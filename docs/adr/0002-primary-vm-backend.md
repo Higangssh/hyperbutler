@@ -28,7 +28,25 @@ winbox needs a Linux VM. The backend must work on Windows Home ([ADR 0001](0001-
   and `WinHvPlatform.dll` are present.
 
 So the HCS stack itself ships on Home with Virtual Machine Platform, and WSL isn't required for
-it. Whether a non-admin third-party process may use it is still open (spike step 2).
+it.
+
+Spike step 2, first run (`spike/hcs`, which calls `computecore.dll` directly):
+
+- A non-elevated process created a LinuxKernelDirect VM. The account is in Administrators,
+  but the token is filtered, and the account is **not** in Hyper-V Administrators.
+- `HcsCreateComputeSystem` failed with `0x8037011B` (`HCS_E_ACCESS_DENIED`). The system
+  message says that only administrators or members of the **Hyper-V Administrators** group may
+  access VMs or containers (see https://aka.ms/hcsadmin).
+- So access to HCS on Home is gated by group membership, not by edition. The group exists on
+  Home (`S-1-5-32-578`).
+
+Still open:
+
+- (a) Does the VM config boot when run elevated?
+- (b) Does Hyper-V Administrators membership alone, without elevation, allow it?
+- (c) The security cost. Hyper-V Administrators is close to admin-equivalent, because its
+  members can attach any host disk to a VM. The alternative is a SYSTEM broker service, as
+  WSL does with `wslservice.exe`, protected by a per-user named-pipe ACL.
 
 ## Spike (decides this ADR)
 
