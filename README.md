@@ -24,16 +24,18 @@ winbox aims to fix these by default, with no tuning.
 
 ## Goals
 
-| Target | Goal |
-|---|---|
-| Cold start | ≤ 3 s |
-| Idle RAM | ≤ 150 MB |
-| Bind-mount I/O | within 2× native |
-| Disk space | returned to the host automatically, no manual compaction |
-| `docker` CLI | fully compatible |
-| Windows editions | Home is first-class, as well as Pro/Enterprise |
+| Target | 0.1 preview | 1.0 |
+|---|---|---|
+| Disk space | returned to the host automatically, no manual compaction, no admin | same |
+| WSL | not required, and unaffected by WSL updates | same |
+| Start until `docker info` works | ≤ 8 s median | ≤ 5 s |
+| Idle host RAM | ≤ 400 MB | ≤ 250 MB |
+| Bind-mount I/O | n/a | within 2× of in-VM ext4; metadata within 3× |
+| `docker` CLI and Compose | core commands | full |
+| Windows editions | Home is first-class | Home, Pro, Enterprise |
 
-These are targets, not measured results. The full list is in
+These are targets, not measured results. For comparison, Docker Desktop is commonly reported
+at 2.5–3 GB idle RAM and 20–60 s to start. The full list is in
 [docs/requirements.md](docs/requirements.md).
 
 ## Planned usage
