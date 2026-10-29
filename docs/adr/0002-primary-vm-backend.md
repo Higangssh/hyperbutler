@@ -48,6 +48,23 @@ Still open:
   members can attach any host disk to a VM. The alternative is a SYSTEM broker service, as
   WSL does with `wslservice.exe`, protected by a per-user named-pipe ACL.
 
+Spike step 2, elevated run. This answers (a): **yes, it boots.** Same Alpine kernel and initrd,
+512 MB, 2 vCPUs, serial console on a COM port named pipe.
+
+| Step | Time since start |
+|---|---|
+| `HcsCreateComputeSystem` done | 132 ms |
+| `HcsStartComputeSystem` done | 156 ms |
+| First serial output | 307 ms |
+| `Alpine Init` seen | **784 ms** |
+
+- The kernel booted to the Alpine init and then to the initramfs shell. That is expected, since
+  there is no boot media.
+- `vmmem` peaked at a 186 MB working set.
+- HCS reported a reserved memory size of 131072 pages (512 MB) with `BalancingEnabled: false`.
+  Dynamic memory and balloon settings remain to be explored.
+- In this test, HCS boots **2.4× faster than QEMU-WHPX** (0.78 s vs 1.89 s).
+
 QEMU-WHPX baseline, same day. Run non-elevated, so no group membership was needed:
 
 - **Setup:** QEMU 11.1.0, `-accel whpx -m 512 -smp 2`, Alpine `latest-stable` netboot
