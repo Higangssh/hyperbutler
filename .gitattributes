@@ -1,0 +1,18 @@
+# Normalize text to LF in the repo AND on checkout (overrides core.autocrlf), because
+# guest-side files must stay LF. Windows-only scripts below are the exception.
+* text=auto eol=lf
+
+*.ps1  text eol=crlf
+*.psm1 text eol=crlf
+*.psd1 text eol=crlf
+*.cmd  text eol=crlf
+*.bat  text eol=crlf
+
+# Never touch binaries.
+*.vhdx binary
+*.vhd  binary
+*.iso  binary
+*.img  binary
+*.efi  binary
+*.png  binary
+*.ico  binary

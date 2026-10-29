@@ -1,0 +1,19 @@
+name: Feature request
+description: Suggest an improvement or a pain point winbox should solve
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem are you facing?
+      description: For example, a WSL2/Docker Desktop pain point. Numbers help (disk size, RAM, build time).
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What would you like winbox to do?
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Workarounds you use today

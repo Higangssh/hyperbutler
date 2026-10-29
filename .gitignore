@@ -1,0 +1,29 @@
+# Build output
+/bin/
+/dist/
+*.exe
+*.test
+/*.out
+coverage.*
+
+# VM and guest artifacts (never commit)
+*.vhdx
+*.vhd
+*.iso
+*.img
+*.qcow2
+/guest/out/
+
+# Benchmark raw results (summaries go in docs/)
+/bench/results/
+
+# Local tooling
+.idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db
+.env
+
+# Small test fixtures (images, golden files) are allowed under testdata/
+!**/testdata/**

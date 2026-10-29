@@ -1,0 +1,47 @@
+name: Bug report
+description: Something doesn't work as expected
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened, and what did you expect?
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. winbox start
+        2. docker run ...
+    validations:
+      required: true
+  - type: input
+    id: edition
+    attributes:
+      label: Windows edition and build (run `winver`)
+      placeholder: Windows 11 Home 24H2 (26100.xxxx)
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: winbox version (`winbox version`)
+    validations:
+      required: true
+  - type: dropdown
+    id: backend
+    attributes:
+      label: VM backend
+      options: [hcs, whp, qemu, not sure]
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: Output of `winbox logs`, or relevant error output.
+      render: text
+  - type: textarea
+    id: env
+    attributes:
+      label: Anything else? (antivirus/EDR, VPN, CPU, ARM64)
