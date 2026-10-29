@@ -48,6 +48,19 @@ Still open:
   members can attach any host disk to a VM. The alternative is a SYSTEM broker service, as
   WSL does with `wslservice.exe`, protected by a per-user named-pipe ACL.
 
+QEMU-WHPX baseline, same day. Run non-elevated, so no group membership was needed:
+
+- **Setup:** QEMU 11.1.0, `-accel whpx -m 512 -smp 2`, Alpine `latest-stable` netboot
+  `vmlinuz-virt` + `initramfs-virt` (SHA256 `17FBD3EF…` / `41D55A3F…`), `console=ttyS0`.
+- **Boot:** From process start until the `Alpine Init` serial line, 5 runs: 1915, 1893, 1886,
+  1853, and 1877 ms. **Median 1.89 s.** For comparison, TCG (no acceleration) took 2.6 s.
+- **Memory:** After 20 s idle at the initramfs shell, with no containers and no dockerd, the
+  QEMU process showed 570 MB private and 202 MB working set. QEMU commits the whole guest RAM, so
+  private memory tracks `-m`. That makes balloon and free page reporting a must for
+  REQ-MEM-001.
+- **Gotcha:** With `-machine q35 -cpu max -nodefaults`, the guest printed nothing. The default
+  machine works.
+
 ## Spike (decides this ADR)
 
 On Windows 11 Home with `VirtualMachinePlatform` and `HypervisorPlatform` enabled:
