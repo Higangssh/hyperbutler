@@ -99,6 +99,10 @@ type node struct {
 	dir     bool
 	orphan  bool      // unlinked or replaced; its path is gone
 	touched time.Time // last change made by the guest itself (inject.go)
+	// inner is the last change the guest made inside this directory: the host then
+	// reports the directory itself as modified (its times changed), which is an echo
+	// too (inject.go).
+	inner time.Time
 	// list is a directory's listing from its last READDIR at offset 0, for the
 	// READDIRs that continue it (nodeListing). Counted in Server.dirEntries.
 	list   []DirEntry
@@ -1691,5 +1695,9 @@ func (s *Server) markRecentLocked(parent uint64, name string) {
 			}
 		}
 	}
-	s.recent[nodeKey{parent, name}] = time.Now()
+	now := time.Now()
+	s.recent[nodeKey{parent, name}] = now
+	if n := s.nodes[parent]; n != nil {
+		n.inner = now
+	}
 }

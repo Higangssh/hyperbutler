@@ -171,3 +171,49 @@ func TestNotifyNeverBlocks(t *testing.T) {
 	<-done
 	_ = binary.LittleEndian
 }
+
+
+// A directory the guest just changed something in is reported by the host as modified
+// (its times changed). That echo must not invalidate the directory (a GETATTR per
+// create, and the guest's readdir cache dropped); a Windows change inside it must.
+func TestDirectoryModifiedEchoSuppressed(t *testing.T) {
+	fs := newMemFS()
+	s := NewServer(Options{NoWatch: true})
+	s.AddShare(&Share{Name: "src", FS: fs})
+	c := newClient(t, s)
+	root := c.mustLookup(rootNode, "src")
+	d := c.mustLookup(root.node, "d")
+	var sent [][]byte
+	s.cmu.Lock()
+	s.conn = &conn{rw: &capture{out: &sent}}
+	s.cmu.Unlock()
+	if e, _, _ := c.create(d.node, "new.txt", oWRONLY|oCREAT, 0o644); e != 0 {
+		t.Fatalf("create: errno %d", e)
+	}
+	s.HostChanged(HostEvent{Share: "src", Path: []string{"d"}, Kind: Modified})
+	if len(sent) != 0 {
+		t.Fatalf("echo of the guest's own create invalidated the directory: %d frames", len(sent))
+	}
+	// A Windows-side create in d still invalidates d.
+	fs.files["d/win.txt"] = nil
+	s.HostChanged(HostEvent{Share: "src", Path: []string{"d", "win.txt"}, Kind: Created})
+	if len(sent) == 0 {
+		t.Fatal("a Windows create in the directory sent nothing")
+	}
+	// Once the echo window has passed, a directory modification is passed on.
+	sent = sent[:0]
+	s.mu.Lock()
+	s.nodes[d.node].inner = time.Now().Add(-2 * echoWindow)
+	s.mu.Unlock()
+	s.HostChanged(HostEvent{Share: "src", Path: []string{"d"}, Kind: Modified})
+	if len(sent) == 0 {
+		t.Fatal("a later directory modification was dropped")
+	}
+	// The directory's own removal is never taken for an echo of a change inside it.
+	sent = sent[:0]
+	c.create(d.node, "again.txt", oWRONLY|oCREAT, 0o644)
+	s.HostChanged(HostEvent{Share: "src", Path: []string{"d"}, Kind: Removed})
+	if len(sent) == 0 {
+		t.Fatal("removal of a directory the guest wrote in was suppressed")
+	}
+}

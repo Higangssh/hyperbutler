@@ -209,6 +209,12 @@ func (s *Server) HostChanged(ev HostEvent) {
 	inj := s.injectorKnown()
 	switch ev.Kind {
 	case Modified:
+		if n := s.nodes[childID]; known && n.dir && n.inner.After(time.Now().Add(-echoWindow)) {
+			// The directory's times changed because the guest changed something in
+			// it. Invalidating it would only make the guest ask again for what it
+			// already knows (a GETATTR per create) and drop its readdir cache.
+			break
+		}
 		if known {
 			msgs = append(msgs, notifyInvalInodeMsg(childID, 0, 0))
 			if n := s.nodes[childID]; inj && !n.dir {
