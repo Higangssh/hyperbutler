@@ -52,7 +52,38 @@ type Config struct {
 	// on the host to accept connections from the guest. Every other service is closed in
 	// both directions.
 	Services []Service
+	// Plan9 are HCS Plan9 file shares served by the VM worker process over hvsock
+	// (option (a) in docs/research/bind-mounts.md). The guest reaches each one by
+	// connecting to AF_VSOCK port Port on the host and mounting 9p with trans=fd.
+	// winbox bind mounts do not use them (ADR 0007); they exist for measurement.
+	Plan9 []Plan9Share
 }
+
+// Plan9Share is one HCS Plan9 share.
+type Plan9Share struct {
+	// Name identifies the share in the VM document. AccessName is the 9P aname the
+	// guest attaches with.
+	Name, AccessName string
+	// Path is the absolute host directory. The VM worker must have been granted access
+	// to it (GrantVMAccess).
+	Path string
+	// Port is the AF_VSOCK port the VM worker listens on (LCOW uses 564).
+	Port uint32
+	// ReadOnly exports the share read-only.
+	ReadOnly bool
+	// Flags are HCS Plan9 share flags (Plan9Flag*). ReadOnly adds Plan9FlagReadOnly.
+	Flags uint32
+}
+
+// HCS Plan9 share flags, as hcsshim's internal/uvm/plan9.go defines them.
+const (
+	Plan9FlagReadOnly      = 0x00000001
+	Plan9FlagLinuxMetadata = 0x00000004
+	Plan9FlagCaseSensitive = 0x00000008
+)
+
+// maxPlan9Shares bounds the share list; HCS documents no limit.
+const maxPlan9Shares = 64
 
 // Disk is a virtual disk file on the host.
 type Disk struct {
@@ -110,6 +141,19 @@ func (c *Config) Validate() error {
 			return fmt.Errorf("vm: disk %q is attached twice", d.Path)
 		}
 		paths[k] = true
+	}
+	if len(c.Plan9) > maxPlan9Shares {
+		return fmt.Errorf("vm: %d Plan9 shares, at most %d", len(c.Plan9), maxPlan9Shares)
+	}
+	shareNames := make(map[string]bool, len(c.Plan9))
+	for _, s := range c.Plan9 {
+		if s.Name == "" || !filepath.IsAbs(s.Path) || s.Port == 0 {
+			return fmt.Errorf("vm: Plan9 share %q needs a name, an absolute path and a port", s.Name)
+		}
+		if shareNames[s.Name] {
+			return fmt.Errorf("vm: Plan9 share %q is listed twice", s.Name)
+		}
+		shareNames[s.Name] = true
 	}
 	seen := make(map[guid.GUID]bool, len(c.Services))
 	for _, s := range c.Services {
@@ -176,6 +220,17 @@ func (c *Config) Document() ([]byte, error) {
 			att[strconv.Itoa(i)] = attachment{Type: "VirtualDisk", Path: d.Path, ReadOnly: d.ReadOnly, AlwaysAllowSparseFiles: d.Sparse}
 		}
 		doc.VirtualMachine.Devices.Scsi = map[string]scsi{"0": {Attachments: att}}
+	}
+	if len(c.Plan9) > 0 {
+		p9 := &plan9{}
+		for _, s := range c.Plan9 {
+			flags := s.Flags
+			if s.ReadOnly {
+				flags |= Plan9FlagReadOnly
+			}
+			p9.Shares = append(p9.Shares, plan9Share{Name: s.Name, AccessName: s.AccessName, Path: s.Path, Port: s.Port, Flags: flags, ReadOnly: s.ReadOnly})
+		}
+		doc.VirtualMachine.Devices.Plan9 = p9
 	}
 	if c.ConsolePipe != "" {
 		doc.VirtualMachine.Devices.ComPorts = map[string]comPort{"0": {NamedPipe: c.ConsolePipe}}
@@ -259,6 +314,20 @@ type devices struct {
 	Scsi     map[string]scsi    `json:",omitempty"`
 	ComPorts map[string]comPort `json:",omitempty"`
 	HvSocket *hvSocket          `json:",omitempty"`
+	Plan9    *plan9             `json:",omitempty"`
+}
+
+type plan9 struct {
+	Shares []plan9Share
+}
+
+type plan9Share struct {
+	Name       string
+	AccessName string `json:",omitempty"`
+	Path       string
+	Port       uint32
+	Flags      uint32 `json:",omitempty"`
+	ReadOnly   bool   `json:",omitempty"`
 }
 
 type comPort struct{ NamedPipe string }
