@@ -164,6 +164,15 @@ func hcsConfig(kernel, initrd, cmdline, pipe, vhdx string, sparse bool, schemaMi
 		// error OpenVirtualDisk returns; measured in the vhdx subcommand).
 		attachment["AlwaysAllowSparseFiles"] = true
 	}
+	devices := map[string]any{
+		"ComPorts": comPorts(pipe),
+		"Scsi": map[string]any{
+			"0": map[string]any{"Attachments": map[string]any{"0": attachment}},
+		},
+	}
+	if hvSocketSDDL != "" {
+		devices["HvSocket"] = hvSocketDevice(hvSocketSDDL)
+	}
 	doc := map[string]any{
 		"SchemaVersion":                     map[string]int{"Major": 2, "Minor": schemaMinor},
 		"Owner":                             "winbox-spike",
@@ -181,12 +190,7 @@ func hcsConfig(kernel, initrd, cmdline, pipe, vhdx string, sparse bool, schemaMi
 				"Memory":    memory,
 				"Processor": map[string]any{"Count": 2},
 			},
-			"Devices": map[string]any{
-				"ComPorts": comPorts(pipe),
-				"Scsi": map[string]any{
-					"0": map[string]any{"Attachments": map[string]any{"0": attachment}},
-				},
-			},
+			"Devices": devices,
 		},
 	}
 	return json.MarshalIndent(doc, "", "  ")
@@ -214,12 +218,24 @@ func runHCS(args []string) error {
 	reserve := fs.String("reserve", "", "host-full test: file to delete if the guest stalls, freeing host space")
 	stall := fs.Duration("stall", 30*time.Second, "host-full test: guest silence that counts as a stall")
 	gopts := guardFlags(fs)
+	copts := ctlFlags(fs)
 	fs.Parse(args)
 	if gopts.on {
 		if *extraDir == "" {
 			return fmt.Errorf("-guard needs -extra (mke2fs, e2fsck)")
 		}
 		initrdExtraFiles = append(initrdExtraFiles, gopts.bin)
+	}
+	if copts.on {
+		if *extraDir == "" {
+			return fmt.Errorf("-ctl needs -extra (mke2fs, e2fsck)")
+		}
+		initrdExtraFiles = append(initrdExtraFiles, copts.bin)
+		sddl, err := userSDDL()
+		if err != nil {
+			return err
+		}
+		hvSocketSDDL = sddl
 	}
 
 	var mods, names []string
@@ -261,7 +277,7 @@ func runHCS(args []string) error {
 
 	id := fmt.Sprintf("winbox-vhdx-spike-%d", time.Now().UnixNano())
 	pipe := `\\.\pipe\` + id + "-com1"
-	if gopts.on {
+	if gopts.on && !copts.on {
 		guardPipe = `\\.\pipe\` + id + "-com2"
 	}
 	cmdline := fmt.Sprintf("console=ttyS0 rdinit=/wbinit loglevel=3 WB_DEV=sda WB_MB=%d WB_MODS=%s WB_MODE=%s", *writeMB, strings.Join(names, ","), *mode)
@@ -272,6 +288,7 @@ func runHCS(args []string) error {
 		cmdline += fmt.Sprintf(" WB_GROUP=%d", *group)
 	}
 	cmdline += gopts.cmdline()
+	cmdline += copts.cmdline()
 	memory := map[string]any{"SizeInMB": *memMB, "AllowOvercommit": true}
 	for _, h := range strings.Split(*memHints, ",") {
 		if h != "" {
@@ -301,6 +318,7 @@ func runHCS(args []string) error {
 	fmt.Printf("hcs sparse=%v image=%s guest writes %d MiB\n", *sparse, vhdx, *writeMB)
 	u0 := report("before boot", vhdx)
 	start := time.Now()
+	vmmemBefore := vmmemPIDs()
 	var system uintptr
 	if _, err := hcsCall("HcsCreateComputeSystem", 30*time.Second, func(op uintptr) uintptr {
 		hr, _, _ := procHcsCreateSystem.Call(uintptr(unsafe.Pointer(u16(id))), uintptr(unsafe.Pointer(u16(string(cfg)))), op, 0, uintptr(unsafe.Pointer(&system)))
@@ -352,8 +370,31 @@ func runHCS(args []string) error {
 		conn = w
 		go watchStall(w, system, *stall, *reserve, vhdx, start)
 	}
+	var sup *guestctlSupervisor
+	if copts.on {
+		s, rid, stop, err := startCtl(system, start)
+		if err != nil {
+			return err
+		}
+		defer stop()
+		sup = s
+		fmt.Printf("  ctl: VM runtime id %s, control service %s\n", rid, guestctlServiceID())
+		pid, perr := newVmmemPID(vmmemBefore)
+		if perr != nil {
+			fmt.Println("  ctl: vmmem:", perr)
+		} else {
+			fmt.Printf("  ctl: this VM's vmmem is pid %d\n", pid)
+		}
+		markerHook = ctlHooks(copts, pid, vhdx, start, s)
+		if !gopts.on {
+			// Without the guard test, still send a real budget so winboxd's guard runs as
+			// it would in winbox (on a roomy volume it is "unlimited").
+			gopts.margin, gopts.floor = 1<<30, 256<<20
+			gopts.on = true
+		}
+	}
 	if gopts.on {
-		g, err := startHostGuard(gopts, system, vhdx, uint64(*diskSize), uint64(u0.Allocated), start)
+		g, err := startHostGuard(gopts, system, vhdx, uint64(*diskSize), uint64(u0.Allocated), start, sup)
 		if err != nil {
 			return err
 		}
