@@ -216,3 +216,49 @@ func TestDirectoryModifiedEchoSuppressed(t *testing.T) {
 		t.Fatal("removal of a directory the guest wrote in was suppressed")
 	}
 }
+
+// bench/fs-notify: Windows edits of files the guest never looked up (a plain READDIR
+// names entries without lookups) must still be replayed, so an inotify watch on the
+// directory gets IN_MODIFY. Directories are not replayed.
+func TestModifyOfUnlookedFileReplayed(t *testing.T) {
+	fs := newMemFS()
+	fs.files["d/sub/"] = nil
+	s := NewServer(Options{NoWatch: true})
+	s.AddShare(&Share{Name: "src", FS: fs})
+	c := newClient(t, s)
+	root := c.mustLookup(rootNode, "src")
+	c.mustLookup(root.node, "d")
+	c.do(opHello, 0, (&wbuf{}).u32(4242).b)
+	var sent [][]byte
+	s.cmu.Lock()
+	s.conn = &conn{rw: &capture{out: &sent}}
+	s.cmu.Unlock()
+	s.HostChanged(HostEvent{Share: "src", Path: []string{"d", "f"}, Kind: Modified})
+	replays := 0
+	for _, m := range sent {
+		if IsInject(m) {
+			f, ok := ParseInject(m[outHeaderLen:])
+			if !ok || f.Kind != injModify || f.Path != "src/d/f" {
+				t.Fatalf("replay %+v %v", f, ok)
+			}
+			replays++
+		}
+	}
+	if replays != 1 {
+		t.Fatalf("%d replays, want 1", replays)
+	}
+	sent = sent[:0]
+	s.HostChanged(HostEvent{Share: "src", Path: []string{"d", "sub"}, Kind: Modified})
+	for _, m := range sent {
+		if IsInject(m) {
+			t.Fatal("a directory's modification was replayed")
+		}
+	}
+	// A file in a directory the guest never looked up is not replayed either: nothing
+	// in the guest can be watching it.
+	sent = sent[:0]
+	s.HostChanged(HostEvent{Share: "src", Path: []string{"other", "f"}, Kind: Modified})
+	if len(sent) != 0 {
+		t.Fatalf("%d frames for an unknown directory", len(sent))
+	}
+}
