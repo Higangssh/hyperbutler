@@ -2,11 +2,12 @@
 
 > A lightweight, Docker-compatible container runtime for Windows that doesn't need WSL.
 
-**Status: early development. Nothing works yet.**
+**Status: early development.** A developer harness boots the VM and runs `docker run` from the
+stock Windows `docker` CLI. There is no installable release yet.
 
-winbox boots a minimal Linux VM directly through the Windows hypervisor (HCS or the
-Windows Hypervisor Platform), runs containerd/dockerd inside it, and exposes the Docker API
-on a Windows named pipe. Your existing `docker` CLI and Compose files keep working.
+winbox boots a minimal Linux VM directly through the Windows Host Compute Service (HCS, the
+same API WSL2 uses), runs dockerd inside it, and exposes the Docker API on a Windows named
+pipe. Your existing `docker` CLI and Compose files keep working.
 
 ## Why
 
@@ -46,15 +47,37 @@ docker run --rm hello-world
 winbox stop
 ```
 
-## Architecture (planned)
+## Architecture
 
 ```
-docker CLI ──npipe──▶ winbox (Windows) ──hvsock──▶ guest agent ─▶ containerd/dockerd
-                         │                              (minimal Linux VM)
-                         └─ VM backend: HCS | WHP | QEMU-WHPX (prototype)
+docker CLI ──npipe──▶ winbox (Windows) ──hvsock──▶ guest agent ─▶ dockerd/containerd
+                         │                              (minimal Linux VM on HCS)
+                         └─ HCS broker service (one-time install) for non-admin use
 ```
 
 Design decisions are recorded in [docs/adr](docs/adr).
+
+## Why Go, not Rust?
+
+Rewriting infrastructure in Rust is popular, so here is why winbox is written in Go
+([ADR 0003](docs/adr/0003-implementation-language.md) has the details):
+
+- **The network stack is Go.** winbox embeds gvisor-tap-vsock as a library, as Podman does.
+- **The Windows container stack is Go.** Microsoft's `hcsshim` and `go-winio`, containerd and
+  moby are Go. winbox calls the HCS DLLs directly, which Rust could do too through
+  `windows-sys`. What Go adds is the reference implementation and the pipe and hvsock helpers
+  in the same language.
+- **The cost is small, and we measured it.** The Go host process used 3–7 MB of private
+  memory while serving Docker. The VM uses about 200 MB. Rust would save a few MB.
+- **Neither language prevents memory leaks.** Rust prevents memory-safety bugs, and so does
+  Go's garbage collector. Leaks in a long-running daemon are design bugs, in either language.
+  winbox bounds every queue and connection set today. Goroutine-leak checks in every package
+  and a 24-hour soak test that fails on memory growth are being built, and they block any
+  release.
+
+If a measurement ever shows that a component misses its budget because of the language, that
+component gets rewritten. The broker's protocol is small and specified for exactly that
+reason.
 
 ## Contributing
 
