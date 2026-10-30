@@ -10,6 +10,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Higangssh/winbox/internal/broker/proto"
 	"golang.org/x/sys/windows"
@@ -342,6 +343,140 @@ func TestNewRejectsBadConfig(t *testing.T) {
 			t.Errorf("New(%+v) accepted", cfg)
 		}
 	}
+}
+
+// recordingPeer records whether code runs inside Impersonate, and can block or fail
+// impersonation.
+type recordingPeer struct {
+	localPeer
+	impersonating bool
+	impErr        error
+	block         chan struct{}
+}
+
+func (p *recordingPeer) Impersonate(fn func() error) error {
+	if p.block != nil {
+		<-p.block
+	}
+	if p.impErr != nil {
+		return p.impErr
+	}
+	p.impersonating = true
+	defer func() { p.impersonating = false }()
+	return fn()
+}
+
+// The reopen must run as the caller (the broker is SYSTEM in production, so this is
+// what stops a caller laundering a handle it could not open itself), and validation
+// must run as the broker.
+func TestDataDirReopenImpersonatesValidateDoesNot(t *testing.T) {
+	sid := currentSID(t)
+	p := &recordingPeer{localPeer: localPeer{sid: sid}}
+	var reopened, validated bool
+	saved := reopenDirectoryFn
+	reopenDirectoryFn = func(h windows.Handle) (windows.Handle, error) {
+		reopened = true
+		if !p.impersonating {
+			t.Error("reopen ran without impersonating the caller")
+		}
+		return saved(h)
+	}
+	t.Cleanup(func() { reopenDirectoryFn = saved })
+	validate := func(h windows.Handle, s string) error {
+		validated = true
+		if p.impersonating {
+			t.Error("validation ran while impersonating the caller")
+		}
+		return ValidateDataDir(h, s)
+	}
+	f, err := os.Open(goodDir(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	d, err := openDataDir(p, uint64(f.Fd()), sid, validate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	d.Close()
+	if !reopened || !validated {
+		t.Fatalf("reopened %v, validated %v", reopened, validated)
+	}
+
+	// If impersonation fails, nothing is opened or validated.
+	reopened, validated = false, false
+	p.impErr = errors.New("cannot impersonate")
+	_, err = openDataDir(p, uint64(f.Fd()), sid, validate)
+	wantReject(t, err, proto.CodeDataLocationRejected, "cannot open the handle as a directory")
+	if reopened || validated {
+		t.Fatalf("after failed impersonation: reopened %v, validated %v", reopened, validated)
+	}
+}
+
+// A data-location check that never returns (a remote or provider-backed file system
+// that stops answering) must not hold the user's lock or the connection forever.
+func TestDataDirCheckTimesOut(t *testing.T) {
+	s, _ := newTestServer(t, Config{RequestTimeout: 300 * time.Millisecond})
+	p := &recordingPeer{localPeer: localPeer{sid: sidA}, block: make(chan struct{})}
+	defer close(p.block)
+
+	start := time.Now()
+	f, err := os.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	r := call1(t, s, p, proto.Request{Op: proto.OpSetDataLocation, Handle: uint64(f.Fd())})
+	wantCode(t, r, proto.CodeInvalidHandle)
+	if d := time.Since(start); d > 3*time.Second {
+		t.Fatalf("took %v", d)
+	}
+	// The user's lock is free again.
+	wantOK(t, call1(t, s, &localPeer{sid: sidA}, proto.Request{Op: proto.OpStatus}), proto.OpStatus)
+}
+
+// blockingReader blocks reads until closed, like an idle client.
+type blockingReader struct{ ch chan struct{} }
+
+func (b blockingReader) Read([]byte) (int, error) { <-b.ch; return 0, io.EOF }
+
+func TestMaxConnsPerUser(t *testing.T) {
+	s, _ := newTestServer(t, Config{MaxConnsPerUser: 1})
+	hold := make(chan struct{})
+	status := encode(t, proto.Request{Op: proto.OpStatus})
+	held := &conn{in: io.MultiReader(bytes.NewReader(status), blockingReader{hold})}
+	done := make(chan error, 1)
+	go func() { done <- s.ServeConn(context.Background(), held, &localPeer{sid: sidA}) }()
+	// Wait until the first connection has been identified.
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		s.mu.Lock()
+		n := s.conns[sidA]
+		s.mu.Unlock()
+		if n == 1 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("first connection never identified")
+		}
+		time.Sleep(time.Millisecond)
+	}
+
+	c := &conn{in: bytes.NewReader(status)}
+	if err := s.ServeConn(context.Background(), c, &localPeer{sid: sidA}); err == nil {
+		t.Fatal("second connection of the same user was served")
+	}
+	r := decodeReplies(t, c.out.Bytes())
+	if len(r) != 1 {
+		t.Fatalf("%d replies", len(r))
+	}
+	wantCode(t, r[0], proto.CodeBusy)
+	// Another user is not affected.
+	wantOK(t, call1(t, s, &localPeer{sid: sidB}, proto.Request{Op: proto.OpStatus}), proto.OpStatus)
+
+	close(hold)
+	<-done
+	wantOK(t, call1(t, s, &localPeer{sid: sidA}, proto.Request{Op: proto.OpStatus}), proto.OpStatus)
 }
 
 func TestCloseReleasesDataDirs(t *testing.T) {

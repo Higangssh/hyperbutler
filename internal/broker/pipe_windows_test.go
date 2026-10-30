@@ -263,6 +263,58 @@ func TestPipeIdleAndClose(t *testing.T) {
 	}
 }
 
+func TestServeTwiceFails(t *testing.T) {
+	l, _ := servePipe(t)
+	s, _ := newTestServer(t, Config{})
+	// servePipe's Serve may not have registered yet; wait for it.
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		l.mu.Lock()
+		started := l.started
+		l.mu.Unlock()
+		if started || time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if err := s.Serve(l); !errors.Is(err, ErrAlreadyServing) {
+		t.Fatalf("second Serve: %v, want ErrAlreadyServing", err)
+	}
+}
+
+// The shared-endpoint form (interactive users) produces a valid, live pipe whose DACL
+// has exactly the broker and IU.
+func TestPipeSharedEndpointACL(t *testing.T) {
+	l, err := ListenPipe(PipeConfig{Name: testPipeName(t), Instances: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.Close()
+	sd, err := windows.GetSecurityInfo(l.insts[0].h, windows.SE_KERNEL_OBJECT, windows.DACL_SECURITY_INFORMATION)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := sd.String()
+	if !strings.Contains(s, ";;;IU)") || strings.Count(s, "(") != 2 {
+		t.Fatalf("shared endpoint DACL %s", s)
+	}
+}
+
+// The NPFS root (\\.\pipe\) opens as a directory File object on a non-disk device, which
+// exercises the local-disk check without needing a network share.
+func TestDataDirNotLocalDisk(t *testing.T) {
+	h := openDir(t, `\\.\pipe\`, false, 0)
+	_, err := take(t, h)
+	var re *rejectError
+	if !errors.As(err, &re) || re.code != proto.CodeDataLocationRejected {
+		t.Fatalf("err = %v, want rejection", err)
+	}
+	if re.reason != "not on a local disk" && re.reason != "cannot open the handle as a directory" {
+		t.Fatalf("rejected for %q", re.reason)
+	}
+	t.Logf("rejected for %q", re.reason)
+}
+
 func TestListenPipeRejectsBadConfig(t *testing.T) {
 	for _, cfg := range []PipeConfig{
 		{Name: `\\server\pipe\x`},

@@ -85,8 +85,12 @@ type Config struct {
 	// is defence in depth.
 	AllowedSIDs []string
 
-	// RequestTimeout bounds each backend call. IdleTimeout bounds the wait for each
-	// request frame, and IOTimeout each reply write.
+	// MaxConnsPerUser caps one user's concurrent identified connections (default 2), so
+	// that one user cannot hold every instance of a shared endpoint.
+	MaxConnsPerUser int
+
+	// RequestTimeout bounds each backend call and each data-location check.
+	// IdleTimeout bounds the wait for each request frame, and IOTimeout each reply write.
 	RequestTimeout, IdleTimeout, IOTimeout time.Duration
 
 	// Logf receives internal errors that are not sent to the caller. Nil discards them.
@@ -103,6 +107,7 @@ type Server struct {
 	mu     sync.Mutex
 	closed bool
 	users  map[string]*userState
+	conns  map[string]int // identified connections by SID
 }
 
 type userState struct {
@@ -154,7 +159,28 @@ func New(cfg Config) (*Server, error) {
 	if cfg.validateDataDir == nil {
 		cfg.validateDataDir = ValidateDataDir
 	}
-	return &Server{cfg: cfg, users: make(map[string]*userState)}, nil
+	if cfg.MaxConnsPerUser == 0 {
+		cfg.MaxConnsPerUser = 2
+	}
+	return &Server{cfg: cfg, users: make(map[string]*userState), conns: make(map[string]int)}, nil
+}
+
+func (s *Server) addConn(sid string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.conns[sid] >= s.cfg.MaxConnsPerUser {
+		return false
+	}
+	s.conns[sid]++
+	return true
+}
+
+func (s *Server) dropConn(sid string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.conns[sid]--; s.conns[sid] <= 0 {
+		delete(s.conns, sid)
+	}
 }
 
 // Close releases every data directory handle the server holds. It does not stop VMs.
@@ -256,6 +282,11 @@ func (s *Server) ServeConn(ctx context.Context, rw io.ReadWriter, p Peer) error 
 				return fail(proto.CodeAccessDenied, "caller not allowed on this endpoint",
 					fmt.Errorf("broker: caller %s not allowed", got.SID))
 			}
+			if !s.addConn(got.SID) {
+				return fail(proto.CodeBusy, "too many connections for this user",
+					fmt.Errorf("broker: caller %s over its connection limit", got.SID))
+			}
+			defer s.dropConn(got.SID)
 			id = &got
 		}
 		req, err := proto.DecodeRequest(b)
@@ -377,7 +408,9 @@ func (s *Server) handle(ctx context.Context, id Identity, p Peer, req proto.Requ
 		if st.Running {
 			return errorReply(proto.CodeBusy, "stop the VM before moving its data")
 		}
-		d, err := openDataDir(p, req.Handle, id.SID, s.cfg.validateDataDir)
+		dctx, dcancel := context.WithTimeout(ctx, dataDirTimeout)
+		defer dcancel()
+		d, err := s.openDataDirBounded(dctx, p, req.Handle, id.SID)
 		if err != nil {
 			return rejectReply(err)
 		}
@@ -388,6 +421,53 @@ func (s *Server) handle(ctx context.Context, id Identity, p Peer, req proto.Requ
 		return proto.Reply{Type: okType(req.Op)}
 	}
 	return errorReply(proto.CodeBadRequest, "unknown op")
+}
+
+// dataDirTimeout caps a data-location check below RequestTimeout: a local NTFS directory
+// answers in milliseconds.
+const dataDirTimeout = 10 * time.Second
+
+// openDataDirBounded runs openDataDir but stops waiting when ctx is done. Reopening a
+// caller-chosen object goes through whatever file system or filter serves it (a remote
+// share, a ProjFS or cloud-files provider the caller runs), which may never answer, and
+// those calls cannot be cancelled. On timeout the caller gets a rejection, the per-user
+// lock and the pipe instance are released, and the abandoned goroutine closes the handle
+// if the call ever returns.
+func (s *Server) openDataDirBounded(ctx context.Context, p Peer, v uint64, sid string) (*DataDir, error) {
+	type result struct {
+		d   *DataDir
+		err error
+	}
+	ch := make(chan result, 1)
+	var mu sync.Mutex
+	abandoned := false
+	go func() {
+		d, err := openDataDir(p, v, sid, s.cfg.validateDataDir)
+		mu.Lock()
+		defer mu.Unlock()
+		if abandoned {
+			if d != nil {
+				_ = d.Close()
+			}
+			s.cfg.Logf("broker: data location check finished after timeout: %v", err)
+			return
+		}
+		ch <- result{d, err}
+	}()
+	select {
+	case r := <-ch:
+		return r.d, r.err
+	case <-ctx.Done():
+		mu.Lock()
+		defer mu.Unlock()
+		select {
+		case r := <-ch:
+			return r.d, r.err
+		default:
+		}
+		abandoned = true
+		return nil, &rejectError{code: proto.CodeInvalidHandle, reason: "data location check timed out", err: ctx.Err()}
+	}
 }
 
 func (s *Server) internal(what string, err error) proto.Reply {

@@ -71,8 +71,12 @@ type PipeListener struct {
 
 	mu      sync.Mutex
 	closed  bool
+	started bool // Serve was called; instances share one OVERLAPPED each, so only once
 	serving sync.WaitGroup
 }
+
+// ErrAlreadyServing is returned by a second Serve call on the same listener.
+var ErrAlreadyServing = errors.New("broker: listener is already being served")
 
 // ListenPipe creates every instance of the pipe up front. It fails with ErrPipeExists if
 // the name is taken.
@@ -185,6 +189,11 @@ func (s *Server) Serve(l *PipeListener) error {
 		l.mu.Unlock()
 		return ErrListenerClosed
 	}
+	if l.started {
+		l.mu.Unlock()
+		return ErrAlreadyServing
+	}
+	l.started = true
 	l.serving.Add(1)
 	l.mu.Unlock()
 	defer l.serving.Done()
@@ -206,6 +215,7 @@ func (s *Server) Serve(l *PipeListener) error {
 var ErrListenerClosed = errors.New("broker: listener closed")
 
 func (s *Server) serveInstance(ctx context.Context, inst *pipeInstance) {
+	backoff := 100 * time.Millisecond
 	for {
 		err := inst.connect()
 		if errors.Is(err, errStopped) {
@@ -219,17 +229,24 @@ func (s *Server) serveInstance(ctx context.Context, inst *pipeInstance) {
 		if err != nil {
 			s.cfg.Logf("broker: connect pipe: %v", err)
 			_ = windows.DisconnectNamedPipe(inst.h)
-			// Avoid spinning if the instance is broken; stop still interrupts the wait.
-			if inst.sleep(100 * time.Millisecond) {
+			// Back off if the instance is broken, so it neither spins nor floods the log;
+			// stop still interrupts the wait.
+			if inst.sleep(backoff) {
 				return
 			}
+			backoff = min(2*backoff, 5*time.Second)
 			continue
 		}
+		backoff = 100 * time.Millisecond
 		peer := &pipePeer{h: inst.h}
 		if err := s.ServeConn(ctx, inst, peer); err != nil && !errors.Is(err, errStopped) {
 			s.cfg.Logf("broker: connection: %v", err)
 		}
 		inst.linger()
+		// A data-location check abandoned after its timeout may still hold the peer. Once
+		// the peer is closed it can no longer impersonate or query the pipe, so it can
+		// never act as the next client of this instance.
+		peer.close()
 		_ = windows.DisconnectNamedPipe(inst.h)
 	}
 }
@@ -397,6 +414,28 @@ type pipePeer struct {
 	h windows.Handle
 	// sid is the identified user; set by Identify.
 	sid string
+
+	// mu guards every use of h. After close, h belongs to the instance's next client.
+	mu     sync.Mutex
+	closed bool
+}
+
+var errPeerClosed = errors.New("broker: connection closed")
+
+func (p *pipePeer) close() {
+	p.mu.Lock()
+	p.closed = true
+	p.mu.Unlock()
+}
+
+// withPipe runs fn with the pipe handle while the connection is still this peer's.
+func (p *pipePeer) withPipe(fn func(h windows.Handle) error) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.closed {
+		return errPeerClosed
+	}
+	return fn(p.h)
 }
 
 // TokenIsAppContainer (TOKEN_INFORMATION_CLASS) and SECURITY_MANDATORY_MEDIUM_RID.
@@ -421,11 +460,14 @@ func impersonateNamedPipeClient(h windows.Handle) error {
 // impersonate runs fn on a locked OS thread that impersonates the pipe client. If
 // RevertToSelf fails, the goroutine exits without unlocking the thread, so the runtime
 // destroys the thread instead of reusing it with the client's token.
-func impersonate(h windows.Handle, fn func() error) error {
+//
+// Only ImpersonateNamedPipeClient needs the pipe; once it has run, the thread holds this
+// client's token whatever happens to the pipe, so fn runs outside the peer's lock.
+func impersonate(p *pipePeer, fn func() error) error {
 	done := make(chan error, 1)
 	go func() {
 		runtime.LockOSThread()
-		if err := impersonateNamedPipeClient(h); err != nil {
+		if err := p.withPipe(impersonateNamedPipeClient); err != nil {
 			runtime.UnlockOSThread()
 			done <- fmt.Errorf("broker: impersonate pipe client: %w", err)
 			return
@@ -441,11 +483,11 @@ func impersonate(h windows.Handle, fn func() error) error {
 	return <-done
 }
 
-func (p *pipePeer) Impersonate(fn func() error) error { return impersonate(p.h, fn) }
+func (p *pipePeer) Impersonate(fn func() error) error { return impersonate(p, fn) }
 
 func (p *pipePeer) Identify() (Identity, error) {
 	var id Identity
-	err := impersonate(p.h, func() error {
+	err := impersonate(p, func() error {
 		var tok windows.Token
 		if err := windows.OpenThreadToken(windows.CurrentThread(), windows.TOKEN_QUERY, true, &tok); err != nil {
 			return fmt.Errorf("broker: open client token: %w", err)
@@ -513,7 +555,9 @@ func (p *pipePeer) DuplicateHandle(v uint64) (windows.Handle, error) {
 		return 0, errors.New("broker: caller not identified")
 	}
 	var pid uint32
-	if err := windows.GetNamedPipeClientProcessId(p.h, &pid); err != nil {
+	if err := p.withPipe(func(h windows.Handle) error {
+		return windows.GetNamedPipeClientProcessId(h, &pid)
+	}); err != nil {
 		return 0, fmt.Errorf("broker: client process: %w", err)
 	}
 	var proc windows.Handle
@@ -542,15 +586,22 @@ func (p *pipePeer) DuplicateHandle(v uint64) (windows.Handle, error) {
 	if tu.User.Sid.String() != p.sid {
 		return 0, errors.New("broker: client process belongs to another user")
 	}
-	var again uint32
-	if err := windows.GetNamedPipeClientProcessId(p.h, &again); err != nil || again != pid {
-		return 0, errors.New("broker: client process changed")
-	}
-
+	// The re-check and the duplication run under the peer's lock, so the connection
+	// cannot end (and the instance cannot move to another client) in between.
 	var dup windows.Handle
-	if err := windows.DuplicateHandle(proc, windows.Handle(v), windows.CurrentProcess(), &dup,
-		0, false, windows.DUPLICATE_SAME_ACCESS); err != nil {
-		return 0, fmt.Errorf("broker: duplicate client handle: %w", err)
+	err = p.withPipe(func(h windows.Handle) error {
+		var again uint32
+		if err := windows.GetNamedPipeClientProcessId(h, &again); err != nil || again != pid {
+			return errors.New("broker: client process changed")
+		}
+		if err := windows.DuplicateHandle(proc, windows.Handle(v), windows.CurrentProcess(), &dup,
+			0, false, windows.DUPLICATE_SAME_ACCESS); err != nil {
+			return fmt.Errorf("broker: duplicate client handle: %w", err)
+		}
+		return nil
+	})
+	if err != nil {
+		return 0, err
 	}
 	return dup, nil
 }

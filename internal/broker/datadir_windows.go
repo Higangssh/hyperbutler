@@ -89,7 +89,7 @@ func openDataDir(p Peer, v uint64, sid string, validate func(windows.Handle, str
 	var h windows.Handle
 	err = p.Impersonate(func() error {
 		var err error
-		h, err = reopenDirectory(src)
+		h, err = reopenDirectoryFn(src)
 		return err
 	})
 	if err != nil {
@@ -101,6 +101,9 @@ func openDataDir(p Peer, v uint64, sid string, validate func(windows.Handle, str
 	}
 	return &DataDir{h: h}, nil
 }
+
+// reopenDirectoryFn is replaced in tests to observe that the reopen impersonates.
+var reopenDirectoryFn = reopenDirectory
 
 func reopenDirectory(root windows.Handle) (windows.Handle, error) {
 	qos := windows.SECURITY_QUALITY_OF_SERVICE{ImpersonationLevel: windows.SecurityAnonymous}

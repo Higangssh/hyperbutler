@@ -89,10 +89,14 @@ const (
 // Absolute resource limits. The broker applies its own, narrower, configured limits; these
 // only bound what can appear on the wire.
 const (
-	MaxCPUs       = 64
-	MinMemoryMB   = 256
-	MaxMemoryMB   = 256 << 10
-	MaxHandle     = 0xFFFFFFFF // handle values are small; pseudo-handles (-1, -2, ...) are rejected
+	MaxCPUs     = 64
+	MinMemoryMB = 256
+	MaxMemoryMB = 256 << 10
+	// MaxHandle bounds a handle value. Real handle values fit in 32 bits; 64-bit
+	// pseudo-handles (-1 current process, -2 current thread, ...) are sign-extended to
+	// 0xFFFFFFFFFFFFFFFx, so this bound is what rejects them on the wire. (A 32-bit value
+	// such as 0xFFFFFFFF passes here and fails the broker's object type check instead.)
+	MaxHandle     = 0xFFFFFFFF
 	MaxVersionLen = 64
 	MaxMessageLen = 200
 )
