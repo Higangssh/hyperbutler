@@ -28,6 +28,7 @@ import (
 type NTFS struct {
 	root     windows.Handle
 	rootPath string // final path of the root, for statfs and link targets
+	rootID   string // see RootID
 }
 
 var (
@@ -109,11 +110,16 @@ func OpenNTFS(dir string) (*NTFS, error) {
 		windows.CloseHandle(h)
 		return nil, fmt.Errorf("share: final path of %s: %v", dir, err)
 	}
-	return &NTFS{root: h, rootPath: windows.UTF16ToString(buf[:n])}, nil
+	id := fmt.Sprintf("%08x-%08x%08x", bi.VolumeSerialNumber, bi.FileIndexHigh, bi.FileIndexLow)
+	return &NTFS{root: h, rootPath: windows.UTF16ToString(buf[:n]), rootID: id}, nil
 }
 
 // Close releases the root handle.
 func (f *NTFS) Close() error { return windows.CloseHandle(f.root) }
+
+// RootID identifies the root directory itself (volume serial and file index): a
+// directory deleted and created again under the same path has a new one.
+func (f *NTFS) RootID() string { return f.rootID }
 
 // RootPath is the final path of the share root.
 func (f *NTFS) RootPath() string { return f.rootPath }

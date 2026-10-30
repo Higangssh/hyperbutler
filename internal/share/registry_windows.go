@@ -60,7 +60,10 @@ func (r *Registry) Resolve(winPath string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	key := fs.RootPath()
+	// The root's identity is part of the key: a share holds its root open, so after the
+	// directory is deleted and made again the old share still serves the deleted one.
+	// The same path then gets a new share (an old container keeps the old one).
+	key := fs.RootPath() + "\x00" + fs.RootID()
 	if only != "" {
 		key += "\x00" + only
 	}
