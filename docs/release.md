@@ -1,4 +1,4 @@
-# Releasing winbox
+# Releasing hyperbutler
 
 This is the checklist for every release, and the description of what the release pipeline
 does. A release is a Git tag `vX.Y.Z` (or `vX.Y.Z-pre`) on `main`, a draft GitHub release
@@ -12,27 +12,27 @@ GitHub-hosted runners (ADR 0005, Decision 4).
 
 | Asset | Produced by | What it is |
 |---|---|---|
-| `winbox-<tag>-windows-amd64.zip` | `dist/package.ps1` | The portable install, below |
-| `winbox-<tag>-guest-sources.tar` | `scripts/guest-image/fetch-sources.sh` | Corresponding source of the guest image (GPL and others) |
-| `winbox-<tag>-guest-inputs.tar` | `scripts/guest-image/ci-entry.sh` | The signed Alpine packages the image was built from (our mirror) |
-| `winbox-<tag>-windows-amd64.spdx.json` | syft 1.55.0 | SBOM of the zip contents |
+| `hyperbutler-<tag>-windows-amd64.zip` | `dist/package.ps1` | The portable install, below |
+| `hyperbutler-<tag>-guest-sources.tar` | `scripts/guest-image/fetch-sources.sh` | Corresponding source of the guest image (GPL and others) |
+| `hyperbutler-<tag>-guest-inputs.tar` | `scripts/guest-image/ci-entry.sh` | The signed Alpine packages the image was built from (our mirror) |
+| `hyperbutler-<tag>-windows-amd64.spdx.json` | syft 1.55.0 | SBOM of the zip contents |
 | `SHA256SUMS` | `release.yml` | SHA-256 of the four files above |
-| Build provenance | `actions/attest-build-provenance` | SLSA provenance for every file in `SHA256SUMS`, signed through Sigstore. Verify with `gh attestation verify <file> --repo Higangssh/winbox` |
+| Build provenance | `actions/attest-build-provenance` | SLSA provenance for every file in `SHA256SUMS`, signed through Sigstore. Verify with `gh attestation verify <file> --repo Higangssh/hyperbutler` |
 
 The zip has one top-level folder:
 
 | File | Notes |
 |---|---|
-| `winbox.exe` | `CGO_ENABLED=0 go build -trimpath -buildvcs=true -ldflags "-s -w -buildid="`. The version is the tag, taken from Git by the Go toolchain; `package.ps1` fails if `go version -m winbox.exe` reports anything else |
-| `vmlinuz-virt`, `initramfs-winbox.gz` | The guest image, from the guest-image job. `winbox start` finds them next to `winbox.exe`. The names are a parameter (`-ImageFiles`) for the erofs layout |
-| `LICENSE`, `NOTICE` | winbox's own |
-| `THIRD-PARTY/` | License texts of every Go module linked into `winbox.exe` or the guest binaries, of the Go standard library, and of every guest package (from the upstream sources), with an index in `README.txt` |
+| `hyperbutler.exe` | `CGO_ENABLED=0 go build -trimpath -buildvcs=true -ldflags "-s -w -buildid="`. The version is the tag, taken from Git by the Go toolchain; `package.ps1` fails if `go version -m hyperbutler.exe` reports anything else |
+| `vmlinuz-virt`, `initramfs-hyperbutler.gz` | The guest image, from the guest-image job. `hyperbutler start` finds them next to `hyperbutler.exe`. The names are a parameter (`-ImageFiles`) for the erofs layout |
+| `LICENSE`, `NOTICE` | hyperbutler's own |
+| `THIRD-PARTY/` | License texts of every Go module linked into `hyperbutler.exe` or the guest binaries, of the Go standard library, and of every guest package (from the upstream sources), with an index in `README.txt` |
 | `SOURCE-OFFER.txt` | Names the source bundle by file name, SHA-256 and URL |
 | `README.txt`, `BUILDINFO.txt`, `SHA256SUMS` | Quick start; versions, flags, commit and hashes; checksums of every file in the zip |
 
 **Size (REQ-UX-002, ≤ 150 MB):** `package.ps1` fails above 150 MB. The first dry run
 (2026-10-30, commit `326f048`, prototype image) gave **79.7 MB zipped** (83,541,023 bytes;
-87.6 MB unpacked): initramfs 65.8 MB, `winbox.exe` 13.3 MB, `vmlinuz-virt` 12.6 MB. The
+87.6 MB unpacked): initramfs 65.8 MB, `hyperbutler.exe` 13.3 MB, `vmlinuz-virt` 12.6 MB. The
 initramfs is already gzip, so zipping saves almost nothing. Record the size of every
 release here.
 
@@ -41,7 +41,7 @@ release here.
 | (dry run) | 79.7 MB | prototype A2a image, snapshot |
 
 There is no installer and nothing needs admin rights to install: unzip, add the folder to
-the user PATH, run `winbox start` (REQ-PLAT-003). The one-time prerequisites (the Virtual
+the user PATH, run `hyperbutler start` (REQ-PLAT-003). The one-time prerequisites (the Virtual
 Machine Platform feature, and Hyper-V Administrators membership until the ADR 0004 broker
 ships) do need an administrator; the README says so.
 
@@ -128,13 +128,13 @@ met blocks the release. Changing a gate needs an ADR change, not a waiver here.
 
 **ADR 0002 (HCS backend)**
 - [ ] **Host disk full:** the free-space guard test (`docs/research/disk-reclaim.md`,
-  "Free-space guard") is repeated with the released `winbox` CLI on a small test volume:
+  "Free-space guard") is repeated with the released `hyperbutler` CLI on a small test volume:
   the guest gets `ENOSPC`, no ext4 errors, no lost files, and the VM pauses at the floor
   (REQ-DISK-004/005).
 - [ ] **Deferred commit under host memory pressure** is tested (ADR 0002, Consequences).
 - [ ] The integration tests (`go test -tags integration ./...`) pass on real hardware with
   the current Windows 11 build, on Home, and on Pro if available, because the HCS schema
-  fields winbox uses are undocumented.
+  fields hyperbutler uses are undocumented.
 - [ ] REQ-MEM-002 (`bench/mem-reclaim`, 12 GB guest) is measured and recorded.
 
 **ADR 0005 (guest image)**
@@ -145,7 +145,7 @@ met blocks the release. Changing a gate needs an ADR change, not a waiver here.
 - [ ] Moby, containerd and runc LICENSE and NOTICE files are in `THIRD-PARTY/guest/`
   (Apache-2.0 §4(a) and (d)). `fetch-sources.sh` takes them from the upstream sources
   once those packages come from Alpine.
-- [ ] `winbox.exe` checks the guest image files against hashes embedded at build time
+- [ ] `hyperbutler.exe` checks the guest image files against hashes embedded at build time
   (Decision 4). Not implemented yet.
 - [ ] REQ-MEM-001: idle memory ≤ 400 MB (`bench/mem-idle`). Today 580 MiB; the A2b erofs
   layout is the planned fix.
@@ -167,7 +167,7 @@ met blocks the release. Changing a gate needs an ADR change, not a waiver here.
 - [ ] REQ-UX-002: the zip is ≤ 150 MB (`package.ps1` enforces it). Record the size in the
   table above.
 - [ ] REQ-UX-001: on a clean Windows 11 Home account, the README Quick Start works as
-  written: unzip, PATH, `winbox start`, `docker run --rm hello-world`, `winbox stop`.
+  written: unzip, PATH, `hyperbutler start`, `docker run --rm hello-world`, `hyperbutler stop`.
 - [ ] REQ-PLAT-005 (from the second release on): upgrading from every release since the
   last minor keeps images, volumes and containers.
 - [ ] The README "Current status" table matches the measured numbers for this release.
@@ -176,9 +176,9 @@ met blocks the release. Changing a gate needs an ADR change, not a waiver here.
 ### 2. GPL and license obligations
 
 The guest image contains GPL-2.0 code (Linux, BusyBox, e2fsprogs) and LGPL code
-(libblkid, parts of e2fsprogs). winbox distributes it, so winbox owes the source.
+(libblkid, parts of e2fsprogs). hyperbutler distributes it, so hyperbutler owes the source.
 
-- [ ] `winbox-<tag>-guest-sources.tar` is attached to the same release as the zip. GPLv2
+- [ ] `hyperbutler-<tag>-guest-sources.tar` is attached to the same release as the zip. GPLv2
   §3 lets us meet the source duty by "equivalent access to copy the source code from the
   same place"; that is why the bundle is a release asset and not a link to Alpine's
   servers. Never delete it while the zip is offered.
@@ -191,7 +191,7 @@ The guest image contains GPL-2.0 code (Linux, BusyBox, e2fsprogs) and LGPL code
   its license text. `package.ps1` fails on a Go module without one; `fetch-sources.sh`
   fails on a guest origin without one unless `dist/licenses/<origin>/` supplies it.
 - [ ] `NOTICE` is current: new Go modules, new guest packages.
-- [ ] No GPL code is linked into `winbox.exe` (the SBOM lists its modules).
+- [ ] No GPL code is linked into `hyperbutler.exe` (the SBOM lists its modules).
 - [ ] "Docker" is used only descriptively ("Docker Engine (Moby)"), with the trademark
   note in the README.
 
@@ -199,12 +199,12 @@ The guest image contains GPL-2.0 code (Linux, BusyBox, e2fsprogs) and LGPL code
 
 1. Merge everything for the release into `main`, CI green (including the guest-image job).
 2. Tag the release commit on `main` and push the tag (maintainer only):
-   `git tag -s vX.Y.Z -m "winbox vX.Y.Z"`, then `git push origin vX.Y.Z`.
+   `git tag -s vX.Y.Z -m "hyperbutler vX.Y.Z"`, then `git push origin vX.Y.Z`.
 3. Wait for `release.yml`. Approve the `release` environment when asked.
 4. Check the draft:
    - [ ] Download all assets; `sha256sum -c SHA256SUMS`.
-   - [ ] `gh attestation verify <each asset> --repo Higangssh/winbox`.
-   - [ ] `winbox version` prints the tag.
+   - [ ] `gh attestation verify <each asset> --repo Higangssh/hyperbutler`.
+   - [ ] `hyperbutler version` prints the tag.
    - [ ] The zip size is recorded above.
    - [ ] Run the Quick Start on a clean Windows 11 Home account.
 5. Write the release notes: what changed, the measured status, and the known gaps.

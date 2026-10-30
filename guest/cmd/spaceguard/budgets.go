@@ -6,7 +6,7 @@ import (
 	"io"
 	"log"
 
-	"github.com/Higangssh/winbox/internal/spaceguard"
+	"github.com/Higangssh/hyperbutler/internal/spaceguard"
 )
 
 type event struct {

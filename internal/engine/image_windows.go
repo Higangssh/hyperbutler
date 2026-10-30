@@ -11,7 +11,7 @@ import (
 
 	"golang.org/x/sys/windows"
 
-	"github.com/Higangssh/winbox/guest/image"
+	"github.com/Higangssh/hyperbutler/guest/image"
 )
 
 // guestImage is a verified image set (ADR 0005): the kernel, the stage-1 initramfs and

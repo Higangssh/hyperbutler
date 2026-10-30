@@ -12,17 +12,18 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/Microsoft/go-winio/pkg/guid"
 	"golang.org/x/sys/windows"
 
-	"github.com/Higangssh/winbox/internal/guestctl"
-	"github.com/Higangssh/winbox/internal/netstack"
-	"github.com/Higangssh/winbox/internal/spaceguard"
-	"github.com/Higangssh/winbox/internal/transport"
-	"github.com/Higangssh/winbox/internal/vm"
+	"github.com/Higangssh/hyperbutler/internal/guestctl"
+	"github.com/Higangssh/hyperbutler/internal/netstack"
+	"github.com/Higangssh/hyperbutler/internal/spaceguard"
+	"github.com/Higangssh/hyperbutler/internal/transport"
+	"github.com/Higangssh/hyperbutler/internal/vm"
 )
 
 // GuardConfig is the free-space guard policy: guest writes get ENOSPC before the host
@@ -66,8 +67,8 @@ type Config struct {
 	MemoryMB, CPUs int
 	// Pipe is where the Docker API is served (transport.DefaultPipeName if empty).
 	Pipe string
-	// VMID names the compute system ("winbox-" + random if empty). It must start with
-	// "winbox-".
+	// VMID names the compute system ("hyperbutler-" + random if empty). It must start with
+	// "hyperbutler-".
 	VMID string
 	// Disk, if Data is set, is the persistent data disk: Disk.Data holds data.vhdx and
 	// disk.json, created on the first start with DiskSize bytes. Without it the guest
@@ -158,7 +159,7 @@ func (c *Config) defaults() {
 		c.Pipe = transport.DefaultPipeName
 	}
 	if c.VMID == "" {
-		c.VMID = "winbox-" + randomHex(8)
+		c.VMID = "hyperbutler-" + randomHex(8)
 	}
 	if c.Guard == (spaceguard.Config{}) {
 		c.Guard = GuardConfig
@@ -202,7 +203,7 @@ func CurrentUserSDDL() (string, error) {
 func Run(ctx context.Context, cfg Config) (err error) {
 	cfg.defaults()
 	log := cfg.Logger
-	if !validToken(cfg.VMID, maxVMIDLen, true) || len(cfg.VMID) < len("winbox-")+1 || cfg.VMID[:7] != "winbox-" {
+	if !validToken(cfg.VMID, maxVMIDLen, true) || len(cfg.VMID) <= len("hyperbutler-") || !strings.HasPrefix(cfg.VMID, "hyperbutler-") {
 		return fmt.Errorf("engine: bad VM id %q", cfg.VMID)
 	}
 	t0 := time.Now()
@@ -237,7 +238,7 @@ func Run(ctx context.Context, cfg Config) (err error) {
 	if err != nil {
 		return err
 	}
-	// Listen first: if the pipe name is taken (another winbox, or a squatter), fail
+	// Listen first: if the pipe name is taken (another hyperbutler, or a squatter), fail
 	// before booting anything.
 	ln, err := transport.ListenPipe(cfg.Pipe)
 	if err != nil {
@@ -274,12 +275,12 @@ func Run(ctx context.Context, cfg Config) (err error) {
 		}()
 		disks = []vm.Disk{{Path: disk.path, Sparse: true}}
 		if img != nil {
-			cmdline += " winbox.data=lun:0"
+			cmdline += " hyperbutler.data=lun:0"
 		} else {
-			cmdline += " winbox.data=sda" // what the initramfs-only image understands
+			cmdline += " hyperbutler.data=sda" // what the initramfs-only image understands
 		}
 		if disk.blank {
-			cmdline += " winbox.newdisk=1"
+			cmdline += " hyperbutler.newdisk=1"
 		}
 	}
 	if img != nil {
@@ -292,7 +293,7 @@ func Run(ctx context.Context, cfg Config) (err error) {
 				log.Warn("revoke VM access to the system disk", "err", err)
 			}
 		}()
-		cmdline += fmt.Sprintf(" winbox.system=lun:%d", len(disks))
+		cmdline += fmt.Sprintf(" hyperbutler.system=lun:%d", len(disks))
 		disks = append(disks, vm.Disk{Path: img.system, ReadOnly: true})
 	}
 
@@ -367,8 +368,8 @@ func Run(ctx context.Context, cfg Config) (err error) {
 	sup := &guestctl.Supervisor{
 		Dial: guestctl.HvsockDialer(vmid),
 		// An hvsock connect to a port nobody listens on yet waits for the whole timeout,
-		// and dockerd waits for winboxd's first budget: a short timeout lets the first
-		// connect land soon after winboxd listens (about 0.3 s into a system-disk boot).
+		// and dockerd waits for hyperbutlerd's first budget: a short timeout lets the first
+		// connect land soon after hyperbutlerd listens (about 0.3 s into a system-disk boot).
 		DialTimeout: 400 * time.Millisecond,
 		MaxBackoff:  2 * time.Second,
 		Logf:        func(f string, a ...any) { log.Debug(fmt.Sprintf(f, a...)) },
@@ -386,7 +387,7 @@ func Run(ctx context.Context, cfg Config) (err error) {
 			return err
 		}
 	} else {
-		// No disk, no guard: winboxd runs with the cache policy only.
+		// No disk, no guard: hyperbutlerd runs with the cache policy only.
 		sup.SetBudget(spaceguard.Budget{Unlimited: true})
 	}
 	supCtx, cancelSup := context.WithCancel(context.Background())
@@ -494,7 +495,7 @@ func (r *runner) watch(consoleDone <-chan struct{}) {
 	}
 }
 
-// shutdownGuest asks winboxd for an orderly power-off (dockerd stops the containers,
+// shutdownGuest asks hyperbutlerd for an orderly power-off (dockerd stops the containers,
 // the data disk is unmounted) and waits up to ShutdownTimeout for the VM to stop.
 func (r *runner) shutdownGuest(sup *guestctl.Supervisor) {
 	if r.exited() || r.shutdownTried {
@@ -551,7 +552,7 @@ func (r *runner) stopVM() {
 	r.step("VM stopped")
 }
 
-// guestStats logs what winboxd reports that is worth a line: trims and cache
+// guestStats logs what hyperbutlerd reports that is worth a line: trims and cache
 // reclaims. The values are guest-reported, for display only.
 type guestStats struct {
 	log                 *slog.Logger

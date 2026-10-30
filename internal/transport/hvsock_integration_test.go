@@ -1,12 +1,12 @@
 //go:build integration && windows
 
-// Integration test against a real guest. It needs a running winbox utility VM whose
+// Integration test against a real guest. It needs a running hyperbutler utility VM whose
 // dockerd listens on AF_VSOCK, and an elevated shell (HCS and AF_HYPERV connects to a
 // utility VM require it on Windows 11 Home; see docs/adr/0002-primary-vm-backend.md).
 //
 // Run it with:
 //
-//	$env:WINBOX_TEST_HVSOCK = "<vm-guid>:vsock:2375"   # or <vm-guid>:<service-guid>
+//	$env:HYPERBUTLER_TEST_HVSOCK = "<vm-guid>:vsock:2375"   # or <vm-guid>:<service-guid>
 //	go test -tags integration -run Integration -v ./internal/transport/
 //
 // Windows edition: not yet run; record the edition and build here when it is.
@@ -26,9 +26,9 @@ import (
 
 func integrationTarget(t *testing.T) HvsockTarget {
 	t.Helper()
-	spec := os.Getenv("WINBOX_TEST_HVSOCK")
+	spec := os.Getenv("HYPERBUTLER_TEST_HVSOCK")
 	if spec == "" {
-		t.Skip("WINBOX_TEST_HVSOCK is not set")
+		t.Skip("HYPERBUTLER_TEST_HVSOCK is not set")
 	}
 	target, err := ParseHvsockTarget(spec)
 	if err != nil {

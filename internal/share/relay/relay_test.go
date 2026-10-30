@@ -6,18 +6,18 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/Higangssh/winbox/internal/leaktest"
+	"github.com/Higangssh/hyperbutler/internal/leaktest"
 )
 
 func TestMain(m *testing.M) { leaktest.VerifyTestMain(m) }
 
 func TestSafeJoin(t *testing.T) {
 	for _, bad := range []string{"", "/etc", "a/../b", "a//b", ".", "a/./b", "..", "a\x00b"} {
-		if _, err := safeJoin("/mnt/winbox", bad); err == nil {
+		if _, err := safeJoin("/mnt/hyperbutler", bad); err == nil {
 			t.Errorf("safeJoin accepted %q", bad)
 		}
 	}
-	if p, err := safeJoin("/mnt/winbox", "src/a b/c"); err != nil || p != "/mnt/winbox/src/a b/c" {
+	if p, err := safeJoin("/mnt/hyperbutler", "src/a b/c"); err != nil || p != "/mnt/hyperbutler/src/a b/c" {
 		t.Fatalf("%q %v", p, err)
 	}
 }

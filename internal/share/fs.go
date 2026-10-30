@@ -1,4 +1,4 @@
-// Package share serves Windows directories to the winbox guest as bind-mount sources
+// Package share serves Windows directories to the hyperbutler guest as bind-mount sources
 // (ADR 0007, REQ-FS-001..004).
 //
 // The guest kernel's FUSE client talks to this package over one hvsock connection: the

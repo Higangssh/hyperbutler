@@ -8,7 +8,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/Higangssh/winbox/internal/spaceguard"
+	"github.com/Higangssh/hyperbutler/internal/spaceguard"
 )
 
 // Handler is the guest side of the protocol: what the guest daemon does with the host's

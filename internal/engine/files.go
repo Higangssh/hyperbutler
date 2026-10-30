@@ -14,7 +14,7 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/Higangssh/winbox/internal/transport"
+	"github.com/Higangssh/hyperbutler/internal/transport"
 )
 
 // The state directory's JSON files. Each parser is strict: one JSON object of the
@@ -100,7 +100,7 @@ func (s *State) Validate() error {
 		return errors.New("state: error text too long or not UTF-8")
 	case !validToken(s.ErrorCode, 64, false):
 		return fmt.Errorf("state: bad error code %q", s.ErrorCode)
-	case s.VMID != "" && (!validToken(s.VMID, maxVMIDLen, true) || !strings.HasPrefix(s.VMID, "winbox-")):
+	case s.VMID != "" && (!validToken(s.VMID, maxVMIDLen, true) || !strings.HasPrefix(s.VMID, "hyperbutler-")):
 		return fmt.Errorf("state: bad VM id %q", s.VMID)
 	case s.RuntimeID != "" && !validToken(s.RuntimeID, 40, true):
 		return fmt.Errorf("state: bad runtime id %q", s.RuntimeID)

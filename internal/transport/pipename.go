@@ -6,9 +6,9 @@ import (
 	"unicode/utf8"
 )
 
-// DefaultPipeName is the named pipe winbox serves the Docker API on. It is distinct from
+// DefaultPipeName is the named pipe hyperbutler serves the Docker API on. It is distinct from
 // Docker Desktop's \\.\pipe\docker_engine so both can be installed side by side.
-const DefaultPipeName = `\\.\pipe\docker_engine_winbox`
+const DefaultPipeName = `\\.\pipe\docker_engine_hyperbutler`
 
 const (
 	localPipePrefix = `\\.\pipe\`

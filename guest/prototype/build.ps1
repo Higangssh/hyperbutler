@@ -2,7 +2,7 @@
 # read-only erofs system disk, the kernel, and the manifest that ties them together.
 #
 #   powershell -ExecutionPolicy Bypass -File guest\prototype\build.ps1 [-Cache DIR] [-Out DIR]
-#       [-Docker docker.exe] [-DockerHost npipe:////./pipe/docker_engine_winbox]
+#       [-Docker docker.exe] [-DockerHost npipe:////./pipe/docker_engine_hyperbutler]
 #
 # 1. Downloads every input in sources.lock into its own directory under -Cache and
 #    checks its SHA-256 pin. A mismatch is fatal.
@@ -11,9 +11,9 @@
 #    modules-boot.txt (system disk), with their modules.dep closures, and decompresses
 #    them (CONFIG_MODULE_DECOMPRESS is off in linux-virt).
 # 4. Builds guest/cmd/mkinitramfs and mksysdisk, and cross-compiles guest/cmd/agent,
-#    sockfwd, netfwd and winboxd for linux/amd64.
+#    sockfwd, netfwd and hyperbutlerd for linux/amd64.
 # 5. Builds the system tree (system.spec) as a cpio, turns it into erofs with mkfs.erofs
-#    in a pinned Alpine container on a Docker Engine (winbox's own is fine), and wraps
+#    in a pinned Alpine container on a Docker Engine (hyperbutler's own is fine), and wraps
 #    that as out\system.vhd (a fixed VHD).
 # 6. Builds out\initramfs-stage1.gz (initramfs.spec) and copies vmlinuz-virt.
 # 7. Writes out\image.json, the SHA-256 and size of all three, last.
@@ -23,7 +23,7 @@
 
 [CmdletBinding()]
 param(
-    [string]$Cache = (Join-Path $env:TEMP 'winbox-guest-build'),
+    [string]$Cache = (Join-Path $env:TEMP 'hyperbutler-guest-build'),
     [string]$Out = '',
     [int]$GzipLevel = 9,          # 0 writes an uncompressed cpio
     [string]$Name = 'initramfs-stage1.gz',
@@ -176,7 +176,7 @@ Push-Location $repo
 $saved = $env:GOOS, $env:GOARCH, $env:CGO_ENABLED
 try {
     $env:GOOS = 'linux'; $env:GOARCH = 'amd64'; $env:CGO_ENABLED = '0'
-    foreach ($cmd in 'agent', 'sockfwd', 'netfwd', 'winboxd') {
+    foreach ($cmd in 'agent', 'sockfwd', 'netfwd', 'hyperbutlerd') {
         & go build -trimpath -buildvcs=false -ldflags '-s -w -buildid=' -o (Join-Path $guestBin $cmd) "./guest/cmd/$cmd"
         if ($LASTEXITCODE -ne 0) { throw "go build $cmd failed" }
     }
@@ -185,7 +185,7 @@ try {
 # --- 5. the system disk ----------------------------------------------------------------
 # The tree is a deterministic uncompressed cpio (mtime 0, uid/gid 0), so file modes and
 # links never touch NTFS. mkfs.erofs runs in a pinned Alpine container on any Docker
-# Engine (winbox's own works: no WSL); the cpio goes in on stdin and the image comes back
+# Engine (hyperbutler's own works: no WSL); the cpio goes in on stdin and the image comes back
 # on stdout. -T0 and a UUID derived from the cpio make the image a function of its input.
 $cpio = Join-Path $Cache 'stage\system.cpio'
 & $mkinitramfs -spec (Join-Path $proto 'system.spec') -mtime 0 -level 0 -o $cpio `
@@ -199,7 +199,7 @@ set -e
 apk add --no-cache --quiet erofs-utils=$ErofsUtils >&2
 mkdir /r && cd /r && cpio -i -d -m 2>/dev/null
 chroot /r /bin/busybox --install -s
-mkfs.erofs --quiet -z$Compress -x-1 -T0 -U $uuid --all-root -L winbox-system /sys.img /r >&2
+mkfs.erofs --quiet -z$Compress -x-1 -T0 -U $uuid --all-root -L hyperbutler-sys /sys.img /r >&2
 cat /sys.img
 "@ -replace "`r", ''
 # The script travels base64-encoded, which survives cmd.exe and docker quoting; stdin

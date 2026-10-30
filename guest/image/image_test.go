@@ -100,7 +100,7 @@ func testManifest() *Manifest {
 	return &Manifest{
 		Version: 1,
 		Kernel:  File{Name: "vmlinuz-virt", Size: 12641280, SHA256: h},
-		Initrd:  File{Name: "initramfs-winbox.gz", Size: 3 << 20, SHA256: h},
+		Initrd:  File{Name: "initramfs-hyperbutler.gz", Size: 3 << 20, SHA256: h},
 		System:  File{Name: "system.vhd", Size: 80<<20 + FooterSize, SHA256: h},
 	}
 }

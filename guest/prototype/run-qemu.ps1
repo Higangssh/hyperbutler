@@ -4,7 +4,7 @@
 #   powershell -ExecutionPolicy Bypass -File guest\prototype\run-qemu.ps1 [-Runs 5] [-MemoryMB 512] [-Smoke] [-IdleSeconds 0]
 #
 # The API is reached through QEMU user networking (hostfwd to the guest's tcp:2375, where
-# sockfwd relays to dockerd's Unix socket). This is a measurement harness only; winbox
+# sockfwd relays to dockerd's Unix socket). This is a measurement harness only; hyperbutler
 # itself will use hvsock or a named pipe.
 #   -Smoke        after the first ready run, pull and run hello-world through the API.
 #   -IdleSeconds  after ready, wait this long and report QEMU's private bytes and
@@ -83,7 +83,7 @@ function Measure-Run([int]$run) {
         '-kernel', "`"$kernel`"", '-initrd', "`"$initrdPath`"",
         # The read-only system disk (ADR 0005 A2b) is the first virtio disk, so vda.
         '-drive', "`"file=$(Join-Path $Out 'system.vhd'),format=vpc,if=virtio,readonly=on`"",
-        '-append', "`"console=ttyS0 panic=-1 winbox.system=vda $Append`"",
+        '-append', "`"console=ttyS0 panic=-1 hyperbutler.system=vda $Append`"",
         '-netdev', "user,id=n0,hostfwd=tcp:127.0.0.1:$Port-10.0.2.15:2375",
         '-device', 'virtio-net-pci,netdev=n0',
         '-device', $balloon,
@@ -118,7 +118,7 @@ function Measure-Run([int]$run) {
         Start-Sleep -Milliseconds 300   # let the serial log flush
         $marks = @{}
         foreach ($l in Get-Content $log) {
-            if ($l -match '^winbox-t (\S+) (\S+)') { $marks[$Matches[2]] = [double]$Matches[1] }
+            if ($l -match '^hyperbutler-t (\S+) (\S+)') { $marks[$Matches[2]] = [double]$Matches[1] }
         }
         $row = [ordered]@{
             run = $run; ready_ms = [math]::Round($ready); serial_ms = [math]::Round($serial)

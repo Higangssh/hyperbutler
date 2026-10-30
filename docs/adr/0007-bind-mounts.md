@@ -11,7 +11,7 @@
 - 9P bind mounts are slow (F1);
 - file watchers never fire for edits made in Windows (F2).
 
-winbox owns its VM (HCS, [ADR 0002](0002-primary-vm-backend.md)), so it can pick its own
+hyperbutler owns its VM (HCS, [ADR 0002](0002-primary-vm-backend.md)), so it can pick its own
 mechanism. Constraints:
 - No elevation in daily use.
 - [ADR 0004](0004-hcs-access-broker.md):
@@ -33,7 +33,7 @@ mechanism. Constraints:
    - the schema has no such device, and HCS rejects unknown keys;
    - the only route is an external `FlexibleIov` device emulator, an undocumented COM plugin
      that must be registered (WSL ships its own).
-3. **A winbox FUSE server over hvsock** (`internal/share`). The guest kernel's FUSE client is
+3. **A hyperbutler FUSE server over hvsock** (`internal/share`). The guest kernel's FUSE client is
    relayed unchanged over 4 hvsock connections. The host performs requests on NTFS relative
    to a share-root handle and never follows a link. Windows changes come back as FUSE
    invalidations plus replayed operations, so inotify fires.
@@ -54,7 +54,7 @@ mechanism. Constraints:
 **Option 3 is the bind-mount mechanism.** Option 4 is a later, opt-in mode for write-heavy
 trees.
 
-- The guest mounts one FUSE file system at `/mnt/winbox` (`nosuid,nodev,default_permissions,
+- The guest mounts one FUSE file system at `/mnt/hyperbutler` (`nosuid,nodev,default_permissions,
   allow_other`). Its root lists only the registered shares.
 - A Windows bind source becomes a share on first use, named `b-<hash of final path>`:
   - a directory is shared as itself;
@@ -63,7 +63,7 @@ trees.
 - **Docker API mapping: path translation in the proxy, shares registered on the fly.** The
   named-pipe proxy rewrites `POST /containers/create` (`HostConfig.Binds` entries whose
   source is `X:\…`, `X:/…` or `\\?\X:\…`, and `Mounts` with `Type: bind`) to
-  `/mnt/winbox/<share>[/<file>]` (`share.RewriteCreate` + `share.Registry.Resolve`).
+  `/mnt/hyperbutler/<share>[/<file>]` (`share.RewriteCreate` + `share.Registry.Resolve`).
   - Named volumes and guest paths pass through unchanged. `:ro` is kept and enforced by
     dockerd's read-only bind.
   - No VM change is needed per share, so the broker is untouched: the share server, like
@@ -93,8 +93,8 @@ trees.
 
 1. **Guest image (`guest/prototype`, ADR 0005):**
    - add `kernel/fs/fuse/fuse.ko` to `modules.txt`;
-   - have winboxd run `relay.Start` after `hv_sock` is loaded: four AF_VSOCK connections to
-     host port **2385**, mount point `/mnt/winbox`, retried while the host is not listening.
+   - have hyperbutlerd run `relay.Start` after `hv_sock` is loaded: four AF_VSOCK connections to
+     host port **2385**, mount point `/mnt/hyperbutler`, retried while the host is not listening.
 
    The demo instead uses a wrapper PID 1 that forks the relay and execs `/init`
    (`spike/share/guest/wrap_linux.go`).

@@ -4,7 +4,7 @@
 //
 // It stands in for a full user-mode stack such as gvisor-tap-vsock in the
 // guest-networking spike. It carries TCP only (no UDP, ICMP or inbound connections), so
-// it is not a design for winbox; it measures the hvsock + Windows-socket path that such a
+// it is not a design for hyperbutler; it measures the hvsock + Windows-socket path that such a
 // stack would also take.
 package relay
 

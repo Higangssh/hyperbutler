@@ -12,7 +12,7 @@ import (
 
 	"golang.org/x/sys/windows"
 
-	"github.com/Higangssh/winbox/guest/image"
+	"github.com/Higangssh/hyperbutler/guest/image"
 )
 
 // writeImage makes an image directory: kernel, initrd, a 1 MiB system disk with a
@@ -43,7 +43,7 @@ func writeImage(t *testing.T) (dir, manifest string) {
 	m := &image.Manifest{
 		Version: image.ManifestVersion,
 		Kernel:  write("vmlinuz-virt", []byte("kernel")),
-		Initrd:  write("initramfs-winbox.gz", []byte("initrd")),
+		Initrd:  write("initramfs-hyperbutler.gz", []byte("initrd")),
 		System:  write("system.vhd", append(make([]byte, 1<<20), footer[:]...)),
 	}
 	b, err := m.Encode()
@@ -67,7 +67,7 @@ func TestOpenImage(t *testing.T) {
 		t.Fatalf("paths: %+v", g)
 	}
 	// While the image is held, nobody can write or delete its files, but reading works.
-	for _, name := range []string{"vmlinuz-virt", "initramfs-winbox.gz", "system.vhd"} {
+	for _, name := range []string{"vmlinuz-virt", "initramfs-hyperbutler.gz", "system.vhd"} {
 		p := filepath.Join(dir, name)
 		if f, err := os.OpenFile(p, os.O_WRONLY, 0); err == nil {
 			f.Close()
@@ -100,7 +100,7 @@ func TestOpenImageRejects(t *testing.T) {
 			}
 		},
 		"missing initrd": func(t *testing.T, dir string) {
-			if err := os.Remove(filepath.Join(dir, "initramfs-winbox.gz")); err != nil {
+			if err := os.Remove(filepath.Join(dir, "initramfs-hyperbutler.gz")); err != nil {
 				t.Fatal(err)
 			}
 		},

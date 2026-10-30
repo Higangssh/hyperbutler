@@ -1,4 +1,4 @@
-// Command soak is the leak gate of ADR 0003 (guardrail 3). It drives a running winbox
+// Command soak is the leak gate of ADR 0003 (guardrail 3). It drives a running hyperbutler
 // engine with the stock docker CLI in a mixed loop (version, load, run, run+logs+rm),
 // samples the target process's private working set, handle and thread counts, the VM's
 // vmmem private working set, and, when the target serves an internal/diag endpoint, its

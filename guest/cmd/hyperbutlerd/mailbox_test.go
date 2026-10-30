@@ -3,7 +3,7 @@ package main
 import (
 	"testing"
 
-	"github.com/Higangssh/winbox/internal/spaceguard"
+	"github.com/Higangssh/hyperbutler/internal/spaceguard"
 )
 
 // The review's M1 sequence: connection 2 posts a budget, then connection 1's deferred

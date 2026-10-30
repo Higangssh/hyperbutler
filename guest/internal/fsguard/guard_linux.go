@@ -2,7 +2,7 @@
 
 // Package fsguard is the guest half of the free-space guard (REQ-DISK-004): it keeps an
 // fallocate'd reservation file on the guest's data file system at the size
-// internal/spaceguard computes from the host's budget. It is shared by guest/cmd/winboxd
+// internal/spaceguard computes from the host's budget. It is shared by guest/cmd/hyperbutlerd
 // (budget over the guestctl channel) and guest/cmd/spaceguard (budget over a serial
 // line).
 //
@@ -23,7 +23,7 @@ import (
 
 	"golang.org/x/sys/unix"
 
-	"github.com/Higangssh/winbox/internal/spaceguard"
+	"github.com/Higangssh/hyperbutler/internal/spaceguard"
 )
 
 // Trimmer runs FITRIM on the guarded file system. The guard calls it before growing the

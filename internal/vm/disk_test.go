@@ -73,8 +73,8 @@ func TestValidateDisks(t *testing.T) {
 }
 
 func TestParseSummariesAndState(t *testing.T) {
-	l, err := parseSummaries(`[{"Id":"winbox-1","Owner":"winbox","State":"Running","RuntimeId":"x"}]`)
-	if err != nil || len(l) != 1 || l[0].ID != "winbox-1" || l[0].Owner != "winbox" || l[0].State != "Running" {
+	l, err := parseSummaries(`[{"Id":"hyperbutler-1","Owner":"hyperbutler","State":"Running","RuntimeId":"x"}]`)
+	if err != nil || len(l) != 1 || l[0].ID != "hyperbutler-1" || l[0].Owner != "hyperbutler" || l[0].State != "Running" {
 		t.Fatalf("parseSummaries = %v, %v", l, err)
 	}
 	if l, err := parseSummaries("null"); err != nil || l != nil {
@@ -94,7 +94,7 @@ func TestParseSummariesAndState(t *testing.T) {
 // FuzzParseSummaries: never panics, stays bounded, and accepts only JSON arrays (or an
 // empty or null document).
 func FuzzParseSummaries(f *testing.F) {
-	f.Add(`[{"Id":"winbox-1","Owner":"winbox","State":"Running"}]`)
+	f.Add(`[{"Id":"hyperbutler-1","Owner":"hyperbutler","State":"Running"}]`)
 	f.Add(`null`)
 	f.Add(``)
 	f.Add(`[{"Id":null},{}]`)

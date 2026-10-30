@@ -14,8 +14,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Higangssh/winbox/internal/share"
-	"github.com/Higangssh/winbox/internal/transport"
+	"github.com/Higangssh/hyperbutler/internal/share"
+	"github.com/Higangssh/hyperbutler/internal/transport"
 	"github.com/Microsoft/go-winio"
 	"github.com/Microsoft/go-winio/pkg/guid"
 )

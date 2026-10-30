@@ -20,14 +20,14 @@ import (
 	"github.com/Microsoft/go-winio/pkg/guid"
 	"golang.org/x/sys/windows"
 
-	"github.com/Higangssh/winbox/internal/hcn"
-	"github.com/Higangssh/winbox/spike/net/probe"
-	"github.com/Higangssh/winbox/spike/net/relay"
+	"github.com/Higangssh/hyperbutler/internal/hcn"
+	"github.com/Higangssh/hyperbutler/spike/net/probe"
+	"github.com/Higangssh/hyperbutler/spike/net/relay"
 )
 
 var (
-	guestDir = filepath.Join(os.TempDir(), "hb-dev", "winbox-spike", "guest")
-	modDir   = filepath.Join(os.TempDir(), "hb-dev", "winbox-spike", "linux-virt", "lib", "modules", "6.18.58-0-virt", "kernel")
+	guestDir = filepath.Join(os.TempDir(), "hb-dev", "hyperbutler-spike", "guest")
+	modDir   = filepath.Join(os.TempDir(), "hb-dev", "hyperbutler-spike", "linux-virt", "lib", "modules", "6.18.58-0-virt", "kernel")
 )
 
 // runBaseline runs the probe on the host and saves the roots the guest will need.
@@ -92,7 +92,7 @@ func runHNS(args []string) error {
 	gw := p.Addr().Next()
 	guestIP := netip.PrefixFrom(gw.Next(), p.Bits())
 
-	n, err := hcn.NATNetwork("winbox-spike-nat", p, gw)
+	n, err := hcn.NATNetwork("hyperbutler-spike-nat", p, gw)
 	if err != nil {
 		return err
 	}
@@ -134,7 +134,7 @@ func runHNS(args []string) error {
 	fmt.Println("network:", doc)
 
 	t = time.Now()
-	ep, err := hcn.StaticEndpoint("winbox-spike-ep", netID, guestIP, gw, nil)
+	ep, err := hcn.StaticEndpoint("hyperbutler-spike-ep", netID, guestIP, gw, nil)
 	if err != nil {
 		return err
 	}
@@ -179,7 +179,7 @@ func runHNS(args []string) error {
 	if *ipMode == "dhcp" {
 		ipArg = "dhcp"
 	}
-	id := fmt.Sprintf("winbox-net-spike-%d", time.Now().UnixNano())
+	id := fmt.Sprintf("hyperbutler-net-spike-%d", time.Now().UnixNano())
 	spec := vmSpec{
 		id:     id,
 		initrd: initrd,
@@ -308,7 +308,7 @@ func runRelay(args []string) error {
 	if err != nil {
 		return err
 	}
-	id := fmt.Sprintf("winbox-net-spike-%d", time.Now().UnixNano())
+	id := fmt.Sprintf("hyperbutler-net-spike-%d", time.Now().UnixNano())
 	spec := vmSpec{
 		id:      id,
 		initrd:  initrd,

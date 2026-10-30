@@ -1,13 +1,13 @@
 //go:build windows
 
-// Command winbox is the winbox CLI: a Docker engine for Windows in a small Hyper-V VM,
+// Command hyperbutler is the hyperbutler CLI: a Docker engine for Windows in a small Hyper-V VM,
 // without WSL.
 //
-//	winbox start    boot the VM in a background engine process, select the docker context
-//	winbox stop     shut the VM down (gracefully, then forced after --timeout)
-//	winbox status   show whether it runs, and where its data is
-//	winbox logs     print the engine log (or the guest console with --console)
-//	winbox delete   remove the VM state and the data disk
+//	hyperbutler start    boot the VM in a background engine process, select the docker context
+//	hyperbutler stop     shut the VM down (gracefully, then forced after --timeout)
+//	hyperbutler status   show whether it runs, and where its data is
+//	hyperbutler logs     print the engine log (or the guest console with --console)
+//	hyperbutler delete   remove the VM state and the data disk
 //
 // See docs/research/cli-engine.md.
 package main
@@ -20,25 +20,25 @@ import (
 	"runtime/debug"
 )
 
-const usageText = `winbox: a Docker engine for Windows in a small Hyper-V VM, without WSL
+const usageText = `hyperbutler: a Docker engine for Windows in a small Hyper-V VM, without WSL
 
 Usage:
-  winbox start   [--data DIR] [--image-dir DIR] [--memory SIZE] [--cpus N] [--disk-size SIZE]
-  winbox stop    [--timeout DURATION]
-  winbox status  [--json]
-  winbox logs    [--console] [-n LINES] [-f]
-  winbox delete  [--yes]
-  winbox version
+  hyperbutler start   [--data DIR] [--image-dir DIR] [--memory SIZE] [--cpus N] [--disk-size SIZE]
+  hyperbutler stop    [--timeout DURATION]
+  hyperbutler status  [--json]
+  hyperbutler logs    [--console] [-n LINES] [-f]
+  hyperbutler delete  [--yes]
+  hyperbutler version
 
-State lives in %LOCALAPPDATA%\winbox (override with WINBOX_HOME).
-Run "winbox COMMAND -h" for a command's flags.
+State lives in %LOCALAPPDATA%\hyperbutler (override with HYPERBUTLER_HOME).
+Run "hyperbutler COMMAND -h" for a command's flags.
 `
 
 func main() {
 	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
 }
 
-// exitNotRunning is the exit code of `winbox status` when winbox is not running.
+// exitNotRunning is the exit code of `hyperbutler status` when hyperbutler is not running.
 const exitNotRunning = 3
 
 func run(args []string, stdout, stderr io.Writer) int {
@@ -66,11 +66,11 @@ func run(args []string, stdout, stderr io.Writer) int {
 		if bi, ok := debug.ReadBuildInfo(); ok && bi.Main.Version != "" {
 			v = bi.Main.Version
 		}
-		fmt.Fprintln(stdout, "winbox", v)
+		fmt.Fprintln(stdout, "hyperbutler", v)
 	case "help", "-h", "--help":
 		fmt.Fprint(stdout, usageText)
 	default:
-		fmt.Fprintf(stderr, "winbox: unknown command %q\n\n%s", args[0], usageText)
+		fmt.Fprintf(stderr, "hyperbutler: unknown command %q\n\n%s", args[0], usageText)
 		return 2
 	}
 	if errors.Is(err, errUsage) {
@@ -80,7 +80,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		var se *shownError
 		if !errors.As(err, &se) {
-			fmt.Fprintln(stderr, "winbox:", err)
+			fmt.Fprintln(stderr, "hyperbutler:", err)
 		}
 		if code == 0 {
 			code = 1

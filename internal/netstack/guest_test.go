@@ -20,7 +20,7 @@ import (
 	"gvisor.dev/gvisor/pkg/tcpip/transport/tcp"
 	"gvisor.dev/gvisor/pkg/tcpip/transport/udp"
 
-	"github.com/Higangssh/winbox/internal/netstack/frame"
+	"github.com/Higangssh/hyperbutler/internal/netstack/frame"
 )
 
 // fakeGuest is a second gVisor stack that plays the guest kernel: it sends and receives

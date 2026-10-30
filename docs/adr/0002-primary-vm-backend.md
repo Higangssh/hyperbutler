@@ -1,7 +1,7 @@
 # 0002. Primary VM backend
 
 - Status: accepted (2026-10-30). The adversarial review findings are resolved below. The
-  host-disk-full test showed that winbox needs a free-space guard, which the backend choice
+  host-disk-full test showed that hyperbutler needs a free-space guard, which the backend choice
   does not change.
 - Date: 2026-10-29
 - Requirements: REQ-START-001, REQ-MEM-001, REQ-MEM-002, REQ-DISK-001, REQ-DISK-002,
@@ -9,7 +9,7 @@
 
 ## Context
 
-winbox needs a Linux VM. The backend must work on Windows Home ([ADR 0001](0001-windows-home-first-class.md)).
+hyperbutler needs a Linux VM. The backend must work on Windows Home ([ADR 0001](0001-windows-home-first-class.md)).
 
 ## Options
 
@@ -154,7 +154,7 @@ QEMU-WHPX stays a development and diagnostic tool. It is not a shipped backend.
 |---|---|---|
 | REQ-START-001: start ≤ 8 s | dockerd socket in 0.91 s | 2.2 s |
 | REQ-MEM-001: idle RAM, reclaim | commits on touch; freed memory returned in ≤ 30 s | commits all of `-m`; free page reporting fails |
-| REQ-DISK-001: online reclaim | sparse VHDX + ext4 `fstrim`: 1035 → 11 MiB | only with a winbox-served block device (NBD prototype) |
+| REQ-DISK-001: online reclaim | sparse VHDX + ext4 `fstrim`: 1035 → 11 MiB | only with a hyperbutler-served block device (NBD prototype) |
 | REQ-API-001 transport | hvsock is part of HCS; not yet tested end to end with the guest | no vsock or hvsock in the Windows build |
 | No elevation in daily use | needs Hyper-V Administrators or a broker (ADR 0004) | none needed |
 
@@ -216,7 +216,7 @@ The adversarial review of the drafted decision on 2026-10-30 raised nine finding
 
 ## Consequences
 
-- **Elevation:** winbox needs the ADR 0004 broker, or the user's own Hyper-V Administrators
+- **Elevation:** hyperbutler needs the ADR 0004 broker, or the user's own Hyper-V Administrators
   membership, before it can start a VM. There is no zero-setup, no-admin path in 1.0.
 - **Host disk full:** this was tested on a 3 GiB test volume (`docs/research/disk-reclaim.md`).
   - HCS does not pause the VM. The guest gets `EIO`, and ext4 aborts its journal and loses
@@ -224,7 +224,7 @@ The adversarial review of the drafted decision on 2026-10-30 raised nine finding
   - After host space was freed, journal replay succeeded, `e2fsck` was clean, and all
     10,516 remaining files read back. So the sparse VHDX did not corrupt, unlike WSL issue
     #41837.
-  - REQ-DISK-004 asks for `ENOSPC` and no lost data, so winbox needs a **free-space guard**:
+  - REQ-DISK-004 asks for `ENOSPC` and no lost data, so hyperbutler needs a **free-space guard**:
     a guest-side `fallocate` reservation that tracks host free space, plus pausing the VM
     as a last resort.
   - This is required for any growable image, so it does not change the backend choice.
@@ -235,7 +235,7 @@ The adversarial review of the drafted decision on 2026-10-30 raised nine finding
 - **Small Windows API surface:** `computecore.dll`, `virtdisk.dll` and hvsock. There is no
   QEMU, so no GPL binary ships in the host package.
 - **Microsoft dependency:** Microsoft controls HCS behaviour, and WSL is its main consumer. A
-  WSL-driven change can break winbox.
+  WSL-driven change can break hyperbutler.
 - **Deferred commit under host pressure:** with `AllowOvercommit` and `EnableDeferredCommit`,
   guest RAM is not reserved up front. If the host runs out of commit, HCS may pause or stop
   the VM, possibly in the middle of a write (REQ-DISK-003). This needs a host-memory-pressure

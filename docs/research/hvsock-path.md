@@ -3,13 +3,13 @@
 - Date: 2026-10-30
 - Requirements: REQ-API-001, REQ-START-001 (indicative only, see "Timings")
 - Machine: Windows 11 Home 10.0.26200, user in Hyper-V Administrators, **non-elevated**
-- Code: `guest/cmd/agent`, `internal/vm`, `cmd/winbox-dev` (dev-only harness),
+- Code: `guest/cmd/agent`, `internal/vm`, `cmd/hyperbutler-dev` (dev-only harness),
   `internal/transport` (existing)
 
 ## Path
 
 ```
-docker.exe --npipe--> \\.\pipe\docker_engine_winbox   (transport.ListenPipe, current user only)
+docker.exe --npipe--> \\.\pipe\docker_engine_hyperbutler   (transport.ListenPipe, current user only)
            --Proxy--> AF_HYPERV <VM runtime id>:<vsock 2375 service GUID>   (transport.HvsockDialer)
            --hv_sock--> guest agent, AF_VSOCK port 2375, host CID only
            --relay--> /run/docker.sock (dockerd 29.9.2)
@@ -24,14 +24,14 @@ descriptor.
 ## How to reproduce
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File guest\prototype\build.ps1 -Out $env:TEMP\winbox-out
-go build -o $env:TEMP\winbox-dev.exe ./cmd/winbox-dev
-& $env:TEMP\winbox-dev.exe run -kernel $env:TEMP\winbox-out\vmlinuz-virt -initrd $env:TEMP\winbox-out\initramfs-winbox.gz
+powershell -ExecutionPolicy Bypass -File guest\prototype\build.ps1 -Out $env:TEMP\hyperbutler-out
+go build -o $env:TEMP\hyperbutler-dev.exe ./cmd/hyperbutler-dev
+& $env:TEMP\hyperbutler-dev.exe run -kernel $env:TEMP\hyperbutler-out\vmlinuz-virt -initrd $env:TEMP\hyperbutler-out\initramfs-hyperbutler.gz
 # second shell:
-docker -H npipe:////./pipe/docker_engine_winbox version
-& $env:TEMP\winbox-dev.exe mkimage -busybox <busybox.static from the build cache> -o busybox.tar
-docker -H npipe:////./pipe/docker_engine_winbox load -i busybox.tar
-docker -H npipe:////./pipe/docker_engine_winbox run --rm --network none winbox-test/busybox
+docker -H npipe:////./pipe/docker_engine_hyperbutler version
+& $env:TEMP\hyperbutler-dev.exe mkimage -busybox <busybox.static from the build cache> -o busybox.tar
+docker -H npipe:////./pipe/docker_engine_hyperbutler load -i busybox.tar
+docker -H npipe:////./pipe/docker_engine_hyperbutler run --rm --network none hyperbutler-test/busybox
 ```
 
 The docker CLI was the official static build `docker-29.9.2.zip` from
@@ -53,7 +53,7 @@ All from non-elevated PowerShell, 1024 MB, 2 vCPUs, `console=ttyS0 quiet`.
 | `docker version` | works; median 95 ms (5 runs, warm) |
 | `docker info` | works; median 102 ms. Storage driver overlayfs (containerd snapshotter), cgroup v2 |
 | `docker load` of the 1 MB busybox scratch image | 133 ms |
-| `docker run --rm --network none winbox-test/busybox` | prints `hello from winbox`; median 191 ms |
+| `docker run --rm --network none hyperbutler-test/busybox` | prints `hello from hyperbutler`; median 191 ms |
 | `docker run -i ... cat` with piped stdin | echoes stdin, exits: half-close works end to end |
 | `docker run ... sh -c 'exit 7'` | exit code 7 reaches the CLI |
 | 100 MiB container stdout to a file (`--log-driver none`) | 0.78 s including container start |
@@ -77,7 +77,7 @@ idempotent. It passed on this machine in 1.8 s.
   short. `transport.HvsockDialer` now returns when its context ends and closes a
   connection the abandoned attempt still produces.
 - **An unread COM port stalls the guest.** Writes to `/dev/console` block when nobody
-  reads the console pipe, and the prototype's dockerd logs there. winbox-dev always
+  reads the console pipe, and the prototype's dockerd logs there. hyperbutler-dev always
   drains it.
 - **json-file logs on tmpfs can exhaust guest RAM.** A 100 MiB stdout run with the default
   log driver stopped at ~80 MB and wedged dockerd: json-file stores the stream, escaped,
@@ -91,14 +91,14 @@ The adversarial reviewer reviewed the diff. Every finding and what was done:
 | # | Sev | Finding | Resolution |
 |---|---|---|---|
 | 1 | Med | Terminate tolerated only the `0xC037…` (vmcompute) codes for "not found / already stopped", computecore returns `0x8037…` | Fixed: `alreadyGone` accepts both families; integration test terminates twice |
-| 2 | Med | `cmd/winbox-dev` had no tests; image layout untested | Fixed: `TestBuildImage` checks every descriptor against its blob, diff_id, legacy manifest, layer entries, reproducibility; `TestFullName` |
+| 2 | Med | `cmd/hyperbutler-dev` had no tests; image layout untested | Fixed: `TestBuildImage` checks every descriptor against its blob, diff_id, legacy manifest, layer entries, reproducibility; `TestFullName` |
 | 3 | Med | Connect descriptor enforcement asserted, not verified | Partly fixed: integration test shows an unlisted service is refused with WSAEACCES. Not verified: that a **different user** is refused by the listed entry (needs a second account or a restricted token). Note: the descriptor excludes SYSTEM and Administrators, so an ADR 0004 broker running as SYSTEM cannot use this entry as is |
 | 4 | Low | Console scanner stopped on a >64 KiB line; guest text printed to the terminal unescaped | Fixed: `bufio.Reader.ReadSlice` loop that never stops on long lines, reported lines escaped with `strconv.QuoteToGraphic`; `TestStreamConsole` |
 | 5 | Low | Console pipe opened without SQOS flags | Fixed: `SECURITY_SQOS_PRESENT \| SECURITY_IDENTIFICATION` |
 | 6 | Low | Agent hid dockerd dial failures | Fixed: logged, at most once per 5 s |
 | 7 | Low | Ctrl+C during boot reported as "not ready" / CreateFile error | Fixed: returns `context.Canceled`; `TestWaitPingCancelled` |
 | 8 | Low | Comment claimed AllowOvercommit returns idle memory | Fixed comment |
-| 9 | Low | Host proxy allows 1024 connections, agent 256 | Fixed: winbox-dev sets `Proxy.MaxConns` to the agent's 256 |
+| 9 | Low | Host proxy allows 1024 connections, agent 256 | Fixed: hyperbutler-dev sets `Proxy.MaxConns` to the agent's 256 |
 | 10 | Low | Init does not restart the agent | Fixed: restart loop in `guest/prototype/init` |
 | 11 | Low | No fuzz corpus committed | Fixed: `guest/cmd/agent/testdata/fuzz/FuzzRelay`, `internal/vm/testdata/fuzz/*` |
 
@@ -119,5 +119,5 @@ The adversarial reviewer reviewed the diff. Every finding and what was done:
 - Other-user denial (finding 3) is unverified.
 - The pipe is only as private as `transport.ListenPipe`'s DACL; the hvsock entry adds the
   same restriction one hop further. Neither authenticates the guest to the host.
-- winbox-dev has no reconnect on guest restart and no host sleep/resume handling.
+- hyperbutler-dev has no reconnect on guest restart and no host sleep/resume handling.
 - No guest network; images come only from `docker load`. (Since superseded: the user-mode network of ADR 0006 is on by default, so `--network none` is no longer needed; see guest-networking.md.)

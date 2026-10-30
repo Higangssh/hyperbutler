@@ -1,4 +1,4 @@
-// Package proto is the wire format between winbox and the HCS access broker (ADR 0004).
+// Package proto is the wire format between hyperbutler and the HCS access broker (ADR 0004).
 //
 // It carries only the ADR 0004 verbs: start (create) the caller's VM, stop it, query its
 // status, resize it within fixed limits, set its data location by handle, and report the

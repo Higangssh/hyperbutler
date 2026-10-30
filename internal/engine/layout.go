@@ -10,10 +10,10 @@ import (
 )
 
 // HomeEnv overrides the state directory (tests, several side-by-side installs).
-const HomeEnv = "WINBOX_HOME"
+const HomeEnv = "HYPERBUTLER_HOME"
 
-// DefaultHome returns the state directory: %WINBOX_HOME% if set, else
-// %LOCALAPPDATA%\winbox.
+// DefaultHome returns the state directory: %HYPERBUTLER_HOME% if set, else
+// %LOCALAPPDATA%\hyperbutler.
 func DefaultHome() (string, error) {
 	if h := os.Getenv(HomeEnv); h != "" {
 		return filepath.Abs(h)
@@ -25,10 +25,10 @@ func DefaultHome() (string, error) {
 			return "", errors.New("engine: neither LOCALAPPDATA nor a user cache directory is set")
 		}
 	}
-	return filepath.Join(base, "winbox"), nil
+	return filepath.Join(base, "hyperbutler"), nil
 }
 
-// Layout names the files of one winbox installation.
+// Layout names the files of one hyperbutler installation.
 //
 // Home holds the small files: settings, state, locks and logs. Data holds the data disk.
 // Data is Home unless the user chose another location on the first start
@@ -56,18 +56,18 @@ func (l Layout) ConsoleLogPath() string {
 func (l Layout) DiskPath() string     { return filepath.Join(l.Data, "data.vhdx") }
 func (l Layout) DiskMetaPath() string { return filepath.Join(l.Data, "disk.json") }
 
-// Tag is a short hash of the home directory. VM names start with "winbox-<tag>-", so
+// Tag is a short hash of the home directory. VM names start with "hyperbutler-<tag>-", so
 // an engine only ever cleans up compute systems of its own installation.
 func (l Layout) Tag() string {
 	sum := sha256.Sum256([]byte(strings.ToLower(filepath.Clean(l.Home))))
 	return hex.EncodeToString(sum[:4])
 }
 
-// VMOwner is the HCS Owner of every winbox VM.
-const VMOwner = "winbox"
+// VMOwner is the HCS Owner of every hyperbutler VM.
+const VMOwner = "hyperbutler"
 
 // VMPrefix is the name prefix of this installation's compute systems.
-func (l Layout) VMPrefix() string { return "winbox-" + l.Tag() + "-" }
+func (l Layout) VMPrefix() string { return "hyperbutler-" + l.Tag() + "-" }
 
 // SamePath reports whether a and b name the same directory, comparing cleaned,
 // absolute paths without regard to case (NTFS is case-insensitive by default).

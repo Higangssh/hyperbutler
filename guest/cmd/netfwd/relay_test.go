@@ -7,7 +7,7 @@ import (
 	"io"
 	"testing"
 
-	"github.com/Higangssh/winbox/internal/netstack/frame"
+	"github.com/Higangssh/hyperbutler/internal/netstack/frame"
 )
 
 // chunkReader returns at most one queued slice per Read, like a TAP device.

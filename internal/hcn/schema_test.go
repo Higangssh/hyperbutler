@@ -12,17 +12,17 @@ func TestValidateName(t *testing.T) {
 		name string
 		ok   bool
 	}{
-		{"winbox-nat", true},
-		{"winbox-spike-ep-1", true},
-		{"winbox-", false},
+		{"hyperbutler-nat", true},
+		{"hyperbutler-spike-ep-1", true},
+		{"hyperbutler-", false},
 		{"WSL", false},
 		{"Default Switch", false},
-		{"winbox-NAT", false},
-		{"winbox-a b", false},
-		{"xwinbox-a", false},
-		{"winbox-" + strings.Repeat("a", 57), true},
-		{"winbox-" + strings.Repeat("a", 58), false},
-		{"winbox-é", false},
+		{"hyperbutler-NAT", false},
+		{"hyperbutler-a b", false},
+		{"xhyperbutler-a", false},
+		{"hyperbutler-" + strings.Repeat("a", maxNameLen-len(NamePrefix)), true},
+		{"hyperbutler-" + strings.Repeat("a", maxNameLen-len(NamePrefix)+1), false},
+		{"hyperbutler-é", false},
 	} {
 		if err := ValidateName(tc.name); (err == nil) != tc.ok {
 			t.Errorf("ValidateName(%q) = %v, want ok=%v", tc.name, err, tc.ok)
@@ -32,7 +32,7 @@ func TestValidateName(t *testing.T) {
 
 func TestNATNetwork(t *testing.T) {
 	p := netip.MustParsePrefix("10.239.77.0/24")
-	n, err := NATNetwork("winbox-nat", p, netip.MustParseAddr("10.239.77.1"))
+	n, err := NATNetwork("hyperbutler-nat", p, netip.MustParseAddr("10.239.77.1"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -52,7 +52,7 @@ func TestNATNetwork(t *testing.T) {
 		{"10.239.77.0/31", "10.239.77.1"},   // too small
 		{"fd00::/64", "fd00::1"},            // IPv6
 	} {
-		if _, err := NATNetwork("winbox-nat", netip.MustParsePrefix(bad.prefix), netip.MustParseAddr(bad.gw)); err == nil {
+		if _, err := NATNetwork("hyperbutler-nat", netip.MustParsePrefix(bad.prefix), netip.MustParseAddr(bad.gw)); err == nil {
 			t.Errorf("NATNetwork(%s, %s) accepted", bad.prefix, bad.gw)
 		}
 	}
@@ -63,14 +63,14 @@ func TestNATNetwork(t *testing.T) {
 
 func TestStaticEndpoint(t *testing.T) {
 	gw := netip.MustParseAddr("10.239.77.1")
-	e, err := StaticEndpoint("winbox-ep", "net", netip.MustParsePrefix("10.239.77.2/24"), gw, []netip.Addr{netip.MustParseAddr("1.1.1.1")})
+	e, err := StaticEndpoint("hyperbutler-ep", "net", netip.MustParsePrefix("10.239.77.2/24"), gw, []netip.Addr{netip.MustParseAddr("1.1.1.1")})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if e.IPConfigurations[0].IPAddress != "10.239.77.2" || e.IPConfigurations[0].PrefixLength != 24 || e.DNS.ServerList[0] != "1.1.1.1" {
 		t.Errorf("endpoint %+v", e)
 	}
-	if _, err := StaticEndpoint("winbox-ep", "net", netip.MustParsePrefix("10.239.77.1/24"), gw, nil); err == nil {
+	if _, err := StaticEndpoint("hyperbutler-ep", "net", netip.MustParsePrefix("10.239.77.1/24"), gw, nil); err == nil {
 		t.Error("accepted the gateway as the endpoint address")
 	}
 }
@@ -110,12 +110,12 @@ func TestParseIDList(t *testing.T) {
 // TestParseNetworkRecorded parses a trimmed copy of a document HNS returned on Windows 11
 // Home 26200 (see docs/research/guest-networking.md).
 func TestParseNetworkRecorded(t *testing.T) {
-	doc := `{"ID":"3afee72c-1e7c-4cb2-9fbc-f9663a27c59f","Name":"winbox-spike-nat","Version":68719476736,"SchemaVersion":{"Major":2,"Minor":0},"Policies":[{"Type":"VSwitchExtension","Settings":{"ExtensionID":"f74f241b-440f-4433-bb28-00f89ead20d8"}}],"MacPool":{"Ranges":[{"StartMacAddress":"00-15-5D-E1-70-00","EndMacAddress":"00-15-5D-E1-7F-FF"}]},"Ipams":[{"Subnets":[{"ID":"6a8b1cbf-bb0a-44f8-a8a1-e264d301610a","IpAddressPrefix":"10.239.77.0/24","Routes":[{"NextHop":"10.239.77.1","DestinationPrefix":"0.0.0.0/0"}]}]}],"Flags":8}`
+	doc := `{"ID":"3afee72c-1e7c-4cb2-9fbc-f9663a27c59f","Name":"hyperbutler-spike-nat","Version":68719476736,"SchemaVersion":{"Major":2,"Minor":0},"Policies":[{"Type":"VSwitchExtension","Settings":{"ExtensionID":"f74f241b-440f-4433-bb28-00f89ead20d8"}}],"MacPool":{"Ranges":[{"StartMacAddress":"00-15-5D-E1-70-00","EndMacAddress":"00-15-5D-E1-7F-FF"}]},"Ipams":[{"Subnets":[{"ID":"6a8b1cbf-bb0a-44f8-a8a1-e264d301610a","IpAddressPrefix":"10.239.77.0/24","Routes":[{"NextHop":"10.239.77.1","DestinationPrefix":"0.0.0.0/0"}]}]}],"Flags":8}`
 	n, err := ParseNetwork(doc)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if n.Name != "winbox-spike-nat" || n.Flags != 8 || n.Ipams[0].Subnets[0].IPAddressPrefix != "10.239.77.0/24" {
+	if n.Name != "hyperbutler-spike-nat" || n.Flags != 8 || n.Ipams[0].Subnets[0].IPAddressPrefix != "10.239.77.0/24" {
 		t.Errorf("got %+v", n)
 	}
 	if _, err := ParseNetwork(doc + "{}"); err == nil {

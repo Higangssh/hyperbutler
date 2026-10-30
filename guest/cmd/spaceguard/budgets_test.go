@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/Higangssh/winbox/internal/spaceguard"
+	"github.com/Higangssh/hyperbutler/internal/spaceguard"
 )
 
 func TestReadBudgets(t *testing.T) {

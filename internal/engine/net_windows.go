@@ -20,9 +20,9 @@ import (
 	"github.com/Microsoft/go-winio"
 	"github.com/Microsoft/go-winio/pkg/guid"
 
-	"github.com/Higangssh/winbox/internal/netstack"
-	"github.com/Higangssh/winbox/internal/transport"
-	"github.com/Higangssh/winbox/internal/vm"
+	"github.com/Higangssh/hyperbutler/internal/netstack"
+	"github.com/Higangssh/hyperbutler/internal/transport"
+	"github.com/Higangssh/hyperbutler/internal/vm"
 )
 
 // NetConfig is the guest network (ADR 0006).
@@ -93,7 +93,7 @@ func setupNet(nc NetConfig, sddl string, log *slog.Logger) (g *guestNet, svcs []
 	// The guest connects to the host on this service; only this user may listen on it,
 	// and nobody may connect to it in the guest.
 	svcs = []vm.Service{{ID: g.svc, BindSDDL: sddl}}
-	args = fmt.Sprintf(" winbox.net=%d winbox.mtu=%d winbox.ip=%s/%d winbox.gw=%s winbox.dns=%s",
+	args = fmt.Sprintf(" hyperbutler.net=%d hyperbutler.mtu=%d hyperbutler.ip=%s/%d hyperbutler.gw=%s hyperbutler.dns=%s",
 		nc.Port, cfg.MTU, cfg.GuestIP(), cfg.Subnet.Bits(), cfg.Gateway(), cfg.Gateway())
 	return g, svcs, args, nil
 }

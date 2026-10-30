@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Higangssh/winbox/internal/netstack/frame"
+	"github.com/Higangssh/hyperbutler/internal/netstack/frame"
 )
 
 // Defaults for Config. The subnet is gvisor-tap-vsock's default. It exists only between
@@ -211,7 +211,7 @@ type Publish struct {
 func (p Publish) String() string { return fmt.Sprintf("%s->guest:%d", p.Host, p.GuestPort) }
 
 // ParsePublish parses "[HOST_IP:]HOST_PORT:GUEST_PORT[/tcp]", the subset of docker's -p
-// syntax winbox supports. HOST_IP defaults to 127.0.0.1; an IPv6 host address is
+// syntax hyperbutler supports. HOST_IP defaults to 127.0.0.1; an IPv6 host address is
 // written in brackets ("[::1]:8080:80"). Only loopback host addresses are accepted unless
 // allowLAN is set, so a published port is not reachable from the network by accident.
 func ParsePublish(s string, allowLAN bool) (Publish, error) {

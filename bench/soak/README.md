@@ -1,7 +1,7 @@
 # bench/soak: leak gate
 
 `soak` is guardrail 3 of [ADR 0003](../../docs/adr/0003-implementation-language.md). It
-drives a running winbox engine with the stock docker CLI and fails if the host process,
+drives a running hyperbutler engine with the stock docker CLI and fails if the host process,
 or the VM, grows over time.
 
 ## What it does
@@ -32,9 +32,9 @@ The target PID is held open for the whole run, so it cannot be reused by another
 ## Running it
 
 ```powershell
-winbox-dev.exe run -kernel ...\vmlinuz-virt -initrd ...\initramfs-winbox.gz -debug-pipe \\.\pipe\winbox-dev-debug
+hyperbutler-dev.exe run -kernel ...\vmlinuz-virt -initrd ...\initramfs-hyperbutler.gz -debug-pipe \\.\pipe\hyperbutler-dev-debug
 # release gate
-soak.exe -docker C:\docker\docker.exe -image-tar busybox-image.tar -diag-pipe \\.\pipe\winbox-dev-debug `
+soak.exe -docker C:\docker\docker.exe -image-tar busybox-image.tar -diag-pipe \\.\pipe\hyperbutler-dev-debug `
     -duration 24h -warmup 1h -out bench\results\soak.csv
 # main gate
 soak.exe ... -duration 1h -warmup 10m
@@ -42,10 +42,10 @@ soak.exe ... -duration 1h -warmup 10m
 soak.exe ... -duration 15m -warmup 3m -bucket 1m
 ```
 
-`winbox-dev -debug-pipe` (the `internal/diag` endpoint) is not wired in yet; until it is,
+`hyperbutler-dev -debug-pipe` (the `internal/diag` endpoint) is not wired in yet; until it is,
 pass `-diag-pipe none`, which skips the goroutine and heap metrics and says so.
 
-`winbox-dev mkimage` writes the image tar. Raw CSVs go under `bench/results/`, which git
+`hyperbutler-dev mkimage` writes the image tar. Raw CSVs go under `bench/results/`, which git
 ignores; record summaries in `docs/`.
 
 ## Where it runs

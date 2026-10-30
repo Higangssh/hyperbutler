@@ -53,7 +53,7 @@ file usr/bin/docker-proxy ${DOCKER}/docker-proxy 0755
 file usr/bin/agent ${GUESTBIN}/agent 0755
 file usr/bin/sockfwd ${GUESTBIN}/sockfwd 0755
 file usr/bin/netfwd ${GUESTBIN}/netfwd 0755
-file usr/bin/winboxd ${GUESTBIN}/winboxd 0755
+file usr/bin/hyperbutlerd ${GUESTBIN}/hyperbutlerd 0755
 
 # Data disk tools: mke2fs formats a blank data disk, e2fsck checks it before the mount.
 # They are musl builds; the libraries are installed under their sonames.

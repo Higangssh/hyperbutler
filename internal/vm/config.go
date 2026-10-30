@@ -1,4 +1,4 @@
-// Package vm creates and runs the winbox utility VM through the Host Compute Service
+// Package vm creates and runs the hyperbutler utility VM through the Host Compute Service
 // (HCS, computecore.dll), the primary backend chosen in ADR 0002.
 //
 // Config describes the VM and renders the HCS schema v2 document; it builds on every
@@ -55,7 +55,7 @@ type Config struct {
 	// Plan9 are HCS Plan9 file shares served by the VM worker process over hvsock
 	// (option (a) in docs/research/bind-mounts.md). The guest reaches each one by
 	// connecting to AF_VSOCK port Port on the host and mounting 9p with trans=fd.
-	// winbox bind mounts do not use them (ADR 0007); they exist for measurement.
+	// hyperbutler bind mounts do not use them (ADR 0007); they exist for measurement.
 	Plan9 []Plan9Share
 }
 

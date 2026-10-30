@@ -1,6 +1,6 @@
-# Contributing to winbox
+# Contributing to hyperbutler
 
-Thanks for your interest! winbox is early-stage, so please open an issue to discuss larger
+Thanks for your interest! hyperbutler is early-stage, so please open an issue to discuss larger
 changes before writing code.
 
 ## Development setup
@@ -59,7 +59,7 @@ under the project's license.
     formatter check
   - `govulncheck ./...`
   - on `ubuntu-latest`: `go test -race` for the Linux-only guest packages (`./guest/...`:
-    `netfwd`, `winboxd`, `guest/internal/...`)
+    `netfwd`, `hyperbutlerd`, `guest/internal/...`)
   - on `ubuntu-latest`: the canonical guest image build (`guest-image.yml`), the same one
     the release uses. It runs in a digest-pinned Alpine container, checks every input in
     `guest/prototype/sources.lock` against its SHA-256 pin, and checks every Alpine

@@ -8,13 +8,13 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/Higangssh/winbox/internal/share/relay"
+	"github.com/Higangssh/hyperbutler/internal/share/relay"
 	"golang.org/x/sys/unix"
 )
 
 // wrapMain runs as PID 1 when the kernel command line has sb.wrap=1: it starts the
-// share relay as a child and then execs the normal winbox /init. This stands in for
-// the integration ADR 0007 proposes (the relay inside winboxd).
+// share relay as a child and then execs the normal hyperbutler /init. This stands in for
+// the integration ADR 0007 proposes (the relay inside hyperbutlerd).
 func wrapMain() {
 	if _, err := syscall.ForkExec("/sharebench", []string{"/sharebench", "relay-daemon"}, &syscall.ProcAttr{
 		Env:   []string{"PATH=/usr/sbin:/usr/bin:/sbin:/bin"},
@@ -39,7 +39,7 @@ func wrapRequested() bool {
 }
 
 // relayDaemon waits for the system to come up, then mounts the host's shares at
-// /mnt/winbox and keeps them mounted.
+// /mnt/hyperbutler and keeps them mounted.
 func relayDaemon() {
 	if f, err := os.Open("/sbmods/fuse.ko"); err == nil {
 		unix.FinitModule(int(f.Fd()), "", 0)
@@ -74,7 +74,7 @@ func relayDaemon() {
 			}
 			conns = append(conns, c)
 		}
-		r, err := relay.Start(relay.Config{Mountpoint: "/mnt/winbox", Conns: conns, Logf: logf})
+		r, err := relay.Start(relay.Config{Mountpoint: "/mnt/hyperbutler", Conns: conns, Logf: logf})
 		if err != nil {
 			logf("relay: %v", err)
 			for _, c := range conns {
@@ -83,7 +83,7 @@ func relayDaemon() {
 			time.Sleep(time.Second)
 			continue
 		}
-		logf("shares mounted at /mnt/winbox (%d queues)", queues)
+		logf("shares mounted at /mnt/hyperbutler (%d queues)", queues)
 		logf("relay ended: %v", r.Wait())
 		r.Close()
 	}

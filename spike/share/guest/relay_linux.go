@@ -5,7 +5,7 @@ import (
 	"io"
 	"strconv"
 
-	"github.com/Higangssh/winbox/internal/share/relay"
+	"github.com/Higangssh/hyperbutler/internal/share/relay"
 )
 
 var relays []*relay.Relay

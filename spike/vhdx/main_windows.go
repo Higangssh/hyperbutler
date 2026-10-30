@@ -31,7 +31,7 @@ const (
 )
 
 var (
-	dir     = flag.String("dir", filepath.Join(os.TempDir(), "hb-dev", "winbox-spike", "disk"), "scratch directory for images")
+	dir     = flag.String("dir", filepath.Join(os.TempDir(), "hb-dev", "hyperbutler-spike", "disk"), "scratch directory for images")
 	qemuDir = flag.String("qemu", `C:\Program Files\qemu`, "QEMU install directory")
 )
 

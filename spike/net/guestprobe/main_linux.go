@@ -18,8 +18,8 @@ import (
 
 	"golang.org/x/sys/unix"
 
-	"github.com/Higangssh/winbox/spike/net/probe"
-	"github.com/Higangssh/winbox/spike/net/relay"
+	"github.com/Higangssh/hyperbutler/spike/net/probe"
+	"github.com/Higangssh/hyperbutler/spike/net/relay"
 )
 
 func main() {

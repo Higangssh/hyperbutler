@@ -1,9 +1,9 @@
-// Package netstack is winbox's user-mode guest network (ADR 0006): a gVisor TCP/IP stack
-// in the winbox process, reached by the guest over one hvsock stream that carries
+// Package netstack is hyperbutler's user-mode guest network (ADR 0006): a gVisor TCP/IP stack
+// in the hyperbutler process, reached by the guest over one hvsock stream that carries
 // Ethernet frames (see package frame and guest/cmd/netfwd).
 //
 // It is built from gvisor-tap-vsock's pieces rather than its VirtualNetwork, because
-// winbox needs things VirtualNetwork has no hooks for:
+// hyperbutler needs things VirtualNetwork has no hooks for:
 //   - Every guest connection is checked against a Policy before the host dials it, so the
 //     guest cannot reach this host's own services (loopback, LAN and VPN addresses of the
 //     host, link-local and metadata addresses) unless a HostForward allows it.
@@ -45,7 +45,7 @@ import (
 	"gvisor.dev/gvisor/pkg/tcpip/transport/udp"
 	"gvisor.dev/gvisor/pkg/waiter"
 
-	"github.com/Higangssh/winbox/internal/netstack/frame"
+	"github.com/Higangssh/hyperbutler/internal/netstack/frame"
 )
 
 const (

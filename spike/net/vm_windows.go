@@ -16,7 +16,7 @@ import (
 	"time"
 	"unsafe"
 
-	"github.com/Higangssh/winbox/spike/net/probe"
+	"github.com/Higangssh/hyperbutler/spike/net/probe"
 )
 
 var (
@@ -89,7 +89,7 @@ func vmDoc(s vmSpec, kernel, pipe string) ([]byte, error) {
 	}
 	doc := map[string]any{
 		"SchemaVersion":                     map[string]int{"Major": 2, "Minor": 1},
-		"Owner":                             "winbox-net-spike",
+		"Owner":                             "hyperbutler-net-spike",
 		"ShouldTerminateOnLastHandleClosed": true,
 		"VirtualMachine": map[string]any{
 			"StopOnReset": true,

@@ -1,6 +1,6 @@
 //go:build linux
 
-// Command winboxd is the winbox guest services daemon. It serves the guestctl control
+// Command hyperbutlerd is the hyperbutler guest services daemon. It serves the guestctl control
 // channel (internal/guestctl) on AF_VSOCK port guestctl.ControlPort, accepting the host
 // (CID 2) only, and runs three policies:
 //
@@ -15,7 +15,7 @@
 //
 // See docs/research/guest-services.md. Cross-compile with GOOS=linux CGO_ENABLED=0.
 //
-//	winboxd -mount /mnt -dev /dev/sda -file /mnt/.winbox-reserve
+//	hyperbutlerd -mount /mnt -dev /dev/sda -file /mnt/.hyperbutler-reserve
 package main
 
 import (
@@ -33,10 +33,10 @@ import (
 
 	"golang.org/x/sys/unix"
 
-	"github.com/Higangssh/winbox/guest/internal/fsguard"
-	"github.com/Higangssh/winbox/guest/internal/policy"
-	"github.com/Higangssh/winbox/internal/guestctl"
-	"github.com/Higangssh/winbox/internal/spaceguard"
+	"github.com/Higangssh/hyperbutler/guest/internal/fsguard"
+	"github.com/Higangssh/hyperbutler/guest/internal/policy"
+	"github.com/Higangssh/hyperbutler/internal/guestctl"
+	"github.com/Higangssh/hyperbutler/internal/spaceguard"
 )
 
 type options struct {
@@ -98,7 +98,7 @@ func main() {
 		flag.Usage()
 		os.Exit(2)
 	}
-	log.SetPrefix("winboxd: ")
+	log.SetPrefix("hyperbutlerd: ")
 	log.SetFlags(0)
 	d, err := newDaemon(o)
 	if err != nil {

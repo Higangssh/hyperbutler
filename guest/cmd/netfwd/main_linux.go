@@ -1,4 +1,4 @@
-// Command netfwd connects the guest to winbox's user-mode network (ADR 0006). It creates
+// Command netfwd connects the guest to hyperbutler's user-mode network (ADR 0006). It creates
 // a TAP device and relays its Ethernet frames, length-prefixed (internal/netstack/frame),
 // over one AF_VSOCK stream to the host, where internal/netstack terminates them.
 //
@@ -8,8 +8,8 @@
 //	netfwd -port 1024 -dev eth0 -mtu 1500
 //
 // With -bench-tcp and -bench-vsock it also serves an endless stream of zeros on a TCP
-// port and an AF_VSOCK port, for comparing the stack with raw hvsock (winbox-dev -bench).
-// Development only: init enables it only with winbox.netbench=1 on the command line.
+// port and an AF_VSOCK port, for comparing the stack with raw hvsock (hyperbutler-dev -bench).
+// Development only: init enables it only with hyperbutler.netbench=1 on the command line.
 package main
 
 import (
@@ -25,7 +25,7 @@ import (
 
 	"golang.org/x/sys/unix"
 
-	"github.com/Higangssh/winbox/internal/netstack/frame"
+	"github.com/Higangssh/hyperbutler/internal/netstack/frame"
 )
 
 func main() {
@@ -40,7 +40,7 @@ func main() {
 		flag.Usage()
 		os.Exit(2)
 	}
-	log.SetPrefix("winbox-netfwd: ")
+	log.SetPrefix("hyperbutler-netfwd: ")
 	log.SetFlags(0)
 
 	tap, err := openTAP(*dev)

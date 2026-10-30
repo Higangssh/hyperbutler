@@ -1,5 +1,5 @@
-# Assembles the portable winbox release zip. No installer and no admin: unzip, add the
-# folder to PATH, run `winbox start`.
+# Assembles the portable hyperbutler release zip. No installer and no admin: unzip, add the
+# folder to PATH, run `hyperbutler start`.
 #
 #   pwsh -File dist\package.ps1 -ImageDir DIR [-SourceBundle FILE] [-ReleaseUrl URL]
 #        [-ImageFiles a,b] [-Version vX.Y.Z] [-Out DIR] [-Snapshot]
@@ -10,7 +10,7 @@
 # SOURCE-OFFER.txt in the zip names it by file name and SHA-256.
 #
 # Without -Snapshot (the release workflow), every check is fatal: a clean tree, a tag
-# version that winbox.exe reports itself, image hashes that match the artifact's
+# version that hyperbutler.exe reports itself, image hashes that match the artifact's
 # SHA256SUMS, guest license texts, a source bundle, and REQ-UX-002's 150 MB limit.
 # -Snapshot relaxes the first five for local dry runs and marks the zip as not for
 # redistribution. The size limit always applies.
@@ -18,13 +18,13 @@
 # Reproducibility: CGO_ENABLED=0, -trimpath, -buildvcs=true (the version comes from the
 # git tag, as `git describe` sees it), -ldflags "-s -w -buildid=", GOTOOLCHAIN=local, and
 # zip entries in ordinal order with the commit time as their timestamp. The same commit
-# and Go version give the same winbox.exe; the zip also depends on the .NET deflate
-# implementation, so compare winbox.exe, not the zip, across machines.
+# and Go version give the same hyperbutler.exe; the zip also depends on the .NET deflate
+# implementation, so compare hyperbutler.exe, not the zip, across machines.
 
 [CmdletBinding()]
 param(
     [Parameter(Mandatory)] [string]$ImageDir,
-    [string[]]$ImageFiles = @('vmlinuz-virt', 'initramfs-winbox.gz'),
+    [string[]]$ImageFiles = @('vmlinuz-virt', 'initramfs-hyperbutler.gz'),
     [string]$SourceBundle = '',
     [string]$ReleaseUrl = '',
     [string]$Version = '',
@@ -75,19 +75,19 @@ try {
     if (-not $Snapshot -and $Version -notmatch '^v\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?$') {
         Fail "a release version must be a semver tag (vX.Y.Z[-pre]), got $Version"
     }
-    $name = "winbox-$Version-windows-amd64"
+    $name = "hyperbutler-$Version-windows-amd64"
     $stage = Join-Path $Out $name
     if (Test-Path $stage) { Remove-Item -Recurse -Force $stage }
     New-Item -ItemType Directory -Force $stage | Out-Null
     Write-Host "packaging $name from $commit"
 
-    # --- winbox.exe -------------------------------------------------------------------------
-    $exe = Join-Path $stage 'winbox.exe'
+    # --- hyperbutler.exe -------------------------------------------------------------------------
+    $exe = Join-Path $stage 'hyperbutler.exe'
     $saved = $env:GOOS, $env:GOARCH, $env:CGO_ENABLED, $env:GOTOOLCHAIN, $env:GOFLAGS
     try {
         $env:GOOS = 'windows'; $env:GOARCH = 'amd64'; $env:CGO_ENABLED = '0'
         $env:GOTOOLCHAIN = 'local'; $env:GOFLAGS = '-mod=readonly'
-        Exec go build -trimpath -buildvcs=true -ldflags '-s -w -buildid=' -o $exe ./cmd/winbox | Out-Null
+        Exec go build -trimpath -buildvcs=true -ldflags '-s -w -buildid=' -o $exe ./cmd/hyperbutler | Out-Null
         $goVersion = (Exec go version) | Select-Object -First 1
         $goroot = (Exec go env GOROOT) | Select-Object -First 1
 
@@ -99,13 +99,13 @@ try {
             $f = $l.Trim() -split "`t"
             if ($f[0] -eq 'mod' -and $f.Count -ge 3) { $modVersion = $f[2] }
             elseif ($f[0] -eq 'dep' -and $f.Count -ge 3) { $deps.Add([pscustomobject]@{ Path = $f[1]; Version = $f[2] }) }
-            elseif ($f[0] -eq '=>') { Fail "replaced module in winbox.exe: $l" }
+            elseif ($f[0] -eq '=>') { Fail "replaced module in hyperbutler.exe: $l" }
         }
         if ($modVersion -ne $Version) {
-            Warn "winbox.exe reports version '$modVersion', expected '$Version' (is HEAD tagged and the tree clean?)"
+            Warn "hyperbutler.exe reports version '$modVersion', expected '$Version' (is HEAD tagged and the tree clean?)"
         }
         # The guest binaries (guest/cmd/*, GOOS=linux) are Go too and ship inside the
-        # initramfs. Add the modules they link that winbox.exe does not.
+        # initramfs. Add the modules they link that hyperbutler.exe does not.
         $env:GOOS = 'linux'
         $seen = @{}
         foreach ($d in $deps) { $seen["$($d.Path)@$($d.Version)"] = $true }
@@ -123,7 +123,7 @@ try {
         $index = [Collections.Generic.List[string]]::new()
         $index.Add('Third-party components shipped in this archive, and their license texts.')
         $index.Add('')
-        $index.Add('== Go: linked into winbox.exe (`go version -m`) or into the guest binaries')
+        $index.Add('== Go: linked into hyperbutler.exe (`go version -m`) or into the guest binaries')
         $index.Add('   (guest/cmd/*, `go list -deps` for linux)')
         $index.Add('')
         $std = Join-Path $tp 'go\std'
@@ -205,7 +205,7 @@ try {
     )
     if ($SourceBundle) {
         $sb = (Resolve-Path $SourceBundle).Path
-        $sbName = "winbox-$Version-guest-sources.tar"
+        $sbName = "hyperbutler-$Version-guest-sources.tar"
         $offer += "  $sbName"
         $offer += "  sha256 $(Sha256 $sb)"
         if ($ReleaseUrl) { $offer += "  $($ReleaseUrl.TrimEnd('/'))/$sbName" }
@@ -214,26 +214,26 @@ try {
         Warn 'no -SourceBundle; a release must publish the guest source bundle'
         $offer += '  SNAPSHOT BUILD: no source bundle was produced. Do not redistribute this archive.'
     }
-    $offer += @('', 'winbox itself is Apache-2.0; its source is https://github.com/Higangssh/winbox at', "commit $commit.")
+    $offer += @('', 'hyperbutler itself is Apache-2.0; its source is https://github.com/Higangssh/hyperbutler at', "commit $commit.")
     WriteText (Join-Path $stage 'SOURCE-OFFER.txt') $offer
 
     # --- licenses, readme, build info -----------------------------------------------------------
     Copy-Item (Join-Path $repo 'LICENSE') $stage
     Copy-Item (Join-Path $repo 'NOTICE') $stage
     WriteText (Join-Path $stage 'README.txt') @(
-        "winbox $Version for Windows x64",
+        "hyperbutler $Version for Windows x64",
         '',
         'A Docker-compatible container runtime for Windows that does not use WSL.',
         '',
         'Quick start (no installer, no admin rights for these steps):',
-        '  1. Keep all files of this archive in one folder, for example %LOCALAPPDATA%\Programs\winbox.',
+        '  1. Keep all files of this archive in one folder, for example %LOCALAPPDATA%\Programs\hyperbutler.',
         '  2. Add that folder to your user PATH.',
-        '  3. winbox start',
+        '  3. hyperbutler start',
         '  4. docker run --rm hello-world   (needs the docker CLI)',
-        '  5. winbox stop',
+        '  5. hyperbutler stop',
         '',
         'Prerequisites (Virtual Machine Platform, Hyper-V Administrators membership) and the',
-        'current status: https://github.com/Higangssh/winbox#quick-start',
+        'current status: https://github.com/Higangssh/hyperbutler#quick-start',
         '',
         'LICENSE, NOTICE, THIRD-PARTY/ and SOURCE-OFFER.txt describe the licenses of',
         'everything in this archive. SHA256SUMS lists every file.'
@@ -243,8 +243,8 @@ try {
         "commit: $commit",
         "snapshot: $([bool]$Snapshot)",
         "go: $goVersion",
-        'build: GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -buildvcs=true -ldflags "-s -w -buildid=" ./cmd/winbox',
-        "winbox.exe: $(Sha256 $exe)",
+        'build: GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -buildvcs=true -ldflags "-s -w -buildid=" ./cmd/hyperbutler',
+        "hyperbutler.exe: $(Sha256 $exe)",
         'guest image:'
     ) + $imageLines
     $gbi = Join-Path $ImageDir 'BUILDINFO.txt'

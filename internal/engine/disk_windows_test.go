@@ -15,9 +15,9 @@ import (
 
 	"github.com/Microsoft/go-winio/pkg/guid"
 
-	"github.com/Higangssh/winbox/internal/guestctl"
-	"github.com/Higangssh/winbox/internal/spaceguard"
-	"github.com/Higangssh/winbox/internal/vm"
+	"github.com/Higangssh/hyperbutler/internal/guestctl"
+	"github.com/Higangssh/hyperbutler/internal/spaceguard"
+	"github.com/Higangssh/hyperbutler/internal/vm"
 )
 
 func TestPrepareDisk(t *testing.T) {
@@ -51,7 +51,7 @@ func TestPrepareDisk(t *testing.T) {
 		t.Fatalf("after a crash before the rename: %+v %v", d3, err)
 	}
 
-	// A disk removed behind winbox's back is an error, not a silent reformat.
+	// A disk removed behind hyperbutler's back is an error, not a silent reformat.
 	if err := os.Remove(d.path); err != nil {
 		t.Fatal(err)
 	}
@@ -165,9 +165,9 @@ func TestCleanupOrphans(t *testing.T) {
 	b := &fakeBackend{opened: map[string]*fakeMachine{}, list: []vm.Summary{
 		{ID: l.VMPrefix() + "aaaa", Owner: VMOwner},
 		{ID: l.VMPrefix() + "bbbb", Owner: VMOwner},
-		{ID: "winbox-00000000-cccc", Owner: VMOwner},  // another installation
-		{ID: l.VMPrefix() + "dddd", Owner: "someone"}, // not winbox's
-		{ID: "winbox-dev-1234", Owner: "winbox-dev"},
+		{ID: "hyperbutler-00000000-cccc", Owner: VMOwner}, // another installation
+		{ID: l.VMPrefix() + "dddd", Owner: "someone"},     // not hyperbutler's
+		{ID: "hyperbutler-dev-1234", Owner: "hyperbutler-dev"},
 	}}
 	if n := CleanupOrphans(b, l.VMPrefix(), slog.New(slog.DiscardHandler)); n != 2 {
 		t.Fatalf("terminated %d, want 2", n)

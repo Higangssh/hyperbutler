@@ -175,7 +175,7 @@ func hcsConfig(kernel, initrd, cmdline, pipe, vhdx string, sparse bool, schemaMi
 	}
 	doc := map[string]any{
 		"SchemaVersion":                     map[string]int{"Major": 2, "Minor": schemaMinor},
-		"Owner":                             "winbox-spike",
+		"Owner":                             "hyperbutler-spike",
 		"ShouldTerminateOnLastHandleClosed": true,
 		"VirtualMachine": map[string]any{
 			"StopOnReset": true,
@@ -198,7 +198,7 @@ func hcsConfig(kernel, initrd, cmdline, pipe, vhdx string, sparse bool, schemaMi
 
 func runHCS(args []string) error {
 	fs := flag.NewFlagSet("hcs", flag.ExitOnError)
-	guestDir := fs.String("guest", filepath.Join(os.TempDir(), "hb-dev", "winbox-spike", "guest"), "dir with vmlinuz-virt and initramfs-virt")
+	guestDir := fs.String("guest", filepath.Join(os.TempDir(), "hb-dev", "hyperbutler-spike", "guest"), "dir with vmlinuz-virt and initramfs-virt")
 	modDir := fs.String("modules", "", "dir with the guest's Hyper-V SCSI modules (hv_storvsc is not in initramfs-virt)")
 	modList := fs.String("modlist", defaultHCSGuestModuleSet, "modules from -modules to insmod, in dependency order")
 	sparse := fs.Bool("sparse", false, "make the VHDX an NTFS sparse file and set AlwaysAllowSparseFiles")
@@ -275,7 +275,7 @@ func runHCS(args []string) error {
 		}
 	}
 
-	id := fmt.Sprintf("winbox-vhdx-spike-%d", time.Now().UnixNano())
+	id := fmt.Sprintf("hyperbutler-vhdx-spike-%d", time.Now().UnixNano())
 	pipe := `\\.\pipe\` + id + "-com1"
 	if gopts.on && !copts.on {
 		guardPipe = `\\.\pipe\` + id + "-com2"
@@ -387,8 +387,8 @@ func runHCS(args []string) error {
 		}
 		markerHook = ctlHooks(copts, pid, vhdx, start, s)
 		if !gopts.on {
-			// Without the guard test, still send a real budget so winboxd's guard runs as
-			// it would in winbox (on a roomy volume it is "unlimited").
+			// Without the guard test, still send a real budget so hyperbutlerd's guard runs as
+			// it would in hyperbutler (on a roomy volume it is "unlimited").
 			gopts.margin, gopts.floor = 1<<30, 256<<20
 			gopts.on = true
 		}

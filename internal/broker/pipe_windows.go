@@ -13,14 +13,14 @@ import (
 	"time"
 	"unsafe"
 
-	"github.com/Higangssh/winbox/internal/broker/proto"
-	"github.com/Higangssh/winbox/internal/transport"
+	"github.com/Higangssh/hyperbutler/internal/broker/proto"
+	"github.com/Higangssh/hyperbutler/internal/transport"
 	"golang.org/x/sys/windows"
 )
 
 // ErrPipeExists is returned by ListenPipe when the pipe name is already taken, for
 // example by a process squatting on it. The broker never falls back to another name
-// (ADR 0004 rule 5); `winbox doctor` reports this error.
+// (ADR 0004 rule 5); `hyperbutler doctor` reports this error.
 var ErrPipeExists = errors.New("broker: pipe name is already in use")
 
 // clientPipeAccess is what a client is granted on the pipe: FILE_GENERIC_READ and

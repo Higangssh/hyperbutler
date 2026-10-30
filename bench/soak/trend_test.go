@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Higangssh/winbox/internal/leaktest"
+	"github.com/Higangssh/hyperbutler/internal/leaktest"
 )
 
 func TestMain(m *testing.M) {

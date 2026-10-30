@@ -1,6 +1,6 @@
 //go:build windows
 
-// Command winbox-broker runs the HCS access broker (ADR 0004) in the foreground.
+// Command hyperbutler-broker runs the HCS access broker (ADR 0004) in the foreground.
 //
 // It does not install, register or start a Windows service, and it needs no elevation:
 // run as a normal user, it serves that user only. Installing it as a service is a
@@ -19,11 +19,11 @@ import (
 
 	"golang.org/x/sys/windows"
 
-	"github.com/Higangssh/winbox/internal/broker"
-	"github.com/Higangssh/winbox/internal/diag"
+	"github.com/Higangssh/hyperbutler/internal/broker"
+	"github.com/Higangssh/hyperbutler/internal/diag"
 )
 
-const defaultPipe = `\\.\pipe\winbox-broker-dev`
+const defaultPipe = `\\.\pipe\hyperbutler-broker-dev`
 
 // version is set at link time (-ldflags "-X main.version=...").
 var version = "dev"
@@ -38,10 +38,10 @@ func main() {
 	fake := flag.Bool("fake-backend", false, "use the in-memory fake backend (required for now)")
 	var dcfg diag.Config
 	flag.StringVar(&dcfg.MemoryLimit, "memlimit", defaultMemLimit, "Go soft memory limit, GOMEMLIMIT syntax (the GOMEMLIMIT variable wins)")
-	flag.StringVar(&dcfg.DebugPipe, "debug-pipe", "", `serve pprof and runtime stats on this pipe, current user only (off when empty), e.g. \\.\pipe\winbox-broker-debug`)
+	flag.StringVar(&dcfg.DebugPipe, "debug-pipe", "", `serve pprof and runtime stats on this pipe, current user only (off when empty), e.g. \\.\pipe\hyperbutler-broker-debug`)
 	flag.Parse()
 	if err := run(*pipe, *fake, dcfg); err != nil {
-		fmt.Fprintln(os.Stderr, "winbox-broker:", err)
+		fmt.Fprintln(os.Stderr, "hyperbutler-broker:", err)
 		os.Exit(1)
 	}
 }

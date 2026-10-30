@@ -1,6 +1,6 @@
 // Command mkinitramfs builds a gzip-compressed newc initramfs from a spec file, on any OS
 // Go runs on (in particular on Windows without WSL). It can also list an existing
-// archive. See package github.com/Higangssh/winbox/guest/cpio for the spec format.
+// archive. See package github.com/Higangssh/hyperbutler/guest/cpio for the spec format.
 //
 //	mkinitramfs -spec initramfs.spec -base DIR -D NAME=path ... -o out.cpio.gz
 //	mkinitramfs -list initramfs-virt
@@ -20,7 +20,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/Higangssh/winbox/guest/cpio"
+	"github.com/Higangssh/hyperbutler/guest/cpio"
 )
 
 type vars map[string]string

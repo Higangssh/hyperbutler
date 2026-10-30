@@ -11,7 +11,7 @@ import (
 // must validate, and must survive a re-encode unchanged.
 
 func FuzzParseState(f *testing.F) {
-	f.Add([]byte(`{"version":1,"phase":"running","pid":4,"pidCreated":1,"vmId":"winbox-65fd2a1a-c01f6278e7ec","runtimeId":"6cf7ba4c-5e89-5915-bea5-3642d57a897b","pipe":"\\\\.\\pipe\\docker_engine_winbox","dataDir":"C:\\x","started":"2026-10-30T08:00:00Z","readyMillis":1700,"updated":"2026-10-30T08:00:01Z"}`))
+	f.Add([]byte(`{"version":1,"phase":"running","pid":4,"pidCreated":1,"vmId":"hyperbutler-65fd2a1a-c01f6278e7ec","runtimeId":"6cf7ba4c-5e89-5915-bea5-3642d57a897b","pipe":"\\\\.\\pipe\\docker_engine_hyperbutler","dataDir":"C:\\x","started":"2026-10-30T08:00:00Z","readyMillis":1700,"updated":"2026-10-30T08:00:01Z"}`))
 	f.Add([]byte(`{"version":1,"phase":"failed","pid":0,"pidCreated":0,"pipe":"","dataDir":"","started":"0001-01-01T00:00:00Z","updated":"0001-01-01T00:00:00Z","error":"boom","errorCode":"hcs-access-denied"}`))
 	f.Add([]byte(`{"version":1,"phase":"running","pid":0}`))
 	f.Add([]byte(`{"version":1,"phase":"stopped","pid":1e3}`))
@@ -26,7 +26,7 @@ func FuzzParseState(f *testing.F) {
 		if s.Phase.Live() && s.PID <= 0 {
 			t.Fatalf("live phase %q with pid %d", s.Phase, s.PID)
 		}
-		if s.VMID != "" && !strings.HasPrefix(s.VMID, "winbox-") {
+		if s.VMID != "" && !strings.HasPrefix(s.VMID, "hyperbutler-") {
 			t.Fatalf("foreign VM id %q", s.VMID)
 		}
 		again, err := encode(s)
@@ -41,7 +41,7 @@ func FuzzParseState(f *testing.F) {
 }
 
 func FuzzParseSettings(f *testing.F) {
-	f.Add([]byte(`{"version":1,"dataDir":"C:\\Users\\x\\AppData\\Local\\winbox","diskSizeBytes":68719476736,"memoryMB":4096,"cpus":4}`))
+	f.Add([]byte(`{"version":1,"dataDir":"C:\\Users\\x\\AppData\\Local\\hyperbutler","diskSizeBytes":68719476736,"memoryMB":4096,"cpus":4}`))
 	f.Add([]byte(`{"version":1,"dataDir":"/home/x","diskSizeBytes":68719476736,"memoryMB":4096,"cpus":4,"pipe":"\\\\.\\pipe\\x"}`))
 	f.Add([]byte(`{"version":1,"dataDir":"C:\\x","diskSizeBytes":-1,"memoryMB":4096,"cpus":4}`))
 	f.Fuzz(func(t *testing.T, b []byte) {

@@ -42,13 +42,13 @@ func parseFlags() (*config, error) {
 	c := &config{}
 	fs := flag.NewFlagSet("soak", flag.ContinueOnError)
 	fs.StringVar(&c.docker, "docker", "", "path to the stock docker.exe (required)")
-	fs.StringVar(&c.host, "host", "npipe:////./pipe/docker_engine_winbox", "docker -H endpoint")
-	fs.StringVar(&c.imageTar, "image-tar", "", "`docker load` tar, e.g. from `winbox-dev mkimage` (required)")
-	fs.StringVar(&c.image, "image", "winbox-test/busybox:latest", "image name:tag inside -image-tar; its default command must print and exit 0")
-	fs.StringVar(&c.process, "process", "winbox-dev.exe", "image name of the target process when -pid is 0")
+	fs.StringVar(&c.host, "host", "npipe:////./pipe/docker_engine_hyperbutler", "docker -H endpoint")
+	fs.StringVar(&c.imageTar, "image-tar", "", "`docker load` tar, e.g. from `hyperbutler-dev mkimage` (required)")
+	fs.StringVar(&c.image, "image", "hyperbutler-test/busybox:latest", "image name:tag inside -image-tar; its default command must print and exit 0")
+	fs.StringVar(&c.process, "process", "hyperbutler-dev.exe", "image name of the target process when -pid is 0")
 	fs.UintVar(&c.pid, "pid", 0, "PID of the target process (0: the single running -process)")
 	fs.IntVar(&c.vmmemPID, "vmmem-pid", 0, "PID of the VM's vmmem process (0: the single running vmmem, -1: don't sample)")
-	fs.StringVar(&c.diagPipe, "diag-pipe", "", `target's internal/diag endpoint, e.g. \\.\pipe\winbox-dev-debug (required; "none" skips goroutine and heap samples)`)
+	fs.StringVar(&c.diagPipe, "diag-pipe", "", `target's internal/diag endpoint, e.g. \\.\pipe\hyperbutler-dev-debug (required; "none" skips goroutine and heap samples)`)
 	fs.DurationVar(&c.duration, "duration", 24*time.Hour, "total run time (main gate: 1h with -warmup 10m)")
 	fs.DurationVar(&c.warmup, "warmup", time.Hour, "samples before this are left out of the trend fit")
 	fs.DurationVar(&c.minWindow, "min-window", 0, "fail unless the steady-state window is at least this long (0: 80% of duration-warmup)")
@@ -144,7 +144,7 @@ func run() error {
 		}
 	}
 
-	cfgDir, err := os.MkdirTemp("", "winbox-soak-docker-config")
+	cfgDir, err := os.MkdirTemp("", "hyperbutler-soak-docker-config")
 	if err != nil {
 		return err
 	}

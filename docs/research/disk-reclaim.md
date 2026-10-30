@@ -42,8 +42,8 @@ It is throwaway code.
   - The ext4 path has to be measured before an ADR.
 
 ```powershell
-go build -o $env:TEMP\hb-dev\winbox-spike\disk\vhdx-spike.exe ./spike/vhdx
-$x = "$env:TEMP\hb-dev\winbox-spike\disk\vhdx-spike.exe"
+go build -o $env:TEMP\hb-dev\hyperbutler-spike\disk\vhdx-spike.exe ./spike/vhdx
+$x = "$env:TEMP\hb-dev\hyperbutler-spike\disk\vhdx-spike.exe"
 & $x vhdx                  # Q1, Q3
 & $x raw                   # Q4a
 & $x qemu -backend raw     # Q4b: QEMU file driver, sparse raw, discard=unmap
@@ -130,7 +130,7 @@ Alpine's `linux-virt` package for the same kernel, and the spike packs them into
 
 ```powershell
 # Elevated PowerShell, from the repo root.
-$s = "$env:TEMP\hb-dev\winbox-spike"
+$s = "$env:TEMP\hb-dev\hyperbutler-spike"
 go build -o "$s\disk\vhdx-spike-hcs.exe" ./spike/vhdx
 # 1. Download linux-virt-6.18.58-r0.apk by hand from the Alpine branch that the netboot files
 #    came from (dl-cdn.alpinelinux.org/alpine/<branch>/main/x86_64/). It must match
@@ -227,7 +227,7 @@ What this shows:
   whose writes have not yet been flushed. To confirm, flush before the first `fstrim`. ext4
   commits its journal with flushes, so normal use is likely fine, but it needs a test.
 - **Plain VHDX gives space back only when the disk is closed.** That makes it fit for
-  "reclaim on `winbox stop`", not for REQ-DISK-001's "while running".
+  "reclaim on `hyperbutler stop`", not for REQ-DISK-001's "while running".
 - **Sparse VHDX with `AlwaysAllowSparseFiles` gives space back online.** It is the candidate
   for REQ-DISK-001 on HCS. WSL marks this path as experimental, so it is not yet trusted.
 
@@ -278,14 +278,14 @@ build, and the block size was confirmed in the VHDX metadata and in the guest's
   That is the normal case after deleting some image layers and keeping others.
 - **With 1 MiB blocks (what WSL uses), the freed half comes back even when the holes are only
   2 MiB.** The empty formatted disk is also smaller: 36 MiB of file size instead of 356 MiB.
-- So winbox creates its data VHDX with `BlockSizeInBytes = 1 MiB`. Holes under 1 MiB are
+- So hyperbutler creates its data VHDX with `BlockSizeInBytes = 1 MiB`. Holes under 1 MiB are
   still not returned. The cost is bounded by about 1 MiB per fragment.
 
 #### Host disk full (non-elevated, 2026-10-30)
 
 **Setup:**
 - A 3 GiB NTFS test volume `T:`. It is a VHDX created with `diskpart` in one approved
-  elevated step and stored at `C:\winbox-test\fulltest.vhdx`.
+  elevated step and stored at `C:\hyperbutler-test\fulltest.vhdx`.
 - The guest disk is a 4 GiB sparse VHDX on `T:` with 1 MiB blocks.
 - A 400 MiB reserve file left about 2.6 GiB free.
 - `-mode full` formats ext4 and writes 256 KiB files until a write fails.
@@ -311,13 +311,13 @@ build, and the block size was confirmed in the VHDX metadata and in the guest's
   is **not met by the backend alone**. The same would happen with any backend whose image
   grows on demand, including the NBD design.
 
-**Needed:** a free-space guard in winbox.
+**Needed:** a free-space guard in hyperbutler.
 - The host watches the free space of the volume that holds the VHDX.
 - The guest agent keeps an `fallocate`d reservation file on ext4, so that guest free space
   stays at or below host free space minus a margin. `fallocate` reserves guest blocks
   without writing, so the sparse VHDX does not grow.
 - The guest then hits `ENOSPC` before the host fills up.
-- As a last resort, winbox pauses the VM before the host fills (`HcsPauseComputeSystem`).
+- As a last resort, hyperbutler pauses the VM before the host fills (`HcsPauseComputeSystem`).
 
 - **Still open:**
   - Build and test the free-space guard against `bench/disk-full`.
@@ -443,7 +443,7 @@ had written and synced 1 GiB, `GetCompressedFileSizeW` showed:
 
 QEMU opens the image so that a second handle can open and flush it. No "host flush" error was
 printed in any run. The main table uses the host flush. A guest that sends flushes, which ext4
-does on `sync` and on journal commits, needs no trick. For `winbox status` (REQ-DISK-005) and
+does on `sync` and on journal commits, needs no trick. For `hyperbutler status` (REQ-DISK-005) and
 the `bench/disk-reclaim` harness, this means sampling allocation after a guest or host flush.
 Otherwise freshly written data is under-counted for a while.
 
@@ -494,7 +494,7 @@ Otherwise freshly written data is under-counted for a while.
 ## Recommendation
 
 For the default, non-admin backend (QEMU-WHPX), keep the data disk as a **sparse raw file on
-NTFS, served by a block backend inside winbox**. The spike used NBD over loopback. Map
+NTFS, served by a block backend inside hyperbutler**. The spike used NBD over loopback. Map
 discard and write-zeroes to `FSCTL_SET_ZERO_DATA` in 64 KiB-aligned units. Have the guest run
 ext4 with `fstrim` triggered after large deletes, plus a timer.
 
@@ -506,7 +506,7 @@ no-op, or into reuse inside the file.
 Two alternatives should go in the ADR:
 
 - **A small QEMU patch adding `pdiscard` to `file-win32.c`.** It would remove the NBD hop. It is
-  GPL, so it has to be upstreamed or shipped as a patched binary, not copied into winbox.
+  GPL, so it has to be upstreamed or shipped as a patched binary, not copied into hyperbutler.
 - **For an HCS backend** (elevated, possibly Hyper-V Administrators, or a SYSTEM broker; see
   ADR 0002):
   a sparse VHDX (0x80 | 0x400, creatable without admin) with `AlwaysAllowSparseFiles`, as WSL
@@ -632,7 +632,7 @@ guest printed a status line (review finding 1). The guest agent over hvsock repl
   - After the filler was deleted, `HcsResumeComputeSystem` took 2??7 ms.
   - The guest continued and its writes then ended in `ENOSPC`.
   - Pause is not recovery: in the first guard run nothing could free space, so the VM
-    stayed paused until it was killed. winbox has to tell the user.
+    stayed paused until it was killed. hyperbutler has to tell the user.
 - **The guard costs slack.** With a working guard the guest stopped with about 115 MiB more
   host free space than the margin. That slack is real worst-case exposure, not error:
   - inode tables and journal blocks that ext4 has not written yet (about 100 MiB on 2 GiB);
@@ -678,7 +678,7 @@ guest printed a status line (review finding 1). The guest agent over hvsock repl
 | # | Finding | Resolution |
 |---|---|---|
 | 1 | High: the COM2 pipe was a synchronous handle, so the sender's write waited for the reader's pending read. Budgets reached the guest only when it printed a status line (~1 s lag; seen in run 3's log). | **Fixed:** the host opens the pipe with go-winio (overlapped). |
-| 2 | High: used-but-unbacked blocks (zero-written files, preallocated files, unwritten metadata) can grow the VHDX without changing guest free. | **Fixed** by the exposure invariant, and tested with the zero-file run. **Rejected for a hostile guest root** that writes into the reservation file itself (`dd conv=notrunc`): the guard protects against cooperative workloads, and the hard floor is the guarantee against a hostile guest. In winbox the file lives outside every container mount. |
+| 2 | High: used-but-unbacked blocks (zero-written files, preallocated files, unwritten metadata) can grow the VHDX without changing guest free. | **Fixed** by the exposure invariant, and tested with the zero-file run. **Rejected for a hostile guest root** that writes into the reservation file itself (`dd conv=notrunc`): the guard protects against cooperative workloads, and the hard floor is the guarantee against a hostile guest. In hyperbutler the file lives outside every container mount. |
 | 3 | Medium: `grow` started at `st_size`, so a file with holes was never filled. | **Fixed:** `grow` allocates from offset 0 in chunks; this is idempotent on allocated ranges. |
 | 4 | Medium: `Overhead` counted all metadata forever, causing permanent early `ENOSPC`. The runs never came within the margin. | **Fixed** by the exposure rule: metadata stops counting once it is written. The remaining slack is real exposure (see above). The tight-margin case is covered by the host-filler run, which drove the host to 12 MiB. |
 | 5 | Medium: wall-clock staleness after a pause or host sleep would fail closed and give spurious `ENOSPC`. | **Fixed:** staleness counts the daemon's own ticks. |

@@ -1,4 +1,4 @@
-// Package relay is the guest half of winbox bind mounts (ADR 0007). It mounts a FUSE
+// Package relay is the guest half of hyperbutler bind mounts (ADR 0007). It mounts a FUSE
 // file system whose server is the host (package share), and copies frames between
 // /dev/fuse and one hvsock connection without decoding them. Notifications from the
 // host are written to /dev/fuse from their own queue, never from the reply path, so an

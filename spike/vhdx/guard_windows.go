@@ -17,8 +17,8 @@ import (
 
 	"github.com/Microsoft/go-winio"
 
-	"github.com/Higangssh/winbox/internal/guestctl"
-	"github.com/Higangssh/winbox/internal/spaceguard"
+	"github.com/Higangssh/hyperbutler/internal/guestctl"
+	"github.com/Higangssh/hyperbutler/internal/spaceguard"
 )
 
 type guestctlSupervisor = guestctl.Supervisor
@@ -66,7 +66,7 @@ type guardOpts struct {
 func guardFlags(fs *flag.FlagSet) *guardOpts {
 	o := &guardOpts{}
 	fs.BoolVar(&o.on, "guard", false, "guard mode: run the free-space guard (host budget loop + guest spaceguard)")
-	fs.StringVar(&o.bin, "guard-bin", filepath.Join(os.TempDir(), "hb-dev", "winbox-spike", "guard-bin", "spaceguard"), "linux spaceguard binary to pack into the initrd")
+	fs.StringVar(&o.bin, "guard-bin", filepath.Join(os.TempDir(), "hb-dev", "hyperbutler-spike", "guard-bin", "spaceguard"), "linux spaceguard binary to pack into the initrd")
 	fs.Uint64Var(&o.margin, "guard-margin", 64<<20, "host bytes the guest may never consume")
 	fs.Uint64Var(&o.floor, "guard-floor", 24<<20, "pause the VM below this much host free space")
 	fs.Uint64Var(&o.resumeGap, "guard-resume", 32<<20, "resume once host free space is this far above the floor")

@@ -16,7 +16,7 @@
 //
 // Cross-compile on Windows with GOOS=linux CGO_ENABLED=0.
 //
-//	spaceguard -dev /dev/sda -file /mnt/.winbox-reserve -ctl /dev/ttyS1
+//	spaceguard -dev /dev/sda -file /mnt/.hyperbutler-reserve -ctl /dev/ttyS1
 package main
 
 import (
@@ -29,8 +29,8 @@ import (
 
 	"golang.org/x/sys/unix"
 
-	"github.com/Higangssh/winbox/guest/internal/fsguard"
-	"github.com/Higangssh/winbox/internal/spaceguard"
+	"github.com/Higangssh/hyperbutler/guest/internal/fsguard"
+	"github.com/Higangssh/hyperbutler/internal/spaceguard"
 )
 
 func main() {

@@ -1,4 +1,4 @@
-// Package leaktest holds the goroutine-leak check shared by winbox test
+// Package leaktest holds the goroutine-leak check shared by hyperbutler test
 // binaries (ADR 0003, guardrail 1). Only _test.go files may import it, so
 // goleak is never linked into a shipped binary.
 package leaktest

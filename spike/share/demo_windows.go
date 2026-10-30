@@ -18,22 +18,22 @@ import (
 	"regexp"
 	"time"
 
-	"github.com/Higangssh/winbox/guest/cpio"
-	"github.com/Higangssh/winbox/internal/engine"
-	"github.com/Higangssh/winbox/internal/share"
-	"github.com/Higangssh/winbox/internal/transport"
-	"github.com/Higangssh/winbox/internal/vm"
+	"github.com/Higangssh/hyperbutler/guest/cpio"
+	"github.com/Higangssh/hyperbutler/internal/engine"
+	"github.com/Higangssh/hyperbutler/internal/share"
+	"github.com/Higangssh/hyperbutler/internal/transport"
+	"github.com/Higangssh/hyperbutler/internal/vm"
 	"github.com/Microsoft/go-winio"
 	"github.com/Microsoft/go-winio/pkg/guid"
 )
 
 var (
-	demo       = flag.Bool("demo", false, "boot the full winbox image through internal/engine with bind mounts and serve a translating Docker API on -demo-pipe until Ctrl+C")
-	demoPipe   = flag.String("demo-pipe", `\\.\pipe\winbox-share-demo`, "Docker API pipe of the demo")
-	demoEngine = flag.String("demo-engine-pipe", `\\.\pipe\winbox-share-demo-raw`, "the engine's own (untranslated) Docker API pipe in the demo")
+	demo       = flag.Bool("demo", false, "boot the full hyperbutler image through internal/engine with bind mounts and serve a translating Docker API on -demo-pipe until Ctrl+C")
+	demoPipe   = flag.String("demo-pipe", `\\.\pipe\hyperbutler-share-demo`, "Docker API pipe of the demo")
+	demoEngine = flag.String("demo-engine-pipe", `\\.\pipe\hyperbutler-share-demo-raw`, "the engine's own (untranslated) Docker API pipe in the demo")
 )
 
-const guestMount = "/mnt/winbox"
+const guestMount = "/mnt/hyperbutler"
 
 // createPath matches POST /containers/create with or without an API version prefix.
 var createPath = regexp.MustCompile(`^(/v[0-9]+\.[0-9]+)?/containers/create$`)
@@ -42,7 +42,7 @@ var createPath = regexp.MustCompile(`^(/v[0-9]+\.[0-9]+)?/containers/create$`)
 //   - the guest gets fuse.ko and the relay (here as a wrapper that starts the relay
 //     and then execs the normal /init);
 //   - the engine gets an extra hvsock service the relay connects to;
-//   - a Docker API proxy rewrites Windows bind sources to /mnt/winbox/<share>.
+//   - a Docker API proxy rewrites Windows bind sources to /mnt/hyperbutler/<share>.
 func runDemo() error {
 	guestBin, err := buildGuest()
 	if err != nil {
@@ -69,7 +69,7 @@ func runDemo() error {
 		MemoryMB:      *memMB,
 		CPUs:          *cpus,
 		Pipe:          *demoEngine,
-		VMID:          fmt.Sprintf("winbox-share-demo-%d", time.Now().UnixNano()%1e6),
+		VMID:          fmt.Sprintf("hyperbutler-share-demo-%d", time.Now().UnixNano()%1e6),
 		Logger:        log,
 		ExtraServices: []vm.Service{{ID: transport.VsockServiceID(fusePort), BindSDDL: sddl}},
 		ExtraCmdLine:  fmt.Sprintf(" rdinit=/sharebench sbwrap=1 sbfuseport=%d sbqueues=%d", fusePort, *fuseQueues),
@@ -129,7 +129,7 @@ func serveProxy(ctx context.Context, r *engine.Running, reg *share.Registry) err
 			}
 			nb, err := share.RewriteCreate(body, reg.Resolve)
 			if err != nil {
-				http.Error(w, `{"message":"winbox: `+err.Error()+`"}`, http.StatusBadRequest)
+				http.Error(w, `{"message":"hyperbutler: `+err.Error()+`"}`, http.StatusBadRequest)
 				return
 			}
 			if !bytes.Equal(nb, body) {
@@ -160,9 +160,9 @@ func filepathToNpipe(p string) string {
 	return string(b)
 }
 
-// buildDemoInitrd appends sharebench (as the wrapper) and fuse.ko to the winbox image.
+// buildDemoInitrd appends sharebench (as the wrapper) and fuse.ko to the hyperbutler image.
 func buildDemoInitrd(guestBin string) (string, error) {
-	base, err := os.ReadFile(filepath.Join(*imageDir, "initramfs-winbox.gz"))
+	base, err := os.ReadFile(filepath.Join(*imageDir, "initramfs-hyperbutler.gz"))
 	if err != nil {
 		return "", err
 	}

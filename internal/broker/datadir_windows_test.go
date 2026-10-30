@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Higangssh/winbox/internal/broker/proto"
+	"github.com/Higangssh/hyperbutler/internal/broker/proto"
 	"golang.org/x/sys/windows"
 )
 
@@ -229,7 +229,7 @@ func TestDataDirBadHandleValue(t *testing.T) {
 // A handle to a pipe the caller controls must be rejected without the broker ever
 // opening (connecting to) the pipe: that is how a privileged process gets impersonated.
 func TestDataDirPipeHandleNotConnected(t *testing.T) {
-	name := `\\.\pipe\winbox_test_datadir_` + time.Now().Format("150405.000000000")
+	name := `\\.\pipe\hyperbutler_test_datadir_` + time.Now().Format("150405.000000000")
 	n16, _ := windows.UTF16PtrFromString(name)
 	mk := func(first bool) windows.Handle {
 		flags := uint32(windows.PIPE_ACCESS_DUPLEX | windows.FILE_FLAG_OVERLAPPED)

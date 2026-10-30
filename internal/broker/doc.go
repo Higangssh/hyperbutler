@@ -1,4 +1,4 @@
-// Package broker is the HCS access broker of ADR 0004: the only winbox component that
+// Package broker is the HCS access broker of ADR 0004: the only hyperbutler component that
 // will call HCS, serving a small, fixed set of requests (package proto) to non-admin
 // users over a per-user named pipe.
 //

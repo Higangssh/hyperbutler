@@ -64,7 +64,7 @@ What HNS did on the host, read from the network document:
 - It created a WinNAT instance for the prefix (`"Tag": "NAT"`, `NATState: 2`).
 - It allocated a MAC pool `00-15-5D-E1-70-00`–`7F-FF`.
 - It wrote the host's own DNS servers into the endpoint's `Dns.ServerList`. Nobody asked
-  for that, and the guest only sees it if winbox passes it on.
+  for that, and the guest only sees it if hyperbutler passes it on.
 
 ### Attaching it to the VM
 
@@ -89,7 +89,7 @@ was no namespace and no `HcnModifyEndpoint` step.
 | DNS to gateway `.1` | timed out | timed out |
 | DNS to the host's upstream resolver | works (3.6–7.5 ms) | works |
 
-- winbox has to assign the address itself (kernel command line or guest agent). It also
+- hyperbutler has to assign the address itself (kernel command line or guest agent). It also
   has to supply DNS. The NAT gateway offers neither DHCP nor a DNS proxy.
 - The ICS type (what the Default Switch and WSL use) behaved the same with these settings.
   WSL gets DHCP and DNS from extra HNS settings and its own DNS tunnelling. Those were not
@@ -126,7 +126,7 @@ short when the guest powered off, which was a bug in the test script, since fixe
 
 - Split DNS cannot work with a resolver list in the guest. Windows decides per name
   (NRPT) which server to use, and the guest has a single `resolv.conf`.
-- winbox would need a host-side DNS forwarder that asks the Windows resolver, as WSL's
+- hyperbutler would need a host-side DNS forwarder that asks the Windows resolver, as WSL's
   `dnsTunneling` does. That forwarder is the same component the user-mode path needs
   anyway.
 - **Not tested:** full-tunnel corporate VPNs (AnyConnect, GlobalProtect, Zscaler) that
@@ -200,10 +200,10 @@ n=3 that cannot separate a relay cost from Wi-Fi variance.
 and the host resolves them where Windows would. A full user-mode stack such as
 gvisor-tap-vsock receives the guest's DNS packets instead. Split DNS then holds only if its
 DNS forwarder asks the Windows resolver rather than fixed upstream servers. This was not
-tested. The traffic also leaves as winbox's own sockets, so VPN clients, firewalls and
+tested. The traffic also leaves as hyperbutler's own sockets, so VPN clients, firewalls and
 proxies see an ordinary host process.
 
-## The user-mode stack: gVisor in winbox-dev
+## The user-mode stack: gVisor in hyperbutler-dev
 
 This is the implementation ADR 0006 asked for (`internal/netstack`, `guest/cmd/netfwd`).
 The machine and VPN are the same as above. The guest is the ADR 0005 prototype initramfs
@@ -220,7 +220,7 @@ section.
 | `docker pull ubuntu:24.04`, fresh boot | 3.66, 3.49 s |
 | `docker pull python:3.13-slim`, fresh boot | 4.02, 3.97 s |
 | `docker pull nginx` | 4.7–5.3 s |
-| winbox-dev CPU during those pulls | 47–344 ms, 0.02–0.09 cores |
+| hyperbutler-dev CPU during those pulls | 47–344 ms, 0.02–0.09 cores |
 | `docker run --rm alpine wget -qO- https://example.com` | 214–478 ms including container start; prints the page |
 | `docker run -d -p 8080:80 nginx`, then curl on the host | `127.0.0.1:8080`, `[::1]:8080` and `localhost:8080` serve nginx 26–99 ms after start; unpublished on `docker rm` |
 
@@ -228,15 +228,15 @@ Pulls are dominated by registry round trips (token, manifest, redirects), not by
 bandwidth. For bandwidth, the same 100 MiB HTTPS file
 (`proof.ovh.net/files/100Mb.dat`) was downloaded by the host (`curl.exe`) and by a
 container (`busybox wget`), alternating, n=3 each: **host 41, 31, 51 Mbit/s; container
-32, 65, 52 Mbit/s**, with winbox-dev at 0.05–0.08 cores. Both are limited by the internet
+32, 65, 52 Mbit/s**, with hyperbutler-dev at 0.05–0.08 cores. Both are limited by the internet
 path. The guest cannot be told apart from the host at this n.
 
 ### Local throughput and CPU against raw hvsock
 
-`winbox-dev run -bench-bytes N` boots with `winbox.netbench=1`. netfwd then serves a zero
+`hyperbutler-dev run -bench-bytes N` boots with `hyperbutler.netbench=1`. netfwd then serves a zero
 source, a sink and an echo on TCP 5201/5203/5205 (reached through `Publish`, so through
 the stack plus one Windows loopback hop) and on vsock 5202/5204/5206 (raw hvsock). Each
-run moves 1 GiB. "Cores" is winbox-dev's own CPU time over wall time, so the
+run moves 1 GiB. "Cores" is hyperbutler-dev's own CPU time over wall time, so the
 hypervisor's (vmwp, vmmem) is not included.
 
 | Configuration | Guest to host, stack | Guest to host, raw | Host to guest, stack | Host to guest, raw |
@@ -291,18 +291,18 @@ with zero configuration. Only Tailscale was tested; full-tunnel VPNs were not.
 
 ### Memory
 
-winbox-dev idle with the stack: 21 MB working set, 56 MB private. After the pulls and
+hyperbutler-dev idle with the stack: 21 MB working set, 56 MB private. After the pulls and
 downloads: 42 MB and 77 MB. The stack's TCP buffers are bounded at 256 MiB in total
 (512 connections x 2 x 256 KiB). No test stressed this bound.
 
 ### Reproducing
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File guest\prototype\build.ps1 -Out $env:TEMP\winbox-out
-go build -o $env:TEMP\winbox-dev.exe ./cmd/winbox-dev
-& $env:TEMP\winbox-dev.exe run -kernel $env:TEMP\winbox-out\vmlinuz-virt -initrd $env:TEMP\winbox-out\initramfs-winbox.gz
-docker -H npipe:////./pipe/docker_engine_winbox run --rm alpine wget -qO- https://example.com
-& $env:TEMP\winbox-dev.exe run ... -bench-bytes 1073741824 [-net-mtu 1500]   # throughput and latency
+powershell -ExecutionPolicy Bypass -File guest\prototype\build.ps1 -Out $env:TEMP\hyperbutler-out
+go build -o $env:TEMP\hyperbutler-dev.exe ./cmd/hyperbutler-dev
+& $env:TEMP\hyperbutler-dev.exe run -kernel $env:TEMP\hyperbutler-out\vmlinuz-virt -initrd $env:TEMP\hyperbutler-out\initramfs-hyperbutler.gz
+docker -H npipe:////./pipe/docker_engine_hyperbutler run --rm alpine wget -qO- https://example.com
+& $env:TEMP\hyperbutler-dev.exe run ... -bench-bytes 1073741824 [-net-mtu 1500]   # throughput and latency
 ```
 
 ## Comparison
@@ -310,13 +310,13 @@ docker -H npipe:////./pipe/docker_engine_winbox run --rm alpine wget -qO- https:
 | | HNS NAT (or ICS) | User-mode stack over hvsock |
 |---|---|---|
 | Needs elevation? | No, but needs Hyper-V Administrators or the ADR 0004 broker for the HCN calls. A non-member was not tested. | Nothing beyond what HCS already needs |
-| Host-wide state | Creates a host vNIC, a WinNAT instance and a /24 that must not collide with LAN or VPN routes. Leaks until reboot if winbox crashes (non-persistent flag). | None: a socket in the winbox process |
-| Guest address / DNS | winbox must assign the IP; no DHCP and no DNS at the gateway | Not needed (the stack's virtual DHCP, or the relay) |
+| Host-wide state | Creates a host vNIC, a WinNAT instance and a /24 that must not collide with LAN or VPN routes. Leaks until reboot if hyperbutler crashes (non-persistent flag). | None: a socket in the hyperbutler process |
+| Guest address / DNS | hyperbutler must assign the IP; no DHCP and no DNS at the gateway | Not needed (the stack's virtual DHCP, or the relay) |
 | VPN routes | Worked with Tailscale; full-tunnel VPNs untested and a known WSL failure class | Worked; traffic is host-process traffic |
 | Split DNS | **Broken** without a host-side DNS forwarder (which would fix it) | Works in the relay; depends on the stack's DNS forwarder |
 | Throughput, internet | 294–321 Mbit/s (n=6) | 241–296 Mbit/s (n=3) |
 | Throughput, local | 5.5–9.6 Gbit/s over the vNIC (n=8) | 5.3–10.2 Gbit/s raw hvsock (n=6); a real netstack will cost more and is unmeasured |
-| Host memory | In HNS and vmwp, outside winbox | The stack's buffers count against winbox's REQ-MEM-001 budget; unmeasured |
+| Host memory | In HNS and vmwp, outside hyperbutler | The stack's buffers count against hyperbutler's REQ-MEM-001 budget; unmeasured |
 | Host services | Guest traffic crosses the vNIC, so inbound firewall rules apply | A host process dials for the guest, so it bypasses inbound firewall rules for the host's own addresses unless the stack refuses them (the relay does) |
 | Inbound / LAN (REQ-NET-003) | Natural (NAT port mappings or the vNIC IP) | Host-side listeners forward over hvsock, the same machinery REQ-NET-001 needs |
 | Coexistence (REQ-PLAT-004) | Shares HNS and WinNAT with WSL, Docker Desktop and Windows Sandbox; prefix collisions are possible; not tested here | Shares nothing but the hypervisor |
@@ -325,7 +325,7 @@ docker -H npipe:////./pipe/docker_engine_winbox run --rm alpine wget -qO- https:
 
 ## Open items
 
-- The gVisor stack now runs in winbox-dev; see "The user-mode stack" above. It misses the
+- The gVisor stack now runs in hyperbutler-dev; see "The user-mode stack" above. It misses the
   50% gate under the 256 KiB buffer bound (medians 36–38% of raw hvsock), and the LAN registry
   comparison against HNS NAT has not been run.
 - Whether a non-member of Hyper-V Administrators can call HCN.
@@ -349,8 +349,8 @@ docker -H npipe:////./pipe/docker_engine_winbox run --rm alpine wget -qO- https:
 ## Reproducing
 
 ```
-go build -o %TEMP%\hb-dev\winbox-spike\net\net-spike.exe ./spike/net
-set GOOS=linux& set CGO_ENABLED=0& go build -o %TEMP%\hb-dev\winbox-spike\net\guestprobe ./spike/net/guestprobe
+go build -o %TEMP%\hb-dev\hyperbutler-spike\net\net-spike.exe ./spike/net
+set GOOS=linux& set CGO_ENABLED=0& go build -o %TEMP%\hb-dev\hyperbutler-spike\net\guestprobe ./spike/net/guestprobe
 net-spike list                     # read-only
 net-spike baseline                 # host probe; saves the TLS roots the guest needs
 net-spike hns [-ip dhcp] [-type ICS] [-bulk 5201] [-reach host:port,...] [-dnstry ip]
@@ -362,4 +362,4 @@ net-spike cleanup                  # deletes only IDs this tool recorded
 to create the object. A crash at any point therefore leaves nothing that `cleanup` does not
 know about. It deletes the objects at exit or on Ctrl+C, then lists HNS again to verify.
 Objects are also created non-persistent, so a reboot removes any leftovers. Deletion refuses any object whose name lacks
-the `winbox-` prefix.
+the `hyperbutler-` prefix.

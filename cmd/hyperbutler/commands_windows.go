@@ -19,18 +19,18 @@ import (
 
 	"golang.org/x/sys/windows"
 
-	"github.com/Higangssh/winbox/guest/image"
-	"github.com/Higangssh/winbox/internal/diag"
-	"github.com/Higangssh/winbox/internal/engine"
-	"github.com/Higangssh/winbox/internal/engine/dockerctx"
-	"github.com/Higangssh/winbox/internal/transport"
-	"github.com/Higangssh/winbox/internal/vm"
+	"github.com/Higangssh/hyperbutler/guest/image"
+	"github.com/Higangssh/hyperbutler/internal/diag"
+	"github.com/Higangssh/hyperbutler/internal/engine"
+	"github.com/Higangssh/hyperbutler/internal/engine/dockerctx"
+	"github.com/Higangssh/hyperbutler/internal/transport"
+	"github.com/Higangssh/hyperbutler/internal/vm"
 )
 
 const (
-	contextName = "winbox"
+	contextName = "hyperbutler"
 	kernelName  = "vmlinuz-virt"
-	initrdName  = "initramfs-winbox.gz"
+	initrdName  = "initramfs-hyperbutler.gz"
 
 	defaultDiskSize = 64 << 30
 	defaultMemoryMB = 4096
@@ -39,7 +39,7 @@ const (
 	engineLogMax = 4 << 20
 )
 
-// install is one winbox installation: its layout and settings (nil before the first
+// install is one hyperbutler installation: its layout and settings (nil before the first
 // start).
 type install struct {
 	l        engine.Layout
@@ -80,7 +80,7 @@ func (in *install) opsLock() (*engine.FileLock, error) {
 	}
 	l, err := engine.Lock(in.l.OpsLockPath(), 60*time.Second)
 	if errors.Is(err, engine.ErrLocked) {
-		return nil, errors.New("another winbox start, stop or delete is still running")
+		return nil, errors.New("another hyperbutler start, stop or delete is still running")
 	}
 	return l, err
 }
@@ -103,7 +103,7 @@ func (in *install) liveState() (*engine.State, *engine.Process, error) {
 			err = fmt.Errorf("state.json says %s", st.Phase)
 		}
 		if time.Now().After(deadline) {
-			return nil, nil, fmt.Errorf("winbox is running but its engine process cannot be identified: %w", err)
+			return nil, nil, fmt.Errorf("hyperbutler is running but its engine process cannot be identified: %w", err)
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
@@ -114,17 +114,17 @@ func (in *install) liveState() (*engine.State, *engine.Process, error) {
 func cmdStart(args []string, stdout, stderr io.Writer) error {
 	fs := newFlagSet("start", stderr)
 	dataDir := fs.String("data", "", "where the data disk lives; chosen on the first start (default: the state directory)")
-	imageDir := fs.String("image-dir", "", "directory with "+kernelName+" and "+initrdName+" (default: next to winbox.exe)")
+	imageDir := fs.String("image-dir", "", "directory with "+kernelName+" and "+initrdName+" (default: next to hyperbutler.exe)")
 	memory := fs.String("memory", "", "guest memory, such as 4GiB or 4096 (MiB); kept for later starts")
 	cpus := fs.Int("cpus", 0, "virtual CPUs; kept for later starts")
 	var diskSize sizeFlag
 	fs.Var(&diskSize, "disk-size", "data disk size, such as 64GiB; first start only (the disk is sparse)")
 	timeout := fs.Duration("timeout", 2*time.Minute, "how long to wait for the Docker API")
-	noContext := fs.Bool("no-context", false, `do not create or select the "winbox" docker context`)
-	pipe := fs.String("pipe", "", `Docker API pipe (default \\.\pipe\docker_engine_winbox); kept for later starts`)
+	noContext := fs.Bool("no-context", false, `do not create or select the "hyperbutler" docker context`)
+	pipe := fs.String("pipe", "", `Docker API pipe (default \\.\pipe\docker_engine_hyperbutler); kept for later starts`)
 	var dcfg diag.Config
 	fs.StringVar(&dcfg.MemoryLimit, "memlimit", "", "Go soft memory limit of the engine process, GOMEMLIMIT syntax (off by default)")
-	fs.StringVar(&dcfg.DebugPipe, "debug-pipe", "", `serve the engine's pprof and runtime stats on this pipe, current user only (off by default), e.g. \\.\pipe\winbox-engine-debug`)
+	fs.StringVar(&dcfg.DebugPipe, "debug-pipe", "", `serve the engine's pprof and runtime stats on this pipe, current user only (off by default), e.g. \\.\pipe\hyperbutler-engine-debug`)
 	if err := parseArgs(fs, args); err != nil {
 		return err
 	}
@@ -163,7 +163,7 @@ func cmdStart(args []string, stdout, stderr io.Writer) error {
 			return err
 		}
 		p.Close()
-		fmt.Fprintf(stdout, "winbox is already running (engine pid %d, %s).\n", st.PID, st.Phase)
+		fmt.Fprintf(stdout, "hyperbutler is already running (engine pid %d, %s).\n", st.PID, st.Phase)
 		if !*noContext {
 			selectContext(st.Pipe, stdout, stderr)
 		}
@@ -187,7 +187,7 @@ func cmdStart(args []string, stdout, stderr io.Writer) error {
 	if err != nil {
 		return in.explainFailure(err, st, stderr)
 	}
-	fmt.Fprintf(stdout, "winbox is running: the Docker API answered after %.1f s (engine pid %d).\n", time.Since(t0).Seconds(), st.PID)
+	fmt.Fprintf(stdout, "hyperbutler is running: the Docker API answered after %.1f s (engine pid %d).\n", time.Since(t0).Seconds(), st.PID)
 	if !*noContext {
 		selectContext(st.Pipe, stdout, stderr)
 	}
@@ -195,7 +195,7 @@ func cmdStart(args []string, stdout, stderr io.Writer) error {
 }
 
 // applySettings creates settings.json on the first start and applies changes to later
-// ones. The data location is fixed once chosen (moving it is REQ-DISK-007's `winbox
+// ones. The data location is fixed once chosen (moving it is REQ-DISK-007's `hyperbutler
 // move`, not implemented yet).
 func (in *install) applySettings(dataDir, memory string, cpus int, diskSize sizeFlag, pipe string) error {
 	s := in.settings
@@ -215,7 +215,7 @@ func (in *install) applySettings(dataDir, memory string, cpus int, diskSize size
 		case first:
 			s.DataDir = abs
 		case !engine.SamePath(abs, s.DataDir):
-			return fmt.Errorf("the data location is already %s; moving it (winbox move) is not supported yet. `winbox delete` and a new start choose again", s.DataDir)
+			return fmt.Errorf("the data location is already %s; moving it (hyperbutler move) is not supported yet. `hyperbutler delete` and a new start choose again", s.DataDir)
 		}
 	}
 	if diskSize.set {
@@ -299,7 +299,7 @@ func (in *install) noteCrash(stderr io.Writer) {
 	if err != nil || !st.Phase.Live() {
 		return
 	}
-	fmt.Fprintf(stderr, "winbox: the previous engine (pid %d) exited without shutting down; see `winbox logs`.\n", st.PID)
+	fmt.Fprintf(stderr, "hyperbutler: the previous engine (pid %d) exited without shutting down; see `hyperbutler logs`.\n", st.PID)
 	if lk, err := engine.TryLock(in.l.LockPath()); err == nil {
 		engine.CleanupOrphans(engine.HCSBackend{}, in.l.VMPrefix(), slog.New(slog.NewTextHandler(stderr, &slog.HandlerOptions{Level: slog.LevelWarn})))
 		// The dead engine could not revoke its VM account's access to the disk.
@@ -312,7 +312,7 @@ func (in *install) noteCrash(stderr io.Writer) {
 	}
 }
 
-// spawnEngine starts `winbox engine` as a detached background process whose output
+// spawnEngine starts `hyperbutler engine` as a detached background process whose output
 // goes to engine.log. It breaks away from the caller's job object where allowed, so
 // closing the terminal (or a CI step) does not take the engine with it.
 func spawnEngine(in *install, kernel, initrd, manifest string, dcfg diag.Config) (*exec.Cmd, error) {
@@ -398,7 +398,7 @@ func (in *install) waitReady(proc *os.Process, created int64, exited <-chan erro
 				}
 				last = st
 			}
-			return last, fmt.Errorf("the engine exited before it was ready (%v); see `winbox logs`", err)
+			return last, fmt.Errorf("the engine exited before it was ready (%v); see `hyperbutler logs`", err)
 		case <-time.After(100 * time.Millisecond):
 		}
 		if time.Now().After(deadline) {
@@ -416,7 +416,7 @@ func (in *install) waitReady(proc *os.Process, created int64, exited <-chan erro
 			if !stopped { // it never published a state: kill it through our own handle
 				_ = proc.Kill()
 			}
-			return last, fmt.Errorf("the Docker API did not answer within %v; the engine was stopped. See `winbox logs` and `winbox logs --console`", timeout)
+			return last, fmt.Errorf("the Docker API did not answer within %v; the engine was stopped. See `hyperbutler logs` and `hyperbutler logs --console`", timeout)
 		}
 	}
 }
@@ -437,7 +437,7 @@ func engineError(st *engine.State) error {
 
 // explainFailure prints err and, for known causes, what to do about it.
 func (in *install) explainFailure(err error, st *engine.State, stderr io.Writer) error {
-	fmt.Fprintln(stderr, "winbox: start failed:", err)
+	fmt.Fprintln(stderr, "hyperbutler: start failed:", err)
 	var ee *engineErr
 	if errors.As(err, &ee) {
 		if d := engine.Describe(ee.code); d != "" {
@@ -447,7 +447,7 @@ func (in *install) explainFailure(err error, st *engine.State, stderr io.Writer)
 		if ee.code == engine.CodeHCSAccessDenied {
 			fmt.Fprintln(stderr)
 			if member, merr := inHyperVAdmins(); merr == nil && member {
-				fmt.Fprintln(stderr, "Your sign-in token IS a member of Hyper-V Administrators, so the denial has another cause; see `winbox logs`.")
+				fmt.Fprintln(stderr, "Your sign-in token IS a member of Hyper-V Administrators, so the denial has another cause; see `hyperbutler logs`.")
 			} else if merr == nil {
 				fmt.Fprintln(stderr, "Your current sign-in token is NOT a member of Hyper-V Administrators.")
 			}
@@ -467,32 +467,32 @@ func inHyperVAdmins() (bool, error) {
 	return windows.Token(0).IsMember(sid)
 }
 
-// selectContext creates (or refreshes) and selects the "winbox" docker context. A
-// context of that name that winbox did not create is left alone.
+// selectContext creates (or refreshes) and selects the "hyperbutler" docker context. A
+// context of that name that hyperbutler did not create is left alone.
 func selectContext(pipe string, stdout, stderr io.Writer) {
 	store, err := dockerctx.DefaultStore()
 	if err != nil {
-		fmt.Fprintln(stderr, "winbox: docker context:", err)
+		fmt.Fprintln(stderr, "hyperbutler: docker context:", err)
 		return
 	}
 	host := npipeHost(pipe)
-	if err := store.Ensure(contextName, host, "winbox (managed by winbox.exe)"); err != nil {
+	if err := store.Ensure(contextName, host, "hyperbutler (managed by hyperbutler.exe)"); err != nil {
 		if errors.Is(err, dockerctx.ErrNotOurs) {
-			fmt.Fprintf(stderr, "winbox: a docker context named %q already exists and was not created by winbox; it was left alone.\n"+
-				"        Use DOCKER_HOST=%s, or remove that context (docker context rm %s) and run winbox start again.\n", contextName, host, contextName)
+			fmt.Fprintf(stderr, "hyperbutler: a docker context named %q already exists and was not created by hyperbutler; it was left alone.\n"+
+				"        Use DOCKER_HOST=%s, or remove that context (docker context rm %s) and run hyperbutler start again.\n", contextName, host, contextName)
 			return
 		}
-		fmt.Fprintln(stderr, "winbox: docker context:", err)
+		fmt.Fprintln(stderr, "hyperbutler: docker context:", err)
 		return
 	}
 	prev, err := store.Current()
 	if err != nil {
-		fmt.Fprintf(stderr, "winbox: docker context %q is registered but not selected: %v\n", contextName, err)
+		fmt.Fprintf(stderr, "hyperbutler: docker context %q is registered but not selected: %v\n", contextName, err)
 		return
 	}
 	if prev != contextName {
 		if err := store.Use(contextName); err != nil {
-			fmt.Fprintf(stderr, "winbox: docker context %q is registered but not selected: %v\n", contextName, err)
+			fmt.Fprintf(stderr, "hyperbutler: docker context %q is registered but not selected: %v\n", contextName, err)
 			return
 		}
 		was := prev
@@ -504,9 +504,9 @@ func selectContext(pipe string, stdout, stderr io.Writer) {
 		fmt.Fprintf(stdout, "Docker context %q is selected.\n", contextName)
 	}
 	if h := os.Getenv("DOCKER_HOST"); h != "" {
-		fmt.Fprintf(stderr, "winbox: note: DOCKER_HOST=%s overrides the docker context in this shell.\n", h)
+		fmt.Fprintf(stderr, "hyperbutler: note: DOCKER_HOST=%s overrides the docker context in this shell.\n", h)
 	} else if c := os.Getenv("DOCKER_CONTEXT"); c != "" && c != contextName {
-		fmt.Fprintf(stderr, "winbox: note: DOCKER_CONTEXT=%s overrides the selected context in this shell.\n", c)
+		fmt.Fprintf(stderr, "hyperbutler: note: DOCKER_CONTEXT=%s overrides the selected context in this shell.\n", c)
 	}
 }
 
@@ -534,7 +534,7 @@ func cmdStop(args []string, stdout, stderr io.Writer) error {
 	}
 	forced, took, err := in.stop(*timeout, stderr)
 	if errors.Is(err, errNotRunning) {
-		fmt.Fprintln(stdout, "winbox is not running.")
+		fmt.Fprintln(stdout, "hyperbutler is not running.")
 		return nil
 	}
 	if err != nil {
@@ -544,7 +544,7 @@ func cmdStop(args []string, stdout, stderr io.Writer) error {
 	if forced {
 		how = "killed after the orderly shutdown timed out"
 	}
-	fmt.Fprintf(stdout, "winbox stopped: %s in %.1f s.\n", how, took.Seconds())
+	fmt.Fprintf(stdout, "hyperbutler stopped: %s in %.1f s.\n", how, took.Seconds())
 	return nil
 }
 
@@ -569,7 +569,7 @@ func (in *install) stop(timeout time.Duration, stderr io.Writer) (forced bool, t
 	}
 	defer p.Close()
 	if err := engine.RequestStop(st.PID, st.PIDCreated); err != nil {
-		fmt.Fprintln(stderr, "winbox: could not ask the engine to stop; killing it:", err)
+		fmt.Fprintln(stderr, "hyperbutler: could not ask the engine to stop; killing it:", err)
 		forced = true
 	} else if ok, _ := p.Wait(timeout); !ok {
 		forced = true
@@ -589,11 +589,11 @@ func (in *install) stop(timeout time.Duration, stderr io.Writer) (forced bool, t
 	}
 	defer func() { _ = lk.Unlock() }()
 	if n := engine.CleanupOrphans(engine.HCSBackend{}, in.l.VMPrefix(), slog.New(slog.NewTextHandler(stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))); n > 0 {
-		fmt.Fprintf(stderr, "winbox: terminated %d VM(s) the engine left behind.\n", n)
+		fmt.Fprintf(stderr, "hyperbutler: terminated %d VM(s) the engine left behind.\n", n)
 	}
 	if forced {
 		if st, err := engine.LoadState(in.l); err == nil && st.Phase.Live() {
-			st.Phase, st.Error = engine.PhaseFailed, "killed by winbox stop after the orderly shutdown timed out"
+			st.Phase, st.Error = engine.PhaseFailed, "killed by hyperbutler stop after the orderly shutdown timed out"
 			_ = engine.SaveState(in.l, st)
 		}
 	}
@@ -665,7 +665,7 @@ func cmdStatus(args []string, stdout, stderr io.Writer) (int, error) {
 	st := r.State
 	switch {
 	case r.Running && st != nil && st.Phase.Live():
-		fmt.Fprintf(stdout, "winbox: %s (engine pid %d, up %s", st.Phase, st.PID, time.Since(st.Started).Round(time.Second))
+		fmt.Fprintf(stdout, "hyperbutler: %s (engine pid %d, up %s", st.Phase, st.PID, time.Since(st.Started).Round(time.Second))
 		if st.ReadyMillis > 0 {
 			fmt.Fprintf(stdout, ", Docker API ready after %.1f s", float64(st.ReadyMillis)/1000)
 		}
@@ -673,16 +673,16 @@ func cmdStatus(args []string, stdout, stderr io.Writer) (int, error) {
 		fmt.Fprintf(stdout, "  docker:  %s\n", npipeHost(st.Pipe))
 		fmt.Fprintf(stdout, "  vm:      %s\n", st.VMID)
 	case r.Running:
-		fmt.Fprintln(stdout, "winbox: starting")
+		fmt.Fprintln(stdout, "hyperbutler: starting")
 	case st != nil && st.Phase.Live():
-		fmt.Fprintf(stdout, "winbox: stopped (the engine, pid %d, exited without shutting down; see `winbox logs`)\n", st.PID)
+		fmt.Fprintf(stdout, "hyperbutler: stopped (the engine, pid %d, exited without shutting down; see `hyperbutler logs`)\n", st.PID)
 	case st != nil && st.Phase == engine.PhaseFailed:
-		fmt.Fprintf(stdout, "winbox: stopped (last run failed: %s)\n", string(printable([]byte(st.Error))))
+		fmt.Fprintf(stdout, "hyperbutler: stopped (last run failed: %s)\n", string(printable([]byte(st.Error))))
 	case in.settings == nil:
-		fmt.Fprintln(stdout, "winbox: not set up yet (run winbox start)")
+		fmt.Fprintln(stdout, "hyperbutler: not set up yet (run hyperbutler start)")
 		return code, nil
 	default:
-		fmt.Fprintln(stdout, "winbox: stopped")
+		fmt.Fprintln(stdout, "hyperbutler: stopped")
 	}
 	if in.settings != nil {
 		fmt.Fprintf(stdout, "  guest:   %d MiB, %d CPUs\n", r.MemoryMB, r.CPUs)
@@ -812,10 +812,10 @@ func cmdDelete(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 		if u, err := vm.Usage(disk); err == nil {
 			size = engine.HumanSize(u.Allocated) + " on the host"
 		}
-		fmt.Fprintf(stdout, "This deletes winbox's VM state and its data disk:\n  %s (%s)\n"+
+		fmt.Fprintf(stdout, "This deletes hyperbutler's VM state and its data disk:\n  %s (%s)\n"+
 			"All images, containers and volumes in it are lost.", disk, size)
 		if up {
-			fmt.Fprint(stdout, " winbox is running and will be stopped first.")
+			fmt.Fprint(stdout, " hyperbutler is running and will be stopped first.")
 		}
 		fmt.Fprint(stdout, "\nType \"yes\" to continue: ")
 		if !isConsole(stdin) {
@@ -840,7 +840,7 @@ func cmdDelete(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	}
 	defer func() { _ = lk.Unlock() }()
 
-	// Only files winbox created, by name: never a recursive delete of a directory the
+	// Only files hyperbutler created, by name: never a recursive delete of a directory the
 	// user chose.
 	var failed []string
 	remove := func(p string) {
@@ -874,7 +874,7 @@ func cmdDelete(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	if len(failed) > 0 {
 		return fmt.Errorf("delete: could not remove:\n  %s", strings.Join(failed, "\n  "))
 	}
-	fmt.Fprintln(stdout, "winbox deleted. `winbox start` sets it up again.")
+	fmt.Fprintln(stdout, "hyperbutler deleted. `hyperbutler start` sets it up again.")
 	return nil
 }
 
@@ -917,7 +917,7 @@ func cmdEngine(args []string, stderr io.Writer) (int, error) {
 	}
 	legacy := *kernel != "" || *initrd != ""
 	if *home == "" || (*manifest != "") == legacy || legacy && (*kernel == "" || *initrd == "") {
-		return 2, errors.New("engine: --home and either --image or --kernel and --initrd are required (it is started by winbox start)")
+		return 2, errors.New("engine: --home and either --image or --kernel and --initrd are required (it is started by hyperbutler start)")
 	}
 	level := slog.LevelInfo
 	if *debugLog {

@@ -115,7 +115,7 @@ func (p *Process) Close() {
 
 // stopEventName is the named event the CLI sets to ask the engine with this PID to stop.
 func stopEventName(pid int, created int64) string {
-	return fmt.Sprintf(`Local\winbox-engine-stop-%d-%x`, pid, created)
+	return fmt.Sprintf(`Local\hyperbutler-engine-stop-%d-%x`, pid, created)
 }
 
 // StopEvent is the engine's end of the stop request.

@@ -23,7 +23,7 @@ on:
       outputs:
         description: Space-separated file names the build script must produce
         type: string
-        default: vmlinuz-virt initramfs-winbox.gz
+        default: vmlinuz-virt initramfs-hyperbutler.gz
       strict:
         description: Accept only signed Alpine packages (inputs whose source can be bundled)
         type: boolean
@@ -61,11 +61,11 @@ jobs:
       # multi-arch index of alpine:3.24.3 on Docker Hub; /etc/apk/keys in this image
       # is the trust root for `apk verify`.
       ALPINE_IMAGE: alpine:3.24.3@sha256:be2656061b536c1883c4034790e21d0a09c5aaaf51968b89368a3c0371ea2c9a
-      WINBOX_BUILD_SCRIPT: ${{ inputs.build-script }}
-      WINBOX_LOCK: ${{ inputs.lock }}
-      WINBOX_OUTPUTS: ${{ inputs.outputs }}
-      WINBOX_STRICT: ${{ inputs.strict && '1' || '0' }}
-      WINBOX_WITH_SOURCES: ${{ inputs.with-sources && '1' || '0' }}
+      HYPERBUTLER_BUILD_SCRIPT: ${{ inputs.build-script }}
+      HYPERBUTLER_LOCK: ${{ inputs.lock }}
+      HYPERBUTLER_OUTPUTS: ${{ inputs.outputs }}
+      HYPERBUTLER_STRICT: ${{ inputs.strict && '1' || '0' }}
+      HYPERBUTLER_WITH_SOURCES: ${{ inputs.with-sources && '1' || '0' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -88,9 +88,9 @@ jobs:
             -v "$GITHUB_WORKSPACE:/src:ro" \
             -v "$(go env GOROOT):/usr/local/go:ro" \
             -v "$out:/out" \
-            -e WINBOX_BUILD_SCRIPT -e WINBOX_LOCK -e WINBOX_OUTPUTS \
-            -e WINBOX_STRICT -e WINBOX_WITH_SOURCES \
-            -e WINBOX_IMAGE="$ALPINE_IMAGE" -e WINBOX_HOST_UID="$(id -u)" \
+            -e HYPERBUTLER_BUILD_SCRIPT -e HYPERBUTLER_LOCK -e HYPERBUTLER_OUTPUTS \
+            -e HYPERBUTLER_STRICT -e HYPERBUTLER_WITH_SOURCES \
+            -e HYPERBUTLER_IMAGE="$ALPINE_IMAGE" -e HYPERBUTLER_HOST_UID="$(id -u)" \
             "$ALPINE_IMAGE" /bin/sh /src/scripts/guest-image/ci-entry.sh
 
       - name: Check and summarize
@@ -105,7 +105,7 @@ jobs:
             echo
             echo '| File | Bytes | SHA-256 |'
             echo '|---|---:|---|'
-            for f in $WINBOX_OUTPUTS guest-sources.tar; do
+            for f in $HYPERBUTLER_OUTPUTS guest-sources.tar; do
               [ -f "$f" ] || continue
               echo "| \`$f\` | $(stat -c %s "$f") | \`$(sha256sum "$f" | cut -d' ' -f1)\` |"
             done

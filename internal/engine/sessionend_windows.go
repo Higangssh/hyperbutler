@@ -90,7 +90,7 @@ var (
 	wndProcCallback = syscall.NewCallback(sessionWndProc)
 	classOnce       sync.Once
 	classErr        error
-	className       = windows.StringToUTF16Ptr("winbox-engine-session")
+	className       = windows.StringToUTF16Ptr("hyperbutler-engine-session")
 )
 
 func sessionWndProc(hwnd windows.HWND, m uint32, wp, lp uintptr) uintptr {
@@ -99,7 +99,7 @@ func sessionWndProc(hwnd windows.HWND, m uint32, wp, lp uintptr) uintptr {
 	watchMu.Unlock()
 	switch {
 	case w != nil && m == wmQueryEndSession:
-		reason, _ := windows.UTF16PtrFromString("Stopping the winbox VM")
+		reason, _ := windows.UTF16PtrFromString("Stopping the hyperbutler VM")
 		procShutdownBlockReasonCreate.Call(uintptr(hwnd), uintptr(unsafe.Pointer(reason)))
 		w.stop()
 		return 1 // allow the session to end; WM_ENDSESSION waits for the stop

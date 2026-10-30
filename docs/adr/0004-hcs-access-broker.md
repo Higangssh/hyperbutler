@@ -9,10 +9,10 @@
 
 [ADR 0002](0002-primary-vm-backend.md) showed that HCS boots a Linux VM on Windows 11 Home in
 under a second, but only for callers that are elevated or in the **Hyper-V Administrators**
-group (`S-1-5-32-578`). A normal, non-elevated winbox process gets `HCS_E_ACCESS_DENIED`
+group (`S-1-5-32-578`). A normal, non-elevated hyperbutler process gets `HCS_E_ACCESS_DENIED`
 (`0x8037011B`).
 
-winbox must run day to day without elevation. Enabling Virtual Machine Platform already needs
+hyperbutler must run day to day without elevation. Enabling Virtual Machine Platform already needs
 admin once, so one more admin step at that same moment costs the user little. Every admin step
 after that is what REQ-PLAT-003 forbids.
 
@@ -20,18 +20,18 @@ after that is what REQ-PLAT-003 forbids.
 
 ### A. Add the user to Hyper-V Administrators
 
-The installer adds the user to the group once. After that, winbox calls HCS directly from the
+The installer adds the user to the group once. After that, hyperbutler calls HCS directly from the
 user's process.
 
 - This is the simplest option: no service and no extra protocol.
 - Microsoft documents the group as having complete, unrestricted access to all Hyper-V
   features. Its members control VM configuration, which includes which host files a VM may
-  open. Every program the user runs inherits that power, not just winbox.
+  open. Every program the user runs inherits that power, not just hyperbutler.
 - Group membership tends to outlive the tool that asked for it.
 
 ### B. A SYSTEM broker service with a narrow API
 
-A small Windows service is the only winbox component that calls HCS. The user's winbox process
+A small Windows service is the only hyperbutler component that calls HCS. The user's hyperbutler process
 talks to it over a local, per-user-authorised channel. The broker accepts only high-level
 requests, not raw HCS documents.
 
@@ -45,7 +45,7 @@ requests, not raw HCS documents.
 
 ### C. Like B, but the service runs as a dedicated virtual account
 
-The broker runs as a virtual service account (`NT SERVICE\winbox-broker`) that is a member of
+The broker runs as a virtual service account (`NT SERVICE\hyperbutler-broker`) that is a member of
 Hyper-V Administrators, instead of as SYSTEM. A broker bug then yields Hyper-V Administrators
 rights rather than SYSTEM. That is still serious, but smaller and easier to audit.
 
@@ -54,7 +54,7 @@ rights rather than SYSTEM. That is still serious, but smaller and easier to audi
 
 ### D. Elevate once per boot and keep the VM alive
 
-A UAC prompt appears on the first `winbox start` after each reboot, and a long-lived elevated
+A UAC prompt appears on the first `hyperbutler start` after each reboot, and a long-lived elevated
 helper then holds the VM.
 
 - Rejected. It means a recurring UAC prompt, which is the friction this project exists to
@@ -97,7 +97,7 @@ SYSTEM otherwise.** It follows these design rules.
    - The broker never opens or connects to any pipe or file name it did not create itself.
      That includes VM serial console pipes: these are disabled in release builds, or created
      by the broker with an owner-only ACL.
-   - If the name is already taken, the broker fails loudly and `winbox doctor` reports it
+   - If the name is already taken, the broker fails loudly and `hyperbutler doctor` reports it
      (REQ-UX-003). It does not silently fall back.
 6. **Cross-user isolation on hvsock.**
    - Each VM's HvSocket service table sets a connect security descriptor that allows only the
@@ -120,7 +120,7 @@ SYSTEM otherwise.** It follows these design rules.
    - Each VM is tagged with its owner's SID and created with `ShouldTerminateOnLastHandleClosed`,
      so a broker crash cannot leave a VM running unseen.
    - VMs stop on the owner's logoff, and after a configurable idle time.
-   - On start, the broker lists compute systems that carry the winbox owner tag and
+   - On start, the broker lists compute systems that carry the hyperbutler owner tag and
      terminates any it does not track. That releases orphaned `vmmem` memory (REQ-MEM-001).
 10. **Surface budget instead of a line count.**
     - No network listeners.
@@ -132,7 +132,7 @@ SYSTEM otherwise.** It follows these design rules.
 ### Upgrades (REQ-PLAT-003)
 
 The broker is versioned separately from the CLI, and it is kept deliberately small and stable.
-- **CLI-only releases:** most releases change only `winbox.exe` and the guest images, and these
+- **CLI-only releases:** most releases change only `hyperbutler.exe` and the guest images, and these
   install, upgrade and uninstall as a standard user.
 - **Broker releases:** a release that changes the broker needs admin once. The CLI detects the
   version gap and explains it.
@@ -154,14 +154,14 @@ the service needs admin. Uninstalling the CLI and its data does not.
 
 - Install needs admin once, at the same moment as feature setup. Daily use needs no
   elevation. REQ-PLAT-003 is amended as described in Upgrades.
-- winbox now has a privileged component, and its bugs are local privilege escalation bugs.
+- hyperbutler now has a privileged component, and its bugs are local privilege escalation bugs.
   The surface budget and review rule exist because of that.
 - REQ-UX-002 allows three resident processes. The broker service counts as the "optional
   helper", so no other resident helper may be added.
 - Whether a no-service, no-admin path exists (for example through QEMU-WHPX) depends on
   ADR 0002. This ADR does not assume one.
 - Option A remains a developer mode. It is documented and used for spikes (ADR 0002), but it is
-  not a supported way for end users to run winbox.
+  not a supported way for end users to run hyperbutler.
 
 ## Open questions
 
@@ -193,7 +193,7 @@ The first review (2026-10-30) raised eight findings. All eight were accepted:
 
 The first implementation of the broker's protocol and request handling is in
 `internal/broker` (server, handle validation, named pipe) and `internal/broker/proto` (wire
-format). `cmd/winbox-broker` runs it in the foreground with an in-memory fake backend. It
+format). `cmd/hyperbutler-broker` runs it in the foreground with an in-memory fake backend. It
 never installs, registers or starts a service. There is no HCS backend yet.
 
 ### Wire format
@@ -303,7 +303,7 @@ never installs, registers or starts a service. There is no HCS backend yet.
    matches the rule as written. Rejected directories include ones owned by Administrators
    after elevated creation, ones that inherit BU or AU from a drive root, and directories
    on Dev Drive (ReFS). The CLI must create the data directory itself with the user as
-   owner and a protected DACL. `winbox doctor` must explain each rejection reason. Whether
+   owner and a protected DACL. `hyperbutler doctor` must explain each rejection reason. Whether
    to allow ReFS for Dev Drive is an open question.
 6. **Low. Untested branches.** Fixed:
    - the not-local-disk branch is tested through the NPFS root;

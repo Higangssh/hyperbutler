@@ -8,7 +8,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/Higangssh/winbox/internal/spaceguard"
+	"github.com/Higangssh/hyperbutler/internal/spaceguard"
 )
 
 // ClientConfig bounds what the host accepts from the guest. Zero values pick the

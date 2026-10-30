@@ -3,7 +3,7 @@
 package diag
 
 import (
-	"github.com/Higangssh/winbox/internal/transport"
+	"github.com/Higangssh/hyperbutler/internal/transport"
 )
 
 // Serve starts the debug endpoint on the local named pipe name. The pipe gets

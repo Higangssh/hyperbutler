@@ -3,7 +3,7 @@
 // through QEMU user networking without dockerd listening on TCP itself. (dockerd sleeps
 // for one second at start-up for every unauthenticated TCP listener.)
 //
-// It is cross-compiled on Windows with GOOS=linux CGO_ENABLED=0. Throwaway: winbox will
+// It is cross-compiled on Windows with GOOS=linux CGO_ENABLED=0. Throwaway: hyperbutler will
 // relay hvsock/vsock to the socket in the real guest agent.
 //
 //	sockfwd -listen 10.0.2.15:2375 -unix /run/docker.sock

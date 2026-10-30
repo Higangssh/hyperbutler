@@ -2,7 +2,7 @@
 
 package engine
 
-import "github.com/Higangssh/winbox/internal/vm"
+import "github.com/Higangssh/hyperbutler/internal/vm"
 
 // HCSBackend calls HCS (computecore.dll) directly from this process.
 type HCSBackend struct{}

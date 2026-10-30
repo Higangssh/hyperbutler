@@ -8,7 +8,7 @@ import (
 	"time"
 	"unsafe"
 
-	"github.com/Higangssh/winbox/internal/vm"
+	"github.com/Higangssh/hyperbutler/internal/vm"
 	"golang.org/x/sys/windows"
 )
 
@@ -17,9 +17,9 @@ import (
 // virtio-fs device for a Linux guest?" without guessing.
 func probeDevices(extra string) error {
 	cfg := &vm.Config{
-		Owner:          "winbox-share-probe",
+		Owner:          "hyperbutler-share-probe",
 		KernelPath:     filepath.Join(*imageDir, "vmlinuz-virt"),
-		InitrdPath:     filepath.Join(*imageDir, "initramfs-winbox.gz"),
+		InitrdPath:     filepath.Join(*imageDir, "initramfs-hyperbutler.gz"),
 		KernelCmdLine:  "console=ttyS0",
 		MemoryMB:       512,
 		ProcessorCount: 1,
@@ -39,7 +39,7 @@ func probeDevices(extra string) error {
 		devs[k] = v
 	}
 	doc, _ = json.Marshal(m)
-	id := fmt.Sprintf("winbox-share-probe-%d", time.Now().UnixNano()%1e9)
+	id := fmt.Sprintf("hyperbutler-share-probe-%d", time.Now().UnixNano()%1e9)
 	cc := windows.NewLazySystemDLL("computecore.dll")
 	create, start, term, closeSys := cc.NewProc("HcsCreateComputeSystem"), cc.NewProc("HcsStartComputeSystem"), cc.NewProc("HcsTerminateComputeSystem"), cc.NewProc("HcsCloseComputeSystem")
 	newOp, closeOp, wait := cc.NewProc("HcsCreateOperation"), cc.NewProc("HcsCloseOperation"), cc.NewProc("HcsWaitForOperationResult")

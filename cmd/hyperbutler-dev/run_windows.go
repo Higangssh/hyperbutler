@@ -13,16 +13,16 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/Higangssh/winbox/internal/diag"
-	"github.com/Higangssh/winbox/internal/engine"
-	"github.com/Higangssh/winbox/internal/transport"
+	"github.com/Higangssh/hyperbutler/internal/diag"
+	"github.com/Higangssh/hyperbutler/internal/engine"
+	"github.com/Higangssh/hyperbutler/internal/transport"
 )
 
 // runCmd is a thin wrapper over engine.Run: flags in, one VM run in the foreground.
 func runCmd(args []string) error {
 	fs := flag.NewFlagSet("run", flag.ContinueOnError)
 	kernel := fs.String("kernel", "", "guest kernel (vmlinuz-virt), required")
-	initrd := fs.String("initrd", "", "guest initramfs with the winbox agent, required")
+	initrd := fs.String("initrd", "", "guest initramfs with the hyperbutler agent, required")
 	cmdline := fs.String("cmdline", engine.DefaultCmdLine, "kernel command line")
 	memMB := fs.Int("mem", 1024, "guest memory in MB (512 is too small for dockerd)")
 	cpus := fs.Int("cpus", 2, "vCPUs")

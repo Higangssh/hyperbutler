@@ -22,8 +22,8 @@ func testDir(t testing.TB) string {
 func validState(dir string) *State {
 	return &State{
 		Version: stateVersion, Phase: PhaseRunning, PID: 1234, PIDCreated: 133000000000000000,
-		VMID: "winbox-65fd2a1a-c01f6278e7ec", RuntimeID: "6cf7ba4c-5e89-5915-bea5-3642d57a897b",
-		Pipe: `\\.\pipe\docker_engine_winbox`, DataDir: dir,
+		VMID: "hyperbutler-65fd2a1a-c01f6278e7ec", RuntimeID: "6cf7ba4c-5e89-5915-bea5-3642d57a897b",
+		Pipe: `\\.\pipe\docker_engine_hyperbutler`, DataDir: dir,
 		Started: time.Date(2026, 10, 30, 8, 0, 0, 0, time.UTC), ReadyMillis: 1700,
 	}
 }
@@ -56,7 +56,7 @@ func TestStateRejects(t *testing.T) {
 		"negative pid":  func(s *State) { s.PID = -1 },
 		"live no pid":   func(s *State) { s.PID = 0 },
 		"vm id":         func(s *State) { s.VMID = "other-vm" },
-		"vm id chars":   func(s *State) { s.VMID = "winbox-A;B" },
+		"vm id chars":   func(s *State) { s.VMID = "hyperbutler-A;B" },
 		"runtime id":    func(s *State) { s.RuntimeID = "{x}" },
 		"pipe":          func(s *State) { s.Pipe = `\\server\pipe\x` },
 		"error code":    func(s *State) { s.ErrorCode = "Bad Code" },
@@ -109,11 +109,11 @@ func TestSettings(t *testing.T) {
 	if err != nil || *got != *s {
 		t.Fatalf("got %+v, %v", got, err)
 	}
-	if got.PipeName() != `\\.\pipe\docker_engine_winbox` {
+	if got.PipeName() != `\\.\pipe\docker_engine_hyperbutler` {
 		t.Fatalf("default pipe %q", got.PipeName())
 	}
 	for name, mut := range map[string]func(*Settings){
-		"relative":   func(s *Settings) { s.DataDir = "winbox" },
+		"relative":   func(s *Settings) { s.DataDir = "hyperbutler" },
 		"disk small": func(s *Settings) { s.DiskSize = 1 << 30 },
 		"disk odd":   func(s *Settings) { s.DiskSize = 64<<30 + 1 },
 		"memory":     func(s *Settings) { s.MemoryMB = 512 },
@@ -184,22 +184,22 @@ func TestParseSize(t *testing.T) {
 }
 
 func TestLayout(t *testing.T) {
-	a := Layout{Home: `C:\Users\x\AppData\Local\winbox`}
-	b := Layout{Home: `c:\users\X\appdata\local\WINBOX\`}
+	a := Layout{Home: `C:\Users\x\AppData\Local\hyperbutler`}
+	b := Layout{Home: `c:\users\X\appdata\local\HYPERBUTLER\`}
 	if a.Tag() != b.Tag() || len(a.Tag()) != 8 {
 		t.Fatalf("tags %q %q", a.Tag(), b.Tag())
 	}
-	if !strings.HasPrefix(a.VMPrefix(), "winbox-") || !validToken(a.VMPrefix()+"0", maxVMIDLen, true) {
+	if !strings.HasPrefix(a.VMPrefix(), "hyperbutler-") || !validToken(a.VMPrefix()+"0", maxVMIDLen, true) {
 		t.Fatalf("prefix %q", a.VMPrefix())
 	}
 	t.Setenv(HomeEnv, "")
 	t.Setenv("LOCALAPPDATA", filepath.Join(testDir(t), "Local"))
 	h, err := DefaultHome()
-	if err != nil || filepath.Base(h) != "winbox" || filepath.Base(filepath.Dir(h)) != "Local" {
+	if err != nil || filepath.Base(h) != "hyperbutler" || filepath.Base(filepath.Dir(h)) != "Local" {
 		t.Fatalf("DefaultHome = %q, %v", h, err)
 	}
 	t.Setenv(HomeEnv, "rel")
 	if h, err := DefaultHome(); err != nil || !filepath.IsAbs(h) {
-		t.Fatalf("WINBOX_HOME relative: %q, %v", h, err)
+		t.Fatalf("HYPERBUTLER_HOME relative: %q, %v", h, err)
 	}
 }

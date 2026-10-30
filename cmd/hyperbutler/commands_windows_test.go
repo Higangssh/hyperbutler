@@ -9,8 +9,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/Higangssh/winbox/internal/engine"
-	"github.com/Higangssh/winbox/internal/engine/dockerctx"
+	"github.com/Higangssh/hyperbutler/internal/engine"
+	"github.com/Higangssh/hyperbutler/internal/engine/dockerctx"
 )
 
 // testHome points the CLI at an empty state directory and docker config.
@@ -41,7 +41,7 @@ func TestCLIUsage(t *testing.T) {
 	if code, _, e := runCLI(t, "frobnicate"); code != 2 || !strings.Contains(e, "unknown command") {
 		t.Fatalf("unknown command: %d %q", code, e)
 	}
-	if code, out, _ := runCLI(t, "version"); code != 0 || !strings.HasPrefix(out, "winbox ") {
+	if code, out, _ := runCLI(t, "version"); code != 0 || !strings.HasPrefix(out, "hyperbutler ") {
 		t.Fatalf("version: %d %q", code, out)
 	}
 	if code, _, _ := runCLI(t, "stop", "extra"); code != 1 {
@@ -93,10 +93,10 @@ func TestCLIDataLocationIsFixed(t *testing.T) {
 		t.Fatalf("same location refused: %q", e)
 	}
 	code, _, e := runCLI(t, "start", "--data", filepath.Join(home, "elsewhere"), "--image-dir", nope)
-	if code != 1 || !strings.Contains(e, "winbox move") {
+	if code != 1 || !strings.Contains(e, "hyperbutler move") {
 		t.Fatalf("moved data: %d %q", code, e)
 	}
-	if code, _, e := runCLI(t, "start", "--data", `\\server\share\winbox`, "--image-dir", nope); code != 1 || !strings.Contains(e, "already") && !strings.Contains(e, "local") {
+	if code, _, e := runCLI(t, "start", "--data", `\\server\share\hyperbutler`, "--image-dir", nope); code != 1 || !strings.Contains(e, "already") && !strings.Contains(e, "local") {
 		t.Fatalf("UNC data: %d %q", code, e)
 	}
 	// The disk size is fixed once the disk exists.
@@ -122,7 +122,7 @@ func TestCLIStatusAfterCrash(t *testing.T) {
 		t.Fatal(err)
 	}
 	// A state that says running, from an engine that is gone (nobody holds the lock).
-	st := &engine.State{Phase: engine.PhaseRunning, PID: 999999, PIDCreated: 1, Pipe: `\\.\pipe\docker_engine_winbox`, DataDir: home}
+	st := &engine.State{Phase: engine.PhaseRunning, PID: 999999, PIDCreated: 1, Pipe: `\\.\pipe\docker_engine_hyperbutler`, DataDir: home}
 	if err := engine.SaveState(l, st); err != nil {
 		t.Fatal(err)
 	}
@@ -162,7 +162,7 @@ func TestCLIDeleteRemovesOnlyItsFiles(t *testing.T) {
 		}
 	}
 	store := dockerctx.Store{Dir: dockerCfg}
-	if err := store.Ensure(contextName, "npipe:////./pipe/x", "winbox"); err != nil {
+	if err := store.Ensure(contextName, "npipe:////./pipe/x", "hyperbutler"); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.Use(contextName); err != nil {
@@ -197,17 +197,17 @@ func TestCLIDeleteRemovesOnlyItsFiles(t *testing.T) {
 func TestSelectContextLeavesForeign(t *testing.T) {
 	_, dockerCfg := testHome(t)
 	store := dockerctx.Store{Dir: dockerCfg}
-	meta := filepath.Join(dockerCfg, "contexts", "meta", "e357a9c858c4388f8e18f7a2a36e017445a29e5b26fb318d136c1116ece1e27a")
+	meta := filepath.Join(dockerCfg, "contexts", "meta", "1f11812811c947c3b0809ebbae1ed8305fe8633d6b1c0ddee6357f1f07e572fe")
 	if err := os.MkdirAll(meta, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	foreign := `{"Name":"winbox","Metadata":{},"Endpoints":{"docker":{"Host":"tcp://example:2376"}}}`
+	foreign := `{"Name":"hyperbutler","Metadata":{},"Endpoints":{"docker":{"Host":"tcp://example:2376"}}}`
 	if err := os.WriteFile(filepath.Join(meta, "meta.json"), []byte(foreign), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	var out, errb bytes.Buffer
-	selectContext(`\\.\pipe\docker_engine_winbox`, &out, &errb)
-	if !strings.Contains(errb.String(), "was not created by winbox") {
+	selectContext(`\\.\pipe\docker_engine_hyperbutler`, &out, &errb)
+	if !strings.Contains(errb.String(), "was not created by hyperbutler") {
 		t.Fatalf("no warning: %q", errb.String())
 	}
 	if cur, _ := store.Current(); cur != "" {

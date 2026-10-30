@@ -7,7 +7,7 @@
 - Code:
   - `internal/guestctl`: the protocol, the host `Client` and `Supervisor`, and the guest
     `Server`.
-  - `guest/cmd/winboxd`: the guest daemon.
+  - `guest/cmd/hyperbutlerd`: the guest daemon.
   - `guest/internal/fsguard`: the guard reservation and FITRIM. It was moved out of
     `guest/cmd/spaceguard`, which now uses it.
   - `guest/internal/policy`: the pure trim and cache policies and the `/proc` parsers.
@@ -67,7 +67,7 @@ after 5 s. At most one trim and one cache trim run at a time; a second request g
 `Error busy`. A newer host connection replaces the older one. Each connection carries a
 generation number, so events from a replaced connection are dropped (see the review, M1).
 
-## Guest policies (winboxd)
+## Guest policies (hyperbutlerd)
 
 1. **Guard (REQ-DISK-004).** This is the `internal/spaceguard` policy, unchanged.
    - It fails closed without a budget, and once its own ticks say the budget is 30 s
@@ -120,7 +120,7 @@ The ctl and guard runs below use the **final code** (after the review fixes).
 **Page cache (REQ-MEM-002):**
 - The guest writes 2 GiB, drops the cache once as setup, and reads everything twice.
 - **Before:** at ready, 260 MiB private; with 2 GiB cached, 2370 MiB.
-- winboxd reclaimed 2049 → 31 MiB in 20 ms, 16 s after the read: 10 s idle detection plus
+- hyperbutlerd reclaimed 2049 → 31 MiB in 20 ms, 16 s after the read: 10 s idle detection plus
   sampling.
 - vmmem private working set:
 
@@ -153,7 +153,7 @@ The ctl and guard runs below use the **final code** (after the review fixes).
 
 **Delete reclaim (REQ-DISK-001):** the same run then deletes the 2 GiB. There was no
 manual fstrim, and the guest only waits.
-- winboxd's delete trigger trimmed 6–10 s after the delete.
+- hyperbutlerd's delete trigger trimmed 6–10 s after the delete.
 - The VHDX went from 2056 MiB to 24 MiB, against 8 MiB before the write. It was measured
   10 s after the delete, in 5 s polls.
 - It was reclaimed within 10 s in all 6 ctl runs.
@@ -212,7 +212,7 @@ first rounds (`fuzz-engineer`: 26.5M, 27.3M, 2.67M and 0.77M execs) or in the re
 | L2 | A grow within `TrimEvery` of a trim may reserve still-backed blocks. | **Fixed:** a grow by more than the hysteresis band trims unconditionally. |
 | L3 | A guest reporting `Short != 0` got a log line per status. | **Fixed:** status logging is rate-limited regardless of content. |
 | L4 | An idle working set above keep + threshold is reclaimed every 30 s and re-faulted on wake. | **Rejected:** reclaiming it is the point of REQ-MEM-002. It happens only after 10 s of idle, and the cost was measured (a cold re-read). Keep and threshold are flags. |
-| Gaps | No ADR; no tests for winboxd; the measurements are a spike harness rather than an `integration` test. | The **decisions are recorded here** for the orchestrator to promote to an ADR with the production design. **winboxd's event logic is now unit-tested** (`mailbox_test.go`). The task allowed the harness in `spike/vhdx`, and it records the edition (this file). |
+| Gaps | No ADR; no tests for hyperbutlerd; the measurements are a spike harness rather than an `integration` test. | The **decisions are recorded here** for the orchestrator to promote to an ADR with the production design. **hyperbutlerd's event logic is now unit-tested** (`mailbox_test.go`). The task allowed the harness in `spike/vhdx`, and it records the edition (this file). |
 
 **Host trust of guest numbers.** No guest-reported value feeds the budget or the floor
 pause:
@@ -230,11 +230,11 @@ guest.
 
 ## Integration steps for the orchestrator
 
-These are not applied here: `guest/prototype` and `cmd/winbox-dev` belong to another
+These are not applied here: `guest/prototype` and `cmd/hyperbutler-dev` belong to another
 session.
 
-1. **Build:** add `winboxd` to the guest image build next to `agent`
-   (`GOOS=linux CGO_ENABLED=0 go build ./guest/cmd/winboxd`) and install it to `/usr/bin`.
+1. **Build:** add `hyperbutlerd` to the guest image build next to `agent`
+   (`GOOS=linux CGO_ENABLED=0 go build ./guest/cmd/hyperbutlerd`) and install it to `/usr/bin`.
 2. **Modules:** `guest/prototype/init` already loads `hv_sock` and `hv_balloon`
    (`modprobe -a hv_storvsc sd_mod hv_sock hv_balloon hv_utils`), and `vsock` comes in
    as a dependency. Keep `hv_balloon`: REQ-MEM-002 depends on free page reporting.
@@ -245,22 +245,22 @@ session.
 
    ```sh
    (while :; do
-   	winboxd -mount /var/lib/docker -dev /dev/sdX -file /var/lib/docker/.winbox-reserve >/dev/console 2>&1
-   	t "winboxd-exit $?"
+   	hyperbutlerd -mount /var/lib/docker -dev /dev/sdX -file /var/lib/docker/.hyperbutler-reserve >/dev/console 2>&1
+   	t "hyperbutlerd-exit $?"
    	sleep 1
    done) &
    ```
 
    Until the prototype has a data disk (today `/var/lib/docker` is tmpfs), start it
-   without the guard and the trim, with cache only: `winboxd -no-trim`.
-5. **VM document** (`internal/vm`, used by `cmd/winbox-dev`):
+   without the guard and the trim, with cache only: `hyperbutlerd -no-trim`.
+5. **VM document** (`internal/vm`, used by `cmd/hyperbutler-dev`):
    - add `vm.Service{ID: guestctl.ServiceID, ConnectSDDL: <user-only SDDL>}` next to the
      2375 service;
    - set the memory flags `EnableDeferredCommit`, `EnableHotHint` and
      `EnableColdDiscardHint` (ADR 0002).
 
    `internal/vm.Config` has no memory-hint or SCSI fields yet.
-6. **Host:** in `cmd/winbox-dev run`, after `RuntimeID`:
+6. **Host:** in `cmd/hyperbutler-dev run`, after `RuntimeID`:
    - start `guestctl.Supervisor{Dial: guestctl.HvsockDialer(id)}`;
    - feed it `spaceguard.HostBudget` every 100 ms from the VHDX volume (see
      `spike/vhdx/guard_windows.go`);

@@ -10,7 +10,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/Higangssh/winbox/internal/diag"
+	"github.com/Higangssh/hyperbutler/internal/diag"
 )
 
 // ProcSample is one process's counters from Win32_PerfFormattedData_PerfProc_Process.

@@ -1,5 +1,5 @@
-winbox
-Copyright 2026 The winbox Authors
+hyperbutler
+Copyright 2026 The hyperbutler Authors
 
 This product is licensed under the Apache License, Version 2.0 (see LICENSE).
 
@@ -11,11 +11,11 @@ and license.
   the use of gvisor-tap-vsock's tap.LinkEndpoint in a promiscuous, spoofing gVisor stack
   follow gvisor-tap-vsock v0.9.0 (pkg/virtualnetwork, pkg/services/forwarder),
   https://github.com/containers/gvisor-tap-vsock, Apache License 2.0, Copyright The
-  gvisor-tap-vsock Authors. The code was written for winbox; no file was copied.
+  gvisor-tap-vsock Authors. The code was written for hyperbutler; no file was copied.
 - internal/netstack/frame: the 4-byte big-endian length prefix is gvisor-tap-vsock's
   "qemu" stream protocol (same source and license).
 
-Third-party Go modules linked into winbox binaries:
+Third-party Go modules linked into hyperbutler binaries:
 
 - github.com/Microsoft/go-winio v0.6.4
   https://github.com/microsoft/go-winio
@@ -31,7 +31,7 @@ Third-party Go modules linked into winbox binaries:
   by guest/cmd/netfwd for the TAP device and AF_VSOCK,
   and by internal/diag and bench/soak (process handle count, process snapshots).
 
-The user-mode guest network (internal/netstack, ADR 0006) links these into winbox-dev:
+The user-mode guest network (internal/netstack, ADR 0006) links these into hyperbutler-dev:
 
 - github.com/containers/gvisor-tap-vsock v0.9.0
   https://github.com/containers/gvisor-tap-vsock
@@ -73,10 +73,10 @@ Third-party Go modules used only by tests (never linked into a shipped binary):
   Used by internal/leaktest, which every package's TestMain calls to fail tests that
   leave goroutines running (ADR 0003, guardrail 1).
 
-Release archives (winbox-<version>-windows-amd64.zip) also contain a Linux guest image
+Release archives (hyperbutler-<version>-windows-amd64.zip) also contain a Linux guest image
 (vmlinuz-virt and the initramfs), built by .github/workflows/guest-image.yml from the
 Alpine Linux packages pinned in guest/prototype/sources.lock. It is a separate program
-that winbox.exe runs in a VM, distributed alongside winbox (mere aggregation); its
+that hyperbutler.exe runs in a VM, distributed alongside hyperbutler (mere aggregation); its
 components keep their own licenses, among them:
 
 - Linux kernel and modules (Alpine linux-virt): GPL-2.0-only
@@ -91,7 +91,7 @@ components keep their own licenses, among them:
 
 Each release archive carries THIRD-PARTY/ (the license texts, generated from the
 upstream sources) and SOURCE-OFFER.txt, and each release publishes the corresponding
-source of the guest image as winbox-<version>-guest-sources.tar. docs/release.md
+source of the guest image as hyperbutler-<version>-guest-sources.tar. docs/release.md
 describes how these are produced and checked.
 
 Only archives attached to a published GitHub release meet the above. A local

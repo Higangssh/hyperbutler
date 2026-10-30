@@ -166,7 +166,7 @@ func TestUserOnlySDDL(t *testing.T) {
 }
 
 func TestParseRuntimeID(t *testing.T) {
-	id, err := parseRuntimeID(`{"Id":"winbox-dev-1","SystemType":"VirtualMachine","RuntimeId":"7d757fea-5532-5530-aa44-69bf7ad959da","State":"Running"}`)
+	id, err := parseRuntimeID(`{"Id":"hyperbutler-dev-1","SystemType":"VirtualMachine","RuntimeId":"7d757fea-5532-5530-aa44-69bf7ad959da","State":"Running"}`)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -130,19 +130,19 @@ if [ "$WB_MODE" = full ] || [ "$WB_MODE" = check ]; then
 	echo "@@DONE"
 	poweroff -f
 fi
-# winboxd (WB_CTL): the guest services daemon over the guestctl hvsock channel. Needs the
+# hyperbutlerd (WB_CTL): the guest services daemon over the guestctl hvsock channel. Needs the
 # vsock, hv_sock (and hv_balloon) modules in WB_MODS. WB_DARGS are extra flags, with commas
 # for spaces.
-startwinboxd() {
+starthyperbutlerd() {
 	ready=$1; shift
 	mount -t cgroup2 cgroup2 /sys/fs/cgroup 2>/dev/null
-	(/wbextra/winboxd -mount /mnt -dev $D -file /mnt/.winbox-reserve -ready $ready "$@" $(echo "$WB_DARGS" | tr ',' ' ') 2>&1 | sed 's/^/@@I winboxd: /') &
+	(/wbextra/hyperbutlerd -mount /mnt -dev $D -file /mnt/.hyperbutler-reserve -ready $ready "$@" $(echo "$WB_DARGS" | tr ',' ' ') 2>&1 | sed 's/^/@@I hyperbutlerd: /') &
 }
-# WB_MODE=ctl: winboxd policies. Write WB_MB MiB in 16 MiB files; page-cache test (drop
+# WB_MODE=ctl: hyperbutlerd policies. Write WB_MB MiB in 16 MiB files; page-cache test (drop
 # caches once as setup, read everything back so the page cache holds it, then idle while
 # the host follows vmmem); re-read cost after the policy ran; then delete everything and
 # idle while the host waits for the VHDX to shrink. No manual fstrim or drop_caches after
-# the setup: winboxd must do it.
+# the setup: hyperbutlerd must do it.
 if [ "$WB_MODE" = ctl ]; then
 	export LD_LIBRARY_PATH=/wbextra
 	up() { cut -d' ' -f1 /proc/uptime; }
@@ -151,9 +151,9 @@ if [ "$WB_MODE" = ctl ]; then
 	mount -t ext4 $D /mnt || echo "@@E mount"
 	mkdir /mnt/d; sync
 	dmesg | grep -iE 'balloon|page.?report|hv_sock|vsock' | sed 's/^/@@I dmesg: /'
-	startwinboxd /tmp/wb.ready
+	starthyperbutlerd /tmp/wb.ready
 	i=0; while [ ! -e /tmp/wb.ready ] && [ $i -lt 300 ]; do sleep 0.1; i=$((i + 1)); done
-	[ -e /tmp/wb.ready ] && echo "@@I winboxd ready after $i ticks" || echo "@@E winboxd not ready"
+	[ -e /tmp/wb.ready ] && echo "@@I hyperbutlerd ready after $i ticks" || echo "@@E hyperbutlerd not ready"
 	sleep 2; mi
 	m ready
 	n=$((WB_MB / 16)); i=0
@@ -170,7 +170,7 @@ if [ "$WB_MODE" = ctl ]; then
 	echo "@@I deleted; df: $(df -k /mnt | tail -n 1)"
 	mi; m deleted
 	mi; m end
-	killall winboxd 2>/dev/null; sleep 1
+	killall hyperbutlerd 2>/dev/null; sleep 1
 	echo "@@I umount: $(umount /mnt 2>&1; echo exit=$?)"
 	echo "@@DONE"
 	poweroff -f
@@ -193,9 +193,9 @@ if [ "$WB_MODE" = guard ] || [ "$WB_MODE" = guardcheck ]; then
 		if [ -n "$WB_GUARD" ]; then
 			echo "@@I ttys: $(ls /dev/ttyS* | tr '\n' ' ')"
 			if [ -n "$WB_CTL" ]; then
-				startwinboxd /tmp/sg.ready -hysteresis "$WB_HYST"
+				starthyperbutlerd /tmp/sg.ready -hysteresis "$WB_HYST"
 			else
-				(/wbextra/spaceguard -dev $D -file /mnt/.winbox-reserve -ctl /dev/ttyS1 -ready /tmp/sg.ready -hysteresis "$WB_HYST" 2>&1 | sed 's/^/@@I guard: /') &
+				(/wbextra/spaceguard -dev $D -file /mnt/.hyperbutler-reserve -ctl /dev/ttyS1 -ready /tmp/sg.ready -hysteresis "$WB_HYST" 2>&1 | sed 's/^/@@I guard: /') &
 			fi
 			i=0; while [ ! -e /tmp/sg.ready ] && [ $i -lt 150 ]; do sleep 0.1; i=$((i + 1)); done
 			[ -e /tmp/sg.ready ] && echo "@@I guard ready" || echo "@@E guard not ready"
@@ -234,7 +234,7 @@ if [ "$WB_MODE" = guard ] || [ "$WB_MODE" = guardcheck ]; then
 		fi
 		echo "@@I probe:$( (echo probe >/mnt/d/probe && sync /mnt/d/probe) 2>&1 || true)"; rm -f /mnt/d/probe
 		echo "@@I df: $(df -k /mnt | tail -n 1)"
-		echo "@@I reserve:$(ls -ls /mnt/.winbox-reserve 2>/dev/null | tr -s ' ')"
+		echo "@@I reserve:$(ls -ls /mnt/.hyperbutler-reserve 2>/dev/null | tr -s ' ')"
 		echo "@@I dmesg_errors=$(dmesg | grep -ciE "$errs")"
 		dmesg | grep -iE "$errs" | tail -n 6 | sed 's/^/@@I dmesg: /'
 		m filled
@@ -245,7 +245,7 @@ if [ "$WB_MODE" = guard ] || [ "$WB_MODE" = guardcheck ]; then
 		m half-deleted-trimmed
 		manifest
 		echo "@@I dmesg_errors=$(dmesg | grep -ciE "$errs")"
-		killall spaceguard winboxd 2>/dev/null; sleep 1
+		killall spaceguard hyperbutlerd 2>/dev/null; sleep 1
 		echo "@@I umount: $(umount /mnt 2>&1; echo exit=$?)"
 	else
 		echo "@@I e2fsck: $(/wbextra/e2fsck -fn $D >/tmp/fsck.log 2>&1; echo exit=$?)"
@@ -338,7 +338,7 @@ poweroff -f
 func runQEMU(args []string) error {
 	fs := flag.NewFlagSet("qemu", flag.ExitOnError)
 	backend := fs.String("backend", "raw", "raw | qcow2 | nbd")
-	guestDir := fs.String("guest", filepath.Join(os.TempDir(), "hb-dev", "winbox-spike", "guest"), "dir with vmlinuz-virt and initramfs-virt")
+	guestDir := fs.String("guest", filepath.Join(os.TempDir(), "hb-dev", "hyperbutler-spike", "guest"), "dir with vmlinuz-virt and initramfs-virt")
 	diskSize := fs.Int64("size", 2*gib, "virtual disk size in bytes")
 	writeMB := fs.Int("mb", 1024, "MiB the guest writes and deletes")
 	flush := fs.Bool("hostflush", true, "flush the image from the host before each measurement")

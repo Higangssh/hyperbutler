@@ -1,5 +1,5 @@
 #!/bin/sh
-# winbox guest init (PID 1 after stage 1). See docs/adr/0005-guest-image.md.
+# hyperbutler guest init (PID 1 after stage 1). See docs/adr/0005-guest-image.md.
 #
 # It runs from the read-only erofs system disk, which guest/prototype/initramfs-init
 # mounted and switch_rooted into. Everything that must be writable is a mount: /run,
@@ -8,8 +8,8 @@
 #
 # Mounts the API file systems, loads the modules for whichever hypervisor it finds
 # (Hyper-V vmbus or virtio), brings up the network, mounts the data disk on
-# /var/lib/docker (formatting it if it is blank), starts winboxd, and starts dockerd,
-# which starts its own containerd. Every step prints "winbox-t <uptime> <step>" on the
+# /var/lib/docker (formatting it if it is blank), starts hyperbutlerd, and starts dockerd,
+# which starts its own containerd. Every step prints "hyperbutler-t <uptime> <step>" on the
 # console so the host can see where boot time goes.
 #
 # Shutdown: SIGTERM or SIGUSR2 (what busybox poweroff sends, which is what the kernel
@@ -20,7 +20,7 @@
 PATH=/usr/sbin:/usr/bin:/sbin:/bin
 export PATH
 
-t() { read -r up _ </proc/uptime; echo "winbox-t $up $*"; }
+t() { read -r up _ </proc/uptime; echo "hyperbutler-t $up $*"; }
 
 mount -t proc -o nosuid,nodev,noexec proc /proc
 t init-start
@@ -36,7 +36,7 @@ ln -sf /proc/self/fd /dev/fd
 ln -sf /proc/self/fd/0 /dev/stdin
 ln -sf /proc/self/fd/1 /dev/stdout
 ln -sf /proc/self/fd/2 /dev/stderr
-hostname winbox
+hostname hyperbutler
 t mounts-done
 
 # Hypervisor-specific drivers. hv_netvsc is built in; everything else is a module.
@@ -51,9 +51,9 @@ modprobe -a overlay bridge br_netfilter veth
 t modules-done
 
 ip link set lo up
-# Defaults are QEMU user networking (slirp). On Hyper-V, winbox passes the user-mode
-# network of ADR 0006 on the command line: winbox.net=<host vsock port> starts netfwd,
-# which creates eth0 as a TAP relayed to the host stack, and winbox.ip/gw/dns configure it.
+# Defaults are QEMU user networking (slirp). On Hyper-V, hyperbutler passes the user-mode
+# network of ADR 0006 on the command line: hyperbutler.net=<host vsock port> starts netfwd,
+# which creates eth0 as a TAP relayed to the host stack, and hyperbutler.ip/gw/dns configure it.
 ADDR=10.0.2.15/24
 GW=10.0.2.2
 DNS=10.0.2.3
@@ -69,25 +69,25 @@ CACHE=
 SYSRA=
 for arg in $(cat /proc/cmdline); do
 	case "$arg" in
-	winbox.ip=*) ADDR=${arg#winbox.ip=} ;;
-	winbox.gw=*) GW=${arg#winbox.gw=} ;;
-	winbox.dns=*) DNS=${arg#winbox.dns=} ;;
-	winbox.loglevel=*) LOGLEVEL=${arg#winbox.loglevel=} ;;
-	winbox.net=*) NET=${arg#winbox.net=} ;;
-	winbox.mtu=*) MTU=${arg#winbox.mtu=} ;;
-	winbox.netbench=1) NETBENCH="-bench-tcp 5201 -bench-vsock 5202" ;;
-	winbox.data=*) DATA=${arg#winbox.data=} ;;
-	winbox.newdisk=1) NEWDISK=1 ;;
-	winbox.memlog=1) MEMLOG=1 ;;
-	winbox.thp=*) THP=${arg#winbox.thp=} ;;
-	winbox.cache=*) CACHE=${arg#winbox.cache=} ;;
-	winbox.sysra=*) SYSRA=${arg#winbox.sysra=} ;;
+	hyperbutler.ip=*) ADDR=${arg#hyperbutler.ip=} ;;
+	hyperbutler.gw=*) GW=${arg#hyperbutler.gw=} ;;
+	hyperbutler.dns=*) DNS=${arg#hyperbutler.dns=} ;;
+	hyperbutler.loglevel=*) LOGLEVEL=${arg#hyperbutler.loglevel=} ;;
+	hyperbutler.net=*) NET=${arg#hyperbutler.net=} ;;
+	hyperbutler.mtu=*) MTU=${arg#hyperbutler.mtu=} ;;
+	hyperbutler.netbench=1) NETBENCH="-bench-tcp 5201 -bench-vsock 5202" ;;
+	hyperbutler.data=*) DATA=${arg#hyperbutler.data=} ;;
+	hyperbutler.newdisk=1) NEWDISK=1 ;;
+	hyperbutler.memlog=1) MEMLOG=1 ;;
+	hyperbutler.thp=*) THP=${arg#hyperbutler.thp=} ;;
+	hyperbutler.cache=*) CACHE=${arg#hyperbutler.cache=} ;;
+	hyperbutler.sysra=*) SYSRA=${arg#hyperbutler.sysra=} ;;
 	esac
 done
 # Transparent huge pages only where a program asks (madvise), not for every anonymous
 # mapping: linux-virt defaults to "always", which backs the Go heaps of dockerd and
 # containerd with 2 MiB pages and keeps them resident at idle (REQ-MEM-001; see
-# docs/research/idle-memory.md). winbox.thp=always restores the kernel default.
+# docs/research/idle-memory.md). hyperbutler.thp=always restores the kernel default.
 case "${THP:-madvise}" in
 always | madvise | never) echo "${THP:-madvise}" >/sys/kernel/mm/transparent_hugepage/enabled ;;
 esac
@@ -143,10 +143,10 @@ resolve_disk() {
 	esac
 }
 
-# The data disk (winbox.data=lun:0, or a device name) holds /var/lib/docker: images,
+# The data disk (hyperbutler.data=lun:0, or a device name) holds /var/lib/docker: images,
 # containers, volumes and their json-file logs. It is formatted only when it is blank
 # (see data_disk), which is how a new VHDX reads; anything else that is not a clean ext4
-# is refused, never reformatted. Without winbox.data (the QEMU harness),
+# is refused, never reformatted. Without hyperbutler.data (the QEMU harness),
 # /var/lib/docker is a tmpfs.
 data_disk() {
 	modprobe ext4
@@ -160,7 +160,7 @@ data_disk() {
 		return 1
 	fi
 	DATADEV=$dev
-	# Blank means all three: the host says the VHDX was never written (winbox.newdisk=1:
+	# Blank means all three: the host says the VHDX was never written (hyperbutler.newdisk=1:
 	# its allocation is still what it was at creation), a complete read of the first MiB
 	# succeeded and is all zero, and blkid finds no file system. A failed or short read
 	# is never taken for a blank disk.
@@ -177,7 +177,7 @@ data_disk() {
 		# -J size=128: journal blocks, once written, stay allocated in the VHDX (they
 		# are never free, so never trimmed). The default for 64 GiB is several times
 		# larger.
-		if ! mke2fs -q -F -t ext4 -m 0 -L winbox-data -J size=128 \
+		if ! mke2fs -q -F -t ext4 -m 0 -L hyperbutler-data -J size=128 \
 			-E nodiscard,lazy_itable_init=1,lazy_journal_init=1 "$dev" >/dev/console 2>&1; then
 			t data-mkfs-failed
 			return 1
@@ -199,44 +199,44 @@ data_disk() {
 	fi
 	t data-mounted
 }
-WINBOXD_ARGS=-no-trim
+HYPERBUTLERD_ARGS=-no-trim
 # Page cache: the binaries now run from the system disk, so they are file cache too (not
 # Shmem). Keep 32 MiB and reclaim once 16 MiB more piles up at idle, instead of the
 # default 64 MiB: what dockerd and containerd touch while idle refaults from the
-# read-only disk (host file cache), cheaply. winbox.cache=<threshold MiB> overrides it.
+# read-only disk (host file cache), cheaply. hyperbutler.cache=<threshold MiB> overrides it.
 case "$CACHE" in
 "" | *[!0-9]* | ????*) CACHE=16 ;;
 esac
-WINBOXD_CACHE="-cache-keep $((32 << 20)) -cache-threshold $((CACHE << 20))"
+HYPERBUTLERD_CACHE="-cache-keep $((32 << 20)) -cache-threshold $((CACHE << 20))"
 if [ -n "$DATA" ]; then
 	if ! data_disk; then
-		echo "winbox: the data disk could not be used; see the lines above" >/dev/console
+		echo "hyperbutler: the data disk could not be used; see the lines above" >/dev/console
 		sleep 1
 		poweroff -f
 	fi
-	WINBOXD_ARGS="-mount /var/lib/docker -dev $DATADEV -file /var/lib/docker/.winbox-reserve"
+	HYPERBUTLERD_ARGS="-mount /var/lib/docker -dev $DATADEV -file /var/lib/docker/.hyperbutler-reserve"
 else
 	mount -t tmpfs -o mode=0710 docker /var/lib/docker
 fi
 
-# winboxd: the host control channel (vsock 2380), the free-space guard, automatic
+# hyperbutlerd: the host control channel (vsock 2380), the free-space guard, automatic
 # fstrim and page-cache reclaim (docs/research/guest-services.md). The guard fails
 # closed until the host's first budget arrives, so dockerd waits for that (bounded).
 if [ -d /sys/bus/vmbus ]; then
-	rm -f /run/winboxd.ready
+	rm -f /run/hyperbutlerd.ready
 	(while :; do
 		# shellcheck disable=SC2086
-		winboxd $WINBOXD_ARGS $WINBOXD_CACHE -ready /run/winboxd.ready >/dev/console 2>&1
-		t "winboxd-exit $?"
+		hyperbutlerd $HYPERBUTLERD_ARGS $HYPERBUTLERD_CACHE -ready /run/hyperbutlerd.ready >/dev/console 2>&1
+		t "hyperbutlerd-exit $?"
 		sleep 1
 	done) &
-	WINBOXD_LOOP=$!
+	HYPERBUTLERD_LOOP=$!
 	i=0
-	while [ ! -e /run/winboxd.ready ] && [ $i -lt 1000 ]; do
+	while [ ! -e /run/hyperbutlerd.ready ] && [ $i -lt 1000 ]; do
 		sleep 0.01
 		i=$((i + 1))
 	done
-	t winboxd-ready
+	t hyperbutlerd-ready
 fi
 
 # The root is the erofs system disk, a real mount, so runc uses pivot_root(2): no
@@ -269,11 +269,11 @@ trap stop_dockerd TERM USR2 INT
 
 # Readahead on the system disk. At idle dockerd and containerd fault code in at random,
 # and with the kernel's 128 KiB each fault pulls 128 KiB around it back into the page
-# cache right after winboxd reclaimed it: about 70 MiB of churn (REQ-MEM-001,
+# cache right after hyperbutlerd reclaimed it: about 70 MiB of churn (REQ-MEM-001,
 # docs/research/idle-memory.md). A file's readahead is fixed when it is opened, so the
 # small value must be set before dockerd starts. To keep the start fast, the binaries
-# dockerd needs first are read once, sequentially, with the large value; winboxd's cache
-# policy trims what stays unused. winbox.sysra=<KiB> sets the small value.
+# dockerd needs first are read once, sequentially, with the large value; hyperbutlerd's cache
+# policy trims what stays unused. hyperbutler.sysra=<KiB> sets the small value.
 case "$SYSRA" in
 "" | *[!0-9]* | ?????*) SYSRA=16 ;;
 esac
@@ -296,7 +296,7 @@ while [ ! -S /run/docker.sock ] && [ $i -lt 600 ]; do
 done
 t docker-sock
 
-# winbox.memlog=1: guest-side memory every 15 s, so host numbers can be split into
+# hyperbutler.memlog=1: guest-side memory every 15 s, so host numbers can be split into
 # guest use and VMM cost.
 if [ -n "$MEMLOG" ]; then
 	(
@@ -312,10 +312,10 @@ while kill -0 "$DOCKERD" 2>/dev/null; do
 	wait "$DOCKERD"
 done
 t dockerd-exit
-for p in $WINBOXD_LOOP $AGENT_LOOP; do
+for p in $HYPERBUTLERD_LOOP $AGENT_LOOP; do
 	kill "$p" 2>/dev/null
 done
-killall winboxd agent 2>/dev/null
+killall hyperbutlerd agent 2>/dev/null
 sync
 if mountpoint -q /var/lib/docker; then
 	umount /var/lib/docker 2>/dev/null || mount -o remount,ro /var/lib/docker

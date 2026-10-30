@@ -44,7 +44,7 @@ func (r *Relay) replay(b []byte) error {
 		case unix.S_IFDIR:
 			return unix.Mkdirat(dfd, leaf, 0o755)
 		case unix.S_IFLNK:
-			return unix.Symlinkat("winbox-replay", dfd, leaf)
+			return unix.Symlinkat("hyperbutler-replay", dfd, leaf)
 		case unix.S_IFIFO, unix.S_IFSOCK:
 			return unix.Mknodat(dfd, leaf, f.mode&unix.S_IFMT|0o644, 0)
 		default:

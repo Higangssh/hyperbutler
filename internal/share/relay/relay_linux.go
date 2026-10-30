@@ -16,7 +16,7 @@ import (
 
 // Config describes one relay.
 type Config struct {
-	// Mountpoint is where the FUSE file system is mounted (for example /mnt/winbox).
+	// Mountpoint is where the FUSE file system is mounted (for example /mnt/hyperbutler).
 	Mountpoint string
 	// Conns are connections to the host's share server, one per queue. Conns[0] opens
 	// the session; hvsock bandwidth grows with each extra connection (ADR 0007).
@@ -83,7 +83,7 @@ func Start(cfg Config) (*Relay, error) {
 	// guest. default_permissions makes the guest kernel check modes; allow_other lets
 	// every container user in.
 	data := fmt.Sprintf("fd=%d,rootmode=40000,user_id=0,group_id=0,default_permissions,allow_other,max_read=%d", fd, 1<<20)
-	if err := unix.Mount("winbox", cfg.Mountpoint, "fuse.winbox", unix.MS_NOSUID|unix.MS_NODEV|unix.MS_NOATIME, data); err != nil {
+	if err := unix.Mount("hyperbutler", cfg.Mountpoint, "fuse.hyperbutler", unix.MS_NOSUID|unix.MS_NODEV|unix.MS_NOATIME, data); err != nil {
 		unix.Close(fd)
 		r.stopQueue()
 		return nil, fmt.Errorf("relay: mount %s: %w", cfg.Mountpoint, err)

@@ -277,7 +277,7 @@ func FuzzBind(f *testing.F) {
 				t.Fatalf("resolver got %q", p)
 			}
 			seen = append(seen, p)
-			return "/mnt/winbox/b-x", nil
+			return "/mnt/hyperbutler/b-x", nil
 		})
 		if err != nil {
 			return

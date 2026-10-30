@@ -1,7 +1,7 @@
-// Command share-spike measures ways to expose Windows directories to the winbox guest
+// Command share-spike measures ways to expose Windows directories to the hyperbutler guest
 // (docs/research/bind-mounts.md, ADR 0007). It boots a throwaway HCS VM whose PID 1 is
 // spike/share/guest (sharebench), attaches an ext4 data disk as the baseline, optionally
-// an HCS Plan9 share and the winbox file server (internal/share), and drives benchmarks
+// an HCS Plan9 share and the hyperbutler file server (internal/share), and drives benchmarks
 // from the host.
 //
 // Run non-elevated; the account must be in Hyper-V Administrators (ADR 0004). Every file
@@ -29,10 +29,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/Higangssh/winbox/guest/cpio"
-	"github.com/Higangssh/winbox/internal/engine"
-	"github.com/Higangssh/winbox/internal/transport"
-	"github.com/Higangssh/winbox/internal/vm"
+	"github.com/Higangssh/hyperbutler/guest/cpio"
+	"github.com/Higangssh/hyperbutler/internal/engine"
+	"github.com/Higangssh/hyperbutler/internal/transport"
+	"github.com/Higangssh/hyperbutler/internal/vm"
 	"github.com/Microsoft/go-winio"
 	"github.com/Microsoft/go-winio/pkg/guid"
 )
@@ -47,8 +47,8 @@ const (
 
 var (
 	work     = flag.String("work", filepath.Join(os.TempDir(), "hb-dev", "share"), "work directory (test data, VHDX, logs)")
-	imageDir = flag.String("image", filepath.Join(os.TempDir(), "hb-dev", "wbcli", "out"), "dir with vmlinuz-virt and initramfs-winbox.gz")
-	modDir   = flag.String("mods", filepath.Join(os.TempDir(), "hb-dev", "winbox-spike", "linux-virt", "lib", "modules", kver), "Alpine linux-virt module tree (for 9p and fuse)")
+	imageDir = flag.String("image", filepath.Join(os.TempDir(), "hb-dev", "wbcli", "out"), "dir with vmlinuz-virt and initramfs-hyperbutler.gz")
+	modDir   = flag.String("mods", filepath.Join(os.TempDir(), "hb-dev", "hyperbutler-spike", "linux-virt", "lib", "modules", kver), "Alpine linux-virt module tree (for 9p and fuse)")
 	memMB    = flag.Int("mem", 4096, "guest memory in MiB")
 	cpus     = flag.Int("cpus", 4, "guest vCPUs")
 	targets  = flag.String("targets", "ext4,plan9,fuse", "comma-separated: ext4, plan9, fuse, fuse-nocache, sync")
@@ -119,7 +119,7 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	id := fmt.Sprintf("winbox-share-spike-%d", time.Now().UnixNano()%1e9)
+	id := fmt.Sprintf("hyperbutler-share-spike-%d", time.Now().UnixNano()%1e9)
 
 	vhdx := filepath.Join(*work, "ext4.vhdx")
 	os.Remove(vhdx)
@@ -140,7 +140,7 @@ func run() error {
 		}
 	}
 	cfg := &vm.Config{
-		Owner:          "winbox-share-spike",
+		Owner:          "hyperbutler-share-spike",
 		KernelPath:     filepath.Join(*imageDir, "vmlinuz-virt"),
 		InitrdPath:     initrd,
 		KernelCmdLine:  fmt.Sprintf("console=ttyS0 quiet rdinit=/sharebench sb.port=%d", ctlPort),
@@ -364,10 +364,10 @@ func buildGuest() (string, error) {
 	return out, nil
 }
 
-// buildInitrd appends a cpio with /sharebench and the extra modules to the winbox
+// buildInitrd appends a cpio with /sharebench and the extra modules to the hyperbutler
 // initramfs, which brings busybox, mke2fs and the Hyper-V modules.
 func buildInitrd(guestBin string) (string, error) {
-	base, err := os.ReadFile(filepath.Join(*imageDir, "initramfs-winbox.gz"))
+	base, err := os.ReadFile(filepath.Join(*imageDir, "initramfs-hyperbutler.gz"))
 	if err != nil {
 		return "", err
 	}

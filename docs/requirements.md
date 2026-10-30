@@ -18,15 +18,15 @@ wanted is marked *withdrawn*, not deleted.
 
 - **Where results come from:** Every criterion names a `bench/` scenario. Most are scripts.
   Ones marked *(manual)* have a written procedure. Results include the machine, Windows
-  edition and build, the winbox backend, and whether Defender real-time protection was on.
+  edition and build, the hyperbutler backend, and whether Defender real-time protection was on.
 - **Reference machine:** The maintainer's Windows 11 Home laptop (Core Ultra 7 155H, 32 GB,
   NVMe). `bench/` also measures Docker Desktop and Podman on the same machine. The research
   baselines marked † are not rigorous, so these runs replace them.
-- **Host memory:** The sum of the Private Working Set of `winbox.exe`, the VMM process (`vmmem`
-  for HCS, the VMM for WHP), and any winbox helper process (for example the network stack).
+- **Host memory:** The sum of the Private Working Set of `hyperbutler.exe`, the VMM process (`vmmem`
+  for HCS, the VMM for WHP), and any hyperbutler helper process (for example the network stack).
   It is read from performance counters.
 - **Host disk usage:** Bytes actually allocated on disk (`GetCompressedFileSize`, which matches
-  `fsutil file layout`), summed over the winbox data directory. This is not the file length.
+  `fsutil file layout`), summed over the hyperbutler data directory. This is not the file length.
 - **Defender:** Disk and file-sharing criteria are measured with Defender real-time protection
   **on**, with no exclusions, unless a row says otherwise.
 
@@ -38,16 +38,16 @@ wanted is marked *withdrawn*, not deleted.
 | REQ-DISK-002 | Reclaiming disk space needs neither admin rights nor Hyper-V tools. | REQ-DISK-001 passes from a standard user account on Windows Home. Neither the Hyper-V PowerShell module nor `diskpart` is ever invoked (`bench/disk-reclaim` run as a standard user). HCS on Home needs Administrators or Hyper-V Administrators ([ADR 0002](adr/0002-primary-vm-backend.md)). So "standard user" here means one served by the broker in [ADR 0004](adr/0004-hcs-access-broker.md), and the reclaim path itself (`fstrim` in the guest) needs no host privilege. | P0 | D3 P1 P2 |
 | REQ-DISK-003 | Reclaiming space never risks data integrity. | **0.1 smoke:** 100 rounds of write, delete, and reclaim, with the VMM process killed (`TerminateProcess`) at a random point in each round. Every round ends with 0 errors from `e2fsck -n`, and no committed image is lost. An image is committed if its `docker pull`/`build` exited 0 before the kill. **1.0:** 1,000 kill rounds, plus 200 power-loss replays inside the guest (`dm-log-writes`), plus 10 documented hard-reset cycles *(manual)* (`bench/disk-torture`). | P0 smoke / P1 full | D4 |
 | REQ-DISK-004 | A full host disk is a safe, recoverable state. | When the host volume fills during writes, the guest gets `ENOSPC` and no data file is corrupted. After space is freed, `docker ps` works again without reformatting or deleting data (`bench/disk-full`). | P0 | D5 |
-| REQ-DISK-005 | Real usage is reported, and a hard cap is enforced. | `winbox status` shows host disk usage to within ±1%. A configured cap is never exceeded by more than 1%. Writes are refused before the host volume drops below a reserve (default 5 GB) (`bench/disk-cap`). | P1 | D5 |
+| REQ-DISK-005 | Real usage is reported, and a hard cap is enforced. | `hyperbutler status` shows host disk usage to within ±1%. A configured cap is never exceeded by more than 1%. Writes are refused before the host volume drops below a reserve (default 5 GB) (`bench/disk-cap`). | P1 | D5 |
 | REQ-DISK-006 | Build cache stays bounded by default. | With default settings, 30 `docker compose build` cycles of a reference project keep BuildKit cache at ≤ 10 GB, or the configured limit (`bench/buildcache`). | P1 | D2 |
-| REQ-DISK-007 | The data location can be chosen at first run and moved safely later, without admin. | `winbox start --data D:\winbox` works. `winbox move` runs as a standard user. Killed at any point (once every 1 s across a run), it leaves either the old or the new location fully usable (`bench/disk-move`). | P1 | D6 |
-| REQ-DISK-008 | Upgrades don't leak disk. | After upgrading winbox, host disk usage grows by no more than the size of the new guest image. Old guest images are removed (`bench/upgrade`). | P1 | D2 |
+| REQ-DISK-007 | The data location can be chosen at first run and moved safely later, without admin. | `hyperbutler start --data D:\hyperbutler` works. `hyperbutler move` runs as a standard user. Killed at any point (once every 1 s across a run), it leaves either the old or the new location fully usable (`bench/disk-move`). | P1 | D6 |
+| REQ-DISK-008 | Upgrades don't leak disk. | After upgrading hyperbutler, host disk usage grows by no more than the size of the new guest image. Old guest images are removed (`bench/upgrade`). | P1 | D2 |
 
 ## Start-up and memory
 
 | ID | Requirement | Acceptance criterion (how measured) | Pri | Pain |
 |---|---|---|---|---|
-| REQ-START-001 | Fast start. | From `winbox start` (no VM running) until `docker info` succeeds: median ≤ 8 s / ≤ 5 s, p95 ≤ 12 s / ≤ 8 s, over 20 runs. The host file cache is warm: discard one warm-up run per boot (`bench/start`). Measure the first start after a reboot separately and report it. | P0 | F3 |
+| REQ-START-001 | Fast start. | From `hyperbutler start` (no VM running) until `docker info` succeeds: median ≤ 8 s / ≤ 5 s, p95 ≤ 12 s / ≤ 8 s, over 20 runs. The host file cache is warm: discard one warm-up run per boot (`bench/start`). Measure the first start after a reboot separately and report it. | P0 | F3 |
 | REQ-MEM-001 | Small idle footprint. | Host memory, sampled every 10 s from minute 5 to minute 10 of idle, with the VM running and no containers. Median ≤ 400 MB / ≤ 250 MB (`bench/mem-idle`). | P0 | M2 |
 | REQ-MEM-002 | Memory goes back to the host after workloads stop. | The VM is configured with a 12 GB maximum. A container fills 4 GB of anonymous memory plus 4 GB of page cache, then exits. Within 60 s, without restarting the VM, host memory returns to ≤ the REQ-MEM-001 target + 100 MB (`bench/mem-reclaim`). | P1 | M1 |
 | REQ-MEM-003 | The VM can be capped without breaking workloads. | With `memory: 2GB`, a container that allocates 3 GB is OOM-killed inside the guest. The VM and the other containers keep running (`bench/mem-cap`). | P1 | M1 |
@@ -67,14 +67,14 @@ wanted is marked *withdrawn*, not deleted.
 | ID | Requirement | Acceptance criterion (how measured) | Pri | Pain |
 |---|---|---|---|---|
 | REQ-NET-001 | Published ports work on loopback. | `docker run -p 8080:80` is reachable from Windows at `127.0.0.1:8080`, `[::1]:8080`, and `localhost:8080`. **0.1:** 1 h at 10k connections/min with 0 failures. **1.0:** the same for 24 h, plus no growth in CLOSE_WAIT connections (`bench/net-ports`). | P0 | N1 |
-| REQ-NET-002 | VPN and corporate DNS work with zero configuration. | With at least one common VPN client connected (tested clients are listed in `docs/compat.md`), containers reach VPN routes. Split DNS works: VPN suffixes resolve through the VPN's resolver and everything else through the default one. Connecting or disconnecting the VPN needs no winbox restart (`bench/net-vpn`, *manual*). | P1 | N2 |
+| REQ-NET-002 | VPN and corporate DNS work with zero configuration. | With at least one common VPN client connected (tested clients are listed in `docs/compat.md`), containers reach VPN routes. Split DNS works: VPN suffixes resolve through the VPN's resolver and everything else through the default one. Connecting or disconnecting the VPN needs no hyperbutler restart (`bench/net-vpn`, *manual*). | P1 | N2 |
 | REQ-NET-003 | Published ports can be exposed on the LAN, opt-in. | Behind a flag, published ports are reachable from another machine at the host's LAN IP. Off by default (`bench/net-lan`). | P2 | N1 |
 
 ## Docker API compatibility
 
 | ID | Requirement | Acceptance criterion (how measured) | Pri | Pain |
 |---|---|---|---|---|
-| REQ-API-001 | The stock Docker CLI and Compose work unchanged. | Through the auto-registered `winbox` context, the stock `docker` and `docker compose` CLIs pass `bench/compat`. **0.1** covers run, exec, logs, pull, build (BuildKit), volumes, and compose up/down. **1.0** adds attach, push, networks, and compose watch. Known gaps are listed in `docs/compat.md`. | P0 | U3 |
+| REQ-API-001 | The stock Docker CLI and Compose work unchanged. | Through the auto-registered `hyperbutler` context, the stock `docker` and `docker compose` CLIs pass `bench/compat`. **0.1** covers run, exec, logs, pull, build (BuildKit), volumes, and compose up/down. **1.0** adds attach, push, networks, and compose watch. Known gaps are listed in `docs/compat.md`. | P0 | U3 |
 | REQ-API-002 | Common tools that talk to the Docker API work. | VS Code Dev Containers, Testcontainers (Java/Go/Node), and the Docker SDK for Python and Go pass their own basic samples against the `npipe` endpoint (`bench/compat-tools`). | P1 | U3 |
 
 ## Platform
@@ -82,9 +82,9 @@ wanted is marked *withdrawn*, not deleted.
 | ID | Requirement | Acceptance criterion (how measured) | Pri | Pain |
 |---|---|---|---|---|
 | REQ-PLAT-001 | Works on Windows 11 Home. | All P0 criteria pass on Home ([ADR 0001](adr/0001-windows-home-first-class.md)). | P0 | P1 |
-| REQ-PLAT-002 | Doesn't depend on WSL. | All P0 criteria pass with the WSL feature disabled. Installing, updating, or uninstalling WSL never changes how winbox behaves (`bench/no-wsl`). | P0 | U1 |
+| REQ-PLAT-002 | Doesn't depend on WSL. | All P0 criteria pass with the WSL feature disabled. Installing, updating, or uninstalling WSL never changes how hyperbutler behaves (`bench/no-wsl`). | P0 | U1 |
 | REQ-PLAT-003 | No admin rights after the one-time setup. | The one-time setup enables the required Windows features and installs the HCS broker service ([ADR 0004](adr/0004-hcs-access-broker.md)). After that, install, start, stop, upgrade, and uninstall of the CLI and guest images all work as a standard user (`bench/noadmin`). The only exceptions are a release that changes the broker itself and removing the broker service; each needs admin once. | P1 | P2 |
-| REQ-PLAT-004 | Coexists with WSL, Docker Desktop, and Windows Sandbox. | With those installed and running, winbox and they keep working and neither breaks the other (`bench/coexist`, *manual*). | P1 | P5 |
+| REQ-PLAT-004 | Coexists with WSL, Docker Desktop, and Windows Sandbox. | With those installed and running, hyperbutler and they keep working and neither breaks the other (`bench/coexist`, *manual*). | P1 | P5 |
 | REQ-PLAT-005 | Upgrades keep data, and recovery never needs a destructive reset. | Upgrading across every release since the last minor keeps images, volumes, and containers. No documented recovery step deletes user data (release checklist). | P1 | U1 |
 | REQ-PLAT-006 | Runs natively on Windows on ARM64. | P0 criteria pass on an ARM64 Windows 11 device with an arm64 guest. | P2 | P4 |
 | REQ-PLAT-007 | Usable under real-time antivirus. | With Defender real-time protection on and no exclusions, REQ-FS-002 and REQ-START-001 still pass within 1.5× of their limits (`bench/av`). Evidence for P3 is weak (†), so the first `bench/av` run also checks whether this requirement is needed. | P1 | P3 |
@@ -100,9 +100,9 @@ wanted is marked *withdrawn*, not deleted.
 
 | ID | Requirement | Acceptance criterion (how measured) | Pri | Pain |
 |---|---|---|---|---|
-| REQ-UX-001 | One command to start, no tuning. | From a fresh install, `winbox start` then `docker run hello-world` works with no config file and no other steps. The `winbox` docker context is registered and selected (`bench/firstrun`). | P0 | U3 |
-| REQ-UX-002 | Lightweight install. | The installer is ≤ 150 MB. There is no GUI and no tray process. At most 3 resident host processes while running: `winbox.exe`, the VMM (or `vmmem`), and one optional helper (`bench/footprint`). | P1 | U2 |
-| REQ-UX-003 | Failures are diagnosable. | `winbox doctor` detects and explains, with a fix, at least: missing Windows features, virtualization disabled in firmware, a conflicting hypervisor, a full host disk, and a named-pipe conflict (`bench/doctor`). | P1 | U1 P5 |
+| REQ-UX-001 | One command to start, no tuning. | From a fresh install, `hyperbutler start` then `docker run hello-world` works with no config file and no other steps. The `hyperbutler` docker context is registered and selected (`bench/firstrun`). | P0 | U3 |
+| REQ-UX-002 | Lightweight install. | The installer is ≤ 150 MB. There is no GUI and no tray process. At most 3 resident host processes while running: `hyperbutler.exe`, the VMM (or `vmmem`), and one optional helper (`bench/footprint`). | P1 | U2 |
+| REQ-UX-003 | Failures are diagnosable. | `hyperbutler doctor` detects and explains, with a fix, at least: missing Windows features, virtualization disabled in firmware, a conflicting hypervisor, a full host disk, and a named-pipe conflict (`bench/doctor`). | P1 | U1 P5 |
 
 ## Non-goals
 

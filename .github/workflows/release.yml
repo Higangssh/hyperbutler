@@ -5,7 +5,7 @@ name: Release
 # docs/release.md (soak, host-full, etc.), which hosted runners cannot run.
 #
 #   guest-image  canonical guest image + GPL source bundle (strict: signed inputs only)
-#   package      winbox.exe and the portable zip (dist/package.ps1), on Windows
+#   package      hyperbutler.exe and the portable zip (dist/package.ps1), on Windows
 #   sbom         SPDX SBOM of the zip contents (syft), with no write permissions
 #   publish      SHA256SUMS, build provenance attestation, draft release
 #
@@ -111,7 +111,7 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           foreach ($k in 'sources', 'inputs') {
-            $dst = Join-Path $env:RUNNER_TEMP "dist/winbox-$env:TAG-guest-$k.tar"
+            $dst = Join-Path $env:RUNNER_TEMP "dist/hyperbutler-$env:TAG-guest-$k.tar"
             Copy-Item (Join-Path $env:RUNNER_TEMP "guest/guest-$k.tar") $dst
             "$k=$((Get-FileHash -Algorithm SHA256 $dst).Hash.ToLowerInvariant())" | Out-File -Append -Encoding utf8 $env:GITHUB_OUTPUT
           }
@@ -161,11 +161,11 @@ jobs:
           cd "$RUNNER_TEMP/pkg"
           echo "$WANT  $NAME.zip" | sha256sum --check --strict
           unzip -q "$NAME.zip" -d "$RUNNER_TEMP/unpacked"
-          # Covers winbox.exe's Go modules and the files in the archive. The guest
+          # Covers hyperbutler.exe's Go modules and the files in the archive. The guest
           # packages are listed in THIRD-PARTY/README.txt and the source bundle manifest;
           # syft cannot see inside the initramfs.
           "$RUNNER_TEMP/syft/syft" scan "dir:$RUNNER_TEMP/unpacked/$NAME" \
-            --source-name winbox --source-version "${NAME#winbox-}" \
+            --source-name hyperbutler --source-version "${NAME#hyperbutler-}" \
             -o "spdx-json=$RUNNER_TEMP/$NAME.spdx.json"
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -203,8 +203,8 @@ jobs:
         run: |
           set -euo pipefail
           cd "$RUNNER_TEMP/assets"
-          src="winbox-$TAG-guest-sources.tar"
-          inputs="winbox-$TAG-guest-inputs.tar"
+          src="hyperbutler-$TAG-guest-sources.tar"
+          inputs="hyperbutler-$TAG-guest-inputs.tar"
           printf '%s  %s\n' "$ZIP_SHA256" "$NAME.zip" "$SRC_SHA256" "$src" "$INPUTS_SHA256" "$inputs" |
             sha256sum --check --strict
           for f in *; do
@@ -233,9 +233,9 @@ jobs:
           cat >notes.md <<EOF
           Built by the Release workflow from $TAG ($GITHUB_SHA).
 
-          - \`$NAME.zip\`: unzip, add the folder to PATH, run \`winbox start\`.
-          - \`winbox-$TAG-guest-sources.tar\`: corresponding source of the guest image's GPL components.
-          - \`winbox-$TAG-guest-inputs.tar\`: the signed Alpine packages the guest image was built from.
+          - \`$NAME.zip\`: unzip, add the folder to PATH, run \`hyperbutler start\`.
+          - \`hyperbutler-$TAG-guest-sources.tar\`: corresponding source of the guest image's GPL components.
+          - \`hyperbutler-$TAG-guest-inputs.tar\`: the signed Alpine packages the guest image was built from.
           - \`$NAME.spdx.json\`: SBOM. \`SHA256SUMS\`: checksums of the above.
 
           Verify: \`gh attestation verify $NAME.zip --repo $GITHUB_REPOSITORY\`
@@ -243,5 +243,5 @@ jobs:
           This is a draft. It is published only after the gates in docs/release.md pass.
           EOF
           gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --draft --verify-tag "${pre[@]}" \
-            --title "winbox $TAG" --notes-file notes.md \
-            "$NAME.zip" "winbox-$TAG-guest-sources.tar" "winbox-$TAG-guest-inputs.tar" "$NAME.spdx.json" SHA256SUMS
+            --title "hyperbutler $TAG" --notes-file notes.md \
+            "$NAME.zip" "hyperbutler-$TAG-guest-sources.tar" "hyperbutler-$TAG-guest-inputs.tar" "$NAME.spdx.json" SHA256SUMS

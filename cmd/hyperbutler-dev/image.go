@@ -19,7 +19,7 @@ func mkimageCmd(args []string) error {
 	fs := flag.NewFlagSet("mkimage", flag.ContinueOnError)
 	busybox := fs.String("busybox", "", "static busybox binary for linux/amd64 (required)")
 	out := fs.String("o", "busybox-image.tar", "output tar for `docker load`")
-	tag := fs.String("tag", "winbox-test/busybox:latest", "image name:tag")
+	tag := fs.String("tag", "hyperbutler-test/busybox:latest", "image name:tag")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -65,12 +65,12 @@ func buildImage(busybox []byte, tag string) ([]byte, error) {
 		"created":      epoch.Format(time.RFC3339),
 		"config": map[string]any{
 			"Env": []string{"PATH=/bin"},
-			"Cmd": []string{"/bin/sh", "-c", "echo hello from winbox"},
+			"Cmd": []string{"/bin/sh", "-c", "echo hello from hyperbutler"},
 		},
 		"rootfs": map[string]any{"type": "layers", "diff_ids": []string{layerDigest}},
 		"history": []map[string]any{{
 			"created":    epoch.Format(time.RFC3339),
-			"created_by": "winbox-dev mkimage",
+			"created_by": "hyperbutler-dev mkimage",
 		}},
 	})
 	if err != nil {

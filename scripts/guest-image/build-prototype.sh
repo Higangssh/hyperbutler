@@ -6,11 +6,11 @@
 #
 # Build-script contract (what guest-image.yml provides, and what any replacement must
 # accept):
-#   WINBOX_SRC    repository root (read-only)
-#   WINBOX_CACHE  inputs from sources.lock, already fetched and verified by
-#                 fetch-verify.sh, at $WINBOX_CACHE/dl/<name>/<file>
-#   WINBOX_WORK   empty scratch directory
-#   WINBOX_OUT    directory that must receive the files named in the `outputs` input
+#   HYPERBUTLER_SRC    repository root (read-only)
+#   HYPERBUTLER_CACHE  inputs from sources.lock, already fetched and verified by
+#                 fetch-verify.sh, at $HYPERBUTLER_CACHE/dl/<name>/<file>
+#   HYPERBUTLER_WORK   empty scratch directory
+#   HYPERBUTLER_OUT    directory that must receive the files named in the `outputs` input
 #   Go (go.mod version) on PATH, GOTOOLCHAIN=local, GOFLAGS=-mod=readonly.
 # It must not download anything that is not in the lock (Go modules excepted: go.sum
 # verifies them).
@@ -19,11 +19,11 @@
 # Go flags, so both produce the same initramfs bytes from the same inputs and Go version.
 set -eu
 
-: "${WINBOX_SRC:?}" "${WINBOX_CACHE:?}" "${WINBOX_WORK:?}" "${WINBOX_OUT:?}"
-proto="$WINBOX_SRC/guest/prototype"
-dl="$WINBOX_CACHE/dl"
-x="$WINBOX_WORK/x"
-name=initramfs-winbox.gz
+: "${HYPERBUTLER_SRC:?}" "${HYPERBUTLER_CACHE:?}" "${HYPERBUTLER_WORK:?}" "${HYPERBUTLER_OUT:?}"
+proto="$HYPERBUTLER_SRC/guest/prototype"
+dl="$HYPERBUTLER_CACHE/dl"
+x="$HYPERBUTLER_WORK/x"
+name=initramfs-hyperbutler.gz
 
 fail() { echo "build-prototype: $*" >&2; exit 1; }
 
@@ -61,7 +61,7 @@ set -- "$x/linux-virt/lib/modules"/*/
 kmod=${1%/}
 kver=${kmod##*/}
 
-stage="$WINBOX_WORK/stage/modules"
+stage="$HYPERBUTLER_WORK/stage/modules"
 sdir="$stage/$kver"
 mkdir -p "$sdir"
 
@@ -90,7 +90,7 @@ LC_ALL=C awk -v want="$proto/modules.txt" '
         }
         for (p in seen) print p
     }
-' "$kmod/modules.dep" "$proto/modules.txt" | LC_ALL=C sort >"$WINBOX_WORK/modules.want"
+' "$kmod/modules.dep" "$proto/modules.txt" | LC_ALL=C sort >"$HYPERBUTLER_WORK/modules.want"
 
 : >"$sdir/modules.dep"
 count=0
@@ -111,23 +111,23 @@ while read -r p; do
         printf '%s:\n' "$plain" >>"$sdir/modules.dep"
     fi
     count=$((count + 1))
-done <"$WINBOX_WORK/modules.want"
+done <"$HYPERBUTLER_WORK/modules.want"
 cp "$kmod/modules.builtin" "$kmod/modules.order" "$sdir/"
 echo "modules $kver : $count files"
 
 # --- build ----------------------------------------------------------------------------
-tool="$WINBOX_WORK/mkinitramfs"
-guestbin="$WINBOX_WORK/guest-bin"
+tool="$HYPERBUTLER_WORK/mkinitramfs"
+guestbin="$HYPERBUTLER_WORK/guest-bin"
 mkdir -p "$guestbin"
-cd "$WINBOX_SRC"
+cd "$HYPERBUTLER_SRC"
 CGO_ENABLED=0 go build -trimpath -buildvcs=false -o "$tool" ./guest/cmd/mkinitramfs
-for cmd in agent sockfwd netfwd winboxd; do
+for cmd in agent sockfwd netfwd hyperbutlerd; do
     GOOS=linux GOARCH=amd64 CGO_ENABLED=0 \
         go build -trimpath -buildvcs=false -ldflags '-s -w -buildid=' -o "$guestbin/$cmd" "./guest/cmd/$cmd"
 done
 
-"$tool" -spec "$proto/initramfs.spec" -mtime 0 -level 9 -o "$WINBOX_OUT/$name" \
+"$tool" -spec "$proto/initramfs.spec" -mtime 0 -level 9 -o "$HYPERBUTLER_OUT/$name" \
     -D "PROTO=$proto" -D "BUSYBOX=$x/busybox-static" -D "DOCKER=$x/docker-static/docker" \
     -D "MODULES=$stage" -D "GUESTBIN=$guestbin" -D "CACERTS=$x/ca-certificates-bundle" \
     -D "E2FS=$e2fs" -D "MUSL=$x/musl"
-cp "$x/linux-virt/boot/vmlinuz-virt" "$WINBOX_OUT/vmlinuz-virt"
+cp "$x/linux-virt/boot/vmlinuz-virt" "$HYPERBUTLER_OUT/vmlinuz-virt"

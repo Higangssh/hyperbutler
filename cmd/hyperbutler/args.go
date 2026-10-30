@@ -8,7 +8,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"github.com/Higangssh/winbox/internal/engine"
+	"github.com/Higangssh/hyperbutler/internal/engine"
 )
 
 // sizeFlag is a byte-count flag such as --memory 4GiB or --disk-size 64GiB.
@@ -56,12 +56,12 @@ func parseMemoryMB(v string) (int, error) {
 
 // newFlagSet is a flag set that reports errors instead of exiting, writing usage to w.
 func newFlagSet(name string, w io.Writer) *flag.FlagSet {
-	fs := flag.NewFlagSet("winbox "+name, flag.ContinueOnError)
+	fs := flag.NewFlagSet("hyperbutler "+name, flag.ContinueOnError)
 	fs.SetOutput(w)
 	return fs
 }
 
-// parseArgs parses args into fs and rejects positional arguments, which no winbox
+// parseArgs parses args into fs and rejects positional arguments, which no hyperbutler
 // command takes.
 func parseArgs(fs *flag.FlagSet, args []string) error {
 	if err := fs.Parse(args); err != nil {
@@ -125,5 +125,5 @@ func lastLines(b []byte, n int) []byte {
 }
 
 // npipeHost is the docker endpoint URL of a local pipe name:
-// \\.\pipe\docker_engine_winbox -> npipe:////./pipe/docker_engine_winbox.
+// \\.\pipe\docker_engine_hyperbutler -> npipe:////./pipe/docker_engine_hyperbutler.
 func npipeHost(pipe string) string { return "npipe://" + strings.ReplaceAll(pipe, `\`, "/") }

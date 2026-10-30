@@ -6,8 +6,8 @@
 
 ## Context
 
-winbox has a few long-running parts:
-- the host process `winbox.exe`;
+hyperbutler has a few long-running parts:
+- the host process `hyperbutler.exe`;
 - the HCS access broker, which runs with high privilege ([ADR 0004](0004-hcs-access-broker.md));
 - small guest daemons: the hvsock relay agent, the control and space-guard daemon, and the
   network forwarder.
@@ -41,7 +41,7 @@ binaries.
 
 ## Measurements (2026-10-30, Windows 11 Home, this repository)
 
-`winbox-dev` is the Go host process: an HCS VM, a named-pipe server and the hvsock proxy.
+`hyperbutler-dev` is the Go host process: an HCS VM, a named-pipe server and the hvsock proxy.
 Measured as private working set, the REQ-MEM-001 metric:
 
 | State | Private WS | Threads |
@@ -67,7 +67,7 @@ budget or leaks, and the problem can be traced to the language rather than to th
 Why Go here specifically:
 1. **The Windows container stack is Go.** Microsoft's high-level HCS wrapper (`hcsshim`), its
    hvsock and named-pipe library (`go-winio`), containerd's Windows support and moby are Go.
-   winbox uses `go-winio` and reads `hcsshim`'s schema and behaviour as its reference. It
+   hyperbutler uses `go-winio` and reads `hcsshim`'s schema and behaviour as its reference. It
    calls `computecore.dll` and `computenetwork.dll` directly, not through hcsshim.
    - Rust has raw bindings for the same DLLs in Microsoft's `windows-sys` crate. There is
      also a small `hcs-rs` crate.
@@ -78,7 +78,7 @@ Why Go here specifically:
    rewrite.
 3. **The measured cost is small.**
    - About 5 MB of host RAM.
-   - Binaries built with `-s -w`: `winbox-dev.exe` 7.3 MB, `winbox-broker.exe` 2.6 MB, guest
+   - Binaries built with `-s -w`: `hyperbutler-dev.exe` 7.3 MB, `hyperbutler-broker.exe` 2.6 MB, guest
      `agent` 2.4 MB. These fit easily in REQ-UX-002's 150 MB.
    - GC pause latency has **not been measured**. The relay paths reuse pooled 64 KiB buffers
      (`internal/transport`) and allocate one 32 KiB buffer per connection (guest agent), so
@@ -141,14 +141,14 @@ For 0.1 that trade favours Go. Two things would re-open it:
     `internal/leaktest` (goleak), and a meta-test fails CI if a test package lacks it,
     passes any exception other than `leaktest.Ignore*`, or imports goleak directly. The
     one exception is go-winio's process-lifetime I/O completion goroutine. Only
-    `cmd/winbox-dev` is still listed as pending (owned by a parallel change). A Linux CI
+    `cmd/hyperbutler-dev` is still listed as pending (owned by a parallel change). A Linux CI
     job runs the guest packages' tests under goleak and `-race`. Gap: the goroutine
-    loops in `guest/cmd/winboxd` and `guest/cmd/spaceguard` (`_linux.go`) have no tests
+    loops in `guest/cmd/hyperbutlerd` and `guest/cmd/spaceguard` (`_linux.go`) have no tests
     yet, so goleak does not exercise them.
   - Soak gate (3): **built** (`bench/soak`), unit- and fuzz-tested in CI. It needs
     Hyper-V, so the 24 h release run and the 1 h main run happen on self-hosted
     hardware, which does not exist yet. Until it does, the gate is run by hand. A 13-minute
-    run against `winbox-dev` from main (3 min warm-up, 1 min buckets, about 2,900 docker
+    run against `hyperbutler-dev` from main (3 min warm-up, 1 min buckets, about 2,900 docker
     commands, none failed) passed: private working set slope −1.4 MB/h over the 10-minute
     window (median 45.4 MB), handles and threads flat, vmmem +5 MB (limit 64 MB). Such a
     short window only rules out leaks faster than about 14 MB/h.
@@ -158,8 +158,8 @@ For 0.1 that trade favours Go. Two things would re-open it:
     endpoint before the 0.1 budget is claimed.
   - Runtime limits (4): **built** (`internal/diag`: `GOMEMLIMIT` from config unless set
     in the environment; pprof, MemStats, goroutine and handle counts on a current-user-only
-    named pipe, off by default). Wired into `winbox-broker` (`-memlimit`, default 64 MiB;
-    `-debug-pipe`). Not yet wired into `winbox-dev`, so the soak cannot yet sample its
+    named pipe, off by default). Wired into `hyperbutler-broker` (`-memlimit`, default 64 MiB;
+    `-debug-pipe`). Not yet wired into `hyperbutler-dev`, so the soak cannot yet sample its
     goroutines or heap.
   - A release stays blocked until the soak runs on self-hosted hardware with the diag
     endpoint enabled.
@@ -176,7 +176,7 @@ The adversarial review on 2026-10-30, arguing the strongest case for Rust, raise
 **Verdict: no blocking objection.**
 
 1. **High. "No mature Rust HCS binding" was false.** `windows-sys` exposes the HCS and HCN
-   functions, and winbox itself calls the DLLs directly, not through hcsshim. **Fixed:**
+   functions, and hyperbutler itself calls the DLLs directly, not through hcsshim. **Fixed:**
    reason 1 is reworded and marked weak.
 2. **High. The README described guardrails as if they existed.** **Fixed:** the README now
    says which guardrails exist and which are planned, and Consequences records their status.

@@ -1,7 +1,7 @@
-// Package guestctl is the winbox host<->guest control channel: a small binary protocol
+// Package guestctl is the hyperbutler host<->guest control channel: a small binary protocol
 // over hvsock (host) / AF_VSOCK (guest) on its own service port, ControlPort.
 //
-// The host dials; the guest daemon (guest/cmd/winboxd) listens and accepts the host CID
+// The host dials; the guest daemon (guest/cmd/hyperbutlerd) listens and accepts the host CID
 // only. The host sends the free-space guard budget (internal/spaceguard), trim and
 // cache-trim requests, pings, and the request for an orderly guest shutdown. The guest answers requests and pushes a periodic
 // status report.
@@ -37,7 +37,7 @@ import (
 	"io"
 	"time"
 
-	"github.com/Higangssh/winbox/internal/spaceguard"
+	"github.com/Higangssh/hyperbutler/internal/spaceguard"
 )
 
 const (

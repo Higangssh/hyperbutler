@@ -13,7 +13,7 @@
 #      that is not signed by one of those keys fails. Then it reads .PKGINFO for the
 #      origin, aports commit and license, which the source bundle needs;
 #   4. any other file is checked by its SHA-256 pin only (trust on first use). With
-#      WINBOX_STRICT=1 such an entry is an error: a release must only contain inputs
+#      HYPERBUTLER_STRICT=1 such an entry is an error: a release must only contain inputs
 #      whose signature and corresponding source can be verified.
 #
 # MANIFEST gets one tab-separated line per input:
@@ -23,7 +23,7 @@ set -eu
 lock=$1
 cache=$2
 manifest=$3
-strict=${WINBOX_STRICT:-0}
+strict=${HYPERBUTLER_STRICT:-0}
 
 fail() { echo "fetch-verify: $*" >&2; exit 1; }
 

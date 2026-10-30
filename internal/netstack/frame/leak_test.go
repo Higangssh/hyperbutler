@@ -3,7 +3,7 @@ package frame
 import (
 	"testing"
 
-	"github.com/Higangssh/winbox/internal/leaktest"
+	"github.com/Higangssh/hyperbutler/internal/leaktest"
 )
 
 // TestMain fails the package's tests if any goroutine is still running after

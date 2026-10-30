@@ -19,7 +19,7 @@ import (
 	"github.com/Microsoft/go-winio"
 	"golang.org/x/sys/windows"
 
-	"github.com/Higangssh/winbox/internal/diag"
+	"github.com/Higangssh/hyperbutler/internal/diag"
 )
 
 // sampleCIM reads the perf counters of pids in one CIM query.
@@ -64,7 +64,7 @@ func exited(h windows.Handle) bool {
 }
 
 // findProcesses returns the PIDs of running processes whose image name equals name,
-// case-insensitively (for example "vmmem" or "winbox-dev.exe").
+// case-insensitively (for example "vmmem" or "hyperbutler-dev.exe").
 func findProcesses(name string) ([]uint32, error) {
 	snap, err := windows.CreateToolhelp32Snapshot(windows.TH32CS_SNAPPROCESS, 0)
 	if err != nil {

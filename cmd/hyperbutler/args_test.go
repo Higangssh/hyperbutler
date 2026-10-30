@@ -55,7 +55,7 @@ func TestLastLines(t *testing.T) {
 }
 
 func TestNpipeHost(t *testing.T) {
-	if got := npipeHost(`\\.\pipe\docker_engine_winbox`); got != "npipe:////./pipe/docker_engine_winbox" {
+	if got := npipeHost(`\\.\pipe\docker_engine_hyperbutler`); got != "npipe:////./pipe/docker_engine_hyperbutler" {
 		t.Fatalf("npipeHost = %q", got)
 	}
 }

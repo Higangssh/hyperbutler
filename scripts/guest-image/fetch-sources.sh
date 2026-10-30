@@ -11,27 +11,27 @@
 # so every byte in the bundle is pinned by the signed package's commit.
 #
 # BUNDLE becomes one tar (sorted, mtime 0, numeric owner 0):
-#   winbox-guest-sources/MANIFEST.tsv
-#   winbox-guest-sources/aports/<commit>/<repo>/<origin>/...
-#   winbox-guest-sources/distfiles/<upstream tarballs and patches>
-#   winbox-guest-sources/README.txt
+#   hyperbutler-guest-sources/MANIFEST.tsv
+#   hyperbutler-guest-sources/aports/<commit>/<repo>/<origin>/...
+#   hyperbutler-guest-sources/distfiles/<upstream tarballs and patches>
+#   hyperbutler-guest-sources/README.txt
 # LICENSES gets the license files found at the top of each upstream tarball (and the
 # kernel's LICENSES/ directory), under LICENSES/<origin>/. An origin with no license file
 # is an error unless dist/licenses/<origin>/ in the repository supplies one.
 #
 # Inputs that are not Alpine packages have no source here. fetch-verify.sh refuses them
-# when WINBOX_STRICT=1, which the release workflow sets.
+# when HYPERBUTLER_STRICT=1, which the release workflow sets.
 set -eu
 
 manifest=$1
 work=$2
 bundle=$3
 licenses=$4
-src=${WINBOX_SRC:-/src}
+src=${HYPERBUTLER_SRC:-/src}
 
 fail() { echo "fetch-sources: $*" >&2; exit 1; }
 
-root="$work/winbox-guest-sources"
+root="$work/hyperbutler-guest-sources"
 dist="$root/distfiles"
 git_dir="$work/aports.git"
 rm -rf "$root" "$git_dir"
@@ -106,7 +106,7 @@ while IFS="$(printf '\t')" read -r commit repo origin; do
 done <"$work/origins.tsv"
 
 cat >"$root/README.txt" <<'EOF'
-Corresponding source for the winbox guest image.
+Corresponding source for the hyperbutler guest image.
 
 The guest image (vmlinuz-virt and the initramfs or system disk) is built from the
 Alpine Linux packages listed in MANIFEST.tsv. For each package this bundle has:
@@ -120,10 +120,10 @@ Alpine Linux packages listed in MANIFEST.tsv. For each package this bundle has:
 To rebuild a package, copy its aports directory into an aports checkout on Alpine Linux,
 put the distfiles in $SRCDEST, and run `abuild -r`.
 
-The winbox code in the image (guest/cmd/*) is Apache-2.0; its source is the winbox
+The hyperbutler code in the image (guest/cmd/*) is Apache-2.0; its source is the hyperbutler
 repository at the tag of this release.
 EOF
 
 tar --sort=name --mtime=@0 --owner=0 --group=0 --numeric-owner --format=gnu \
-    -C "$work" -cf "$bundle" winbox-guest-sources
+    -C "$work" -cf "$bundle" hyperbutler-guest-sources
 echo "source bundle: $(du -h "$bundle" | cut -f1) $bundle"

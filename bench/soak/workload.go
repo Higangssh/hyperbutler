@@ -14,7 +14,7 @@ import (
 // Workload runs the mixed docker loop against one engine endpoint with the stock CLI.
 type Workload struct {
 	Docker    string        // path to docker.exe
-	Host      string        // -H value, e.g. npipe:////./pipe/docker_engine_winbox
+	Host      string        // -H value, e.g. npipe:////./pipe/docker_engine_hyperbutler
 	ImageTar  string        // `docker load` input
 	Image     string        // name:tag inside ImageTar
 	OpTimeout time.Duration // per docker invocation

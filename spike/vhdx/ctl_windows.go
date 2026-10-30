@@ -18,14 +18,14 @@ import (
 	wguid "github.com/Microsoft/go-winio/pkg/guid"
 	"golang.org/x/sys/windows"
 
-	"github.com/Higangssh/winbox/internal/guestctl"
-	"github.com/Higangssh/winbox/internal/vm"
+	"github.com/Higangssh/hyperbutler/internal/guestctl"
+	"github.com/Higangssh/hyperbutler/internal/vm"
 )
 
-// The ctl options test the guest services daemon (guest/cmd/winboxd) over the guestctl
+// The ctl options test the guest services daemon (guest/cmd/hyperbutlerd) over the guestctl
 // hvsock control channel:
 //
-//	hcs -ctl -mode ctl               ext4 + winboxd; writes -mb MiB, measures the page-cache
+//	hcs -ctl -mode ctl               ext4 + hyperbutlerd; writes -mb MiB, measures the page-cache
 //	                                 policy (vmmem private working set until it returns) and
 //	                                 the trim policy (VHDX allocation after a delete, no
 //	                                 manual fstrim)
@@ -57,9 +57,9 @@ var (
 
 func ctlFlags(fs *flag.FlagSet) *ctlOpts {
 	o := &ctlOpts{}
-	fs.BoolVar(&o.on, "ctl", false, "run winboxd in the guest and talk to it over the guestctl hvsock channel")
-	fs.StringVar(&o.bin, "ctl-bin", filepath.Join(os.TempDir(), "hb-dev", "guestctl-bin", "winboxd"), "linux winboxd binary to pack into the initrd")
-	fs.StringVar(&o.dargs, "ctl-args", "", "extra winboxd flags, comma-separated (no spaces: they go on the kernel command line)")
+	fs.BoolVar(&o.on, "ctl", false, "run hyperbutlerd in the guest and talk to it over the guestctl hvsock channel")
+	fs.StringVar(&o.bin, "ctl-bin", filepath.Join(os.TempDir(), "hb-dev", "guestctl-bin", "hyperbutlerd"), "linux hyperbutlerd binary to pack into the initrd")
+	fs.StringVar(&o.dargs, "ctl-args", "", "extra hyperbutlerd flags, comma-separated (no spaces: they go on the kernel command line)")
 	fs.DurationVar(&o.memPoll, "ctl-mem-wait", 90*time.Second, "ctl mode: how long to follow vmmem after the page cache is filled")
 	fs.DurationVar(&o.trimPoll, "ctl-trim-wait", 330*time.Second, "ctl mode: how long to wait for the VHDX to shrink after the delete")
 	fs.Uint64Var(&o.trimSlack, "ctl-trim-slack", 64<<20, "ctl mode: the delete counts as reclaimed once the VHDX is within this of its pre-write allocation")
@@ -115,7 +115,7 @@ func runtimeID(system uintptr) (wguid.GUID, error) {
 	return wguid.FromString(p.RuntimeId)
 }
 
-// startCtl connects to winboxd and keeps the connection up.
+// startCtl connects to hyperbutlerd and keeps the connection up.
 func startCtl(system uintptr, start time.Time) (*guestctl.Supervisor, wguid.GUID, func(), error) {
 	id, err := runtimeID(system)
 	if err != nil {
@@ -154,7 +154,7 @@ func startCtl(system uintptr, start time.Time) (*guestctl.Supervisor, wguid.GUID
 // vmmemPIDs lists the vmmem processes now. The VM's own vmmem is the one that appears
 // between a snapshot before HcsCreateComputeSystem and one after start: a non-elevated
 // caller cannot read a vmmem process's owner (GetOwner returns access denied), and other
-// VMs (other winbox sessions) may run at the same time.
+// VMs (other hyperbutler sessions) may run at the same time.
 func vmmemPIDs() map[uint32]bool {
 	m := map[uint32]bool{}
 	snap, err := syscall.CreateToolhelp32Snapshot(syscall.TH32CS_SNAPPROCESS, 0)

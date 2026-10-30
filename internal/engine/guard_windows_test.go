@@ -8,9 +8,9 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/Higangssh/winbox/internal/guestctl"
-	"github.com/Higangssh/winbox/internal/spaceguard"
-	"github.com/Higangssh/winbox/internal/vm"
+	"github.com/Higangssh/hyperbutler/internal/guestctl"
+	"github.com/Higangssh/hyperbutler/internal/spaceguard"
+	"github.com/Higangssh/hyperbutler/internal/vm"
 )
 
 func newTestGuard(t *testing.T, cfg spaceguard.Config) (*hostGuard, *fakeMachine) {

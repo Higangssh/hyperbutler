@@ -12,7 +12,7 @@ import (
 
 	"golang.org/x/sys/windows"
 
-	"github.com/Higangssh/winbox/internal/vm"
+	"github.com/Higangssh/hyperbutler/internal/vm"
 )
 
 // MkdirPrivate creates dir (and missing parents) if needed. A directory it creates gets
@@ -89,7 +89,7 @@ type dataDisk struct {
 //  3. data.vhdx.new is renamed to data.vhdx.
 //
 // A disk.json without data.vhdx or data.vhdx.new means the disk was removed behind
-// winbox's back; that is an error, never a silent reformat.
+// hyperbutler's back; that is an error, never a silent reformat.
 func prepareDisk(l Layout, size uint64) (*dataDisk, error) {
 	if err := MkdirPrivate(l.Data); err != nil {
 		return nil, err
@@ -107,11 +107,11 @@ func prepareDisk(l Layout, size uint64) (*dataDisk, error) {
 			}
 			return checkDisk(path, meta, true)
 		}
-		return nil, codeErr(CodeDataDisk, fmt.Errorf("the data disk %s is missing but %s exists; `winbox delete` starts over", path, l.DiskMetaPath()))
+		return nil, codeErr(CodeDataDisk, fmt.Errorf("the data disk %s is missing but %s exists; `hyperbutler delete` starts over", path, l.DiskMetaPath()))
 	case merr != nil && !errors.Is(merr, os.ErrNotExist):
 		return nil, codeErr(CodeDataDisk, merr)
 	case derr == nil:
-		return nil, codeErr(CodeDataDisk, fmt.Errorf("the data disk %s has no %s; `winbox delete` starts over", path, l.DiskMetaPath()))
+		return nil, codeErr(CodeDataDisk, fmt.Errorf("the data disk %s has no %s; `hyperbutler delete` starts over", path, l.DiskMetaPath()))
 	case !errors.Is(derr, os.ErrNotExist):
 		return nil, derr
 	}

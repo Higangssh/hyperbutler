@@ -159,7 +159,7 @@ func TestGoleakOnlyHere(t *testing.T) {
 			if path == "go.uber.org/goleak" && f.dir != "internal/leaktest" {
 				t.Errorf("%s imports goleak directly; use internal/leaktest", f.path)
 			}
-			if !f.test && path == "github.com/Higangssh/winbox/internal/leaktest" {
+			if !f.test && path == "github.com/Higangssh/hyperbutler/internal/leaktest" {
 				t.Errorf("%s: non-test file imports internal/leaktest", f.path)
 			}
 		}

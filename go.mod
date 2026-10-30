@@ -1,4 +1,4 @@
-module github.com/Higangssh/winbox
+module github.com/Higangssh/hyperbutler
 
 go 1.27
 

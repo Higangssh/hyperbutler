@@ -1,8 +1,8 @@
 #!/bin/busybox sh
-# winbox guest stage 1 (PID 1 in the initramfs). See docs/adr/0005-guest-image.md.
+# hyperbutler guest stage 1 (PID 1 in the initramfs). See docs/adr/0005-guest-image.md.
 #
 # The initramfs holds only BusyBox, this script and the modules needed to reach the
-# system disk. It mounts the read-only erofs system disk (winbox.system=lun:N on
+# system disk. It mounts the read-only erofs system disk (hyperbutler.system=lun:N on
 # Hyper-V, a device name such as vdb on QEMU) and switch_roots into it. switch_root
 # deletes the initramfs, so none of it stays in guest RAM, and the new root is a real
 # mount, so runc can pivot_root (no DOCKER_RAMDISK). The system disk's /sbin/init
@@ -16,9 +16,9 @@ mount -t proc -o nosuid,nodev,noexec proc /proc
 mount -t sysfs -o nosuid,nodev,noexec sysfs /sys
 mount -t devtmpfs -o nosuid,mode=0755 devtmpfs /dev
 
-t() { read -r up _ </proc/uptime; echo "winbox-t $up $*"; }
+t() { read -r up _ </proc/uptime; echo "hyperbutler-t $up $*"; }
 fail() {
-	echo "winbox: $*" >/dev/console
+	echo "hyperbutler: $*" >/dev/console
 	t "boot-failed"
 	sleep 1
 	poweroff -f
@@ -28,10 +28,10 @@ t stage1-start
 SYSTEM=
 for arg in $(cat /proc/cmdline); do
 	case "$arg" in
-	winbox.system=*) SYSTEM=${arg#winbox.system=} ;;
+	hyperbutler.system=*) SYSTEM=${arg#hyperbutler.system=} ;;
 	esac
 done
-[ -n "$SYSTEM" ] || fail "no winbox.system= on the kernel command line; this initramfs needs its system disk"
+[ -n "$SYSTEM" ] || fail "no hyperbutler.system= on the kernel command line; this initramfs needs its system disk"
 
 if [ -d /sys/bus/vmbus ]; then
 	modprobe -a hv_storvsc sd_mod erofs

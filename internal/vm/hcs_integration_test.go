@@ -4,8 +4,8 @@
 // with the agent listening on vsock port 2375) and needs the user to be in Hyper-V
 // Administrators. Run it non-elevated with:
 //
-//	$env:WINBOX_TEST_KERNEL = "...\vmlinuz-virt"
-//	$env:WINBOX_TEST_INITRD = "...\initramfs-winbox.gz"
+//	$env:HYPERBUTLER_TEST_KERNEL = "...\vmlinuz-virt"
+//	$env:HYPERBUTLER_TEST_INITRD = "...\initramfs-hyperbutler.gz"
 //	go test -tags integration -run Integration -v ./internal/vm/
 //
 // Windows edition: ran on Windows 11 Home 10.0.26200 (see docs/research/hvsock-path.md).
@@ -24,13 +24,13 @@ import (
 
 	"golang.org/x/sys/windows"
 
-	"github.com/Higangssh/winbox/internal/transport"
+	"github.com/Higangssh/hyperbutler/internal/transport"
 )
 
 func TestIntegrationHvSocketServiceTable(t *testing.T) {
-	kernel, initrd := os.Getenv("WINBOX_TEST_KERNEL"), os.Getenv("WINBOX_TEST_INITRD")
+	kernel, initrd := os.Getenv("HYPERBUTLER_TEST_KERNEL"), os.Getenv("HYPERBUTLER_TEST_INITRD")
 	if kernel == "" || initrd == "" {
-		t.Skip("WINBOX_TEST_KERNEL and WINBOX_TEST_INITRD are not set")
+		t.Skip("HYPERBUTLER_TEST_KERNEL and HYPERBUTLER_TEST_INITRD are not set")
 	}
 	tu, err := windows.GetCurrentProcessToken().GetTokenUser()
 	if err != nil {
@@ -42,7 +42,7 @@ func TestIntegrationHvSocketServiceTable(t *testing.T) {
 	}
 	b := make([]byte, 8)
 	_, _ = rand.Read(b)
-	id := "winbox-test-" + hex.EncodeToString(b)
+	id := "hyperbutler-test-" + hex.EncodeToString(b)
 	consolePipe := `\\.\pipe\` + id + "-com1"
 	sys, err := Create(id, &Config{
 		// The prototype init writes to /dev/console, so it gets a COM port.

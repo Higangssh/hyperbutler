@@ -8,15 +8,15 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/Higangssh/winbox/internal/guestctl"
-	"github.com/Higangssh/winbox/internal/spaceguard"
-	"github.com/Higangssh/winbox/internal/vm"
+	"github.com/Higangssh/hyperbutler/internal/guestctl"
+	"github.com/Higangssh/hyperbutler/internal/spaceguard"
+	"github.com/Higangssh/hyperbutler/internal/vm"
 )
 
 // vhdxMaxOverhead is the VHDX metadata allowance added to the virtual size for the
 // largest the file can become (spaceguard.Host.VHDXMax). With 1 MiB blocks the BAT is
 // 8 bytes per block, 512 KiB for a 64 GiB disk; 64 MiB covers that, the log and the
-// headers for any disk size winbox allows.
+// headers for any disk size hyperbutler allows.
 const vhdxMaxOverhead = 64 << 20
 
 // hostGuard is the host half of the free-space guard (REQ-DISK-004): every interval it

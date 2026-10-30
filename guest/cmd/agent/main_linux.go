@@ -1,4 +1,4 @@
-// Command agent is the winbox guest agent. For now it does one thing: it listens on an
+// Command agent is the hyperbutler guest agent. For now it does one thing: it listens on an
 // AF_VSOCK port and relays every connection from the host to dockerd's Unix socket, so
 // the host can reach the Docker API over hvsock (HCS) without any guest network.
 //
@@ -41,7 +41,7 @@ func main() {
 		flag.Usage()
 		os.Exit(2)
 	}
-	log.SetPrefix("winbox-agent: ")
+	log.SetPrefix("hyperbutler-agent: ")
 	log.SetFlags(0)
 
 	ln, err := listenVsock(uint32(*port))

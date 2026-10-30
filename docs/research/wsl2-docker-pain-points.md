@@ -246,11 +246,11 @@ owns its own VM can fix these problems at the source.
 - **Lima (WSL2 driver):** Experimental, needs a tar rootfs, and supports only some options.
   colima has no Windows support ([Lima docs](https://lima-vm.io/docs/config/vmtype/wsl2/)).
 
-## 9. Implications for winbox's design
+## 9. Implications for hyperbutler's design
 
-1. **Own the VM and its disk.** Don't depend on WSL, so WSL updates can't break winbox (U1).
+1. **Own the VM and its disk.** Don't depend on WSL, so WSL updates can't break hyperbutler (U1).
 2. **Return disk space online:**
-   - Use a disk file winbox owns, marked NTFS-sparse (`FSCTL_SET_SPARSE`).
+   - Use a disk file hyperbutler owns, marked NTFS-sparse (`FSCTL_SET_SPARSE`).
    - Expose virtio-blk discard to the guest and turn discards into `FSCTL_SET_ZERO_DATA` hole
      punches.
    - Run `fstrim` on a timer and enable BuildKit GC by default.

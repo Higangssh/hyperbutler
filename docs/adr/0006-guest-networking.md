@@ -28,7 +28,7 @@ VPN.
      the internet link (294–321 Mbit/s, n=6, against one host run at 282). Local throughput was
      5.5–9.6 Gbit/s (n=8).
    - **Problems:**
-     - There is no DHCP and no DNS at the NAT gateway, so winbox must configure the guest.
+     - There is no DHCP and no DNS at the NAT gateway, so hyperbutler must configure the guest.
      - Split DNS failed: a VPN-only name gave NXDOMAIN. Fixing it needs a host DNS
        forwarder.
      - It creates host-wide objects (a vNIC, WinNAT, a /24 that must not collide with LAN
@@ -61,7 +61,7 @@ VPN.
 **Default: a user-mode network stack on the host, reached over hvsock (option 3).** The
 first candidate is gvisor-tap-vsock (Apache-2.0).
 
-1. The guest has one virtual NIC backed by the stack. The host side runs inside the winbox
+1. The guest has one virtual NIC backed by the stack. The host side runs inside the hyperbutler
    process (or the ADR 0004 broker's per-user worker), so every connection is a Windows
    socket of that process.
 2. DNS from the guest goes to a resolver in the stack, which answers through the Windows
@@ -75,7 +75,7 @@ first candidate is gvisor-tap-vsock (Apache-2.0).
 **HNS NAT stays an opt-in backend for throughput** (option 1). Possible uses: a future
 `--network=hns` flag, or as the fallback if the user-mode stack turns out too slow.
 `internal/hcn` keeps the binding. When it is used:
-- Networks are created non-persistent and named `winbox-*`.
+- Networks are created non-persistent and named `hyperbutler-*`.
 - The guest gets a static address from the kernel command line or the agent.
 - DNS still goes through the same host forwarder, so split DNS keeps working.
 
@@ -94,8 +94,8 @@ WSL, Docker Desktop or a full-tunnel VPN.
    it cannot collide with WSL, Docker Desktop, Windows Sandbox or a VPN's routes
    (REQ-PLAT-004, pain point N2). Option 1 shares HNS and WinNAT with all of them.
 2. **Traffic is host-process traffic.** VPN clients that refuse or filter forwarded (NATed)
-   traffic still see an ordinary socket of the winbox process. Option 1's packets are
-   forwarded, which is the WSL failure class. The flip side: the guest inherits winbox's
+   traffic still see an ordinary socket of the hyperbutler process. Option 1's packets are
+   forwarded, which is the WSL failure class. The flip side: the guest inherits hyperbutler's
    per-app firewall and VPN policy, and the stack must refuse the host's own addresses,
    which a host process would otherwise reach past inbound firewall rules.
 3. **A smaller privileged surface.** Under ADR 0004, option 1 adds HCN create and delete
@@ -165,7 +165,7 @@ the spike:
 ## Implementation
 
 `internal/netstack` embeds gVisor's TCP/IP stack with gvisor-tap-vsock's
-`tap.LinkEndpoint` in `winbox-dev run` (default `-net user`). gvisor-tap-vsock's
+`tap.LinkEndpoint` in `hyperbutler-dev run` (default `-net user`). gvisor-tap-vsock's
 `VirtualNetwork` is not used as a whole, because it has no hook to filter destinations,
 its switch indexes the Ethernet header of a frame before checking its length, and its DNS
 answers every lookup error with NXDOMAIN and falls back to `/etc/resolv.conf`, which does
@@ -173,7 +173,7 @@ not exist on Windows. Instead:
 
 - **Link.** The VM document declares the hvsock service of vsock port 1024 with a bind
   descriptor for the current user only and a deny-all connect descriptor
-  (`vm.Service.BindSDDL`). winbox listens on that service for this VM's runtime ID. In the
+  (`vm.Service.BindSDDL`). hyperbutler listens on that service for this VM's runtime ID. In the
   guest, `guest/cmd/netfwd` creates a persistent TAP `eth0` and relays its frames,
   length-prefixed (`internal/netstack/frame`), over AF_VSOCK to CID 2. Both sides reject
   frames shorter than an Ethernet header or longer than the MTU. Both batch: one read on
@@ -209,17 +209,17 @@ not exist on Windows. Instead:
 ## Gate results (2026-10-30)
 
 Windows 11 Home 10.0.26200, non-elevated Hyper-V Administrators account, Wi-Fi uplink,
-Tailscale connected, 1024 MB and 2 vCPU guest. `winbox-dev run -bench-bytes 1073741824`
+Tailscale connected, 1024 MB and 2 vCPU guest. `hyperbutler-dev run -bench-bytes 1073741824`
 moves 1 GiB per run, three runs per path and direction. The bench servers are in
 `netfwd`. "Stack" paths include one Windows loopback hop (the publish listener).
-Details are in [guest-networking.md](../research/guest-networking.md#the-user-mode-stack-gvisor-in-winbox-dev).
+Details are in [guest-networking.md](../research/guest-networking.md#the-user-mode-stack-gvisor-in-hyperbutler-dev).
 
 | Gate | Result | Pass? |
 |---|---|---|
 | Guest-to-host TCP at least 50% of raw hvsock, same boot | MTU 9000, 256 KiB buffers (shipped): 3.60–3.79 Gbit/s against raw 7.75–13.29 (medians 36–38% on 2 boots). With 1 MiB buffers: 4.69–4.83 against 7.19–14.22 (60%). | **No** with the shipped memory bound |
 | Host CPU at most 1 core per Gbit/s | 0.17–0.63 cores per Gbit/s through the stack, both directions | Yes |
 | LAN registry pull within 20% of HNS NAT | Not run: no second machine with `registry:2` on a wired link | **Not run** |
-| Idle memory within REQ-MEM-001 | winbox-dev with the stack idle: 21 MB working set, 56 MB private; 42 / 77 MB after pulls | Yes for idle; the worst case is bounded at 256 MiB of stack buffers |
+| Idle memory within REQ-MEM-001 | hyperbutler-dev with the stack idle: 21 MB working set, 56 MB private; 42 / 77 MB after pulls | Yes for idle; the worst case is bounded at 256 MiB of stack buffers |
 | VPN split DNS, public DNS and a VPN-only address in one run | `peer-a.<tailnet>.ts.net` and the bare `peer-a` resolved to 100.64.0.10, `registry-1.docker.io` resolved, a missing tailnet name gave NXDOMAIN, and TCP to tailnet peers by IP and by MagicDNS name connected. The host's own Tailscale address was refused. | Yes (Tailscale only) |
 | p99 small-request latency (ADR 0003) | 64-byte round trips, n=20000. Idle: stack p99 239–271 µs (raw hvsock 89–154 µs). Under bulk load: stack p99 444–688 µs, p99.9 11.6 ms (raw 124–273 µs, p99.9 0.7–2.0 ms). | Recorded. The p99.9 tail under load (about 11 ms on every run) is open: GC or the 1 MiB guest-bound queue. |
 
@@ -234,7 +234,7 @@ issues. Each one is fixed or rejected below.
 
 | # | Sev | Finding | Resolution |
 |---|---|---|---|
-| 1 | High | Auto-publish binds `127.0.0.1:P` for ports the guest picks. Windows lets that specific bind succeed beside a host service on `0.0.0.0:P`, and it takes over the service's loopback clients. | **Fixed:** a port is refused if an IPv4, IPv6-only or dual-stack wildcard probe bind fails. The test covers all three listener kinds; the e2e run confirmed a refused port. **Accepted residual:** a guest can still claim a *free* loopback port before a host program does. That is inherent to Docker-style publishing, and the fix (an allow-list from the user's own `POST /containers/create`) belongs to `internal/transport`/`winboxd`. |
+| 1 | High | Auto-publish binds `127.0.0.1:P` for ports the guest picks. Windows lets that specific bind succeed beside a host service on `0.0.0.0:P`, and it takes over the service's loopback clients. | **Fixed:** a port is refused if an IPv4, IPv6-only or dual-stack wildcard probe bind fails. The test covers all three listener kinds; the e2e run confirmed a refused port. **Accepted residual:** a guest can still claim a *free* loopback port before a host program does. That is inherent to Docker-style publishing, and the fix (an allow-list from the user's own `POST /containers/create`) belongs to `internal/transport`/`hyperbutlerd`. |
 | 2 | Med | Host addresses are cached for 1 s, so a new host address (VPN connect) is reachable in that window. | **Fixed:** after each TCP and UDP dial, a connection to this host (local address equals remote address) is closed. Test: `TestStaleHostAddrsStillDenied`. |
 | 3 | Med | The memory bound was about 8 GiB (4096 connections x 2 x 1 MiB). | **Fixed:** 512 connections x 2 x 256 KiB = 256 MiB. This costs throughput (see the gate). |
 | 4 | Med | The `/events` decoder could buffer one value of up to 1 TiB. | **Fixed:** events are read line by line with a 64 KiB cap. Test: `TestReadEventLineBounded`. |

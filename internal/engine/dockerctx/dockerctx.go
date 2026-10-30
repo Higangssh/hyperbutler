@@ -1,4 +1,4 @@
-// Package dockerctx registers and selects the docker CLI context that points at winbox
+// Package dockerctx registers and selects the docker CLI context that points at hyperbutler
 // (REQ-UX-001), by writing the docker CLI's own files the way `docker context create`
 // and `docker context use` do. It needs no docker.exe.
 //
@@ -9,7 +9,7 @@
 //     credentials among them) keeps its value; the file is re-indented and its keys
 //     sorted, as the docker CLI itself does when it saves it.
 //
-// A context is winbox's own when its metadata carries ManagedKey = true. A context of
+// A context is hyperbutler's own when its metadata carries ManagedKey = true. A context of
 // the same name without it was made by someone else and is never overwritten or
 // removed.
 package dockerctx
@@ -28,12 +28,12 @@ import (
 	"unicode/utf8"
 )
 
-// ManagedKey marks a context created by winbox. The docker CLI keeps unknown metadata
+// ManagedKey marks a context created by hyperbutler. The docker CLI keeps unknown metadata
 // fields when it rewrites a context.
-const ManagedKey = "WinboxManaged"
+const ManagedKey = "HyperbutlerManaged"
 
-// ErrNotOurs means a context of that name exists and winbox did not create it.
-var ErrNotOurs = errors.New("dockerctx: a context of that name exists and was not created by winbox")
+// ErrNotOurs means a context of that name exists and hyperbutler did not create it.
+var ErrNotOurs = errors.New("dockerctx: a context of that name exists and was not created by hyperbutler")
 
 // maxFile bounds the files read here. config.json can hold credentials and
 // plugin settings but is small; anything larger is not a docker CLI file.
@@ -54,7 +54,7 @@ func DefaultStore() (Store, error) {
 	return Store{Dir: filepath.Join(h, ".docker")}, nil
 }
 
-// Context is the subset of a context's meta.json that winbox reads.
+// Context is the subset of a context's meta.json that hyperbutler reads.
 type Context struct {
 	Name    string
 	Host    string
@@ -123,7 +123,7 @@ func ParseMeta(b []byte) (*Context, error) {
 	return c, nil
 }
 
-// encodeMeta renders the meta.json of a winbox-managed context.
+// encodeMeta renders the meta.json of a hyperbutler-managed context.
 func encodeMeta(name, host, description string) ([]byte, error) {
 	return json.Marshal(map[string]any{
 		"Name":      name,
@@ -132,9 +132,9 @@ func encodeMeta(name, host, description string) ([]byte, error) {
 	})
 }
 
-// Ensure creates context name pointing at host, or updates it if it is winbox's own.
+// Ensure creates context name pointing at host, or updates it if it is hyperbutler's own.
 // It returns ErrNotOurs, and changes nothing, if a context of that name exists that
-// winbox did not create, or that cannot be read.
+// hyperbutler did not create, or that cannot be read.
 func (s Store) Ensure(name, host, description string) error {
 	if name == "" || !utf8.ValidString(name) || !utf8.ValidString(host) || !utf8.ValidString(description) {
 		return errors.New("dockerctx: context name, host and description must be non-empty UTF-8")
@@ -158,7 +158,7 @@ func (s Store) Ensure(name, host, description string) error {
 	return writeAtomic(s.metaPath(name), b)
 }
 
-// Remove deletes context name if it is winbox's own; a missing one is not an error.
+// Remove deletes context name if it is hyperbutler's own; a missing one is not an error.
 func (s Store) Remove(name string) error {
 	c, err := s.Get(name)
 	if errors.Is(err, os.ErrNotExist) {
@@ -294,7 +294,7 @@ func readBounded(path string) ([]byte, error) {
 func writeAtomic(path string, data []byte) error {
 	var rnd [6]byte
 	_, _ = rand.Read(rnd[:])
-	tmp := path + ".winbox-" + hex.EncodeToString(rnd[:])
+	tmp := path + ".hyperbutler-" + hex.EncodeToString(rnd[:])
 	if err := os.WriteFile(tmp, data, 0o600); err != nil {
 		return err
 	}

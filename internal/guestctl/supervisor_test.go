@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Higangssh/winbox/internal/spaceguard"
+	"github.com/Higangssh/hyperbutler/internal/spaceguard"
 )
 
 // A guest that completes the handshake and drops at once must not get redialed at the

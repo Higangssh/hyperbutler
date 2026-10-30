@@ -9,7 +9,7 @@
 - Machine: the ADR 0005 machine, Windows 11 Home 10.0.26200, NTFS `C:`, Defender in passive
   mode (real-time scanning off; REQ-PLAT-007 needs a rerun with it on). The account is in
   Hyper-V Administrators; **every run was non-elevated**.
-- Guest: HCS VM, 4096 MiB, 4 vCPUs, Alpine `linux-virt` 6.18.58, the winbox initramfs with
+- Guest: HCS VM, 4096 MiB, 4 vCPUs, Alpine `linux-virt` 6.18.58, the hyperbutler initramfs with
   `fuse.ko` and the 9p modules added. Most numbers are **one run each**; treat differences
   under 20 % as noise.
 
@@ -19,7 +19,7 @@
 |---|---|---|---|
 | (a) HCS Plan9 | `Devices.Plan9.Shares` in the VM document. The VM worker (vmwp) serves 9P2000.L over hvsock; the guest dials host port 564 and mounts `9p` with `trans=fd`. WSL's drvfs and LCOW work this way. | **Yes**, after `HcsGrantVmAccess` on the shared directory. | Works, slow, no change notifications. |
 | (b) virtio-fs | No such device in the HCS schema. `VirtioFs` and other unknown keys are rejected at create (`0x8037010D`, "Construct"). `vmvirtio.dll` is only a helper library for *external* device emulators attached through `FlexibleIov`, which needs a registered emulator COM class (WSL ships one, `wsldevicehost.dll`; this machine has none). A `FlexibleIov` entry with an unregistered `EmulatorId` is rejected the same way. | n/a | **Not available** without writing and registering an undocumented out-of-process device emulator. |
-| (c) winbox file server over hvsock | The guest kernel's FUSE client; a tiny guest relay copies `/dev/fuse` frames to hvsock unchanged; the host decodes FUSE and performs it on NTFS (`internal/share`). Changes on Windows are pushed as FUSE invalidations and replayed so inotify fires. | **Yes** (a user-only `BindSecurityDescriptor` on one hvsock service). | **Recommended.** |
+| (c) hyperbutler file server over hvsock | The guest kernel's FUSE client; a tiny guest relay copies `/dev/fuse` frames to hvsock unchanged; the host decodes FUSE and performs it on NTFS (`internal/share`). Changes on Windows are pushed as FUSE invalidations and replayed so inotify fires. | **Yes** (a user-only `BindSecurityDescriptor` on one hvsock service). | **Recommended.** |
 | (c') 9P2000.L server in Go | Same transport, kernel `9p` client. | Yes | Not built: 9P has no server-to-client messages, so it can neither invalidate a cache nor deliver events, and its client has no per-request pid for replay. It would inherit (a)'s two biggest problems. |
 | (d) sync (mutagen-style) | Copy the tree into guest ext4 once, then push each Windows change (`ReadDirectoryChangesW`) into the copy; guest writes would have to be synced back. | Yes | Fastest inside the guest; costs double disk, an initial copy, and a two-way sync engine with conflicts. Measured one-way only. |
 | SMB/CIFS to the host, NFS | Needs a share configured on the host (an admin and system-setting change) and the network path. HCS `VirtualSmb` is for Windows guests. | No | Rejected. |
@@ -200,9 +200,9 @@ Reviewed adversarially (ADR 0007 lists the findings and how each was handled).
 - `internal/share/relay`: the guest side (Linux), multi-queue, readahead, with replay through
   `openat2(RESOLVE_BENEATH|RESOLVE_NO_SYMLINKS)`.
 - `spike/share -demo`:
-  - boots the real winbox image through `engine.Run`, plus a wrapper that starts the relay and
+  - boots the real hyperbutler image through `engine.Run`, plus a wrapper that starts the relay and
     then execs `/init`;
-  - serves a translating Docker API on `\\.\pipe\winbox-share-demo`.
+  - serves a translating Docker API on `\\.\pipe\hyperbutler-share-demo`.
   - Verified: `docker run -v "C:\...\demo src:/src"` (a path with a space) reads and writes;
     `--user 1000:1000` writes; `--mount type=bind,source=C:\...`; `:ro` is enforced; a
     single-file bind shows only that file; inotify fires in the container.
@@ -214,8 +214,8 @@ go build -o $env:TEMP\hb-dev\share\share-spike.exe .\spike\share
 & $env:TEMP\hb-dev\share\share-spike.exe -targets ext4,fuse,plan9,sync -files 20000 -mb 1024 -notify 20 -compat
 & $env:TEMP\hb-dev\share\share-spike.exe -targets ext4 -suite "" -vsockbw
 & $env:TEMP\hb-dev\share\share-spike.exe -probe '{"VirtioFs":{"Tag":"x","Path":"C:/Windows/Temp"}}'
-& $env:TEMP\hb-dev\share\share-spike.exe -demo     # then docker -H npipe:////./pipe/winbox-share-demo run -v C:\x:/x ...
+& $env:TEMP\hb-dev\share\share-spike.exe -demo     # then docker -H npipe:////./pipe/hyperbutler-share-demo run -v C:\x:/x ...
 ```
 
 The harness expects the ADR 0005 build in `%TEMP%\hb-dev\wbcli\out` and Alpine's
-`linux-virt` module tree in `%TEMP%\hb-dev\winbox-spike\linux-virt`.
+`linux-virt` module tree in `%TEMP%\hb-dev\hyperbutler-spike\linux-virt`.

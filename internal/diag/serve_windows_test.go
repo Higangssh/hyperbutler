@@ -22,7 +22,7 @@ import (
 var pipeSeq atomic.Int64
 
 func testPipeName() string {
-	return fmt.Sprintf(`\\.\pipe\winbox-diag-test-%d-%d`, os.Getpid(), pipeSeq.Add(1))
+	return fmt.Sprintf(`\\.\pipe\hyperbutler-diag-test-%d-%d`, os.Getpid(), pipeSeq.Add(1))
 }
 
 func pipeClient(name string) *http.Client {

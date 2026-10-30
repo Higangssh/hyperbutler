@@ -23,7 +23,7 @@ defaults:
   run:
     shell: pwsh
 
-# Most winbox code is Windows-only (_windows.go files, HCS/WHP syscalls), so every job
+# Most hyperbutler code is Windows-only (_windows.go files, HCS/WHP syscalls), so every job
 # runs on Windows. Tests tagged `integration` need a hypervisor; nothing here passes
 # `-tags integration`, so they are never built or run in CI.
 #

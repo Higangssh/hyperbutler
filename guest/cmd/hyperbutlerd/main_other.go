@@ -8,6 +8,6 @@ import (
 )
 
 func main() {
-	fmt.Fprintln(os.Stderr, "winboxd runs in the Linux guest only")
+	fmt.Fprintln(os.Stderr, "hyperbutlerd runs in the Linux guest only")
 	os.Exit(2)
 }

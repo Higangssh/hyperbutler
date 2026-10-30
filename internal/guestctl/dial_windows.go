@@ -8,7 +8,7 @@ import (
 
 	"github.com/Microsoft/go-winio/pkg/guid"
 
-	"github.com/Higangssh/winbox/internal/transport"
+	"github.com/Higangssh/hyperbutler/internal/transport"
 )
 
 // ServiceID is the hvsock service GUID of the control port. The VM's HCS document must

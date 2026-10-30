@@ -3,7 +3,7 @@ package main
 import (
 	"sync"
 
-	"github.com/Higangssh/winbox/internal/spaceguard"
+	"github.com/Higangssh/hyperbutler/internal/spaceguard"
 )
 
 // mailbox carries budget and connection-lost events from the control connections to the

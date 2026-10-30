@@ -4,14 +4,14 @@
 // Subcommands:
 //
 //	list                 print every HNS network and endpoint (read-only)
-//	hns                  create a winbox- NAT network and endpoint, boot an HCS VM with it
+//	hns                  create a hyperbutler- NAT network and endpoint, boot an HCS VM with it
 //	                     attached, run the guest probe, then delete what it created
 //	relay                boot an HCS VM with no NIC and run the guest probe through a
 //	                     host-side CONNECT relay over hvsock (user-mode path)
 //	cleanup              delete the objects recorded in the state file
 //
 // Every object it creates is recorded in a state file before use, and cleanup deletes only
-// IDs from that file whose names start with "winbox-". Throwaway code; see
+// IDs from that file whose names start with "hyperbutler-". Throwaway code; see
 // docs/research/guest-networking.md.
 package main
 
@@ -23,10 +23,10 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/Higangssh/winbox/internal/hcn"
+	"github.com/Higangssh/hyperbutler/internal/hcn"
 )
 
-var workDir = filepath.Join(os.TempDir(), "hb-dev", "winbox-spike", "net")
+var workDir = filepath.Join(os.TempDir(), "hb-dev", "hyperbutler-spike", "net")
 
 func main() {
 	if len(os.Args) < 2 {

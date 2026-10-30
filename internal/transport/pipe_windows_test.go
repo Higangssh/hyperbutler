@@ -25,7 +25,7 @@ import (
 var pipeSeq atomic.Int64
 
 func testPipeName(t *testing.T) string {
-	return fmt.Sprintf(`\\.\pipe\winbox_test_%d_%d_%s`, windows.GetCurrentProcessId(), pipeSeq.Add(1),
+	return fmt.Sprintf(`\\.\pipe\hyperbutler_test_%d_%d_%s`, windows.GetCurrentProcessId(), pipeSeq.Add(1),
 		strings.NewReplacer("/", "_", "\\", "_").Replace(t.Name()))
 }
 

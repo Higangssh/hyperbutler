@@ -66,7 +66,7 @@ func TestValidatePipeName(t *testing.T) {
 		ok bool
 	}{
 		{DefaultPipeName, true},
-		{`\\.\PIPE\docker_engine_winbox`, true},
+		{`\\.\PIPE\docker_engine_hyperbutler`, true},
 		{`\\.\pipe\a`, true},
 		{`\\.\pipe\` + strings.Repeat("a", 256-9), true},
 		{`\\.\pipe\` + strings.Repeat("a", 256-8), false},

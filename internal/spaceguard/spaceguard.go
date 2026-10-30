@@ -1,4 +1,4 @@
-// Package spaceguard decides how much guest file-system space winbox holds back so that
+// Package spaceguard decides how much guest file-system space hyperbutler holds back so that
 // the guest runs out of space (ENOSPC) before the host volume that holds its sparse VHDX
 // does (REQ-DISK-004).
 //
@@ -81,7 +81,7 @@ var DefaultConfig = Config{
 	Floor:      256 << 20, // 256 MiB
 	ResumeGap:  256 << 20,
 	Hysteresis: 64 << 20,
-	Quantum:    1 << 20, // the winbox VHDX block size
+	Quantum:    1 << 20, // the hyperbutler VHDX block size
 }
 
 // Validate reports a configuration the policy cannot honour.

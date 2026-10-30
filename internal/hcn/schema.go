@@ -10,10 +10,10 @@ import (
 	"unicode/utf8"
 )
 
-// NamePrefix is the prefix every network and endpoint winbox creates must carry.
-const NamePrefix = "winbox-"
+// NamePrefix is the prefix every network and endpoint hyperbutler creates must carry.
+const NamePrefix = "hyperbutler-"
 
-// maxNameLen bounds object names. HNS itself accepts longer names, but winbox has no
+// maxNameLen bounds object names. HNS itself accepts longer names, but hyperbutler has no
 // reason to, and a bound keeps names safe to log.
 const maxNameLen = 64
 
@@ -26,7 +26,7 @@ const (
 	FlagEnableNonPersistent uint32 = 8
 )
 
-// SchemaVersion is the HCN schema version. winbox writes 2.0.
+// SchemaVersion is the HCN schema version. hyperbutler writes 2.0.
 type SchemaVersion struct {
 	Major int `json:"Major"`
 	Minor int `json:"Minor"`
@@ -61,7 +61,7 @@ type DNS struct {
 	ServerList []string `json:"ServerList,omitempty"`
 }
 
-// Network is the subset of the HCN network document winbox reads and writes.
+// Network is the subset of the HCN network document hyperbutler reads and writes.
 type Network struct {
 	ID            string        `json:"ID,omitempty"`
 	Name          string        `json:"Name,omitempty"`
@@ -78,7 +78,7 @@ type IPConfig struct {
 	PrefixLength uint8  `json:"PrefixLength,omitempty"`
 }
 
-// Endpoint is the subset of the HCN endpoint document winbox reads and writes.
+// Endpoint is the subset of the HCN endpoint document hyperbutler reads and writes.
 type Endpoint struct {
 	ID                 string        `json:"ID,omitempty"`
 	Name               string        `json:"Name,omitempty"`
@@ -90,7 +90,7 @@ type Endpoint struct {
 	SchemaVersion      SchemaVersion `json:"SchemaVersion"`
 }
 
-// ValidateName reports whether name is acceptable for an object winbox creates or
+// ValidateName reports whether name is acceptable for an object hyperbutler creates or
 // deletes: NamePrefix followed by 1..maxNameLen-len(NamePrefix) of [a-z0-9-].
 func ValidateName(name string) error {
 	if !strings.HasPrefix(name, NamePrefix) {

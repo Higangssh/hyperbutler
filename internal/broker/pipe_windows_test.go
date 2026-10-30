@@ -14,7 +14,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Higangssh/winbox/internal/broker/proto"
+	"github.com/Higangssh/hyperbutler/internal/broker/proto"
 	"github.com/Microsoft/go-winio"
 	"golang.org/x/sys/windows"
 )
@@ -22,7 +22,7 @@ import (
 var pipeSeq atomic.Int64
 
 func testPipeName(t *testing.T) string {
-	return fmt.Sprintf(`\\.\pipe\winbox_broker_test_%d_%d_%s`, windows.GetCurrentProcessId(), pipeSeq.Add(1),
+	return fmt.Sprintf(`\\.\pipe\hyperbutler_broker_test_%d_%d_%s`, windows.GetCurrentProcessId(), pipeSeq.Add(1),
 		strings.NewReplacer("/", "_", "\\", "_").Replace(t.Name()))
 }
 

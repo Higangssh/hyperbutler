@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Higangssh/winbox/internal/spaceguard"
+	"github.com/Higangssh/hyperbutler/internal/spaceguard"
 )
 
 type fakeHandler struct {

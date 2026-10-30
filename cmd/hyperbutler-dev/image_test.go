@@ -10,13 +10,13 @@ import (
 
 func TestFullName(t *testing.T) {
 	tests := map[string]string{
-		"busybox":                    "docker.io/library/busybox",
-		"busybox:1":                  "docker.io/library/busybox:1",
-		"winbox-test/busybox:latest": "docker.io/winbox-test/busybox:latest",
-		"a/b/c":                      "docker.io/a/b/c",
-		"localhost/x":                "localhost/x",
-		"reg.io/x:1":                 "reg.io/x:1",
-		"reg:5000/x":                 "reg:5000/x",
+		"busybox":                         "docker.io/library/busybox",
+		"busybox:1":                       "docker.io/library/busybox:1",
+		"hyperbutler-test/busybox:latest": "docker.io/hyperbutler-test/busybox:latest",
+		"a/b/c":                           "docker.io/a/b/c",
+		"localhost/x":                     "localhost/x",
+		"reg.io/x:1":                      "reg.io/x:1",
+		"reg:5000/x":                      "reg:5000/x",
 	}
 	for in, want := range tests {
 		if got := fullName(in); got != want {
@@ -50,7 +50,7 @@ func readTar(t *testing.T, b []byte) (map[string][]byte, map[string]*tar.Header)
 // does, and the layer's contents.
 func TestBuildImage(t *testing.T) {
 	bin := []byte("\x7fELF fake busybox")
-	img, err := buildImage(bin, "winbox-test/busybox:latest")
+	img, err := buildImage(bin, "hyperbutler-test/busybox:latest")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -74,7 +74,7 @@ func TestBuildImage(t *testing.T) {
 	if err := json.Unmarshal(files["index.json"], &index); err != nil || len(index.Manifests) != 1 {
 		t.Fatalf("index.json: %v %s", err, files["index.json"])
 	}
-	if got := index.Manifests[0].Annotations["io.containerd.image.name"]; got != "docker.io/winbox-test/busybox:latest" {
+	if got := index.Manifests[0].Annotations["io.containerd.image.name"]; got != "docker.io/hyperbutler-test/busybox:latest" {
 		t.Errorf("image name annotation %q", got)
 	}
 	var manifest struct {
@@ -116,7 +116,7 @@ func TestBuildImage(t *testing.T) {
 		t.Fatalf("layer entries %v", lh)
 	}
 
-	again, err := buildImage(bin, "winbox-test/busybox:latest")
+	again, err := buildImage(bin, "hyperbutler-test/busybox:latest")
 	if err != nil || !bytes.Equal(again, img) {
 		t.Error("image is not reproducible")
 	}

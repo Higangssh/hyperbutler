@@ -7,12 +7,12 @@ import (
 	"sync"
 	"time"
 
-	"github.com/Higangssh/winbox/internal/spaceguard"
+	"github.com/Higangssh/hyperbutler/internal/spaceguard"
 )
 
 // Supervisor keeps one control connection to the guest open: it dials, runs the
 // handshake, re-sends the newest budget on every new connection, and redials with a
-// capped backoff when the connection fails (the guest is still booting, winboxd was
+// capped backoff when the connection fails (the guest is still booting, hyperbutlerd was
 // restarted, or the guest broke the protocol).
 type Supervisor struct {
 	// Dial opens a connection to the guest's control service, for example

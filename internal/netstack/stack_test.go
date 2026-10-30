@@ -16,7 +16,7 @@ import (
 	"gvisor.dev/gvisor/pkg/tcpip/adapters/gonet"
 	"gvisor.dev/gvisor/pkg/tcpip/network/ipv4"
 
-	"github.com/Higangssh/winbox/internal/netstack/frame"
+	"github.com/Higangssh/hyperbutler/internal/netstack/frame"
 )
 
 // testHostAddr stands in for a LAN address of this host.
@@ -76,7 +76,7 @@ func TestHostForwardRelaysTCP(t *testing.T) {
 		t.Fatalf("dial host forward: %v", err)
 	}
 	defer c.Close()
-	msg := bytes.Repeat([]byte("winbox"), 50000) // 300 kB, many segments
+	msg := bytes.Repeat([]byte("hyperbutler"), 50000) // 300 kB, many segments
 	go func() { c.Write(msg); c.(*gonet.TCPConn).CloseWrite() }()
 	got, err := io.ReadAll(c)
 	if err != nil {

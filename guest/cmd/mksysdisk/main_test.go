@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Higangssh/winbox/guest/image"
-	"github.com/Higangssh/winbox/internal/leaktest"
+	"github.com/Higangssh/hyperbutler/guest/image"
+	"github.com/Higangssh/hyperbutler/internal/leaktest"
 )
 
 func TestMain(m *testing.M) { leaktest.VerifyTestMain(m) }
@@ -55,13 +55,13 @@ func TestWrapAndManifest(t *testing.T) {
 		t.Fatal("two wraps of the same image differ")
 	}
 
-	for _, n := range []string{"vmlinuz-virt", "initramfs-winbox.gz"} {
+	for _, n := range []string{"vmlinuz-virt", "initramfs-hyperbutler.gz"} {
 		if err := os.WriteFile(filepath.Join(dir, n), []byte(n), 0o600); err != nil {
 			t.Fatal(err)
 		}
 	}
 	man := filepath.Join(dir, image.ManifestName)
-	if err := writeManifest(man, filepath.Join(dir, "vmlinuz-virt"), filepath.Join(dir, "initramfs-winbox.gz"), out); err != nil {
+	if err := writeManifest(man, filepath.Join(dir, "vmlinuz-virt"), filepath.Join(dir, "initramfs-hyperbutler.gz"), out); err != nil {
 		t.Fatal(err)
 	}
 	mb, _ := os.ReadFile(man)

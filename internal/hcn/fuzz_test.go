@@ -60,16 +60,16 @@ func FuzzParseIDList(f *testing.F) {
 // FuzzParseNetwork: never panics, and the delete guard cannot be talked past. If the
 // parsed Name passes ValidateName, that exact string must appear as the value of a
 // top-level "Name" key in the raw document, matched case-insensitively and counting
-// duplicates. So a document whose every Name-like key has a non-winbox value (for
+// duplicates. So a document whose every Name-like key has a non-hyperbutler value (for
 // example "WSL") can never parse to a deletable name through key-case folding,
 // duplicate keys, nesting or trailing data.
 func FuzzParseNetwork(f *testing.F) {
-	f.Add(`{"ID":"3afee72c-1e7c-4cb2-9fbc-f9663a27c59f","Name":"winbox-spike-nat","Type":"NAT","Flags":8,"Ipams":[{"Subnets":[{"IpAddressPrefix":"10.239.77.0/24"}]}]}`)
+	f.Add(`{"ID":"3afee72c-1e7c-4cb2-9fbc-f9663a27c59f","Name":"hyperbutler-spike-nat","Type":"NAT","Flags":8,"Ipams":[{"Subnets":[{"IpAddressPrefix":"10.239.77.0/24"}]}]}`)
 	f.Add(`{"Name":"WSL","Flags":9}`)
-	f.Add(`{"Name":"winbox-a","Name":"WSL"}`)
-	f.Add(`{"name":"WSL","NAME":"winbox-a"}`)
-	f.Add(`{"Policies":[{"Name":"winbox-a"}],"Name":"WSL"}`)
-	f.Add(`{"Name":"winbox-\u0000"}`)
+	f.Add(`{"Name":"hyperbutler-a","Name":"WSL"}`)
+	f.Add(`{"name":"WSL","NAME":"hyperbutler-a"}`)
+	f.Add(`{"Policies":[{"Name":"hyperbutler-a"}],"Name":"WSL"}`)
+	f.Add(`{"Name":"hyperbutler-\u0000"}`)
 	f.Fuzz(func(t *testing.T, doc string) {
 		n, err := ParseNetwork(doc)
 		if err != nil || ValidateName(n.Name) != nil {

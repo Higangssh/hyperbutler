@@ -76,7 +76,7 @@ func TestLockRefusesLink(t *testing.T) {
 func TestLockReleasedWhenHolderDies(t *testing.T) {
 	p := filepath.Join(testDir(t), "engine.lock")
 	cmd := exec.Command(os.Args[0], "-test.run=^TestLockHelperProcess$")
-	cmd.Env = append(os.Environ(), "WINBOX_LOCK_HELPER="+p)
+	cmd.Env = append(os.Environ(), "HYPERBUTLER_LOCK_HELPER="+p)
 	out, err := cmd.StdoutPipe()
 	if err != nil {
 		t.Fatal(err)
@@ -107,7 +107,7 @@ func TestLockReleasedWhenHolderDies(t *testing.T) {
 }
 
 func TestLockHelperProcess(t *testing.T) {
-	p := os.Getenv("WINBOX_LOCK_HELPER")
+	p := os.Getenv("HYPERBUTLER_LOCK_HELPER")
 	if p == "" {
 		t.Skip("helper for TestLockReleasedWhenHolderDies")
 	}

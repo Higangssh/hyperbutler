@@ -66,7 +66,7 @@ formatters:
   settings:
     goimports:
       local-prefixes:
-        - github.com/Higangssh/winbox
+        - github.com/Higangssh/hyperbutler
 
 issues:
   # Report everything, not just the first few per linter.

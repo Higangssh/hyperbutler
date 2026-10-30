@@ -1,5 +1,5 @@
 // Package diag holds the runtime limits and the local debug endpoint that every
-// long-running winbox process uses (ADR 0003, guardrail 4).
+// long-running hyperbutler process uses (ADR 0003, guardrail 4).
 //
 //   - ApplyMemoryLimit sets the Go soft memory limit from configuration unless the
 //     GOMEMLIMIT environment variable already sets one. The environment wins so an
@@ -28,7 +28,7 @@ type Config struct {
 	// GOMEMLIMIT environment variable is set.
 	MemoryLimit string
 	// DebugPipe, when non-empty, is the named pipe the debug endpoint listens on, for
-	// example `\\.\pipe\winbox-dev-debug`. Empty means no endpoint (the default).
+	// example `\\.\pipe\hyperbutler-dev-debug`. Empty means no endpoint (the default).
 	DebugPipe string
 }
 

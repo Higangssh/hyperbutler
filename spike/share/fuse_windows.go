@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/Higangssh/winbox/internal/share"
-	"github.com/Higangssh/winbox/internal/transport"
+	"github.com/Higangssh/hyperbutler/internal/share"
+	"github.com/Higangssh/hyperbutler/internal/transport"
 	"github.com/Microsoft/go-winio"
 	"github.com/Microsoft/go-winio/pkg/guid"
 )
@@ -21,7 +21,7 @@ var (
 )
 
 // startFuse serves hostDir over hvsock with internal/share and has the guest mount it
-// at /mnt/winbox. It returns the guest path of the share.
+// at /mnt/hyperbutler. It returns the guest path of the share.
 func startFuse(ctx context.Context, g *guest, vmid guid.GUID, hostDir string, nocache bool) (string, error) {
 	fs, err := share.OpenNTFS(hostDir)
 	if err != nil {
@@ -59,9 +59,9 @@ func startFuse(ctx context.Context, g *guest, vmid guid.GUID, hostDir string, no
 			}()
 		}
 	}()
-	mp := "/mnt/winbox"
+	mp := "/mnt/hyperbutler"
 	if nocache {
-		mp = "/mnt/winbox-nocache"
+		mp = "/mnt/hyperbutler-nocache"
 	}
 	if _, err := g.call("fuse", map[string]string{"port": fmt.Sprint(fusePort), "target": mp, "queues": fmt.Sprint(*fuseQueues), "readahead": fmt.Sprint(*fuseRA)}); err != nil {
 		return "", err

@@ -10,14 +10,14 @@
   noted, the persistent data disk, user-mode networking.
 - Code: `guest/prototype` (stage-1 initramfs, system disk, `init`), `guest/image` (VHD
   footer and image manifest), `guest/cmd/mksysdisk`, `internal/engine` (image
-  verification, system disk attach, kernel command line), `cmd/winbox` (finds
+  verification, system disk attach, kernel command line), `cmd/hyperbutler` (finds
   `image.json`). Decisions are in [ADR 0005](../adr/0005-guest-image.md).
 
 ## Result
 
 | | Before (initramfs root) | After (erofs system disk + tuning) |
 |---|---|---|
-| Engine (`winbox.exe`) private WS, median | 14.8 MiB | 14.9 MiB |
+| Engine (`hyperbutler.exe`) private WS, median | 14.8 MiB | 14.9 MiB |
 | This VM's `vmmem` private WS, median | 514 MiB | 284 MiB |
 | This VM's `vmwp.exe` (worker) private WS, median | 5.5 MiB | 5.5 MiB |
 | **Total, median (max), 27–29 samples** | **534.3 MiB (534.5)** | **304.5 MiB (304.7)** |
@@ -36,28 +36,28 @@ REQ-MEM-001 for 0.1 (≤ 400 MB, which is ≤ 381 MiB) is **met**, with 77 MiB t
 `cli-engine.md` had 580 MiB, on a VM that had run containers earlier and without `vmwp`.
 
 Guest process RSS after (anonymous / file): dockerd 16.5 / 19.8 MiB, containerd 11.3 /
-28.3 MiB, winboxd 5.8 / 2.2 MiB, agent 1.2 / 2.2 MiB, netfwd 0.7 / 1.0 MiB. Before: dockerd
-34.1 anonymous, containerd 30.1, winboxd 10.4.
+28.3 MiB, hyperbutlerd 5.8 / 2.2 MiB, agent 1.2 / 2.2 MiB, netfwd 0.7 / 1.0 MiB. Before: dockerd
+34.1 anonymous, containerd 30.1, hyperbutlerd 10.4.
 
 ## Method
 
 As REQ-MEM-001 says, with nothing else added. The script is not in `bench/` yet; it should
 become `bench/mem-idle`.
 
-1. `winbox start` (its own `WINBOX_HOME` and `--pipe`, `--no-context`), one `docker info`
+1. `hyperbutler start` (its own `HYPERBUTLER_HOME` and `--pipe`, `--no-context`), one `docker info`
    right after the API answers, then nothing.
 2. From minute 5 to minute 10 after the API answered, every 10 s: the private working set
    (`WorkingSetPrivate` of `Win32_PerfRawData_PerfProc_Process`) of the engine, of this
    VM's `vmmem` and of its `vmwp.exe`. The result is the median of the per-sample sums.
 3. Only after the window: a throwaway privileged container (`--pid=host`) reads the guest's
    `/proc/meminfo`, process RSS, THP mode and `buddyinfo`. The engine also logs the guest's
-   own memory report (winboxd's status) once a minute, which covers the window itself.
+   own memory report (hyperbutlerd's status) once a minute, which covers the window itself.
 
 Which processes are ours: a non-elevated user cannot read a `vmmem` owner (it runs as the
-VM's virtual account). The script snapshots the `vmmem` processes before `winbox start`
+VM's virtual account). The script snapshots the `vmmem` processes before `hyperbutler start`
 and takes the new one. If another session started a VM at the same moment, it takes the
 one whose creation time is closest to the engine's start. `vmwp.exe` is that `vmmem`'s
-parent. After `winbox stop` the script checks that the `vmmem` is gone (it was, for the
+parent. After `hyperbutler stop` the script checks that the `vmmem` is gone (it was, for the
 final runs).
 
 Caveats:
@@ -108,12 +108,12 @@ in the engine's default command line. `MemTotal` rose by 65 MiB.
 linux-virt defaults to THP `always`. 86 of dockerd's and containerd's 96 MiB of anonymous
 memory were huge pages, held at idle because a 2 MiB page is only split under pressure.
 `init` sets `madvise`: programs that ask (`MADV_HUGEPAGE`) still get them, and
-`winbox.thp=always` on the kernel command line restores the default. dockerd's anonymous
+`hyperbutler.thp=always` on the kernel command line restores the default. dockerd's anonymous
 RSS fell from 34 to 17 MiB, containerd's from 30 to 11 MiB.
 
 ### 4. Page cache and readahead, about −40 MiB and a flat line
 
-With the binaries on disk, their pages are file cache, and winboxd's cache policy
+With the binaries on disk, their pages are file cache, and hyperbutlerd's cache policy
 (guest-services.md) reclaims file cache above keep + threshold after 10 s idle. With the
 kernel's 128 KiB readahead, the idle daemons faulted about 70 MiB back within a minute of
 every reclaim, because each random code fault pulls 128 KiB around it. That is the swing
@@ -127,9 +127,9 @@ confirmed by M5's swing).
 
 What ships (M6): `init` reads dockerd, containerd, the shim and runc once, sequentially,
 with 128 KiB (about 0.2 s), sets 16 KiB, and only then starts dockerd. The start reads from
-cache; idle refaults are small; winboxd trims what stays unused. `winbox.sysra=<KiB>` sets
+cache; idle refaults are small; hyperbutlerd trims what stays unused. `hyperbutler.sysra=<KiB>` sets
 the small value. The cache threshold is now 16 MiB (it was 64 MiB; keep stays at 32 MiB;
-`winbox.cache=<MiB>`).
+`hyperbutler.cache=<MiB>`).
 
 ### 5. Guest memory size: considered, not changed
 
@@ -147,7 +147,7 @@ would get both; that is an open item.
 
 They only help when memory is under pressure or something reclaims anonymous memory. At
 idle there are 41 MiB of anonymous pages in all, and nothing pushes them out. Adding
-proactive anonymous reclaim to winboxd would trade idle CPU (REQ-PWR-002) for at most
+proactive anonymous reclaim to hyperbutlerd would trade idle CPU (REQ-PWR-002) for at most
 about 25 MiB. linux-virt has `ZSWAP=y` (off by default) and `ZRAM=m`. Revisit them for
 REQ-MEM-002 or the 1.0 target.
 
@@ -169,7 +169,7 @@ order-10 blocks.
 
 ## Start time (REQ-START-001)
 
-`winbox start` → `docker info` OK → `winbox stop`, 21 runs, the first one discarded, warm
+`hyperbutler start` → `docker info` OK → `hyperbutler stop`, 21 runs, the first one discarded, warm
 host cache, existing data disk, 4096 MiB, 8 vCPUs:
 
 | Image | Median | p95 | min / max |
@@ -184,21 +184,21 @@ Boot phases, in guest uptime, from one boot of the shipped image:
 - first console output: 0.08 s (it was 0.65 s, with a 66 MB initramfs to unpack);
 - system disk mounted: 0.12 s;
 - data disk mounted: 0.30 s;
-- winboxd ready: about 0.38 s;
+- hyperbutlerd ready: about 0.38 s;
 - binaries pre-read: 0.45 s;
 - dockerd socket: 0.47 s.
 
 The host saw `/_ping` at 1.23 s. Part of the gain is the engine's guestctl dial timeout,
-cut from 1 s to 400 ms. winboxd now listens about 0.3 s into the boot, but a connect to a
+cut from 1 s to 400 ms. hyperbutlerd now listens about 0.3 s into the boot, but a connect to a
 port nobody listens on yet waits for the whole timeout. With 1 s, the first successful dial
-came at about 1 s, and dockerd waits for that dial because it waits for winboxd's first
+came at about 1 s, and dockerd waits for that dial because it waits for hyperbutlerd's first
 budget.
 
 Smoke checks on the shipped image all passed:
 
 - `docker run --rm hello-world` printed "Hello from Docker!".
 - `docker run -d -p 8081:80 nginx:alpine` answered 200 on `127.0.0.1:8081`.
-- After `winbox stop` and `start`, the images and the stopped container were still there,
+- After `hyperbutler stop` and `start`, the images and the stopped container were still there,
   and the container started again and answered.
 - dockerd runs without `DOCKER_RAMDISK`, so runc uses `pivot_root`: the root is a real
   (erofs) mount.

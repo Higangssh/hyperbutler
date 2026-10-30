@@ -16,7 +16,7 @@ import (
 
 	"github.com/Microsoft/go-winio/pkg/guid"
 
-	"github.com/Higangssh/winbox/internal/transport"
+	"github.com/Higangssh/hyperbutler/internal/transport"
 )
 
 // ServeOptions configure the background engine process.
@@ -37,7 +37,7 @@ type ServeOptions struct {
 // consoleLogMax bounds each console log file (there are two: current and previous).
 const consoleLogMax = 8 << 20
 
-// Serve is the background engine: `winbox start` spawns a process that calls it. It
+// Serve is the background engine: `hyperbutler start` spawns a process that calls it. It
 //
 //  1. takes the single-instance lock (CodeAlreadyRunning if another engine holds it);
 //  2. publishes State in state.json at every phase;
@@ -67,7 +67,7 @@ func Serve(opts ServeOptions) error {
 	lock, err := Lock(l.LockPath(), 2*time.Second)
 	if errors.Is(err, ErrLocked) {
 		// Another engine runs: its state is not ours to touch.
-		return codeErr(CodeAlreadyRunning, errors.New("another winbox engine is already running"))
+		return codeErr(CodeAlreadyRunning, errors.New("another hyperbutler engine is already running"))
 	}
 	if err != nil {
 		return err
@@ -219,23 +219,23 @@ func Describe(code string) string {
 		return strings.TrimSpace(fmt.Sprintf(`
 The Host Compute Service (HCS) refused access.
 
-winbox starts its VM through HCS directly, which today needs your account in the
+hyperbutler starts its VM through HCS directly, which today needs your account in the
 local "Hyper-V Administrators" group. An administrator adds you once with:
 
     net localgroup "Hyper-V Administrators" %s /add
 
 Then sign out and back in (group changes apply at sign-in). No elevation is needed
-after that, and winbox never asks for it.
+after that, and hyperbutler never asks for it.
 
 A later release replaces this with a small HCS access broker service (ADR 0004), so
 that standard users need no group membership.`, os.Getenv("USERNAME")))
 	case CodePipeInUse:
-		return `Another program already serves the Docker API pipe \\.\pipe\docker_engine_winbox.
+		return `Another program already serves the Docker API pipe \\.\pipe\docker_engine_hyperbutler.
 Stop it, or check with: Get-ChildItem \\.\pipe\ | Where-Object Name -like 'docker*'`
 	case CodeDataDisk:
-		return "The data disk could not be used. `winbox delete` removes it and starts over (all images, containers and volumes are lost)."
+		return "The data disk could not be used. `hyperbutler delete` removes it and starts over (all images, containers and volumes are lost)."
 	case CodeVMExited:
-		return "The VM stopped on its own. `winbox logs --console` shows why."
+		return "The VM stopped on its own. `hyperbutler logs --console` shows why."
 	}
 	return ""
 }

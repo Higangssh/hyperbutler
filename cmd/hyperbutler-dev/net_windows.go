@@ -18,13 +18,13 @@ import (
 	"github.com/Microsoft/go-winio/pkg/guid"
 	"golang.org/x/sys/windows"
 
-	"github.com/Higangssh/winbox/internal/engine"
-	"github.com/Higangssh/winbox/internal/netstack"
-	"github.com/Higangssh/winbox/internal/transport"
-	"github.com/Higangssh/winbox/internal/vm"
+	"github.com/Higangssh/hyperbutler/internal/engine"
+	"github.com/Higangssh/hyperbutler/internal/netstack"
+	"github.com/Higangssh/hyperbutler/internal/transport"
+	"github.com/Higangssh/hyperbutler/internal/vm"
 )
 
-// netFlags are the user-mode networking options of `winbox-dev run` (ADR 0006).
+// netFlags are the user-mode networking options of `hyperbutler-dev run` (ADR 0006).
 type netFlags struct {
 	mode        string
 	subnet      string
@@ -102,7 +102,7 @@ func (nf *netFlags) config(sddl string) (engine.NetConfig, []vm.Service, string,
 		for _, off := range []uint32{0, 2, 4} { // source, sink, echo
 			svcs = append(svcs, vm.Service{ID: transport.VsockServiceID(benchVsockPort + off), ConnectSDDL: sddl})
 		}
-		args = " winbox.netbench=1"
+		args = " hyperbutler.netbench=1"
 	}
 	return nc, svcs, args, nil
 }
@@ -170,7 +170,7 @@ func (g *benchEnv) bench(ctx context.Context, vmid guid.GUID, n int64, step func
 				}
 				s1 := g.st.Stats()
 				gbit := float64(got) * 8 / el.Seconds() / 1e9
-				step("bench round %d %-23s %d MiB in %v = %.2f Gbit/s, winbox-dev CPU %.0f ms (%.2f cores, %.2f cores per Gbit/s), stack retransmits %d of %d segments, RTOs %d",
+				step("bench round %d %-23s %d MiB in %v = %.2f Gbit/s, hyperbutler-dev CPU %.0f ms (%.2f cores, %.2f cores per Gbit/s), stack retransmits %d of %d segments, RTOs %d",
 					round, d.name, got>>20, el.Round(time.Millisecond), gbit, float64(cpu.Milliseconds()),
 					cpu.Seconds()/el.Seconds(), cpu.Seconds()/el.Seconds()/gbit,
 					s1.TCPRetransmits-s0.TCPRetransmits, s1.TCPSegmentsSent-s0.TCPSegmentsSent, s1.TCPTimeouts-s0.TCPTimeouts)

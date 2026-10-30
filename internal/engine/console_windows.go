@@ -18,7 +18,7 @@ import (
 
 	"golang.org/x/sys/windows"
 
-	"github.com/Higangssh/winbox/internal/transport"
+	"github.com/Higangssh/hyperbutler/internal/transport"
 )
 
 // openConsole connects to the COM1 pipe that the VM worker serves.
@@ -49,7 +49,7 @@ func openConsole(ctx context.Context, name string) (*os.File, error) {
 // to w in full; only their first maxConsoleLine bytes are considered.
 const maxConsoleLine = 4 << 10
 
-// streamConsole copies the guest console to w and reports the init's "winbox-t" timing
+// streamConsole copies the guest console to w and reports the init's "hyperbutler-t" timing
 // markers and agent lines as steps. The guest is untrusted: reported lines have control
 // characters escaped so they cannot drive the host terminal.
 func streamConsole(r io.Reader, w io.Writer, step func(string, ...any)) {
@@ -76,8 +76,8 @@ func streamConsole(r io.Reader, w io.Writer, step func(string, ...any)) {
 }
 
 func reportLine(line string) bool {
-	return strings.HasPrefix(line, "winbox-t ") && !strings.Contains(line, " mem ") ||
-		strings.HasPrefix(line, "winbox-agent: ") || strings.HasPrefix(line, "winbox: ")
+	return strings.HasPrefix(line, "hyperbutler-t ") && !strings.Contains(line, " mem ") ||
+		strings.HasPrefix(line, "hyperbutler-agent: ") || strings.HasPrefix(line, "hyperbutler: ")
 }
 
 // sanitize escapes control characters and invalid UTF-8.

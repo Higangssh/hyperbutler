@@ -104,7 +104,7 @@ func call(name string, timeout time.Duration, fn func(op uintptr) uintptr) (stri
 func vmConfig(kernel, initrd, cmdline, pipe string, memMB, cpus int) ([]byte, error) {
 	doc := map[string]any{
 		"SchemaVersion":                     map[string]int{"Major": 2, "Minor": 1},
-		"Owner":                             "winbox-spike",
+		"Owner":                             "hyperbutler-spike",
 		"ShouldTerminateOnLastHandleClosed": true,
 		"VirtualMachine": map[string]any{
 			"StopOnReset": true,
@@ -144,7 +144,7 @@ func openPipe(name string, deadline time.Time) (*os.File, error) {
 }
 
 func main() {
-	tmp := filepath.Join(os.TempDir(), "hb-dev", "winbox-spike", "guest")
+	tmp := filepath.Join(os.TempDir(), "hb-dev", "hyperbutler-spike", "guest")
 	kernel := flag.String("kernel", filepath.Join(tmp, "vmlinuz-virt"), "kernel image")
 	initrd := flag.String("initrd", filepath.Join(tmp, "initramfs-virt"), "initrd")
 	cmdline := flag.String("cmdline", "console=ttyS0 earlyprintk=serial loglevel=7", "kernel command line")
@@ -156,7 +156,7 @@ func main() {
 	printCfg := flag.Bool("print-config", false, "print the HCS document and exit")
 	flag.Parse()
 
-	id := fmt.Sprintf("winbox-spike-%d", time.Now().UnixNano())
+	id := fmt.Sprintf("hyperbutler-spike-%d", time.Now().UnixNano())
 	pipe := `\\.\pipe\` + id + "-com1"
 	cfg, err := vmConfig(*kernel, *initrd, *cmdline, pipe, *memMB, *cpus)
 	if err != nil {

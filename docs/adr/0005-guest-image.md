@@ -7,7 +7,7 @@
 
 ## Context
 
-winbox boots one Linux guest that runs dockerd. The guest image is the kernel, whatever it
+hyperbutler boots one Linux guest that runs dockerd. The guest image is the kernel, whatever it
 boots into, and the disks it mounts. It has to:
 
 - Boot under HCS (primary, [ADR 0002](0002-primary-vm-backend.md)) and under QEMU-WHPX (the
@@ -18,7 +18,7 @@ boots into, and the disks it mounts. It has to:
   the guest keeps resident counts against it.
 - Be built and published without WSL (REQ-PLAT-002 applies to contributors too). The
   maintainer's machine is Windows 11 Home with WSL disabled.
-- Be reproducible, and meet the licenses of what it ships. winbox is Apache-2.0, but the
+- Be reproducible, and meet the licenses of what it ships. hyperbutler is Apache-2.0, but the
   image carries GPL-2.0 code (Linux, BusyBox).
 
 ### Required kernel features
@@ -211,7 +211,7 @@ through hostfwd → sockfwd → `/run/docker.sock`. Each poll uses a fresh TCP c
 
 This number is indicative, not a REQ-START-001 result:
 
-- REQ-START-001 asks for 20 runs with a warm-up run discarded, measured from `winbox start`
+- REQ-START-001 asks for 20 runs with a warm-up run discarded, measured from `hyperbutler start`
   to `docker info`. Here it's 11 runs with no discard, measured from the VMM launch to
   `/_ping`.
 - Before the harness fix (Findings 5), the same image measured ≈ 2.9 s.
@@ -220,7 +220,7 @@ This number is indicative, not a REQ-START-001 result:
 
 **Where the time goes**
 
-The kernel phases use printk timestamps. The `/init` and dockerd phases use the `winbox-t`
+The kernel phases use printk timestamps. The `/init` and dockerd phases use the `hyperbutler-t`
 marks (from `/proc/uptime`) and dockerd's own log. The two guest clocks disagree by
 ≈ 0.15 s: "Run /init" prints at 1.42 s, while `init-start` reads 1.27 s. So the rows don't
 add up exactly. The host-side part is derived.
@@ -258,7 +258,7 @@ TLS with Alpine's CA bundle.
 **Idle memory**
 
 These were taken 60 s after ready, with no containers. They are **not** REQ-MEM-001 numbers.
-The requirement sums Private Working Set from performance counters over winbox.exe, the VMM,
+The requirement sums Private Working Set from performance counters over hyperbutler.exe, the VMM,
 and helpers, over minutes 5 to 10. The harness reads `Process.PrivateMemorySize64` (commit)
 and `WorkingSet64` (which includes shared pages) after one minute.
 
@@ -326,7 +326,7 @@ Some limits on that:
 5. Harness pitfall: with PowerShell `Start-Process`, every QEMU launch after the first one in
    the same session reached first serial output ≈ 0.7 s later (2.95 s vs 2.25 s overall).
    `Process.Start` doesn't show this. The cause wasn't investigated. `bench/start` should
-   launch the VMM the way `winbox.exe` will.
+   launch the VMM the way `hyperbutler.exe` will.
 
 ## Decision
 
@@ -366,20 +366,20 @@ Some limits on that:
    and its signature chain verified by `apk`.
    It produces the kernel, initramfs, and erofs image, plus a GPL source bundle. All of these
    go to GitHub Releases as assets (never git), with SHA-256 sums and build provenance
-   attestations. `winbox.exe` embeds the expected hashes.
+   attestations. `hyperbutler.exe` embeds the expected hashes.
 
    Two paths for contributors without WSL:
    - The initramfs can be rebuilt natively on Windows. That works today, with `guest/cmd/mkinitramfs`.
    - The erofs image is built by `mkfs.erofs` in a pinned Alpine container on any Docker
-     Engine, winbox's own included (see "A2b implementation"). No QEMU VM is needed.
+     Engine, hyperbutler's own included (see "A2b implementation"). No QEMU VM is needed.
 5. **Kernel command line:** keep the serial console and no `quiet` (needed to debug boots).
    Revisit log volume once boot time is measured on HCS.
 
 ### Boot-time budget
 
-REQ-START-001 runs from `winbox start` until `docker info` succeeds: median ≤ 8 s (0.1) and
+REQ-START-001 runs from `hyperbutler start` until `docker info` succeeds: median ≤ 8 s (0.1) and
 ≤ 5 s (1.0). We budget against the 1.0 number, so 0.1 has a wide margin. `bench/start`
-checks each line separately, using the `winbox-t` marks.
+checks each line separately, using the `hyperbutler-t` marks.
 
 | Phase | Budget | QEMU-WHPX, A2a (measured) | HCS reference (ADR 0002 log) |
 |---|---|---|---|
@@ -388,7 +388,7 @@ checks each line separately, using the `winbox-t` marks.
 | Initramfs unpack | 0.1 s | **≈ 0.95 s** (over budget, hence A2b) | 0.09 s for Alpine's 9.4 MB initramfs |
 | `/init` or agent: modules, mounts, system disk, network | 0.3 s | 0.08 s (no disks yet) | not measured |
 | dockerd to "API listen" | 1.0 s | 0.55 s | not measured |
-| Host: `winbox.exe`, transport, the `docker info` round trip | 0.7 s | not measured (the harness pings `/_ping` over slirp) | not measured |
+| Host: `hyperbutler.exe`, transport, the `docker info` round trip | 0.7 s | not measured (the harness pings `/_ping` over slirp) | not measured |
 | **Total** | **3.0 s** | 2.2 s to `/_ping` | |
 | First boot only: format the data disk | + 1.0 s | not measured | reported separately, as REQ-START-001 asks |
 
@@ -408,8 +408,8 @@ iptables/nft setup, the guest agent handshake, and disk checks.
 | CA bundle | MPL-2.0 | Include the license. Point to the source form, Mozilla's `certdata.txt` at the matching revision. The PEM file is derived from it. |
 | Go standard library and modules (in sockfwd, the future agent, and the Go binaries above) | BSD-3-Clause, plus each module's own license | License texts, generated from `go version -m` and the module licenses. |
 
-The image is a "mere aggregation" with winbox's Apache-2.0 code. GPL obligations attach to
-the GPL components, not to winbox. The release pipeline must generate a `THIRD-PARTY.md`, the
+The image is a "mere aggregation" with hyperbutler's Apache-2.0 code. GPL obligations attach to
+the GPL components, not to hyperbutler. The release pipeline must generate a `THIRD-PARTY.md`, the
 license texts, and the source bundle from the lock file, so nothing ships without them.
 Today's `sources.lock` records only binary packages. It must gain a pinned source entry
 (aports commit, kernel.org and BusyBox tarball hashes) for every GPL binary, plus a check that
@@ -425,17 +425,17 @@ Decision 1 is now built and measured under HCS. Numbers and method are in
 | File | What | Size |
 |---|---|---|
 | `vmlinuz-virt` | the pinned Alpine kernel, unchanged | 12.6 MB |
-| `initramfs-stage1.gz` | stage 1 (a new name, so an older `winbox.exe` that knows only `initramfs-winbox.gz` fails with "file not found" instead of booting a stage 1 without its system disk): BusyBox, `initramfs-init`, the modules to reach the disk (`modules-boot.txt`: hv_storvsc, sd_mod, virtio_blk, erofs) | 0.9 MB |
+| `initramfs-stage1.gz` | stage 1 (a new name, so an older `hyperbutler.exe` that knows only `initramfs-hyperbutler.gz` fails with "file not found" instead of booting a stage 1 without its system disk): BusyBox, `initramfs-init`, the modules to reach the disk (`modules-boot.txt`: hv_storvsc, sd_mod, virtio_blk, erofs) | 0.9 MB |
 | `system.vhd` | a fixed VHD (raw erofs, lz4hc, padded to whole MiB, plus the 512-byte footer) holding everything else: `init`, BusyBox and its applet links, dockerd, containerd, runc, the guest services, e2fsprogs, the CA bundle, all modules | 88 MiB |
 | `image.json` | the manifest: name, size and SHA-256 of the three files | 0.5 KB |
 
 **Boot.** Stage 1 loads its modules, finds the system disk by SCSI LUN
-(`winbox.system=lun:1`, or a device name such as `vda` on QEMU), mounts it as erofs
+(`hyperbutler.system=lun:1`, or a device name such as `vda` on QEMU), mounts it as erofs
 read-only and `switch_root`s into it, which deletes the initramfs. The root is then a
 real, read-only mount: runc uses `pivot_root` and `DOCKER_RAMDISK` is gone. What must be
 writable is a mount (`/run`, `/tmp`, `/dev/shm` as tmpfs, `/var/lib/docker` on the data
 disk) or a link into one (`/etc/resolv.conf` → `/run/resolv.conf`). The data disk is now
-`winbox.data=lun:0` as well: the kernel named the system disk `sda` in some boots and
+`hyperbutler.data=lun:0` as well: the kernel named the system disk `sda` in some boots and
 `sdb` in others, so device names are not stable with two disks. No overlay is needed.
 
 **Build.** `build.ps1` builds the system tree as an uncompressed, deterministic cpio
@@ -471,15 +471,15 @@ device-mapper ioctl helper, and hashing on every read. Revisit it if a less-trus
 ever caches or serves the image, or if one image is shared between users.
 
 The manifest beside the image is not a trust anchor. Anyone who can write the image
-directory can also replace `winbox.exe`. The release build should embed the manifest's
-SHA-256 in `winbox.exe` (Decision 4) so a replaced image is refused even with a matching
+directory can also replace `hyperbutler.exe`. The release build should embed the manifest's
+SHA-256 in `hyperbutler.exe` (Decision 4) so a replaced image is refused even with a matching
 `image.json`. That is not done yet.
 
 **Update path.**
 
 - An update replaces the four files and writes `image.json` last (`build.ps1` does).
-- While winbox runs, the files cannot be overwritten, renamed or deleted. An updater must
-  stop winbox first, and it gets a sharing violation instead of a torn image if it does
+- While hyperbutler runs, the files cannot be overwritten, renamed or deleted. An updater must
+  stop hyperbutler first, and it gets a sharing violation instead of a torn image if it does
   not.
 - A crash mid-copy leaves a set that fails the manifest check, with a clear error, until
   the copy is redone. Nothing boots a mixed set.
@@ -499,23 +499,23 @@ requirements and the measurement scripts. Disposition:
 | # | Finding | Disposition |
 |---|---|---|
 | A1 high | Lowering `read_ahead_kb` 10 s after boot does nothing for dockerd and containerd: a file's readahead is copied at `open()`. The M5 log showed the old 33–114 MiB swing. | **Fixed.** `init` reads the four big binaries once with 128 KiB, then sets 16 KiB *before* dockerd starts. Re-measured (idle-memory.md, M6). |
-| A2 medium | The memory script omitted `vmwp.exe` (the VM worker), and a bug left the "new vmmem" filter empty, so attribution rested on creation time alone. | **Fixed.** The script snapshots `vmmem` before the start, takes `vmwp` as its parent, sums engine + vmmem + vmwp, and checks that the `vmmem` is gone after `winbox stop`. Before and after re-measured with it. |
+| A2 medium | The memory script omitted `vmwp.exe` (the VM worker), and a bug left the "new vmmem" filter empty, so attribution rested on creation time alone. | **Fixed.** The script snapshots `vmmem` before the start, takes `vmwp` as its parent, sums engine + vmmem + vmwp, and checks that the `vmmem` is gone after `hyperbutler stop`. Before and after re-measured with it. |
 | A3 medium | Start-time numbers had no saved log; REQ-START-001's first start after a reboot is not reported. | **Fixed:** the runs are logged and the doc records the run set, the phases and the dial-timeout cause (raw logs stay out of git); **cold start rejected for now:** it needs a host reboot, which this session must not do. Listed under Open. |
 | A4 medium | `apk add erofs-utils=1.9.1-r0` is not pinned by hash, and Alpine drops old revisions. | **Accepted as a known gap.** It fails closed (the build stops when the revision disappears; it cannot silently change), apk checks the signature, and two clean builds were byte-identical. Follow-up 8: a builder image pinned by digest with erofs-utils in it, or the `.apk`s in `sources.lock`. |
-| A5 medium | An older `winbox.exe` with a new image directory would boot stage 1 without `winbox.system=` and only time out. | **Fixed.** Stage 1 is now `initramfs-stage1.gz`, a name older engines do not look for, so they fail at once with "not found". Test: `TestGuestArtifacts`. |
+| A5 medium | An older `hyperbutler.exe` with a new image directory would boot stage 1 without `hyperbutler.system=` and only time out. | **Fixed.** Stage 1 is now `initramfs-stage1.gz`, a name older engines do not look for, so they fail at once with "not found". Test: `TestGuestArtifacts`. |
 | A6 low | No committed fuzz corpus; no test for `guestArtifacts`; LUN resolution and reparse rejection untested. | **Fixed** for the corpus (`guest/image/testdata/fuzz`) and `guestArtifacts`. **Rejected** for the shell LUN logic and reparse points: the shell is exercised on every boot (and the probes show the right disk at `/` and `/var/lib/docker` even when the kernel swapped `sda` and `sdb`), and creating a symlink needs Developer Mode or admin here. |
-| A7 low | The manifest is not a trust anchor; VM-account ACEs pile up on `system.vhd` after crashes. | **Accepted.** Both are stated above (embedding the hash in `winbox.exe`; the same ACE issue exists on `data.vhdx`). Open item. |
+| A7 low | The manifest is not a trust anchor; VM-account ACEs pile up on `system.vhd` after crashes. | **Accepted.** Both are stated above (embedding the hash in `hyperbutler.exe`; the same ACE issue exists on `data.vhdx`). Open item. |
 | A8 low | The research doc still had placeholders. | **Fixed.** |
 
 The reviewer also checked and found fine: manifest and footer parsing (no traversal,
 geometry re-derived), `openDenyWrite` sharing and reparse handling, the `ReadOnly`
 attachment and LUN mapping, that the blank-disk check can never target the system disk,
-the `winbox.*` argument validation, the read-only root's writable paths, `swiotlb=noforce`
+the `hyperbutler.*` argument validation, the read-only root's writable paths, `swiotlb=noforce`
 on non-isolated Hyper-V, THP `madvise`, the 400 ms dial timeout, and the dm-verity
 rejection.
 
 **Old images still work.** A directory without `image.json` is an initramfs-only image:
-the engine boots it as before, with `winbox.data=sda`. The QEMU harness (`run-qemu.ps1`)
+the engine boots it as before, with `hyperbutler.data=sda`. The QEMU harness (`run-qemu.ps1`)
 now attaches `system.vhd` as `vda`. This was not run: QEMU was not part of this work.
 
 ## Adversarial review
@@ -551,7 +551,7 @@ layout. It found no path traversal and no copied GPL code. Disposition of each f
 | 22 | "pivot_root impossible" overstated for A2a | **Fixed.** Now a trade-off (switch_root plus a copy). |
 | 23 | Apache §4(a) vs §4(d); Go stdlib; certdata.txt | **Fixed.** |
 | 24 | Should be 0003, since 0003/0004 don't exist | **Rejected.** The maintainer assigned 0005 for this track. |
-| 25 | Default cache path names the AI tooling directory | **Fixed.** The default is now `%TEMP%\winbox-guest-build`. |
+| 25 | Default cache path names the AI tooling directory | **Fixed.** The default is now `%TEMP%\hyperbutler-guest-build`. |
 
 Strongest remaining arguments against the decision, accepted as risks:
 
@@ -567,7 +567,7 @@ Strongest remaining arguments against the decision, accepted as risks:
 - Upgrades swap two read-only artifacts and keep the data disk.
 - Guest binaries are page cache, not pinned RAM.
 - The kernel and userland come from one signed, pinned source with a verifiable chain.
-- The initramfs (and later a per-boot config cpio) can be built by `winbox.exe` itself on
+- The initramfs (and later a per-boot config cpio) can be built by `hyperbutler.exe` itself on
   Windows. The kernel accepts concatenated cpio archives. The prototype booted an initramfs
   with an overlay cpio appended (a wrapper `/init` plus a test binary), and the overlay's
   binary ran.
@@ -591,7 +591,7 @@ These are owned by the guest track unless noted.
 2. ~~Prototype A2b and measure it against A2a.~~ Done under HCS, see "A2b
    implementation": `Shmem` 178 → 0 MiB, first console output 0.65 → 0.08 s.
 3. ~~Run the image build inside a QEMU-WHPX Alpine VM.~~ Superseded: the build runs
-   `mkfs.erofs` in a container on winbox's own Docker Engine, in about 12 s.
+   `mkfs.erofs` in a container on hyperbutler's own Docker Engine, in about 12 s.
 4. Add iptables or nft userspace and turn Docker's firewalling back on. Measure the
    start-time delta.
 5. Pin the Go toolchain (`toolchain` in `go.mod`) so initramfs bytes are reproducible
@@ -603,7 +603,7 @@ These are owned by the guest track unless noted.
    discard on QEMU-WHPX. QEMU may share the missing-MADVISE problem for raw files.
 8. Pin the erofs builder completely: an image by digest with erofs-utils installed, or the
    erofs-utils `.apk`s (with SHA-256) in `sources.lock`. Today it is a version pin.
-9. Embed the image manifest's SHA-256 in release `winbox.exe` builds, so `image.json` stops
+9. Embed the image manifest's SHA-256 in release `hyperbutler.exe` builds, so `image.json` stops
    being self-certifying.
 
 **What would make us revisit**

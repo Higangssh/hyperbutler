@@ -12,7 +12,7 @@ import (
 	"testing/iotest"
 	"time"
 
-	"github.com/Higangssh/winbox/internal/spaceguard"
+	"github.com/Higangssh/hyperbutler/internal/spaceguard"
 )
 
 // fuzzSeedFrames returns one valid frame for every message type, plus edge values.

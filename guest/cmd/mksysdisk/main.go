@@ -1,10 +1,10 @@
-// Command mksysdisk turns a raw erofs system image into the fixed VHD that winbox
+// Command mksysdisk turns a raw erofs system image into the fixed VHD that hyperbutler
 // attaches read-only (it pads the image to whole MiB and appends a VHD footer), and
 // writes the image manifest (image.json) that ties a kernel, an initramfs and a system
 // disk of one build together. See docs/adr/0005-guest-image.md.
 //
 //	mksysdisk -erofs system.erofs -o out/system.vhd [-mtime N]
-//	mksysdisk -manifest out/image.json -kernel out/vmlinuz-virt -initrd out/initramfs-winbox.gz -system out/system.vhd
+//	mksysdisk -manifest out/image.json -kernel out/vmlinuz-virt -initrd out/initramfs-hyperbutler.gz -system out/system.vhd
 //
 // Output is deterministic: the footer's unique id is derived from the content and its
 // timestamp from -mtime ($SOURCE_DATE_EPOCH, else 0).
@@ -23,7 +23,7 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/Higangssh/winbox/guest/image"
+	"github.com/Higangssh/hyperbutler/guest/image"
 )
 
 // erofsMagic is the erofs superblock magic, at byte 1024 (EROFS_SUPER_OFFSET).
