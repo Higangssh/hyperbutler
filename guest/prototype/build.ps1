@@ -7,7 +7,7 @@
 # 2. Unpacks them with the bsdtar that ships with Windows (System32\tar.exe).
 # 3. Picks the kernel modules in modules.txt plus their modules.dep closure and
 #    decompresses them (CONFIG_MODULE_DECOMPRESS is off in linux-virt).
-# 4. Cross-compiles guest/cmd/agent, sockfwd and netfwd for linux/amd64, builds out\initramfs-winbox.gz
+# 4. Cross-compiles guest/cmd/agent, sockfwd, netfwd and winboxd for linux/amd64, builds out\initramfs-winbox.gz
 #    with guest/cmd/mkinitramfs, and copies the matching vmlinuz-virt next to it.
 #
 # Needs: Go (go.mod version), Windows 10 1803+ for tar.exe. Runs as a standard user.
@@ -73,6 +73,15 @@ Expand-Fresh $src['linux-virt'] "$x\linux-virt" 'lib/modules/*/vmlinuz'
 Expand-Fresh $src['busybox-static'] "$x\busybox-static"
 Expand-Fresh $src['docker-static'] "$x\docker-static"
 Expand-Fresh $src['ca-certificates-bundle'] "$x\ca-certificates-bundle" 'etc/ssl/cert.pem', 'etc/ssl1.1'
+# e2fsprogs and its libraries share one tree. The skipped entries are the soname and
+# fsck/mkfs alias symlinks; the spec installs the real files under their sonames.
+$e2fs = "$x\e2fsprogs"
+Expand-Fresh $src['e2fsprogs'] $e2fs 'sbin/fsck.*', 'sbin/mkfs.*'
+foreach ($n in 'e2fsprogs-libs', 'libblkid', 'libcom_err', 'libeconf', 'libuuid') {
+    Expand-Fresh $src[$n] "$x\$n" 'usr/lib/lib*.so.?'
+    Copy-Item -Recurse -Force "$x\$n\usr" $e2fs
+}
+Expand-Fresh $src['musl'] "$x\musl" 'lib/libc.musl-x86_64.so.1'
 
 # --- 3. kernel modules ----------------------------------------------------------------
 $kdirs = @(Get-ChildItem -Directory "$x\linux-virt\lib\modules")
@@ -138,7 +147,7 @@ Push-Location $repo
 $saved = $env:GOOS, $env:GOARCH, $env:CGO_ENABLED
 try {
     $env:GOOS = 'linux'; $env:GOARCH = 'amd64'; $env:CGO_ENABLED = '0'
-    foreach ($cmd in 'agent', 'sockfwd', 'netfwd') {
+    foreach ($cmd in 'agent', 'sockfwd', 'netfwd', 'winboxd') {
         & go build -trimpath -buildvcs=false -ldflags '-s -w -buildid=' -o (Join-Path $guestBin $cmd) "./guest/cmd/$cmd"
         if ($LASTEXITCODE -ne 0) { throw "go build $cmd failed" }
     }
@@ -146,7 +155,7 @@ try {
 
 $img = Join-Path $Out $Name
 & $tool -spec (Join-Path $proto 'initramfs.spec') -mtime 0 -level $GzipLevel -o $img `
-    -D "PROTO=$proto" -D "BUSYBOX=$x\busybox-static" -D "DOCKER=$x\docker-static\docker" -D "MODULES=$stage" -D "GUESTBIN=$guestBin" -D "CACERTS=$x\ca-certificates-bundle"
+    -D "PROTO=$proto" -D "BUSYBOX=$x\busybox-static" -D "DOCKER=$x\docker-static\docker" -D "MODULES=$stage" -D "GUESTBIN=$guestBin" -D "CACERTS=$x\ca-certificates-bundle" -D "E2FS=$e2fs" -D "MUSL=$x\musl"
 if ($LASTEXITCODE -ne 0) { throw 'mkinitramfs failed' }
 Copy-Item -Force "$x\linux-virt\boot\vmlinuz-virt" (Join-Path $Out 'vmlinuz-virt')
 

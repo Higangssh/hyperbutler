@@ -3,6 +3,7 @@
 package vm
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sync"
@@ -25,6 +26,13 @@ var (
 	procHcsTerminateComputeSystem     = modComputecore.NewProc("HcsTerminateComputeSystem")
 	procHcsCloseComputeSystem         = modComputecore.NewProc("HcsCloseComputeSystem")
 	procHcsGetComputeSystemProperties = modComputecore.NewProc("HcsGetComputeSystemProperties")
+	procHcsPauseComputeSystem         = modComputecore.NewProc("HcsPauseComputeSystem")
+	procHcsResumeComputeSystem        = modComputecore.NewProc("HcsResumeComputeSystem")
+	procHcsShutDownComputeSystem      = modComputecore.NewProc("HcsShutDownComputeSystem")
+	procHcsOpenComputeSystem          = modComputecore.NewProc("HcsOpenComputeSystem")
+	procHcsEnumerateComputeSystems    = modComputecore.NewProc("HcsEnumerateComputeSystems")
+	procHcsGrantVMAccess              = modComputecore.NewProc("HcsGrantVmAccess")
+	procHcsRevokeVMAccess             = modComputecore.NewProc("HcsRevokeVmAccess")
 )
 
 // opTimeout bounds every HCS operation.
@@ -41,6 +49,13 @@ type Error struct {
 	Op     string
 	HR     uint32
 	Result string // HCS result document, if any
+}
+
+// IsAccessDenied reports whether err is an HCS call that failed because the caller may
+// not use HCS (not in Administrators or Hyper-V Administrators, see ADR 0004).
+func IsAccessDenied(err error) bool {
+	var he *Error
+	return errors.As(err, &he) && (he.HR == hrAccessDenied || he.HR == hrHcsAccessDenied)
 }
 
 func (e *Error) Error() string {
@@ -138,6 +153,130 @@ func (s *System) RuntimeID() (guid.GUID, error) {
 		return guid.GUID{}, err
 	}
 	return parseRuntimeID(doc)
+}
+
+// Pause freezes the VM's virtual processors. Pausing aborts the host's hvsock
+// connections to the guest (docs/research/guest-services.md).
+func (s *System) Pause() error { return s.simple("HcsPauseComputeSystem", procHcsPauseComputeSystem) }
+
+// Resume undoes Pause.
+func (s *System) Resume() error {
+	return s.simple("HcsResumeComputeSystem", procHcsResumeComputeSystem)
+}
+
+// ShutDown asks the guest to shut down through the Hyper-V shutdown integration
+// component (hv_utils in a Linux guest) and waits for HCS to accept the request. The VM
+// stops later, when the guest powers off; State reports when.
+func (s *System) ShutDown() error {
+	return s.simple("HcsShutDownComputeSystem", procHcsShutDownComputeSystem)
+}
+
+func (s *System) simple(name string, proc *windows.LazyProc) error {
+	return s.withHandle(func(h uintptr) error {
+		_, err := call(name, func(op uintptr) uintptr {
+			hr, _, _ := proc.Call(h, op, 0)
+			return hr
+		})
+		return err
+	})
+}
+
+// State returns the HCS state of the system, such as "Running", "Paused" or "Stopped".
+// A system that HCS no longer knows reports "Stopped".
+func (s *System) State() (string, error) {
+	var doc string
+	err := s.withHandle(func(h uintptr) error {
+		q, err := windows.UTF16PtrFromString(`{"PropertyTypes":[]}`)
+		if err != nil {
+			return err
+		}
+		doc, err = call("HcsGetComputeSystemProperties", func(op uintptr) uintptr {
+			hr, _, _ := procHcsGetComputeSystemProperties.Call(h, op, uintptr(unsafe.Pointer(q)))
+			return hr
+		})
+		return err
+	})
+	var he *Error
+	if errors.As(err, &he) && alreadyGone(he.HR) {
+		return "Stopped", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	return parseState(doc)
+}
+
+// Open opens an existing compute system by name, for example one listed by List.
+func Open(id string) (*System, error) {
+	if err := modComputecore.Load(); err != nil {
+		return nil, fmt.Errorf("vm: load computecore.dll (is Virtual Machine Platform enabled?): %w", err)
+	}
+	idp, err := windows.UTF16PtrFromString(id)
+	if err != nil {
+		return nil, fmt.Errorf("vm: system id: %w", err)
+	}
+	var h uintptr
+	if hr, _, _ := procHcsOpenComputeSystem.Call(uintptr(unsafe.Pointer(idp)), windows.GENERIC_ALL, uintptr(unsafe.Pointer(&h))); hr != 0 {
+		return nil, &Error{Op: "HcsOpenComputeSystem", HR: uint32(hr)}
+	}
+	return &System{id: id, h: h}, nil
+}
+
+// List returns the compute systems HCS reports for the owner (all systems if owner is
+// empty) that the caller may see.
+func List(owner string) ([]Summary, error) {
+	if err := modComputecore.Load(); err != nil {
+		return nil, fmt.Errorf("vm: load computecore.dll (is Virtual Machine Platform enabled?): %w", err)
+	}
+	q := "{}"
+	if owner != "" {
+		b, err := json.Marshal(map[string][]string{"Owners": {owner}})
+		if err != nil {
+			return nil, err
+		}
+		q = string(b)
+	}
+	qp, err := windows.UTF16PtrFromString(q)
+	if err != nil {
+		return nil, err
+	}
+	doc, err := call("HcsEnumerateComputeSystems", func(op uintptr) uintptr {
+		hr, _, _ := procHcsEnumerateComputeSystems.Call(uintptr(unsafe.Pointer(qp)), op)
+		return hr
+	})
+	if err != nil {
+		return nil, err
+	}
+	return parseSummaries(doc)
+}
+
+// GrantVMAccess gives the worker process of compute system id access to path (a disk
+// file). It must be called before Create attaches the file.
+func GrantVMAccess(id, path string) error {
+	return vmAccess("HcsGrantVmAccess", procHcsGrantVMAccess, id, path)
+}
+
+// RevokeVMAccess undoes GrantVMAccess.
+func RevokeVMAccess(id, path string) error {
+	return vmAccess("HcsRevokeVmAccess", procHcsRevokeVMAccess, id, path)
+}
+
+func vmAccess(name string, proc *windows.LazyProc, id, path string) error {
+	if err := modComputecore.Load(); err != nil {
+		return fmt.Errorf("vm: load computecore.dll (is Virtual Machine Platform enabled?): %w", err)
+	}
+	idp, err := windows.UTF16PtrFromString(id)
+	if err != nil {
+		return err
+	}
+	pp, err := windows.UTF16PtrFromString(path)
+	if err != nil {
+		return err
+	}
+	if hr, _, _ := proc.Call(uintptr(unsafe.Pointer(idp)), uintptr(unsafe.Pointer(pp))); hr != 0 {
+		return &Error{Op: name, HR: uint32(hr)}
+	}
+	return nil
 }
 
 // Terminate stops the VM at once. Terminating a VM that has already stopped is not an

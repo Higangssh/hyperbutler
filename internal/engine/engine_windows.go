@@ -1,0 +1,527 @@
+//go:build windows
+
+package engine
+
+import (
+	"context"
+	"crypto/rand"
+	"encoding/hex"
+	"errors"
+	"fmt"
+	"io"
+	"log/slog"
+	"os"
+	"path/filepath"
+	"sync"
+	"time"
+
+	"github.com/Microsoft/go-winio/pkg/guid"
+	"golang.org/x/sys/windows"
+
+	"github.com/Higangssh/winbox/internal/guestctl"
+	"github.com/Higangssh/winbox/internal/netstack"
+	"github.com/Higangssh/winbox/internal/spaceguard"
+	"github.com/Higangssh/winbox/internal/transport"
+	"github.com/Higangssh/winbox/internal/vm"
+)
+
+// GuardConfig is the free-space guard policy: guest writes get ENOSPC before the host
+// volume drops below 5 GiB (REQ-DISK-005's default reserve), and the VM is paused
+// below 1 GiB, the last resort if other host programs fill the volume.
+var GuardConfig = spaceguard.Config{
+	Margin:     5 << 30,
+	Floor:      1 << 30,
+	ResumeGap:  256 << 20,
+	Hysteresis: 64 << 20,
+	Quantum:    1 << 20,
+}
+
+// DockerPort is the AF_VSOCK port of the guest agent's Docker API relay.
+const DockerPort = 2375
+
+// agentMaxConns is the guest agent's default -max-conns.
+const agentMaxConns = 256
+
+// Config is one VM run.
+type Config struct {
+	// KernelPath and InitrdPath are the guest artifacts.
+	KernelPath, InitrdPath string
+	// CmdLine is the base kernel command line ("console=ttyS0 quiet" if empty).
+	CmdLine string
+	// MemoryMB and CPUs size the VM (4096 and 2 if zero).
+	MemoryMB, CPUs int
+	// Pipe is where the Docker API is served (transport.DefaultPipeName if empty).
+	Pipe string
+	// VMID names the compute system ("winbox-" + random if empty). It must start with
+	// "winbox-".
+	VMID string
+	// Disk, if Data is set, is the persistent data disk: Disk.Data holds data.vhdx and
+	// disk.json, created on the first start with DiskSize bytes. Without it the guest
+	// keeps /var/lib/docker in RAM (a development mode).
+	Disk     Layout
+	DiskSize uint64
+	// Guard is the free-space guard policy (GuardConfig if zero).
+	Guard spaceguard.Config
+	// Net is the guest network.
+	Net NetConfig
+	// ReadyTimeout bounds the wait for dockerd (90 s). ShutdownTimeout bounds the guest's
+	// orderly power-off before the VM is terminated (25 s).
+	ReadyTimeout, ShutdownTimeout time.Duration
+	// ConsoleLog receives the guest serial console (discarded if nil).
+	ConsoleLog io.Writer
+	// Logger receives the engine's events (slog.Default() if nil).
+	Logger *slog.Logger
+	// Backend makes the privileged calls (HCSBackend if nil).
+	Backend Backend
+	// ExtraServices and ExtraCmdLine are added to the VM document and the kernel command
+	// line (development harness features such as the network bench).
+	ExtraServices []vm.Service
+	ExtraCmdLine  string
+	// OnCreated, if set, is called once the compute system exists.
+	OnCreated func(vmID string, runtimeID guid.GUID)
+	// OnReady, if set, is called once dockerd answers, before the pipe is served. If it
+	// returns ErrDone, Run shuts the VM down and returns nil; any other error is returned.
+	OnReady func(ctx context.Context, r *Running) error
+	// OnStopping, if set, is called when the shutdown begins.
+	OnStopping func()
+}
+
+// ErrDone ends Run cleanly from OnReady.
+var ErrDone = errors.New("engine: done")
+
+// Running describes a booted VM, for OnReady.
+type Running struct {
+	VMID      string
+	RuntimeID guid.GUID
+	// Docker is the hvsock address of the guest's Docker API.
+	Docker transport.HvsockTarget
+	// Stack is the user-mode network stack, nil when the network is off.
+	Stack *netstack.Stack
+	// Started is when Run began; Ready is when dockerd first answered.
+	Started, Ready time.Time
+}
+
+// CodedError carries one of the Code* values with the error that caused it.
+type CodedError struct {
+	Code string
+	Err  error
+}
+
+func (e *CodedError) Error() string { return e.Err.Error() }
+func (e *CodedError) Unwrap() error { return e.Err }
+
+func codeErr(code string, err error) error {
+	var ce *CodedError
+	if errors.As(err, &ce) {
+		return err
+	}
+	return &CodedError{Code: code, Err: err}
+}
+
+// ErrorCode returns err's Code* value, or "" if it has none.
+func ErrorCode(err error) string {
+	var ce *CodedError
+	if errors.As(err, &ce) {
+		return ce.Code
+	}
+	if vm.IsAccessDenied(err) {
+		return CodeHCSAccessDenied
+	}
+	return ""
+}
+
+func (c *Config) defaults() {
+	if c.CmdLine == "" {
+		c.CmdLine = "console=ttyS0 quiet"
+	}
+	if c.MemoryMB == 0 {
+		c.MemoryMB = 4096
+	}
+	if c.CPUs == 0 {
+		c.CPUs = 2
+	}
+	if c.Pipe == "" {
+		c.Pipe = transport.DefaultPipeName
+	}
+	if c.VMID == "" {
+		c.VMID = "winbox-" + randomHex(8)
+	}
+	if c.Guard == (spaceguard.Config{}) {
+		c.Guard = GuardConfig
+	}
+	if c.ReadyTimeout <= 0 {
+		c.ReadyTimeout = 90 * time.Second
+	}
+	if c.ShutdownTimeout <= 0 {
+		c.ShutdownTimeout = 25 * time.Second
+	}
+	if c.ConsoleLog == nil {
+		c.ConsoleLog = io.Discard
+	}
+	if c.Logger == nil {
+		c.Logger = slog.Default()
+	}
+	if c.Backend == nil {
+		c.Backend = HCSBackend{}
+	}
+}
+
+func randomHex(n int) string {
+	b := make([]byte, n)
+	_, _ = rand.Read(b)
+	return hex.EncodeToString(b)
+}
+
+// CurrentUserSDDL grants hvsock access to the user running this process only.
+func CurrentUserSDDL() (string, error) {
+	tu, err := windows.GetCurrentProcessToken().GetTokenUser()
+	if err != nil {
+		return "", fmt.Errorf("query token user: %w", err)
+	}
+	return vm.UserOnlySDDL(tu.User.Sid.String())
+}
+
+// Run boots the VM and serves the Docker API until ctx ends, the VM stops on its own,
+// or OnReady returns. Then it shuts the guest down (an orderly power-off through the
+// Hyper-V shutdown integration component, bounded by ShutdownTimeout) and terminates
+// the VM. A VM that stopped on its own gives a CodedError with CodeVMExited.
+func Run(ctx context.Context, cfg Config) (err error) {
+	cfg.defaults()
+	log := cfg.Logger
+	if !validToken(cfg.VMID, maxVMIDLen, true) || len(cfg.VMID) < len("winbox-")+1 || cfg.VMID[:7] != "winbox-" {
+		return fmt.Errorf("engine: bad VM id %q", cfg.VMID)
+	}
+	t0 := time.Now()
+	step := func(format string, a ...any) {
+		log.Info(fmt.Sprintf("[%7.1f ms] %s", float64(time.Since(t0).Microseconds())/1000, fmt.Sprintf(format, a...)))
+	}
+	kpath, err := filepath.Abs(cfg.KernelPath)
+	if err != nil {
+		return err
+	}
+	ipath, err := filepath.Abs(cfg.InitrdPath)
+	if err != nil {
+		return err
+	}
+	for _, p := range []string{kpath, ipath} {
+		if fi, err := os.Stat(p); err != nil || !fi.Mode().IsRegular() {
+			return fmt.Errorf("engine: guest artifact %s is missing (use --image-dir)", p)
+		}
+	}
+
+	sddl, err := CurrentUserSDDL()
+	if err != nil {
+		return err
+	}
+	// Listen first: if the pipe name is taken (another winbox, or a squatter), fail
+	// before booting anything.
+	ln, err := transport.ListenPipe(cfg.Pipe)
+	if err != nil {
+		return codeErr(CodePipeInUse, err)
+	}
+	defer ln.Close()
+
+	gnet, netSvcs, netArgs, err := setupNet(cfg.Net, sddl, log)
+	if err != nil {
+		return err
+	}
+	if gnet != nil {
+		defer gnet.close()
+	}
+
+	var disk *dataDisk
+	cmdline := cfg.CmdLine + netArgs + cfg.ExtraCmdLine
+	var disks []vm.Disk
+	if cfg.Disk.Data != "" {
+		if disk, err = prepareDisk(cfg.Disk, cfg.DiskSize); err != nil {
+			return err
+		}
+		if disk.created {
+			step("created data disk %s (%s, sparse, 1 MiB blocks)", disk.path, FormatSize(disk.meta.SizeBytes))
+		}
+		// The VM worker runs as a per-VM virtual account; it needs an ACE on the VHDX.
+		if err := cfg.Backend.GrantAccess(cfg.VMID, disk.path); err != nil {
+			return err
+		}
+		defer func() {
+			if err := cfg.Backend.RevokeAccess(cfg.VMID, disk.path); err != nil {
+				log.Warn("revoke VM access to the data disk", "err", err)
+			}
+		}()
+		disks = []vm.Disk{{Path: disk.path, Sparse: true}}
+		cmdline += " winbox.data=sda"
+		if disk.blank {
+			cmdline += " winbox.newdisk=1"
+		}
+	}
+
+	dockerSvc := transport.VsockServiceID(DockerPort)
+	consolePipe := `\\.\pipe\` + cfg.VMID + "-com1"
+	svcs := []vm.Service{{ID: dockerSvc, ConnectSDDL: sddl}, {ID: guestctl.ServiceID, ConnectSDDL: sddl}}
+	svcs = append(append(svcs, netSvcs...), cfg.ExtraServices...)
+	m, err := cfg.Backend.Create(cfg.VMID, &vm.Config{
+		Owner:          VMOwner,
+		KernelPath:     kpath,
+		InitrdPath:     ipath,
+		KernelCmdLine:  cmdline,
+		MemoryMB:       cfg.MemoryMB,
+		ProcessorCount: cfg.CPUs,
+		MemoryHints:    true,
+		Disks:          disks,
+		ConsolePipe:    consolePipe,
+		Services:       svcs,
+	})
+	if err != nil {
+		return err
+	}
+	r := &runner{cfg: &cfg, m: m, log: log, step: step, vmGone: make(chan struct{})}
+	defer func() { r.stopVM() }()
+	step("created %s", cfg.VMID)
+	if err := m.Start(); err != nil {
+		return err
+	}
+	step("started")
+
+	console, err := openConsole(ctx, consolePipe)
+	if err != nil {
+		return err
+	}
+	// Closed by stopVM after the VM is gone: an early close would look like a VM exit.
+	r.console = console
+	consoleDone := make(chan struct{})
+	go func() {
+		streamConsole(console, cfg.ConsoleLog, step)
+		close(consoleDone)
+	}()
+	go r.watch(consoleDone)
+
+	vmid, err := m.RuntimeID()
+	if err != nil {
+		return err
+	}
+	if cfg.OnCreated != nil {
+		cfg.OnCreated(cfg.VMID, vmid)
+	}
+	target := transport.HvsockTarget{VMID: vmid, ServiceID: dockerSvc}
+	step("runtime id %s", vmid)
+
+	// runCtx ends with ctx or when the VM stops on its own.
+	runCtx, cancelRun := context.WithCancel(ctx)
+	defer cancelRun()
+	go func() {
+		select {
+		case <-r.vmGone:
+			cancelRun()
+		case <-runCtx.Done():
+		}
+	}()
+
+	if gnet != nil {
+		if err := gnet.start(runCtx, vmid, step); err != nil {
+			return err
+		}
+	}
+
+	// The guest control channel and, with a data disk, the free-space guard.
+	sup := &guestctl.Supervisor{
+		Dial:        guestctl.HvsockDialer(vmid),
+		DialTimeout: time.Second,
+		MaxBackoff:  2 * time.Second,
+		Logf:        func(f string, a ...any) { log.Debug(fmt.Sprintf(f, a...)) },
+	}
+	var guard *hostGuard
+	gs := &guestStats{log: log}
+	sup.Config.OnStatus = func(s guestctl.Status) {
+		if guard != nil {
+			guard.onStatus(s)
+		}
+		gs.onStatus(s)
+	}
+	if disk != nil {
+		if guard, err = newHostGuard(cfg.Guard, m, sup, disk, log); err != nil {
+			return err
+		}
+	} else {
+		// No disk, no guard: winboxd runs with the cache policy only.
+		sup.SetBudget(spaceguard.Budget{Unlimited: true})
+	}
+	supCtx, cancelSup := context.WithCancel(context.Background())
+	supDone := make(chan struct{})
+	go func() { _ = sup.Run(supCtx); close(supDone) }()
+	defer func() { cancelSup(); <-supDone }()
+	// Deferred after the supervisor, so it runs while the control channel is still up.
+	defer r.shutdownGuest(sup)
+	if guard != nil {
+		guard.start()
+		defer guard.close() // runs first: no pause decisions during the shutdown
+	}
+
+	if err := waitPing(runCtx, target, cfg.ReadyTimeout); err != nil {
+		if r.exited() {
+			return r.exitErr()
+		}
+		if ctx.Err() != nil {
+			return nil // stopped while booting
+		}
+		return err
+	}
+	ready := time.Now()
+	step("dockerd answered /_ping over hvsock")
+	if cfg.OnReady != nil {
+		var st *netstack.Stack
+		if gnet != nil {
+			st = gnet.st
+		}
+		err := cfg.OnReady(runCtx, &Running{VMID: cfg.VMID, RuntimeID: vmid, Docker: target, Stack: st, Started: t0, Ready: ready})
+		if errors.Is(err, ErrDone) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+	}
+	if gnet != nil && cfg.Net.AutoPublish {
+		gnet.startAutoPublish(runCtx, target, step)
+	}
+
+	p := &transport.Proxy{
+		Upstream: &transport.HvsockDialer{Target: target, Retries: 2, RetryWait: 100 * time.Millisecond},
+		// Match the guest agent's -max-conns, so excess clients wait for a pipe instance
+		// instead of timing out on an hvsock dial the agent will not accept.
+		MaxConns: agentMaxConns,
+		Logger:   slog.New(levelFilter{h: log.Handler(), min: slog.LevelWarn}),
+	}
+	step("serving %s", cfg.Pipe)
+	if err := p.Serve(runCtx, ln); err != nil && runCtx.Err() == nil {
+		return err
+	}
+	if r.exited() && ctx.Err() == nil {
+		return r.exitErr()
+	}
+	return nil
+}
+
+// runner owns the compute system's shutdown.
+type runner struct {
+	cfg  *Config
+	m    Machine
+	log  *slog.Logger
+	step func(string, ...any)
+
+	console  io.Closer
+	vmGone   chan struct{}
+	goneOnce sync.Once
+	// shutdownTried is set once an orderly shutdown was attempted.
+	shutdownTried bool
+}
+
+func (r *runner) markGone() { r.goneOnce.Do(func() { close(r.vmGone) }) }
+
+func (r *runner) exited() bool {
+	select {
+	case <-r.vmGone:
+		return true
+	default:
+		return false
+	}
+}
+
+func (r *runner) exitErr() error {
+	return codeErr(CodeVMExited, errors.New("the VM stopped on its own; see the console log"))
+}
+
+// watch marks the VM gone when its console closes or HCS reports it stopped.
+func (r *runner) watch(consoleDone <-chan struct{}) {
+	t := time.NewTicker(2 * time.Second)
+	defer t.Stop()
+	for {
+		select {
+		case <-consoleDone:
+			r.markGone()
+			return
+		case <-r.vmGone:
+			return
+		case <-t.C:
+			if s, err := r.m.State(); err == nil && s == "Stopped" {
+				r.markGone()
+				return
+			}
+		}
+	}
+}
+
+// shutdownGuest asks winboxd for an orderly power-off (dockerd stops the containers,
+// the data disk is unmounted) and waits up to ShutdownTimeout for the VM to stop.
+func (r *runner) shutdownGuest(sup *guestctl.Supervisor) {
+	if r.exited() || r.shutdownTried {
+		return
+	}
+	r.shutdownTried = true
+	if r.cfg.OnStopping != nil {
+		r.cfg.OnStopping()
+	}
+	t := time.Now()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	err := sup.Shutdown(ctx)
+	cancel()
+	if err != nil {
+		// HCS's own shutdown needs an integration service this guest does not run
+		// (HcsShutDownComputeSystem fails with ERROR_NOT_SUPPORTED); try it anyway.
+		r.log.Warn("the guest did not accept an orderly shutdown", "err", err)
+		if err := r.m.ShutDown(); err != nil {
+			r.log.Warn("HCS shutdown refused too; terminating the VM", "err", err)
+			return
+		}
+	}
+	r.wait(t)
+}
+
+func (r *runner) wait(t time.Time) {
+	select {
+	case <-r.vmGone:
+		r.step("guest powered off in %v", time.Since(t).Round(time.Millisecond))
+	case <-time.After(r.cfg.ShutdownTimeout):
+		r.log.Warn("the guest did not power off in time; terminating the VM", "timeout", r.cfg.ShutdownTimeout)
+	}
+}
+
+// stopVM terminates and closes the compute system, after an orderly shutdown if none
+// was tried yet (Run failed before the control channel existed).
+func (r *runner) stopVM() {
+	defer func() { _ = r.m.Close() }()
+	if !r.exited() && !r.shutdownTried {
+		r.shutdownTried = true
+		if r.cfg.OnStopping != nil {
+			r.cfg.OnStopping()
+		}
+		if err := r.m.ShutDown(); err == nil {
+			r.wait(time.Now())
+		}
+	}
+	if err := r.m.Terminate(); err != nil {
+		r.log.Warn("terminate", "err", err)
+	}
+	if r.console != nil {
+		_ = r.console.Close()
+	}
+	r.step("VM stopped")
+}
+
+// guestStats logs what winboxd reports that is worth a line: trims and cache
+// reclaims. The values are guest-reported, for display only.
+type guestStats struct {
+	log                 *slog.Logger
+	trims, cacheTrims   uint64
+	trimmed, cacheFreed uint64
+	seen                bool
+}
+
+func (g *guestStats) onStatus(s guestctl.Status) {
+	if g.seen && s.Trims > g.trims {
+		g.log.Info("guest fstrim", "trims", s.Trims, "trimmed", HumanSize(s.Trimmed-min(s.Trimmed, g.trimmed)), "fsFree", HumanSize(s.FSFree))
+	}
+	if g.seen && s.CacheTrims > g.cacheTrims {
+		g.log.Info("guest page-cache reclaim", "reclaims", s.CacheTrims, "freed", HumanSize(s.CacheFreed-min(s.CacheFreed, g.cacheFreed)), "memFree", HumanSize(s.MemFree))
+	}
+	g.trims, g.trimmed, g.cacheTrims, g.cacheFreed, g.seen = s.Trims, s.Trimmed, s.CacheTrims, s.CacheFreed, true
+}

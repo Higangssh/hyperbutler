@@ -2,9 +2,15 @@
 # winbox guest prototype init (PID 1). Throwaway: see docs/adr/0005-guest-image.md.
 #
 # Mounts the API file systems, loads the modules for whichever hypervisor it finds
-# (Hyper-V vmbus or virtio), brings up the network, and starts dockerd, which starts
-# its own containerd. Every step prints "winbox-t <uptime> <step>" on the console so
-# the host can see where boot time goes.
+# (Hyper-V vmbus or virtio), brings up the network, mounts the data disk on
+# /var/lib/docker (formatting it if it is blank), starts winboxd, and starts dockerd,
+# which starts its own containerd. Every step prints "winbox-t <uptime> <step>" on the
+# console so the host can see where boot time goes.
+#
+# Shutdown: SIGTERM or SIGUSR2 (what busybox poweroff sends, which is what the kernel
+# runs when the host asks through the Hyper-V shutdown integration component) stops
+# dockerd, which stops the containers; then the data disk is unmounted and the VM
+# powers off.
 
 PATH=/usr/sbin:/usr/bin:/sbin:/bin
 export PATH
@@ -27,6 +33,7 @@ ln -sf /proc/self/fd /dev/fd
 ln -sf /proc/self/fd/0 /dev/stdin
 ln -sf /proc/self/fd/1 /dev/stdout
 ln -sf /proc/self/fd/2 /dev/stderr
+ln -sf /proc/mounts /etc/mtab
 hostname winbox
 t mounts-done
 
@@ -52,6 +59,9 @@ LOGLEVEL=warn
 NET=
 MTU=1500
 NETBENCH=
+DATA=
+NEWDISK=
+MEMLOG=
 for arg in $(cat /proc/cmdline); do
 	case "$arg" in
 	winbox.ip=*) ADDR=${arg#winbox.ip=} ;;
@@ -61,6 +71,9 @@ for arg in $(cat /proc/cmdline); do
 	winbox.net=*) NET=${arg#winbox.net=} ;;
 	winbox.mtu=*) MTU=${arg#winbox.mtu=} ;;
 	winbox.netbench=1) NETBENCH="-bench-tcp 5201 -bench-vsock 5202" ;;
+	winbox.data=*) DATA=${arg#winbox.data=} ;;
+	winbox.newdisk=1) NEWDISK=1 ;;
+	winbox.memlog=1) MEMLOG=1 ;;
 	esac
 done
 if [ -n "$NET" ] && [ -d /sys/bus/vmbus ]; then
@@ -94,8 +107,93 @@ if ip link show eth0 >/dev/null 2>&1; then
 fi
 t net-done
 
+# The data disk (winbox.data=sdX) holds /var/lib/docker: images, containers, volumes and
+# their json-file logs. It is formatted only when it is blank (see data_disk), which is
+# how a new VHDX reads; anything else that is not a clean ext4 is refused, never
+# reformatted. Without winbox.data (the QEMU harness), /var/lib/docker is a tmpfs.
 mkdir -p /var/lib/docker
-mount -t tmpfs -o mode=0710 docker /var/lib/docker
+data_disk() {
+	dev=/dev/$DATA
+	modprobe ext4
+	i=0
+	while [ ! -b "$dev" ] && [ $i -lt 500 ]; do
+		sleep 0.01
+		i=$((i + 1))
+	done
+	if [ ! -b "$dev" ]; then
+		t "data-missing $dev"
+		return 1
+	fi
+	# Blank means all three: the host says the VHDX was never written (winbox.newdisk=1:
+	# its allocation is still what it was at creation), a complete read of the first MiB
+	# succeeded and is all zero, and blkid finds no file system. A failed or short read
+	# is never taken for a blank disk.
+	blank=
+	if [ -n "$NEWDISK" ] && dd if="$dev" of=/tmp/data-head bs=65536 count=16 2>/dev/null &&
+		[ "$(wc -c </tmp/data-head)" -eq 1048576 ] &&
+		[ "$(tr -d '\000' </tmp/data-head | wc -c)" -eq 0 ] &&
+		[ -z "$(blkid "$dev" 2>/dev/null)" ]; then
+		blank=1
+	fi
+	rm -f /tmp/data-head
+	if [ -n "$blank" ]; then
+		t data-mkfs
+		# -J size=128: journal blocks, once written, stay allocated in the VHDX (they
+		# are never free, so never trimmed). The default for 64 GiB is several times
+		# larger.
+		if ! mke2fs -q -F -t ext4 -m 0 -L winbox-data -J size=128 \
+			-E nodiscard,lazy_itable_init=1,lazy_journal_init=1 "$dev" >/dev/console 2>&1; then
+			t data-mkfs-failed
+			return 1
+		fi
+	else
+		# -p repairs what is safe to repair and fails (>= 4) on anything else.
+		e2fsck -p "$dev" >/dev/console 2>&1
+		rc=$?
+		if [ $rc -ge 4 ]; then
+			t "data-fsck-failed $rc"
+			return 1
+		fi
+	fi
+	# noinit_itable: the inode tables of a new VHDX already read as zeros, so the
+	# background zeroing would only cost I/O.
+	if ! mount -t ext4 -o noatime,noinit_itable "$dev" /var/lib/docker; then
+		t data-mount-failed
+		return 1
+	fi
+	t data-mounted
+}
+WINBOXD_ARGS=-no-trim
+if [ -n "$DATA" ]; then
+	if ! data_disk; then
+		echo "winbox: the data disk could not be used; see the lines above" >/dev/console
+		sleep 1
+		poweroff -f
+	fi
+	WINBOXD_ARGS="-mount /var/lib/docker -dev /dev/$DATA -file /var/lib/docker/.winbox-reserve"
+else
+	mount -t tmpfs -o mode=0710 docker /var/lib/docker
+fi
+
+# winboxd: the host control channel (vsock 2380), the free-space guard, automatic
+# fstrim and page-cache reclaim (docs/research/guest-services.md). The guard fails
+# closed until the host's first budget arrives, so dockerd waits for that (bounded).
+if [ -d /sys/bus/vmbus ]; then
+	rm -f /run/winboxd.ready
+	(while :; do
+		# shellcheck disable=SC2086
+		winboxd $WINBOXD_ARGS -ready /run/winboxd.ready >/dev/console 2>&1
+		t "winboxd-exit $?"
+		sleep 1
+	done) &
+	WINBOXD_LOOP=$!
+	i=0
+	while [ ! -e /run/winboxd.ready ] && [ $i -lt 1000 ]; do
+		sleep 0.01
+		i=$((i + 1))
+	done
+	t winboxd-ready
+fi
 
 # The root file system is the initramfs itself, where pivot_root(2) is impossible.
 # DOCKER_RAMDISK makes runc fall back to MS_MOVE + chroot. The production image must
@@ -115,12 +213,19 @@ if [ -d /sys/bus/vmbus ]; then
 		t "agent-exit $?"
 		sleep 1
 	done) &
+	AGENT_LOOP=$!
 else
 	sockfwd -listen "${ADDR%/*}:2375" -unix /run/docker.sock >/dev/console 2>&1 &
 fi
+DOCKERD=
+stop_dockerd() {
+	t shutdown-requested
+	[ -n "$DOCKERD" ] && kill -TERM "$DOCKERD" 2>/dev/null
+}
+trap stop_dockerd TERM USR2 INT
 t dockerd-exec
 dockerd --host=unix:///run/docker.sock --iptables=false --ip6tables=false \
-	--log-level="$LOGLEVEL" >/dev/console 2>&1 &
+	--shutdown-timeout=10 --log-level="$LOGLEVEL" >/dev/console 2>&1 &
 DOCKERD=$!
 
 i=0
@@ -130,14 +235,30 @@ while [ ! -S /run/docker.sock ] && [ $i -lt 600 ]; do
 done
 t docker-sock
 
-# Guest-side memory every 15 s, so host numbers can be split into guest use and VMM cost.
-(
-	while sleep 15; do
-		m=$(grep -E '^(MemTotal|MemFree|MemAvailable|Cached|Shmem):' /proc/meminfo | tr -s ' ' | tr '\n' ' ')
-		t "mem $m"
-	done
-) &
+# winbox.memlog=1: guest-side memory every 15 s, so host numbers can be split into
+# guest use and VMM cost.
+if [ -n "$MEMLOG" ]; then
+	(
+		while sleep 15; do
+			m=$(grep -E '^(MemTotal|MemFree|MemAvailable|Cached|Shmem):' /proc/meminfo | tr -s ' ' | tr '\n' ' ')
+			t "mem $m"
+		done
+	) &
+fi
 
-wait $DOCKERD
-t dockerd-exit $?
+# A trapped signal interrupts wait; keep waiting until dockerd is really gone.
+while kill -0 "$DOCKERD" 2>/dev/null; do
+	wait "$DOCKERD"
+done
+t dockerd-exit
+for p in $WINBOXD_LOOP $AGENT_LOOP; do
+	kill "$p" 2>/dev/null
+done
+killall winboxd agent 2>/dev/null
+sync
+if mountpoint -q /var/lib/docker; then
+	umount /var/lib/docker 2>/dev/null || mount -o remount,ro /var/lib/docker
+	t data-unmounted
+fi
+sync
 poweroff -f

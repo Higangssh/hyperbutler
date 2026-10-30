@@ -6,7 +6,9 @@
 //	winbox-dev mkimage [flags]   write a `docker load` tar of a scratch image holding
 //	                             one static busybox, without any network access
 //
-// See docs/research/hvsock-path.md for how it is used and what it measured.
+// See docs/research/hvsock-path.md for how it is used and what it measured. The VM
+// lifecycle itself lives in internal/engine; `run` only turns flags into engine.Config.
+// The user-facing CLI is cmd/winbox.
 package main
 
 import (

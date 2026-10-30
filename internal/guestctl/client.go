@@ -236,6 +236,13 @@ func (c *Client) CacheTrim(ctx context.Context) (CacheResult, error) {
 	return m.(CacheResult), nil
 }
 
+// Shutdown asks the guest to power off in order and waits until it accepts. The VM
+// stops later, when the guest is done.
+func (c *Client) Shutdown(ctx context.Context) error {
+	_, err := c.request(ctx, ShutdownRequest{}, RShutdown, 0)
+	return err
+}
+
 // Ping measures the round trip to the guest daemon.
 func (c *Client) Ping(ctx context.Context) (time.Duration, error) {
 	t0 := time.Now()
@@ -453,6 +460,8 @@ func requestFor(reply Type) Type {
 		return TCacheTrim
 	case RPong:
 		return TPing
+	case RShutdown:
+		return TShutdown
 	}
 	return 0
 }

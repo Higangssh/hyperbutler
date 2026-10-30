@@ -1,0 +1,416 @@
+package engine
+
+import (
+	"bytes"
+	"crypto/rand"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"os"
+	"path/filepath"
+	"strings"
+	"time"
+	"unicode/utf8"
+
+	"github.com/Higangssh/winbox/internal/transport"
+)
+
+// The state directory's JSON files. Each parser is strict: one JSON object of the
+// current version, no unknown fields, no trailing data, every field in range. A file
+// that fails to parse is reported, never guessed at. They are fuzzed in files_test.go.
+
+// maxFileSize bounds every state file read.
+const maxFileSize = 64 << 10
+
+// Phase is where the engine is in its life.
+type Phase string
+
+const (
+	PhaseStarting Phase = "starting" // booting; the Docker API is not answering yet
+	PhaseRunning  Phase = "running"  // dockerd answers on the pipe
+	PhaseStopping Phase = "stopping" // shutting the guest down
+	PhaseStopped  Phase = "stopped"  // exited cleanly
+	PhaseFailed   Phase = "failed"   // exited with Error
+)
+
+func (p Phase) valid() bool {
+	switch p {
+	case PhaseStarting, PhaseRunning, PhaseStopping, PhaseStopped, PhaseFailed:
+		return true
+	}
+	return false
+}
+
+// Live reports whether an engine in this phase still has (or is about to have) a VM.
+func (p Phase) Live() bool { return p == PhaseStarting || p == PhaseRunning || p == PhaseStopping }
+
+// Error codes in State.ErrorCode, for the CLI to explain.
+const (
+	CodeHCSAccessDenied = "hcs-access-denied" // not in Hyper-V Administrators (ADR 0004)
+	CodePipeInUse       = "pipe-in-use"       // another program serves the Docker pipe
+	CodeAlreadyRunning  = "already-running"
+	CodeVMExited        = "vm-exited" // the guest powered off or crashed on its own
+	CodeDataDisk        = "data-disk"
+)
+
+// State is what the engine publishes about itself in state.json.
+type State struct {
+	Version int   `json:"version"`
+	Phase   Phase `json:"phase"`
+	// PID and PIDCreated identify the engine process. PIDCreated is its creation time
+	// (FILETIME, 100 ns units), so a reused PID is never taken for the engine.
+	PID        int       `json:"pid"`
+	PIDCreated int64     `json:"pidCreated"`
+	VMID       string    `json:"vmId,omitempty"`
+	RuntimeID  string    `json:"runtimeId,omitempty"`
+	Pipe       string    `json:"pipe"`
+	DataDir    string    `json:"dataDir"`
+	Started    time.Time `json:"started"`
+	// ReadyMillis is the time from Started until dockerd answered, 0 before that.
+	ReadyMillis int64     `json:"readyMillis,omitempty"`
+	Updated     time.Time `json:"updated"`
+	Error       string    `json:"error,omitempty"`
+	ErrorCode   string    `json:"errorCode,omitempty"`
+}
+
+const stateVersion = 1
+
+const (
+	maxErrorLen = 4096
+	maxVMIDLen  = 64
+	maxPID      = 1 << 31
+)
+
+// Validate reports the first field out of range.
+func (s *State) Validate() error {
+	switch {
+	case s.Version != stateVersion:
+		return fmt.Errorf("state: version %d, want %d", s.Version, stateVersion)
+	case !s.Phase.valid():
+		return fmt.Errorf("state: unknown phase %q", s.Phase)
+	case s.PID < 0 || s.PID >= maxPID:
+		return fmt.Errorf("state: pid %d out of range", s.PID)
+	case s.PIDCreated < 0:
+		return errors.New("state: negative process creation time")
+	case s.ReadyMillis < 0:
+		return errors.New("state: negative ready time")
+	case len(s.Error) > maxErrorLen || !utf8.ValidString(s.Error):
+		return errors.New("state: error text too long or not UTF-8")
+	case !validToken(s.ErrorCode, 64, false):
+		return fmt.Errorf("state: bad error code %q", s.ErrorCode)
+	case s.VMID != "" && (!validToken(s.VMID, maxVMIDLen, true) || !strings.HasPrefix(s.VMID, "winbox-")):
+		return fmt.Errorf("state: bad VM id %q", s.VMID)
+	case s.RuntimeID != "" && !validToken(s.RuntimeID, 40, true):
+		return fmt.Errorf("state: bad runtime id %q", s.RuntimeID)
+	case s.DataDir != "" && !filepath.IsAbs(s.DataDir):
+		return fmt.Errorf("state: data dir %q is not absolute", s.DataDir)
+	}
+	if s.Pipe != "" {
+		if err := transport.ValidatePipeName(s.Pipe); err != nil {
+			return fmt.Errorf("state: %w", err)
+		}
+	}
+	if s.Phase.Live() && s.PID == 0 {
+		return errors.New("state: a live phase without a pid")
+	}
+	return nil
+}
+
+// validToken accepts lowercase letters, digits and '-', and with digitsFirst also a
+// leading digit; empty is valid.
+func validToken(s string, maxLen int, digitsFirst bool) bool {
+	if len(s) > maxLen {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		switch {
+		case c >= 'a' && c <= 'z', c == '-':
+		case c >= '0' && c <= '9':
+			if i == 0 && !digitsFirst {
+				return false
+			}
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// ParseState decodes and validates state.json.
+func ParseState(b []byte) (*State, error) {
+	var s State
+	if err := decodeStrict(b, &s); err != nil {
+		return nil, fmt.Errorf("state: %w", err)
+	}
+	if err := s.Validate(); err != nil {
+		return nil, err
+	}
+	return &s, nil
+}
+
+// Settings are the user's choices, made on the first start and kept in settings.json.
+type Settings struct {
+	Version int `json:"version"`
+	// DataDir holds the data disk (REQ-DISK-007). It is fixed after the first start.
+	DataDir string `json:"dataDir"`
+	// DiskSize is the data disk's virtual size in bytes, used when it is created.
+	DiskSize uint64 `json:"diskSizeBytes"`
+	MemoryMB int    `json:"memoryMB"`
+	CPUs     int    `json:"cpus"`
+	// Pipe is the Docker API pipe; empty means transport.DefaultPipeName. Another name
+	// lets two installations (or a development harness) run side by side.
+	Pipe string `json:"pipe,omitempty"`
+}
+
+// SettingsVersion is the current settings.json version.
+const SettingsVersion = 1
+
+// Bounds of Settings values.
+const (
+	MinDiskSize = 4 << 30
+	MaxDiskSize = 16 << 40 // well below the VHDX limit of 64 TiB
+	MinMemoryMB = 1024     // dockerd does not start in 512 MB
+	MaxMemoryMB = 1 << 20
+	MaxCPUs     = 256
+)
+
+// Validate reports the first field out of range.
+func (s *Settings) Validate() error {
+	switch {
+	case s.Version != SettingsVersion:
+		return fmt.Errorf("settings: version %d, want %d", s.Version, SettingsVersion)
+	case !filepath.IsAbs(s.DataDir) || len(s.DataDir) > 1024 || !utf8.ValidString(s.DataDir) || strings.ContainsRune(s.DataDir, 0):
+		return fmt.Errorf("settings: data dir %q must be an absolute path", s.DataDir)
+	case s.DiskSize < MinDiskSize || s.DiskSize > MaxDiskSize || s.DiskSize%(1<<20) != 0:
+		return fmt.Errorf("settings: disk size %d must be a multiple of 1 MiB from %s to %s", s.DiskSize, FormatSize(MinDiskSize), FormatSize(MaxDiskSize))
+	case s.MemoryMB < MinMemoryMB || s.MemoryMB > MaxMemoryMB:
+		return fmt.Errorf("settings: memory %d MiB is outside %d..%d", s.MemoryMB, MinMemoryMB, MaxMemoryMB)
+	case s.CPUs < 1 || s.CPUs > MaxCPUs:
+		return fmt.Errorf("settings: %d CPUs is outside 1..%d", s.CPUs, MaxCPUs)
+	}
+	if s.Pipe != "" {
+		if err := transport.ValidatePipeName(s.Pipe); err != nil {
+			return fmt.Errorf("settings: %w", err)
+		}
+	}
+	return nil
+}
+
+// PipeName is the Docker API pipe of these settings.
+func (s *Settings) PipeName() string {
+	if s.Pipe == "" {
+		return transport.DefaultPipeName
+	}
+	return s.Pipe
+}
+
+// ParseSettings decodes and validates settings.json.
+func ParseSettings(b []byte) (*Settings, error) {
+	var s Settings
+	if err := decodeStrict(b, &s); err != nil {
+		return nil, fmt.Errorf("settings: %w", err)
+	}
+	if err := s.Validate(); err != nil {
+		return nil, err
+	}
+	return &s, nil
+}
+
+// DiskMeta describes the data disk, in disk.json next to it.
+type DiskMeta struct {
+	Version   int    `json:"version"`
+	SizeBytes uint64 `json:"sizeBytes"`
+	BlockSize uint32 `json:"blockSize"`
+	// MetadataBytes is the VHDX's host allocation right after it was created, before the
+	// guest wrote anything: the free-space guard's stand-in for the VHDX metadata size
+	// (overstating it is safe, see internal/spaceguard).
+	MetadataBytes uint64    `json:"metadataBytes"`
+	Created       time.Time `json:"created"`
+}
+
+const diskMetaVersion = 1
+
+// Validate reports the first field out of range.
+func (d *DiskMeta) Validate() error {
+	switch {
+	case d.Version != diskMetaVersion:
+		return fmt.Errorf("disk: version %d, want %d", d.Version, diskMetaVersion)
+	case d.SizeBytes < MinDiskSize || d.SizeBytes > MaxDiskSize || d.SizeBytes%(1<<20) != 0:
+		return fmt.Errorf("disk: size %d out of range", d.SizeBytes)
+	case d.BlockSize != 1<<20:
+		return fmt.Errorf("disk: block size %d, want 1 MiB", d.BlockSize)
+	case d.MetadataBytes > 1<<30:
+		return fmt.Errorf("disk: metadata size %d out of range", d.MetadataBytes)
+	}
+	return nil
+}
+
+// ParseDiskMeta decodes and validates disk.json.
+func ParseDiskMeta(b []byte) (*DiskMeta, error) {
+	var d DiskMeta
+	if err := decodeStrict(b, &d); err != nil {
+		return nil, fmt.Errorf("disk: %w", err)
+	}
+	if err := d.Validate(); err != nil {
+		return nil, err
+	}
+	return &d, nil
+}
+
+// decodeStrict decodes exactly one JSON object with known fields only.
+func decodeStrict(b []byte, v any) error {
+	if len(b) > maxFileSize {
+		return errors.New("file too large")
+	}
+	if !utf8.Valid(b) {
+		return errors.New("not UTF-8")
+	}
+	d := json.NewDecoder(bytes.NewReader(b))
+	d.DisallowUnknownFields()
+	if err := d.Decode(v); err != nil {
+		return err
+	}
+	if _, err := d.Token(); !errors.Is(err, io.EOF) {
+		return errors.New("trailing data after the JSON object")
+	}
+	return nil
+}
+
+// encode renders v as indented JSON with a trailing newline.
+func encode(v any) ([]byte, error) {
+	b, err := json.MarshalIndent(v, "", "  ")
+	if err != nil {
+		return nil, err
+	}
+	return append(b, '\n'), nil
+}
+
+// WriteFileAtomic replaces path with data: it writes a temporary file in the same
+// directory, flushes it, and renames it over path, so a reader or a crash sees either
+// the old or the new content. A rename that collides with a reader is retried.
+func WriteFileAtomic(path string, data []byte) error {
+	var rnd [6]byte
+	_, _ = rand.Read(rnd[:])
+	tmp := path + ".tmp-" + hex.EncodeToString(rnd[:])
+	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		return err
+	}
+	_, err = f.Write(data)
+	if err == nil {
+		err = f.Sync()
+	}
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	if err == nil {
+		err = retrySharing(func() error { return os.Rename(tmp, path) })
+	}
+	if err != nil {
+		_ = os.Remove(tmp)
+	}
+	return err
+}
+
+// ReadFileBounded reads at most maxFileSize bytes of path, retrying sharing
+// violations (an atomic rename in progress).
+func ReadFileBounded(path string) ([]byte, error) {
+	var b []byte
+	err := retrySharing(func() error {
+		f, err := os.Open(path)
+		if err != nil {
+			return err
+		}
+		defer f.Close()
+		b, err = io.ReadAll(io.LimitReader(f, maxFileSize+1))
+		if err == nil && len(b) > maxFileSize {
+			err = fmt.Errorf("%s is larger than %d bytes", path, maxFileSize)
+		}
+		return err
+	})
+	return b, err
+}
+
+func retrySharing(fn func() error) error {
+	var err error
+	for i := 0; i < 50; i++ {
+		if err = fn(); err == nil || !isSharingViolation(err) {
+			return err
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	return err
+}
+
+// LoadState reads state.json. It returns os.ErrNotExist (wrapped) if there is none.
+func LoadState(l Layout) (*State, error) {
+	b, err := ReadFileBounded(l.StatePath())
+	if err != nil {
+		return nil, err
+	}
+	return ParseState(b)
+}
+
+// SaveState validates s, stamps Updated and writes state.json.
+func SaveState(l Layout, s *State) error {
+	s.Version = stateVersion
+	s.Updated = time.Now().UTC().Truncate(time.Millisecond)
+	if len(s.Error) > maxErrorLen {
+		s.Error = s.Error[:maxErrorLen]
+	}
+	s.Error = strings.ToValidUTF8(s.Error, "?")
+	if err := s.Validate(); err != nil {
+		return err
+	}
+	b, err := encode(s)
+	if err != nil {
+		return err
+	}
+	return WriteFileAtomic(l.StatePath(), b)
+}
+
+// LoadSettings reads settings.json; os.ErrNotExist (wrapped) before the first start.
+func LoadSettings(l Layout) (*Settings, error) {
+	b, err := ReadFileBounded(l.SettingsPath())
+	if err != nil {
+		return nil, err
+	}
+	return ParseSettings(b)
+}
+
+// SaveSettings validates s and writes settings.json.
+func SaveSettings(l Layout, s *Settings) error {
+	s.Version = SettingsVersion
+	if err := s.Validate(); err != nil {
+		return err
+	}
+	b, err := encode(s)
+	if err != nil {
+		return err
+	}
+	return WriteFileAtomic(l.SettingsPath(), b)
+}
+
+// LoadDiskMeta reads disk.json; os.ErrNotExist (wrapped) if there is none.
+func LoadDiskMeta(l Layout) (*DiskMeta, error) {
+	b, err := ReadFileBounded(l.DiskMetaPath())
+	if err != nil {
+		return nil, err
+	}
+	return ParseDiskMeta(b)
+}
+
+func saveDiskMeta(l Layout, d *DiskMeta) error {
+	d.Version = diskMetaVersion
+	if err := d.Validate(); err != nil {
+		return err
+	}
+	b, err := encode(d)
+	if err != nil {
+		return err
+	}
+	return WriteFileAtomic(l.DiskMetaPath(), b)
+}

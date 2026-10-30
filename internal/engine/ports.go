@@ -1,4 +1,4 @@
-package main
+package engine
 
 import (
 	"bufio"
@@ -12,7 +12,7 @@ import (
 )
 
 // Auto-publishing: when a container with published ports starts in the guest, dockerd's
-// docker-proxy listens on the guest's eth0 for each host port. winbox-dev mirrors each
+// docker-proxy listens on the guest's eth0 for each host port. winbox mirrors each
 // one on the host's loopback, so `docker run -p 8080:80` is reachable at
 // 127.0.0.1:8080 on Windows. The JSON comes from the guest's dockerd and is untrusted.
 
@@ -117,7 +117,7 @@ func validContainerID(id string) bool {
 	return true
 }
 
-// dockerEvent is the subset of a /events message winbox-dev reacts to.
+// dockerEvent is the subset of a /events message the engine reacts to.
 type dockerEvent struct {
 	Type   string `json:"Type"`
 	Action string `json:"Action"`
