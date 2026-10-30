@@ -1,0 +1,173 @@
+package share
+
+// Regression tests for the adversarial review findings (ADR 0007).
+
+import (
+	"bytes"
+	"encoding/binary"
+	"io"
+	"sync"
+	"sync/atomic"
+	"testing"
+	"time"
+)
+
+// A sibling created next to the file of a single-file share must not be named to the
+// guest nor become reachable through replay.
+func TestOnlyShareIgnoresSiblingEvents(t *testing.T) {
+	fs := newMemFS()
+	fs.files["config.json"] = []byte("{}")
+	s := NewServer(Options{NoWatch: true})
+	s.AddShare(&Share{Name: "src", FS: fs, Only: []string{"config.json"}})
+	c := newClient(t, s)
+	root := c.mustLookup(rootNode, "src")
+	c.do(opHello, 0, (&wbuf{}).u32(4242).b)
+	var sent [][]byte
+	s.cmu.Lock()
+	s.conn = &conn{rw: &capture{out: &sent}}
+	s.cmu.Unlock()
+	fs.files["secret.txt"] = []byte("private")
+	s.HostChanged(HostEvent{Share: "src", Path: []string{"secret.txt"}, Kind: Created})
+	for _, m := range sent {
+		if bytes.Contains(m, []byte("secret")) {
+			t.Fatalf("sibling name sent to the guest: %q", m)
+		}
+	}
+	c.pid = 4242
+	if e, _ := c.do(opMknod, root.node, (&wbuf{}).u32(sIFREG|0o644).u32(0).u32(0).u32(0).str("secret.txt").b); e == 0 {
+		t.Fatal("injector created a node for a hidden sibling")
+	}
+	if e, _ := c.lookup(root.node, "secret.txt"); e == 0 {
+		t.Fatal("hidden sibling visible")
+	}
+}
+
+// countingFile records use after close.
+type countingFile struct {
+	closed   atomic.Bool
+	misuse   atomic.Int32
+	inFlight atomic.Int32
+}
+
+func (f *countingFile) ReadAt(p []byte, off int64) (int, error) {
+	f.inFlight.Add(1)
+	defer f.inFlight.Add(-1)
+	if f.closed.Load() {
+		f.misuse.Add(1)
+	}
+	time.Sleep(50 * time.Microsecond)
+	if f.closed.Load() {
+		f.misuse.Add(1)
+	}
+	return 0, io.EOF
+}
+func (f *countingFile) WriteAt(p []byte, off int64) (int, error) { return f.ReadAt(p, off) }
+func (f *countingFile) Sync() error                              { return nil }
+func (f *countingFile) Close() error {
+	if f.inFlight.Load() != 0 {
+		f.misuse.Add(1)
+	}
+	f.closed.Store(true)
+	return nil
+}
+
+// RELEASE racing READ on the same fh must not close the file under the read.
+func TestReleaseWaitsForInflightIO(t *testing.T) {
+	s := NewServer(Options{NoWatch: true})
+	for i := 0; i < 200; i++ {
+		f := &countingFile{}
+		fh, _ := s.addHandle(&handle{node: 5, f: f})
+		var wg sync.WaitGroup
+		for j := 0; j < 4; j++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				if ff, done, err := s.file(fh); err == nil {
+					ff.ReadAt(make([]byte, 1), 0)
+					done()
+				}
+			}()
+		}
+		wg.Add(1)
+		go func() { defer wg.Done(); s.release(fh) }()
+		wg.Wait()
+		if f.misuse.Load() != 0 {
+			t.Fatal("file used after close or closed during I/O")
+		}
+		if !f.closed.Load() {
+			t.Fatal("file never closed")
+		}
+	}
+}
+
+type pipeRW struct {
+	r *io.PipeReader
+	w io.Writer
+}
+
+func (p pipeRW) Read(b []byte) (int, error)  { return p.r.Read(b) }
+func (p pipeRW) Write(b []byte) (int, error) { return p.w.Write(b) }
+
+func helloBytes(queue uint32) []byte {
+	c := &tclient{}
+	return c.frame(opHello, 0, (&wbuf{}).u32(1).u32(queue).b)
+}
+
+// A stale queue-0 connection ending must not wipe the session that replaced it.
+func TestStaleSessionDoesNotResetNew(t *testing.T) {
+	s := NewServer(Options{NoWatch: true})
+	s.AddShare(&Share{Name: "src", FS: newMemFS()})
+	r1, w1 := io.Pipe()
+	done1 := make(chan struct{})
+	go func() { s.Serve(pipeRW{r1, io.Discard}); close(done1) }()
+	w1.Write(helloBytes(0))
+	time.Sleep(50 * time.Millisecond)
+	r2, w2 := io.Pipe()
+	done2 := make(chan struct{})
+	go func() { s.Serve(pipeRW{r2, io.Discard}); close(done2) }()
+	w2.Write(helloBytes(0))
+	time.Sleep(50 * time.Millisecond)
+	c := &tclient{t: t, s: s, pid: 1}
+	en := c.mustLookup(rootNode, "src")
+	w1.Close()
+	<-done1
+	if e, _ := c.lookup(en.node, "top"); e != 0 {
+		t.Fatalf("old connection's end reset the live session: errno %d", e)
+	}
+	w2.Close()
+	<-done2
+}
+
+// blockingWriter never returns from Write until released.
+type blockingWriter struct{ release chan struct{} }
+
+func (b blockingWriter) Write(p []byte) (int, error) { <-b.release; return len(p), nil }
+
+// A guest that stops reading must not block the host side.
+func TestNotifyNeverBlocks(t *testing.T) {
+	s := NewServer(Options{NoWatch: true})
+	s.AddShare(&Share{Name: "src", FS: newMemFS()})
+	r, w := io.Pipe()
+	bw := blockingWriter{make(chan struct{})}
+	done := make(chan struct{})
+	go func() { s.Serve(pipeRW{r, bw}); close(done) }()
+	w.Write(helloBytes(0))
+	time.Sleep(20 * time.Millisecond)
+	finished := make(chan struct{})
+	go func() {
+		for i := 0; i < maxPendingNotes+100; i++ {
+			s.notify(notifyInvalInodeMsg(2, 0, 0))
+		}
+		s.RemoveShare("src")
+		close(finished)
+	}()
+	select {
+	case <-finished:
+	case <-time.After(5 * time.Second):
+		t.Fatal("notify blocked on a guest that does not read")
+	}
+	w.Close()
+	close(bw.release)
+	<-done
+	_ = binary.LittleEndian
+}
