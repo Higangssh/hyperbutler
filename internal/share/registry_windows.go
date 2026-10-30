@@ -3,13 +3,12 @@
 package share
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 )
 
 // Registry registers bind sources as shares on demand, for RewriteCreate.
@@ -17,15 +16,46 @@ type Registry struct {
 	// Server serves the shares; MountPoint is where the guest relay mounted it.
 	Server     *Server
 	MountPoint string
+	// MaxShares bounds the live shares (each holds a root handle and a watcher)
+	// [DefaultMaxShares]. Past it a new bind source is refused until Prune removes
+	// unused ones.
+	MaxShares int
 
-	mu    sync.Mutex
-	names map[string]string // share name -> guest path, for reuse
+	mu       sync.Mutex
+	names    map[string]string    // share name -> guest path, for reuse
+	resolved map[string]time.Time // share name -> last Resolve that returned it
 }
 
-// shareName is stable for a host path, so the same source maps to the same share.
-func shareName(key string) string {
-	h := sha256.Sum256([]byte(strings.ToLower(key)))
-	return "b-" + hex.EncodeToString(h[:8])
+// DefaultMaxShares is Registry.MaxShares when it is zero.
+const DefaultMaxShares = 1024
+
+// Prune removes every share that used does not name and that no Resolve returned since
+// before. The caller lists the containers first and passes the time it started minus
+// a grace period, so a share that a create resolved but whose container dockerd has not
+// recorded yet is kept. It returns the names removed.
+func (r *Registry) Prune(used map[string]bool, before time.Time) []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var removed []string
+	for name := range r.names {
+		if used[name] || !r.resolved[name].Before(before) {
+			continue
+		}
+		// Unregistered first, so a failing Close cannot leave a name that maps to no
+		// share.
+		delete(r.names, name)
+		delete(r.resolved, name)
+		_ = r.Server.RemoveShare(name)
+		removed = append(removed, name)
+	}
+	return removed
+}
+
+// Len returns the number of live shares.
+func (r *Registry) Len() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return len(r.names)
 }
 
 // Resolve returns the guest path for a Windows bind source, sharing it first if needed.
@@ -87,10 +117,20 @@ func (r *Registry) resolve(winPath string, create bool) (string, error) {
 	defer r.mu.Unlock()
 	if r.names == nil {
 		r.names = map[string]string{}
+		r.resolved = map[string]time.Time{}
 	}
 	if g, ok := r.names[name]; ok {
 		fs.Close()
+		r.resolved[name] = time.Now()
 		return g, nil
+	}
+	max := r.MaxShares
+	if max <= 0 {
+		max = DefaultMaxShares
+	}
+	if len(r.names) >= max {
+		fs.Close()
+		return "", fmt.Errorf("share: %d bind-mount sources are in use, the limit; remove containers that no longer need theirs", max)
 	}
 	sh := &Share{Name: name, FS: fs}
 	if only != "" {
@@ -101,5 +141,6 @@ func (r *Registry) resolve(winPath string, create bool) (string, error) {
 		return "", err
 	}
 	r.names[name] = guest
+	r.resolved[name] = time.Now()
 	return guest, nil
 }

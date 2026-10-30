@@ -159,12 +159,17 @@ func (c *tclient) release(node, fh uint64) {
 
 // readdirplus returns the names and node ids in a directory.
 func (c *tclient) readdir(node uint64, plus bool) (int, map[string]entry) {
+	// Like the kernel: an OPENDIR answered ENOSYS means no handles (fh 0, no RELEASEDIR).
+	var fh uint64
 	e, b := c.do(opOpendir, node, (&wbuf{}).u32(0).u32(0).b)
-	if e != 0 {
+	switch {
+	case e == int(ENOSYS):
+	case e != 0:
 		return e, nil
+	default:
+		fh = binary.LittleEndian.Uint64(b)
+		defer c.do(opReleasedir, node, (&wbuf{}).u64(fh).u32(0).u32(0).u64(0).b)
 	}
-	fh := binary.LittleEndian.Uint64(b)
-	defer c.do(opReleasedir, node, (&wbuf{}).u64(fh).u32(0).u32(0).u64(0).b)
 	out := map[string]entry{}
 	op := uint32(opReaddir)
 	if plus {

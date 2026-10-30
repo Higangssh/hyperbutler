@@ -3,10 +3,16 @@
 package engine
 
 import (
+	"bufio"
+	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
+	"net/http"
+	"net/url"
 	"sync"
 	"time"
 
@@ -40,6 +46,9 @@ type shareService struct {
 	svc guid.GUID
 	log *slog.Logger
 
+	// grace and debounce are pruneGrace and pruneDebounce (tests shorten them).
+	grace, debounce time.Duration
+
 	mu     sync.Mutex
 	ln     net.Listener
 	conns  map[net.Conn]struct{}
@@ -64,6 +73,8 @@ func setupShares(sc ShareConfig, sddl string, log *slog.Logger) (s *shareService
 		svc:   transport.VsockServiceID(SharePort),
 		log:   log,
 		conns: map[net.Conn]struct{}{},
+
+		grace: pruneGrace, debounce: pruneDebounce,
 	}
 	// The guest connects to the host on this service; only this user may listen on it.
 	svcs = []vm.Service{{ID: s.svc, BindSDDL: sddl}}
@@ -164,4 +175,141 @@ func (s *shareService) close() {
 	s.mu.Unlock()
 	s.wg.Wait()
 	_ = s.srv.Close()
+}
+
+// Share lifetime (ADR 0007, integration step 5). A share is removed once no container,
+// in any state, has a bind mount from it. The guest dockerd's container list says which
+// shares are in use; it is read again after a container is destroyed (debounced),
+// whenever the event stream (re)opens, and every pruneEvery in case events were lost.
+const (
+	// pruneGrace keeps a share that a create resolved this recently: dockerd may not
+	// list the container yet.
+	pruneGrace = time.Minute
+	// pruneDebounce batches the prunes of a burst of destroys (docker rm $(docker ps -aq)).
+	pruneDebounce = 2 * time.Second
+	pruneEvery    = 10 * time.Minute
+)
+
+// startLifetime follows the guest dockerd until ctx ends, pruning unused shares.
+func (s *shareService) startLifetime(ctx context.Context, target transport.HvsockTarget) {
+	d := &transport.HvsockDialer{Target: target, Retries: 2, RetryWait: 100 * time.Millisecond}
+	client := &http.Client{Transport: &http.Transport{
+		DialContext:       func(ctx context.Context, _, _ string) (net.Conn, error) { return d.DialContext(ctx) },
+		DisableKeepAlives: true,
+	}}
+	s.mu.Lock()
+	if s.closed {
+		s.mu.Unlock()
+		return
+	}
+	s.wg.Add(1)
+	s.mu.Unlock()
+	go func() {
+		defer s.wg.Done()
+		s.lifetime(ctx, client)
+	}()
+}
+
+func (s *shareService) lifetime(ctx context.Context, client *http.Client) {
+	kick := make(chan struct{}, 1)
+	events := func() error {
+		filters := url.QueryEscape(`{"type":["container"],"event":["destroy"]}`)
+		req, _ := http.NewRequestWithContext(ctx, http.MethodGet, "http://docker/events?filters="+filters, nil)
+		resp, err := client.Do(req)
+		if err != nil {
+			return err
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			return fmt.Errorf("events: %s", resp.Status)
+		}
+		// Containers destroyed while the stream was down.
+		select {
+		case kick <- struct{}{}:
+		default:
+		}
+		br := bufio.NewReaderSize(resp.Body, maxEventLine)
+		for {
+			line, err := readEventLine(br)
+			if err != nil {
+				return err
+			}
+			var ev dockerEvent
+			if json.Unmarshal(line, &ev) == nil && ev.Type == "container" && ev.Action == "destroy" {
+				select {
+				case kick <- struct{}{}:
+				default:
+				}
+			}
+		}
+	}
+	var follow sync.WaitGroup
+	defer follow.Wait()
+	follow.Add(1)
+	go func() {
+		defer follow.Done()
+		// A stream that keeps failing at once (each (re)open kicks a full container
+		// list) backs off to a minute.
+		var backoff time.Duration
+		for ctx.Err() == nil {
+			t0 := time.Now()
+			if err := events(); err != nil && ctx.Err() == nil {
+				s.log.Debug("shares: event stream ended", "err", err)
+			}
+			if time.Since(t0) > time.Minute {
+				backoff = 0
+			}
+			backoff = min(max(2*backoff, time.Second), time.Minute)
+			select {
+			case <-ctx.Done():
+			case <-time.After(backoff):
+			}
+		}
+	}()
+	tick := time.NewTicker(pruneEvery)
+	defer tick.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-tick.C:
+		case <-kick:
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(s.debounce):
+			}
+		}
+		if err := s.prune(ctx, client); err != nil && ctx.Err() == nil {
+			s.log.Debug("shares: prune skipped", "err", err)
+		}
+	}
+}
+
+// prune lists every container and removes the shares none of them uses.
+func (s *shareService) prune(ctx context.Context, client *http.Client) error {
+	start := time.Now()
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, "http://docker/containers/json?all=1", nil)
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("containers: %s", resp.Status)
+	}
+	b, err := io.ReadAll(io.LimitReader(resp.Body, share.MaxContainerList+1))
+	if err != nil {
+		return err
+	}
+	used, err := share.SharesInUse(b, ShareMount)
+	if err != nil {
+		return err
+	}
+	if gone := s.reg.Prune(used, start.Add(-s.grace)); len(gone) > 0 {
+		s.log.Info("shares: removed unused", "shares", gone, "left", s.reg.Len())
+	}
+	return nil
 }

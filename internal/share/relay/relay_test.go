@@ -71,3 +71,29 @@ func FuzzSafeJoin(f *testing.F) {
 		}
 	})
 }
+
+func TestMountDev(t *testing.T) {
+	info := "22 1 0:21 / /proc rw - proc proc rw\n" +
+		"40 22 0:28 / /mnt/hyperbutler rw,nosuid - fuse.hyperbutler hyperbutler rw\n" +
+		"41 22 0:31 / /mnt/a\\040b rw - fuse x rw\n" +
+		"42 22 0:300 / /mnt/hyperbutler rw - fuse.hyperbutler hyperbutler rw\n"
+	if maj, min, ok := mountDev([]byte(info), "/mnt/hyperbutler"); !ok || maj != 0 || min != 300 {
+		t.Fatalf("%d:%d %v, want the last mount 0:300", maj, min, ok)
+	}
+	if _, min, ok := mountDev([]byte(info), "/mnt/a b"); !ok || min != 31 {
+		t.Fatalf("escaped mount point: %d %v", min, ok)
+	}
+	if _, _, ok := mountDev([]byte(info), "/nope"); ok {
+		t.Fatal("found a mount that is not there")
+	}
+}
+
+// FuzzMountDev parses mountinfo text; it must never panic.
+func FuzzMountDev(f *testing.F) {
+	f.Add([]byte("40 22 0:28 / /mnt/hyperbutler rw - fuse x rw\n"), "/mnt/hyperbutler")
+	f.Add([]byte("1 2 3 4 /x\\04"), "/x\\04")
+	f.Fuzz(func(t *testing.T, b []byte, mp string) {
+		mountDev(b, mp)
+		unescapeMount(mp)
+	})
+}

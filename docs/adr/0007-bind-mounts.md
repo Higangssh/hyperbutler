@@ -1,7 +1,8 @@
 # 0007. Bind mounts from Windows paths
 
-- Status: accepted. Integration steps 1, 2, 3 and 6 are done (2026-10-31); `-v C:\…`
-  works through `hyperbutler start`. Steps 4 (broker) and 5 (share lifetime) are open.
+- Status: accepted. Integration steps 1, 2, 3, 5 and 6 are done (2026-10-31); `-v C:\…`
+  works through `hyperbutler start`. Step 4 (broker) is open. Measured with `bench/fs-*`
+  on 2026-10-31 ([below](#performance-pass-and-benchfs--2026-10-31)).
 - Date: 2026-10-30, integrated 2026-10-31
 - Requirements: REQ-FS-001, REQ-FS-002, REQ-FS-003, REQ-FS-004, REQ-FS-005, REQ-API-001, REQ-PLAT-003
 - Evidence: [docs/research/bind-mounts.md](../research/bind-mounts.md)
@@ -70,8 +71,8 @@ trees.
   - No VM change is needed per share, so the broker is untouched: the share server, like
     the network stack, is part of the user-process data plane.
 - Caching: 1 h entry and attribute TTLs, negative entries cached, `KEEP_CACHE`, 4 MiB
-  readahead, no writeback cache by default. Coherence comes from host invalidations, not
-  timeouts.
+  readahead, no writeback cache. No directory handles (OPENDIR answers ENOSYS), so the
+  kernel keeps its readdir cache. Coherence comes from host invalidations, not timeouts.
 - POSIX metadata, symlinks and FIFOs use WSL's on-disk formats:
   - `$LXUID/$LXGID/$LXMOD` EAs;
   - `LX_SYMLINK`, `LX_FIFO` and `AF_UNIX` reparse tags.
@@ -139,13 +140,28 @@ trees.
    net/http's decoder.
 4. **Broker (ADR 0004):** add the share service id to the fixed template. No new verb is
    needed. **Open.**
-5. **Share lifetime:** shares now live until the engine stops. Before 1.0, reference-count
-   them by container through the Docker events stream and call `Server.RemoveShare`.
-   **Open.** Since 2026-10-31 a share's name includes the identity of its root directory,
-   so a source deleted and created again gets a new share instead of the old one (which
-   kept serving the deleted directory: found end to end, regression test
-   `TestRegistryRecreatedDirectoryGetsNewShare`). Each such recreate holds one more share
-   until the engine stops.
+5. **Share lifetime. Done** (2026-10-31, `internal/engine/share_windows.go`,
+   `share.Registry.Prune`, `share.SharesInUse`).
+   - A share's name includes the identity of its root directory, so a source deleted and
+     created again gets a new share instead of the old one, which kept serving the deleted
+     directory (regression test `TestRegistryRecreatedDirectoryGetsNewShare`).
+   - The engine follows dockerd's container `destroy` events. After a burst of them (2 s
+     debounce), whenever the stream (re)opens, and every 10 minutes, it lists every
+     container (`GET /containers/json?all=1`). It then removes the shares that no
+     container's bind mount comes from, in any container state.
+   - A share that a create resolved less than a minute before the listing started is kept,
+     so a container dockerd has not recorded yet never loses its share. `Prune` and
+     `Resolve` take the same lock.
+   - At most 1024 live shares (`Registry.MaxShares`); past that a new source is refused
+     with an error that says why.
+   - The list is untrusted guest data: it is bounded to 32 MiB, only bind sources below the
+     mount point with a registry-shaped name count, and it is fuzzed (`FuzzSharesInUse`). A
+     lying guest can only keep the user's own shares alive or remove them under its own
+     containers.
+   - Ended event streams back off to a minute.
+   - End to end: five containers on a source deleted and recreated between runs, then one
+     long-running container. After the grace period the four stale shares were removed and
+     the running container kept reading its mount.
 6. **Requirements. Done.** REQ-FS-001 and REQ-FS-002 are amended as above and REQ-FS-005
    is added; the readdir-cache and host listing-cache work is in the backlog list in
    [requirements.md](../requirements.md#file-sharing) (warm walk is 54× ext4 today).
@@ -183,7 +199,124 @@ container's own ext4 (10 ms resolution): 1000 creates 850 ms (20 ms), reading th
 without fsync 56 MB/s, re-read 603 MB/s; a fresh container's `ls -lR` of the 1000 files
 10 ms. The sequential write rate is far below what hvsock carries and is in the backlog.
 
+## Performance pass and `bench/fs-*` (2026-10-31)
+
+Same machine and guest as above (4 GiB / 8 vCPU, guest kernel 6.18.58, Defender in passive
+mode), the image built by `guest/prototype/build.ps1` from this branch. Each run measured
+`docker run -v` against the same work on a named volume (guest ext4).
+
+**Why sequential writes had dropped to 56 MB/s (the spike reached 282).** The host spent
+under 1 ms on each WRITE (instrumented `Server.Serve`). An ftrace of the guest
+(`fuse:fuse_request_send/end`, `raw_syscalls`, `sched`) showed the cause:
+- every WRITE of 64 KiB or more took about 15 ms from request to reply;
+- the reply sat in the hvsock ring until the Go runtime's background poll (`sysmon`,
+  10 ms) noticed it;
+- the relay read `/dev/fuse` with a blocking read(2) but drove the hvsock connections
+  through the Go poller. The thread that waited in epoll ran the goroutine it woke (the
+  writer of a frame too big for the ring in one write), that goroutine then blocked in
+  read(2) of `/dev/fuse`, and nothing waited in epoll any more;
+- the spike's relay used blocking sockets, so it never hit this. Locking the readers to
+  their threads did not help, and making `/dev/fuse` poller-driven did, at the cost of
+  waking every queue for each request (4 KiB writes 30 % slower).
+
+The fix makes every relay wait a blocking system call: the share connections are blocking
+after a bounded non-blocking connect, and their Close shuts the socket down first. `Close`
+aborts the FUSE connection through fusectl (found via `/proc/self/mountinfo`, not a stat of
+the mount), so blocked readers and guest processes waiting for a reply return. It closes
+`/dev/fuse` only after the relay's goroutines have ended.
+
+**Walks.** The guest kernel did reuse its readdir cache; a warm walk still paid OPENDIR and
+RELEASEDIR, two round trips per directory. OPENDIR now answers ENOSYS. The kernel then
+stops sending both and opens every directory with `FOPEN_KEEP_CACHE | FOPEN_CACHE_DIR`.
+READDIR comes with fh 0; a READDIR at offset 0 reads the directory from the host and keeps
+the listing on the node for the READDIRs that continue it. A host listing cache across
+listings would only help when the guest dropped its cache, and would add a second cache to
+keep coherent, so it was not built.
+
+**Creates.** A create is LOOKUP, a GETATTR of the parent (the kernel drops the directory's
+attributes after every change, and `default_permissions` needs them), CREATE, WRITE and an
+asynchronous RELEASE. Host time per create is about 0.45 ms, of which NTFS
+`NtCreateFile` with the WSL EAs is 0.14–0.16 ms when called directly. Two things were found
+and fixed on the way:
+- each create also invalidated its directory in the guest: NTFS reports the directory as
+  modified, and that echo was passed on. A directory modified event within the echo window
+  of a guest change inside it is now dropped;
+- `bench/fs-notify` found that Windows edits of files the guest had only listed (plain
+  READDIR past the first chunk creates no nodes) were not replayed. 88 of 100 edits got
+  no IN_MODIFY. They are replayed now.
+
+Inlining LOOKUP and GETATTR on the connection's reader (no worker handoff) changed nothing
+measurable, so it was not kept.
+
+**Writeback cache stays off and is not offered as an option.** With `FUSE_WRITEBACK_CACHE`
+the kernel trusts its own size and times for cached regular files and ignores the host's
+(`fuse_get_cache_mask`), so a Windows-side append is not seen while the inode is cached,
+and dirty pages race Windows edits. That breaks the coherence this design is chosen for.
+`Options.Writeback` remains a measurement knob only.
+
+| `docker run -v`, one container | Before | After | Guest ext4 |
+|---|---|---|---|
+| `dd bs=1M` write, 64 MiB | 54–56 MB/s | 304 MB/s | 5.3 GB/s |
+| `dd bs=64k` write | 4.1 MB/s | 212 MB/s | 5.0 GB/s |
+| `dd bs=4k` write | 31 MB/s | 34 MB/s | 2.7 GB/s |
+| 256 MiB, 1 MiB writes + fsync (`fs-seq`) | 4.9 s (52 MB/s) | 0.91–1.0 s (256–280 MiB/s) | 0.11–0.14 s |
+| Read, guest cache dropped | 590–620 MB/s | 450–866 MiB/s | 4.4 GiB/s |
+| Read, guest cache warm | 10.3 GiB/s | 10.1 GiB/s | 11.3 GiB/s |
+| 1000 creates (`os.WriteFile`) | 1.10–1.25 s | 0.88–0.96 s | 11 ms |
+| 1000 deletes | 0.45–0.58 s | 0.42–0.47 s | 3.4 ms |
+| Warm walk, 2100 entries in 101 directories | 15–17 ms | 2.4 ms | 2.1 ms |
+| Windows write to IN_MODIFY in the container | 52–71 ms incl. `docker logs` polling | p50 2.3 ms, p95 4.8 ms | – |
+
+`bench/fs-*`, as the requirements specify:
+
+| Requirement | Measurement | Result | Verdict |
+|---|---|---|---|
+| REQ-FS-001 | read with the guest cache warm, 256 MiB (`fs-seq`) | 1.12× ext4 | **met** |
+| REQ-FS-001 | write + fsync against WSL 2's 9P mount | 259 MiB/s; no WSL on this machine | not measured. HCS Plan9, the same 9P server, gave 191 MB/s in the spike: 1.4×, which would **not** meet 3× |
+| REQ-FS-002 | `fs-meta` on axios v1.7.9 (340 paths): lstat of every path / of a missing name next to each | 2.1× / 0.9× ext4 | **met** |
+| REQ-FS-002 | `git status`, median of 5 after a warm-up | 3.1× (5.3 vs 1.7 ms); 6.1× in an earlier run | **not met** |
+| REQ-FS-003 | `fs-notify`: IN_MODIFY of 100 Windows writes | p50 2.3 ms, p95 4.8 ms, none missed | **met** |
+| REQ-FS-003 | Vite 5.4.11 dev server and webpack 5.97.1 `--watch`, default config, a Windows edit | HMR message after 24 ms; recompiled after 44 ms | **met** |
+| REQ-FS-005 | 10k creates / stats / deletes | 11.6 s / 1.6 s / 5.2 s (ext4: 0.12 / 0.008 / 0.037 s) | not measured against 9P. Against the spike's HCS Plan9 numbers (51 / 22 / 30 s) these are 4.4× / 14× / 5.7× |
+| REQ-FS-005 | `npm ci` in the checkout (2115 packages, warm npm cache) | 65 s (ext4: 8.8 s) | not measured against 9P |
+
+What `git status` still pays for is about 17 OPEN/RELEASE pairs (index, HEAD, refs, config),
+the `index.lock` create and unlink, and re-reading `.git` after them. Every opened file
+costs an OPEN round trip even when its pages are cached. The next step is
+`FUSE_NO_OPEN_SUPPORT`, with a host-side handle cache that closes idle handles. Its risks
+are Windows sharing modes held past the guest's close, and O_TRUNC, which must then come
+as SETATTR. 4 KiB writes and creates stay bound by round trips (about 0.1 ms each) and
+NTFS: named volumes stay the advice for `node_modules`.
+
+Reproduce (the docker CLI and endpoint are explicit; the user's context is never touched):
+
+```powershell
+go run ./bench/fs-seq    -docker C:\path\docker.exe -host npipe:////./pipe/docker_engine_hyperbutler
+go run ./bench/fs-meta   -docker C:\path\docker.exe -host ...      # git, network for the checkout and npm
+go run ./bench/fs-notify -docker C:\path\docker.exe -host ... -frameworks
+# add -wsl <distro> to measure the 9P baselines; without it those rows are "not measured"
+# and the command exits 2 (incomplete)
+```
+
 ## Adversarial review
+
+### Performance pass and share lifetime (2026-10-31)
+
+| # | Sev | Finding | Resolution |
+|---|---|---|---|
+| P1 | High | `FuzzSharesInUse`'s oracle failed: `json.Unmarshal` turns invalid UTF-8 into U+FFFD, which `checkName` accepted. | **Fixed.** Only registry-shaped names (`b-` and 16 hex digits) count. The corpus entry is committed. |
+| P2 | High | `fs-meta` removed `node_modules` in the current directory of `wsl.exe`, not in the checkout. | **Fixed:** the cleanup runs on the checkout's WSL path. |
+| P3 | Med | The relay learned its FUSE connection with a stat of the mount, a FUSE request. It hung `Start` if the host went away first, and a failed stat left `Close` unable to abort, leaking readers on every remount. | **Fixed:** the device comes from `/proc/self/mountinfo` before the readers start (`FuzzMountDev`), and the abort file is opened `O_WRONLY`. |
+| P4 | Med | Bench verdicts passed vacuously: unmeasured requirement rows exited 0, and `fs-notify` without `-frameworks` said nothing about Vite/webpack. | **Fixed:** exit 2 ("incomplete") when any requirement row is not measured; a "not checked" row for frameworks. |
+| P5 | Med-Low | `fs-notify` timed a late IN_MODIFY of one edit as the next edit's. | **Fixed:** one file per edit. This exposed the unlooked-up-file replay gap (fixed, `TestModifyOfUnlookedFileReplayed`). |
+| P6 | Low | REQ-FS-002 lstat rows compared p50 latency, not the same work. | **Fixed:** totals over every path and round; p50/p99 stay in `-json`. |
+| P7 | Low | Two processes listing one directory share the node's snapshot; one's offset 0 replaces the other's. | **Accepted.** A continuation then reads the new listing. Names can only repeat or be missed if the directory changed meanwhile, which POSIX leaves unspecified. Both listers also share the kernel's readdir cache, which already serializes most cases. |
+| P8 | Low | A failing event stream kicked a full container list every second. `Prune` holds the registry lock across `RemoveShare`. A guest that answers `[]` removes every share. | **Fixed:** backoff to a minute. **Accepted:** the lock is held only for bounded watcher closes. A lying guest can only remove shares under its own containers. |
+| P9 | Info | The cached-read row of REQ-FS-001 measures the guest page cache on both sides. | **Accepted:** that is what the amended requirement asks; the cold read is reported next to it. |
+
+Found sound: the echo drop for a directory's own modified event (changes inside it, and its
+own removal or rename, still pass); `Share.Only` with handle-less listings; the listing
+budget accounting; root invalidation after prunes; engine stop ordering; `blockingConn`.
 
 ### Integration (2026-10-31)
 
@@ -270,5 +403,6 @@ Arguments against the decision itself, and the answers:
   mode.
 - **What would make us revisit:**
   - HCS gaining a documented virtio-fs device, or a shared-memory transport;
-  - the readdir cache and a host listing cache not bringing warm walks within 5× ext4;
+  - warm walks are within 1.2–1.7× ext4 since the readdir cache is reused (2026-10-31);
+    a regression past 5× would reopen this;
   - Defender real-time scanning (REQ-PLAT-007) multiplying the create costs.

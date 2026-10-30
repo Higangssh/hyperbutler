@@ -209,10 +209,30 @@ func (s *Server) HostChanged(ev HostEvent) {
 	inj := s.injectorKnown()
 	switch ev.Kind {
 	case Modified:
+		if n := s.nodes[childID]; known && n.dir && n.inner.After(time.Now().Add(-echoWindow)) {
+			// The directory's times changed because the guest changed something in
+			// it. Invalidating it would only make the guest ask again for what it
+			// already knows (a GETATTR per create) and drop its readdir cache.
+			break
+		}
 		if known {
 			msgs = append(msgs, notifyInvalInodeMsg(childID, 0, 0))
 			if n := s.nodes[childID]; inj && !n.dir {
 				s.pending[k] = &injection{kind: injModify, present: true, node: childID, at: time.Now()}
+				msgs = append(msgs, injectMsg(injModify, sIFREG, joinPath(ev.Share, ev.Path), ""))
+			}
+		} else if inj {
+			// A file the guest never looked up, in a directory it has: an inotify watch
+			// on that directory still expects IN_MODIFY (a READDIR without PLUS, which
+			// the kernel uses past the first chunk, names entries without looking them
+			// up). Found by bench/fs-notify: 88 of 100 such edits had no event. The
+			// replay looks the name up like any other process would. Regular files
+			// only: a directory's own times change with its contents.
+			s.mu.Unlock()
+			a, err := sh.FS.Lstat(ev.Path)
+			s.mu.Lock()
+			if err == nil && a.Mode&sIFMT == sIFREG {
+				s.pending[k] = &injection{kind: injModify, present: true, at: time.Now()}
 				msgs = append(msgs, injectMsg(injModify, sIFREG, joinPath(ev.Share, ev.Path), ""))
 			}
 		}

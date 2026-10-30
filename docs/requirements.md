@@ -63,13 +63,24 @@ wanted is marked *withdrawn*, not deleted.
 | REQ-FS-004 | Mounts behave correctly on Windows paths. | The `bench/fs-compat` suite passes. It covers case-sensitivity rules, symlinks, permission mapping, paths longer than 260 characters, and paths with spaces or non-ASCII characters. | P1 | F1 |
 | REQ-FS-005 | Creates and deletes on bind mounts beat 9P. | On the REQ-FS-002 checkout, `npm ci` and creating, stat-ing and deleting 10k files are each at least 3× as fast as on WSL 2's 9P mount of the same directory on the same machine (`bench/fs-meta`). The docs point write-heavy trees (`node_modules`) at a named volume, or at the sync mode once it exists. *Added 2026-10-31 (ADR 0007): the write half of the old REQ-FS-002.* | P1 | F1 |
 
+Status of the bind-mount requirements, measured with `bench/fs-*` through `hyperbutler start`
+on the reference machine (2026-10-31, [ADR 0007](adr/0007-bind-mounts.md#performance-pass-and-benchfs--2026-10-31)):
+- REQ-FS-001: cached reads met (1.12× ext4). Writes not measured against 9P (no WSL on
+  the machine); 259 MiB/s against the spike's 191 MB/s for HCS Plan9 would not meet 3×.
+- REQ-FS-002: lstat and missing-name lookups met (2.1×, 0.9×). `git status` not met
+  (3.1–6.1×).
+- REQ-FS-003: met (IN_MODIFY p95 4.8 ms, none missed; pinned Vite and webpack rebuild).
+- REQ-FS-005: not measured against 9P. Against the spike's HCS Plan9 numbers, 10k
+  creates, stats and deletes are 4.4×, 14× and 5.7× faster; `npm ci` has no baseline.
+
 Backlog for bind mounts (work items, not requirements; ADR 0007):
-- a guest readdir cache (`FUSE_CACHE_READDIR`) and a host listing cache: a warm directory
-  walk is 54× ext4 today;
-- share lifetime: shares live until the engine stops; reference-count them by container
-  through the Docker events stream and call `Server.RemoveShare` (integration step 5);
-- sequential write throughput: 56 MB/s through `hyperbutler start` on the reference machine
-  (2026-10-31), far below hvsock's bandwidth.
+- `FUSE_NO_OPEN_SUPPORT` with a host handle cache: each open costs a round trip even when
+  the file's pages are cached, which is most of what keeps `git status` above 3×;
+- a 9P baseline run (`-wsl`) on a machine with WSL 2, for REQ-FS-001 writes and REQ-FS-005.
+
+Done (2026-10-31): the guest readdir cache is reused (warm walks 1.2–1.7× ext4, from 54×);
+shares no container uses are removed (integration step 5); sequential writes 56 → 260–300
+MB/s (the guest relay waited for the Go runtime's 10 ms background poll).
 
 ## Networking
 

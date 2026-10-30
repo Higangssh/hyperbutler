@@ -171,3 +171,94 @@ func TestNotifyNeverBlocks(t *testing.T) {
 	<-done
 	_ = binary.LittleEndian
 }
+
+// A directory the guest just changed something in is reported by the host as modified
+// (its times changed). That echo must not invalidate the directory (a GETATTR per
+// create, and the guest's readdir cache dropped); a Windows change inside it must.
+func TestDirectoryModifiedEchoSuppressed(t *testing.T) {
+	fs := newMemFS()
+	s := NewServer(Options{NoWatch: true})
+	s.AddShare(&Share{Name: "src", FS: fs})
+	c := newClient(t, s)
+	root := c.mustLookup(rootNode, "src")
+	d := c.mustLookup(root.node, "d")
+	var sent [][]byte
+	s.cmu.Lock()
+	s.conn = &conn{rw: &capture{out: &sent}}
+	s.cmu.Unlock()
+	if e, _, _ := c.create(d.node, "new.txt", oWRONLY|oCREAT, 0o644); e != 0 {
+		t.Fatalf("create: errno %d", e)
+	}
+	s.HostChanged(HostEvent{Share: "src", Path: []string{"d"}, Kind: Modified})
+	if len(sent) != 0 {
+		t.Fatalf("echo of the guest's own create invalidated the directory: %d frames", len(sent))
+	}
+	// A Windows-side create in d still invalidates d.
+	fs.files["d/win.txt"] = nil
+	s.HostChanged(HostEvent{Share: "src", Path: []string{"d", "win.txt"}, Kind: Created})
+	if len(sent) == 0 {
+		t.Fatal("a Windows create in the directory sent nothing")
+	}
+	// Once the echo window has passed, a directory modification is passed on.
+	sent = sent[:0]
+	s.mu.Lock()
+	s.nodes[d.node].inner = time.Now().Add(-2 * echoWindow)
+	s.mu.Unlock()
+	s.HostChanged(HostEvent{Share: "src", Path: []string{"d"}, Kind: Modified})
+	if len(sent) == 0 {
+		t.Fatal("a later directory modification was dropped")
+	}
+	// The directory's own removal is never taken for an echo of a change inside it.
+	sent = sent[:0]
+	c.create(d.node, "again.txt", oWRONLY|oCREAT, 0o644)
+	s.HostChanged(HostEvent{Share: "src", Path: []string{"d"}, Kind: Removed})
+	if len(sent) == 0 {
+		t.Fatal("removal of a directory the guest wrote in was suppressed")
+	}
+}
+
+// bench/fs-notify: Windows edits of files the guest never looked up (a plain READDIR
+// names entries without lookups) must still be replayed, so an inotify watch on the
+// directory gets IN_MODIFY. Directories are not replayed.
+func TestModifyOfUnlookedFileReplayed(t *testing.T) {
+	fs := newMemFS()
+	fs.files["d/sub/"] = nil
+	s := NewServer(Options{NoWatch: true})
+	s.AddShare(&Share{Name: "src", FS: fs})
+	c := newClient(t, s)
+	root := c.mustLookup(rootNode, "src")
+	c.mustLookup(root.node, "d")
+	c.do(opHello, 0, (&wbuf{}).u32(4242).b)
+	var sent [][]byte
+	s.cmu.Lock()
+	s.conn = &conn{rw: &capture{out: &sent}}
+	s.cmu.Unlock()
+	s.HostChanged(HostEvent{Share: "src", Path: []string{"d", "f"}, Kind: Modified})
+	replays := 0
+	for _, m := range sent {
+		if IsInject(m) {
+			f, ok := ParseInject(m[outHeaderLen:])
+			if !ok || f.Kind != injModify || f.Path != "src/d/f" {
+				t.Fatalf("replay %+v %v", f, ok)
+			}
+			replays++
+		}
+	}
+	if replays != 1 {
+		t.Fatalf("%d replays, want 1", replays)
+	}
+	sent = sent[:0]
+	s.HostChanged(HostEvent{Share: "src", Path: []string{"d", "sub"}, Kind: Modified})
+	for _, m := range sent {
+		if IsInject(m) {
+			t.Fatal("a directory's modification was replayed")
+		}
+	}
+	// A file in a directory the guest never looked up is not replayed either: nothing
+	// in the guest can be watching it.
+	sent = sent[:0]
+	s.HostChanged(HostEvent{Share: "src", Path: []string{"other", "f"}, Kind: Modified})
+	if len(sent) != 0 {
+		t.Fatalf("%d frames for an unknown directory", len(sent))
+	}
+}

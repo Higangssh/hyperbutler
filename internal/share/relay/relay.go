@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strconv"
 	"strings"
 )
 
@@ -104,4 +105,44 @@ func safeJoin(mount, p string) (string, error) {
 		}
 	}
 	return mount + "/" + p, nil
+}
+
+// mountDev returns the device (major, minor) of the last mount at mountpoint in a
+// /proc/self/mountinfo listing. It needs no request to the mounted file system, so it
+// works while the FUSE connection has nobody serving it.
+func mountDev(mountinfo []byte, mountpoint string) (major, minor uint32, ok bool) {
+	for _, line := range strings.Split(string(mountinfo), "\n") {
+		f := strings.Fields(line)
+		// id parent major:minor root mountpoint options ...
+		if len(f) < 5 || unescapeMount(f[4]) != mountpoint {
+			continue
+		}
+		maj, min, found := strings.Cut(f[2], ":")
+		a, err1 := strconv.ParseUint(maj, 10, 32)
+		b, err2 := strconv.ParseUint(min, 10, 32)
+		if !found || err1 != nil || err2 != nil {
+			continue
+		}
+		major, minor, ok = uint32(a), uint32(b), true
+	}
+	return major, minor, ok
+}
+
+// unescapeMount undoes mountinfo's octal escapes (\040 for a space).
+func unescapeMount(s string) string {
+	if !strings.Contains(s, `\`) {
+		return s
+	}
+	var b strings.Builder
+	for i := 0; i < len(s); i++ {
+		if s[i] == '\\' && i+4 <= len(s) {
+			if v, err := strconv.ParseUint(s[i+1:i+4], 8, 8); err == nil {
+				b.WriteByte(byte(v))
+				i += 3
+				continue
+			}
+		}
+		b.WriteByte(s[i])
+	}
+	return b.String()
 }
