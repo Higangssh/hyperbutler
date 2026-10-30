@@ -125,6 +125,8 @@ func runHCS(args []string) error {
 	settle := fs.Duration("settle", 5*time.Second, "measure again this long after each marker")
 	printCfg := fs.Bool("print-config", false, "print the HCS document and exit")
 	schemaMinor := fs.Int("schema-minor", 1, "HCS schema 2.x minor version; raise it if HCS rejects AlwaysAllowSparseFiles")
+	block := fs.Uint("block", 0, "VHDX block size in bytes (0 = default 32 MiB; WSL uses 1048576)")
+	group := fs.Int("group", 0, "ext4 mode: delete alternating groups of this many 256 KiB files instead of all of them (0 = all)")
 	memMB := fs.Int("mem", 1024, "guest memory in MiB")
 	memHints := fs.String("mem-hints", "", "comma-separated HCS VirtualMachineMemory booleans to set, e.g. EnableHotHint,EnableColdDiscardHint")
 	extraDir := fs.String("extra", "", "dir whose files are packed flat under /wbextra (mke2fs and its libraries for -mode ext4)")
@@ -148,6 +150,7 @@ func runHCS(args []string) error {
 		name = "hcs-sparse.vhdx"
 	}
 	vhdx := fresh(name)
+	vhdxBlockSize = uint32(*block)
 	if err := createVHDX(vhdx, uint64(*diskSize), createFlagNone); err != nil {
 		return err
 	}
@@ -168,6 +171,9 @@ func runHCS(args []string) error {
 	cmdline := fmt.Sprintf("console=ttyS0 rdinit=/wbinit loglevel=3 WB_DEV=sda WB_MB=%d WB_MODS=%s WB_MODE=%s", *writeMB, strings.Join(names, ","), *mode)
 	if *fsync {
 		cmdline += " WB_FSYNC=1"
+	}
+	if *group > 0 {
+		cmdline += fmt.Sprintf(" WB_GROUP=%d", *group)
 	}
 	memory := map[string]any{"SizeInMB": *memMB, "AllowOvercommit": true}
 	for _, h := range strings.Split(*memHints, ",") {

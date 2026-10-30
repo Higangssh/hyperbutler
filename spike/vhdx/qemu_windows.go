@@ -66,7 +66,9 @@ fi
 # WB_MODE=mem: no disk I/O. Fill WB_MB MiB of tmpfs with random data, free it, then wait and
 # drop caches; the host prints vmmem before each measurement.
 if [ "$WB_MODE" = mem ]; then
-	mi() { echo "@@I meminfo: $(grep -E '^(MemTotal|MemFree):' /proc/meminfo | tr -s ' ' | tr '\n' ' ')"; }
+	mi() { echo "@@I meminfo: $(grep -E '^(MemTotal|MemFree|Cached):' /proc/meminfo | tr -s ' ' | tr '\n' ' ')"; }
+	echo "@@I modules: $(cut -d' ' -f1 /proc/modules | tr '\n' ' ')"
+	dmesg | grep -iE 'balloon|page.?report|hot.?add' | sed 's/^/@@I dmesg: /'
 	mi; m booted
 	mkdir -p /m; mount -t tmpfs -o size=$((WB_MB + 64))M tmpfs /m
 	dd if=/dev/urandom of=/m/x bs=1M count=$WB_MB 2>/dev/null
@@ -76,6 +78,11 @@ if [ "$WB_MODE" = mem ]; then
 	sleep 15; mi; m freed-15s
 	sleep 15; mi; m freed-30s
 	echo 3 >/proc/sys/vm/drop_caches; sleep 15; mi; m dropped-15s
+	# Page cache: read the 600 MiB from the attached disk, then drop caches.
+	dd if=$D of=/dev/null bs=1M count=$WB_MB 2>/dev/null
+	mi; m cache-filled
+	echo 3 >/proc/sys/vm/drop_caches; sleep 30; mi; m cache-dropped-30s
+	dmesg | grep -iE 'balloon|page.?report' | tail -n 5 | sed 's/^/@@I dmesg: /'
 	echo "@@DONE"
 	poweroff -f
 fi
@@ -91,6 +98,19 @@ if [ "$WB_MODE" = ext4 ]; then
 	fill
 	echo "@@I df: $(df -k /mnt | tail -n 1)"
 	m written
+	if [ -n "$WB_GROUP" ]; then
+		# Delete alternating groups of WB_GROUP files, leaving holes of WB_GROUP*256 KiB
+		# between kept files, closer to deleting some image layers but not others.
+		i=0; while [ $i -lt $((WB_MB * 4)) ]; do [ $(((i / WB_GROUP) % 2)) -eq 0 ] && rm /mnt/d/f$i; i=$((i + 1)); done
+		sync
+		echo "@@I df after partial delete: $(df -k /mnt | tail -n 1)"
+		m deleted-half
+		echo "@@I fstrim: $(fstrim -v /mnt 2>&1)"
+		m fstrimmed-half
+		umount /mnt
+		echo "@@DONE"
+		poweroff -f
+	fi
 	rm -rf /mnt/d; sync
 	m deleted
 	echo "@@I fstrim: $(fstrim -v /mnt 2>&1)"

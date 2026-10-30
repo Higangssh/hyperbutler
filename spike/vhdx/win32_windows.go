@@ -36,7 +36,6 @@ const (
 	accessMetaOps              = 0x00200000
 	attachFlagReadOnly         = 0x1
 	attachFlagNoDriveLetter    = 0x2
-	defaultVHDXBlockSize       = 0 // 0 = provider default (32 MiB for VHDX)
 	defaultVHDXLogicalSector   = 512
 	defaultVHDXPhysicalSector  = 4096
 	openVirtualDiskVersion1    = 1
@@ -44,6 +43,10 @@ const (
 	compactVirtualDiskVersion1 = 1
 	attachVirtualDiskVersion1  = 1
 )
+
+// vhdxBlockSize is the VHDX block size for createVHDX; 0 means the provider default (32 MiB).
+// The hcs subcommand sets it with -block. WSL uses 1 MiB.
+var vhdxBlockSize uint32
 
 type guid struct {
 	Data1 uint32
@@ -111,7 +114,7 @@ func createVHDX(path string, size uint64, flags uint32) error {
 	vst := virtualStorageType{DeviceID: virtualStorageTypeVHDX, VendorID: vendorMicrosoft}
 	params := createParams{Version: createVirtualDiskVersion2}
 	params.V2.MaximumSize = size
-	params.V2.BlockSizeInBytes = defaultVHDXBlockSize
+	params.V2.BlockSizeInBytes = vhdxBlockSize
 	params.V2.SectorSizeInBytes = defaultVHDXLogicalSector
 	params.V2.PhysicalSectorSizeInBytes = defaultVHDXPhysicalSector
 	var h syscall.Handle

@@ -160,7 +160,8 @@ the service needs admin. Uninstalling the CLI and its data does not.
   helper", so no other resident helper may be added.
 - Whether a no-service, no-admin path exists (for example through QEMU-WHPX) depends on
   ADR 0002. This ADR does not assume one.
-- Option A remains documented as an unsupported manual mode for developers.
+- Option A remains a developer mode. It is documented and used for spikes (ADR 0002), but it is
+  not a supported way for end users to run winbox.
 
 ## Open questions
 

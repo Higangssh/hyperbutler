@@ -254,6 +254,33 @@ What this shows:
   highest block used. So the 4 MiB and 36 MiB "after exit" results above were truncations of
   unused space at the end of the file, not real reclaim.
 
+#### Block size and fragmented free space (non-elevated, 2026-10-30)
+
+The adversarial review of ADR 0002 pointed out a gap. ext4's FITRIM skips free extents smaller
+than the device's discard granularity, which is the VHDX block size: 32 MiB by default. The
+full-delete test above leaves one big free run, so it hides this. The new `-group N` option
+deletes alternating groups of N files of 256 KiB, which leaves free holes of N/4 MiB between
+kept files. The new `-block` option sets the VHDX block size. The first `-block` runs had a
+bug: the flag was applied after the VHDX was created. The rows below are from the fixed
+build, and the block size was confirmed in the VHDX metadata and in the guest's
+`discard_granularity`.
+
+| Sparse VHDX, ext4, 1 GiB written, half deleted | after delete | after `fstrim` |
+|---|---|---|
+| 32 MiB blocks, 2 MiB holes | 1035 MiB | 1035 MiB (nothing returned) |
+| 32 MiB blocks, 16 MiB holes | 1035 | 1035 (nothing) |
+| 32 MiB blocks, 64 MiB holes | 1035 | **523** |
+| **1 MiB blocks**, 2 MiB holes | 1036 | **524** |
+| **1 MiB blocks**, 16 MiB holes | 1035 | **523** |
+| 1 MiB blocks, full delete then churn | 1035 → 11 | churn 1038 → **14** |
+
+- With the default 32 MiB blocks, free space in runs shorter than 32 MiB is never returned.
+  That is the normal case after deleting some image layers and keeping others.
+- **With 1 MiB blocks (what WSL uses), the freed half comes back even when the holes are only
+  2 MiB.** The empty formatted disk is also smaller: 36 MiB of file size instead of 356 MiB.
+- So winbox creates its data VHDX with `BlockSizeInBytes = 1 MiB`. Holes under 1 MiB are
+  still not returned. The cost is bounded by about 1 MiB per fragment.
+
 - **Still open:**
   - Repeat the WSL corruption scenario: host disk full while a sparse VHDX grows (WSL issue
     #41837).

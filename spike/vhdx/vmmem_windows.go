@@ -59,12 +59,15 @@ func vmmemUsage() (ws, private uint64, n int, err error) {
 // OpenProcess on vmmem fails for a non-elevated caller, so vmmemUsage finds nothing there.
 func printVmmem() {
 	out, err := exec.Command("powershell.exe", "-NoProfile", "-Command",
-		`$p = Get-Process vmmem* -ErrorAction SilentlyContinue; "{0} {1} {2}" -f @($p).Count, ($p | Measure-Object WorkingSet64 -Sum).Sum, ($p | Measure-Object PrivateMemorySize64 -Sum).Sum`).Output()
+		`$p = Get-Process vmmem* -ErrorAction SilentlyContinue; `+
+			`$pws = (Get-CimInstance Win32_PerfFormattedData_PerfProc_Process -Filter "Name like 'vmmem%'" | Measure-Object WorkingSetPrivate -Sum).Sum; `+
+			`"{0} {1} {2} {3}" -f @($p).Count, ($p | Measure-Object WorkingSet64 -Sum).Sum, ($p | Measure-Object PrivateMemorySize64 -Sum).Sum, [uint64]$pws`).Output()
 	if err == nil {
 		var n int
-		var ws, priv uint64
-		if _, err := fmt.Sscan(string(out), &n, &ws, &priv); err == nil {
-			fmt.Printf("  vmmem (%d proc): working set %d MiB, private %d MiB\n", n, ws>>20, priv>>20)
+		var ws, priv, pws uint64
+		if _, err := fmt.Sscan(string(out), &n, &ws, &priv, &pws); err == nil {
+			// Private working set is the REQ-MEM-001 metric (docs/requirements.md).
+			fmt.Printf("  vmmem (%d proc): private working set %d MiB, working set %d MiB, private bytes %d MiB\n", n, pws>>20, ws>>20, priv>>20)
 			return
 		}
 	}
