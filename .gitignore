@@ -27,3 +27,4 @@ Thumbs.db
 
 # Small test fixtures (images, golden files) are allowed under testdata/
 !**/testdata/**
+
