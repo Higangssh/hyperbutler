@@ -26,6 +26,11 @@ defaults:
 # Most winbox code is Windows-only (_windows.go files, HCS/WHP syscalls), so every job
 # runs on Windows. Tests tagged `integration` need a hypervisor; nothing here passes
 # `-tags integration`, so they are never built or run in CI.
+#
+# Leak guardrails (ADR 0003): every package's TestMain runs goleak, so `go test` below
+# fails on a leftover goroutine. The bench/soak gate needs Hyper-V, which hosted runners
+# lack; its 24 h release run and ~1 h main run happen on self-hosted hardware (see
+# bench/soak/README.md). Only its unit and fuzz tests run here.
 jobs:
   test:
     name: vet, gofmt, test -race
@@ -79,6 +84,34 @@ jobs:
           CGO_ENABLED: "1" # the race detector needs cgo (gcc ships with windows-latest)
         run: go test -race -count=1 ./...
 
+  # The guest daemons are Linux binaries whose goroutine code lives in _linux.go files,
+  # which the Windows job only vets. Running their tests on Linux puts that code under
+  # the race detector and goleak (ADR 0003, guardrail 1). No hypervisor is needed.
+  test-linux:
+    name: guest test -race (linux)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          check-latest: true
+          cache-dependency-path: |
+            go.mod
+            go.sum
+
+      - name: go test -race ./guest/...
+        env:
+          CGO_ENABLED: "1"
+        run: go test -race -count=1 ./guest/... ./internal/leaktest/...
+
   fuzz:
     name: fuzz smoke (30s per target)
     runs-on: windows-latest
@@ -101,7 +134,7 @@ jobs:
           FUZZTIME: 30s
           # Fail if fewer targets than this are found, so a renamed or mis-tagged target
           # can't make the job pass silently. Raise it whenever a Fuzz target is added.
-          FUZZ_MIN_TARGETS: "0"
+          FUZZ_MIN_TARGETS: "32"
         # `go test -fuzz` accepts one target in one package per run, so discover them
         # first. Seed corpora already run as plain tests in the test job.
         run: |
