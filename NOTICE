@@ -74,10 +74,11 @@ Third-party Go modules used only by tests (never linked into a shipped binary):
   leave goroutines running (ADR 0003, guardrail 1).
 
 Release archives (hyperbutler-<version>-windows-amd64.zip) also contain a Linux guest image
-(vmlinuz-virt and the initramfs), built by .github/workflows/guest-image.yml from the
-Alpine Linux packages pinned in guest/prototype/sources.lock. It is a separate program
-that hyperbutler.exe runs in a VM, distributed alongside hyperbutler (mere aggregation); its
-components keep their own licenses, among them:
+(vmlinuz-virt, initramfs-stage1.gz and system.vhd), built by
+.github/workflows/guest-image.yml from the signed Alpine Linux packages pinned in
+guest/prototype/sources.lock, and nothing else besides hyperbutler's own guest binaries.
+It is a separate program that hyperbutler.exe runs in a VM, distributed alongside
+hyperbutler (mere aggregation); its components keep their own licenses, among them:
 
 - Linux kernel and modules (Alpine linux-virt): GPL-2.0-only
 - BusyBox (busybox-static): GPL-2.0-only
@@ -86,8 +87,11 @@ components keep their own licenses, among them:
 - libblkid: LGPL-2.1-or-later; libuuid: BSD-3-Clause (util-linux); libeconf: MIT
 - musl libc: MIT
 - CA certificate bundle: MPL-2.0 AND MIT
-- Docker Engine (Moby) dockerd, containerd, runc, docker-proxy, and tini (docker-init):
-  Apache-2.0 and MIT
+- Docker Engine (Moby) dockerd and docker-proxy (Alpine docker-engine), containerd and
+  containerd-shim-runc-v2 (containerd), runc: Apache-2.0. Their LICENSE and NOTICE files
+  are in THIRD-PARTY/guest/.
+- tini (tini-static, installed as docker-init): MIT
+- libseccomp (linked by runc): LGPL-2.1-or-later
 
 Each release archive carries THIRD-PARTY/ (the license texts, generated from the
 upstream sources) and SOURCE-OFFER.txt, and each release publishes the corresponding
@@ -95,6 +99,5 @@ source of the guest image as hyperbutler-<version>-guest-sources.tar. docs/relea
 describes how these are produced and checked.
 
 Only archives attached to a published GitHub release meet the above. A local
-dist/package.ps1 -Snapshot build is not a release: it may contain inputs without
-license texts or source (the prototype's Docker static binaries) and must not be
-redistributed.
+dist/package.ps1 -Snapshot build is not a release: it has no source bundle and no
+license texts from the upstream sources, and must not be redistributed.

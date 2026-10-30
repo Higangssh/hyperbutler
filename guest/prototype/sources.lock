@@ -1,19 +1,33 @@
-# Pinned inputs for the prototype initramfs: <name> <sha256> <url>
+# Pinned inputs for the guest image: <name> <sha256> <url>
 #
-# The Alpine .apk pins were set after checking each package's signature chain once
-# (signature over the control segment with alpine-devel@lists.alpinelinux.org-6165ee59,
-# then the control segment's datahash over the data segment). The key matched both
-# https://alpinelinux.org/keys/ and the aports git copy. linux-virt's /boot/vmlinuz-virt is
-# byte-identical to the v3.24 netboot vmlinuz-virt used in ADR 0002 (sha256 17fbd3ef...).
+# Every input is an Alpine v3.24 package. Each pin was set after checking the package's
+# signature chain (signature over the control segment with
+# alpine-devel@lists.alpinelinux.org-6165ee59, then the control segment's datahash over the
+# data segment). The key matched both https://alpinelinux.org/keys/ and the aports git
+# copy. linux-virt moved from 6.18.58-r0 (the kernel of ADR 0002, whose vmlinuz-virt was
+# byte-identical to the v3.24 netboot one) to 6.18.59-r0 on 2026-10-31: Alpine had dropped
+# 6.18.58-r0 from the mirrors, so a clean build could no longer fetch it.
 #
-# Docker publishes no checksum or signature for its static tarballs, so the docker-static
-# pin is trust-on-first-use over HTTPS. See ADR 0005, "Supply chain".
-linux-virt     1eec55004cf7167c914c8839f46691d2bc82767e20466bff51eb45d06f8e90cc https://dl-cdn.alpinelinux.org/alpine/v3.24/main/x86_64/linux-virt-6.18.58-r0.apk
+# The pin alone is not the trust anchor: every build checks the signatures again. The CI
+# build runs `apk verify` on each package (scripts/guest-image/fetch-verify.sh), and so
+# does build.ps1, in the digest-pinned Alpine container it already uses for mkfs.erofs.
+# A release accepts nothing else (strict mode); ADR 0005, "Docker Engine from Alpine".
+linux-virt     73ad4774ca26c196103a00e2fb8d28ed02de4c08c11fad96e903da03dcb085f4 https://dl-cdn.alpinelinux.org/alpine/v3.24/main/x86_64/linux-virt-6.18.59-r0.apk
 ca-certificates-bundle bb008f6d214b6af7576324659856fb63dc8dcb4373f8345ff706388696f1254d https://dl-cdn.alpinelinux.org/alpine/v3.24/main/x86_64/ca-certificates-bundle-20261020-r0.apk
 busybox-static b0d6cfc585d7fdd12df359cc5d38d5e45894e9e9e78c4059eb41577d022ec734 https://dl-cdn.alpinelinux.org/alpine/v3.24/main/x86_64/busybox-static-1.37.0-r31.apk
-docker-static  9ac225999fd5e863f7694c728ef23d480616b1e5639328fa309befd4243d69eb https://download.docker.com/linux/static/stable/x86_64/docker-29.9.2.tgz
+# Docker Engine (Moby) and what it runs, from community (main for libseccomp). These are
+# musl builds linked dynamically: dockerd, docker-proxy, containerd and the shim need only
+# musl; runc also needs libseccomp. docker-engine's docker-init is a symlink to
+# tini-static's /sbin/tini-static, which system.spec installs as the file itself. The
+# packages' other dependencies (iptables, ca-certificates, /bin/sh) are not installed:
+# dockerd runs with --iptables=false, the CA bundle and BusyBox come from the entries here.
+docker-engine  1f209bee7eb081018b007ecf374d0a1463668678b6e5e14cf0f763e89d6488d3 https://dl-cdn.alpinelinux.org/alpine/v3.24/community/x86_64/docker-engine-29.9.2-r0.apk
+containerd     bdacf19d51ea00ab489458d22a954b8a72850a32febd779e0380826198deb74b https://dl-cdn.alpinelinux.org/alpine/v3.24/community/x86_64/containerd-2.3.7-r0.apk
+runc           875fd2ce632520882972cb0e1ff87d3103dd27eb10fd3f4f737c1bc4c59667e6 https://dl-cdn.alpinelinux.org/alpine/v3.24/community/x86_64/runc-1.4.3-r2.apk
+libseccomp     b22ccfe8cb072e4c8d3bc17222eeda132e270ce6258c27622acb193bf27b48e1 https://dl-cdn.alpinelinux.org/alpine/v3.24/main/x86_64/libseccomp-2.6.1-r0.apk
+tini-static    5b1a0c8623715edc5f32c1cf69256d9de9752f25e3da7a268e14ec81b6db24e9 https://dl-cdn.alpinelinux.org/alpine/v3.24/community/x86_64/tini-static-0.19.0-r3.apk
 # The data disk tools (mke2fs, e2fsck) and what they link against: e2fsprogs is a musl
-# build, so musl's dynamic loader comes too. Signature chains checked the same way.
+# build, so musl's dynamic loader comes too (the engine binaries above use it as well).
 e2fsprogs      c7a99a18206827b09f0cfa2373e6f1db0963845ad8468a378a3b99a7e716a0e8 https://dl-cdn.alpinelinux.org/alpine/v3.24/main/x86_64/e2fsprogs-1.47.4-r0.apk
 e2fsprogs-libs 2e067395a6981b06cfd2cd3abf0e6c6574f7ef64d02e01f75fc5323d4a337fb9 https://dl-cdn.alpinelinux.org/alpine/v3.24/main/x86_64/e2fsprogs-libs-1.47.4-r0.apk
 libblkid       2512c2bff496ac2b8561a3c814d21d35ce10cda579b3d410f9f96da93a5aaac1 https://dl-cdn.alpinelinux.org/alpine/v3.24/main/x86_64/libblkid-2.42.3-r1.apk
