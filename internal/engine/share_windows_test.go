@@ -13,6 +13,46 @@ import (
 	"time"
 )
 
+// flakyListener fails its first Accept with a transient error.
+type flakyListener struct {
+	net.Listener
+	failed bool
+}
+
+func (l *flakyListener) Accept() (net.Conn, error) {
+	if !l.failed {
+		l.failed = true
+		return nil, errors.New("an existing connection was forcibly closed")
+	}
+	return l.Listener.Accept()
+}
+
+// Review finding 4: one failed Accept must not end the share listener.
+func TestShareServiceSurvivesAcceptError(t *testing.T) {
+	s, _, _ := setupShares(ShareConfig{}, "D:P", slog.New(slog.DiscardHandler))
+	defer s.close()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.serve(&flakyListener{Listener: ln})
+	c, err := net.Dial("tcp", ln.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	if _, err := c.Write(helloFrame(0)); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for !s.srv.Mounted() {
+		if time.Now().After(deadline) {
+			t.Fatal("the connection after a failed accept was never served")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
 func TestSetupSharesOff(t *testing.T) {
 	s, svcs, args := setupShares(ShareConfig{Off: true}, "D:P", slog.Default())
 	if s != nil || svcs != nil || args != "" {

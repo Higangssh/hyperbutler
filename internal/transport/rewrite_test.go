@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -91,6 +92,22 @@ func TestFilterLeavesHijackedStreamsAlone(t *testing.T) {
 		}
 		mustEqual(t, out, in)
 	}
+}
+
+// Review finding 1: a detached exec start is a plain request on a pooled connection; a
+// create after it must still be rewritten.
+func TestFilterFollowsDetachedExecStart(t *testing.T) {
+	exec := "POST /v1.47/exec/abc/start HTTP/1.1\r\nHost: docker\r\nContent-Type: application/json\r\nContent-Length: 29\r\n\r\n{\"Detach\":true,\"Tty\":false}\r\n"
+	in := exec + fmt.Sprintf("POST /containers/create HTTP/1.1\r\nContent-Length: %d\r\n\r\n%s", len(createBody), createBody)
+	var out bytes.Buffer
+	f := newReqFilter(strings.NewReader(in), &out, testRewriter)
+	if err := f.run(); err != nil {
+		t.Fatal(err)
+	}
+	if f.wentRaw {
+		t.Fatal("went raw after a detached exec start")
+	}
+	mustEqual(t, out.String(), exec+fmt.Sprintf("POST /containers/create HTTP/1.1\r\nContent-Length: %d\r\n\r\n%s", len(rewritten), rewritten))
 }
 
 func TestFilterRefusals(t *testing.T) {
@@ -263,10 +280,19 @@ func dockerdView(b []byte) (views []reqView, rest string) {
 		}
 		views = append(views, reqView{req.Method, req.RequestURI, req.Host, req.Proto, h, string(body),
 			req.Method == http.MethodPost && createPath.MatchString(req.URL.Path)})
-		if hijacks(req) {
+		if hijacks(req) && !oracleDetached(req, body) {
 			return views, remaining()
 		}
 	}
+}
+
+// oracleDetached is dockerd's view of a detached exec start that keeps the connection,
+// within the bounds the filter follows (detachedExec).
+func oracleDetached(req *http.Request, body []byte) bool {
+	var start struct{ Detach bool }
+	return req.Method == http.MethodPost && execStartPath.MatchString(req.URL.Path) && !upgrades(req) &&
+		len(req.TransferEncoding) == 0 && req.ContentLength > 0 && req.ContentLength <= maxExecStartBody &&
+		json.Unmarshal(body, &start) == nil && start.Detach
 }
 
 func sameView(a, b reqView) bool {
@@ -284,6 +310,7 @@ func FuzzRequestFilter(f *testing.F) {
 	f.Add([]byte("POST /exec/1/start HTTP/1.1\r\nContent-Length: 2\r\n\r\n{}POST /containers/create HTTP/1.1\r\nContent-Length: 1\r\n\r\nx"), true)
 	f.Add([]byte("POST /containers/create HTTP/1.1\nContent-Length: 1\nContent-Length: 1\n\nxGET / HTTP/1.0\n\n"), true)
 	f.Add([]byte("GET / HTTP/1.1\r\nUpgrade: tcp\r\n\r\nPOST /containers/create HTTP/1.1\r\n\r\n"), true)
+	f.Add([]byte("POST /exec/1/start HTTP/1.1\r\nContent-Length: 15\r\n\r\n{\"Detach\":true}POST /containers/create HTTP/1.1\r\nContent-Length: 2\r\n\r\n{}"), true)
 	f.Fuzz(func(t *testing.T, in []byte, transform bool) {
 		rw := func(b []byte) ([]byte, error) { return b, nil }
 		if transform {

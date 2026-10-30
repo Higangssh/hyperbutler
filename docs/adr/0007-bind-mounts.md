@@ -128,7 +128,7 @@ trees.
    client-to-guest direction follows request boundaries with net/http's own parser and
    framing rules and copies every other byte verbatim, including keep-alive and
    pipelined requests, chunked bodies (`docker build`) and `Expect`. A request that can
-   take the connection over (`Upgrade`, attach, exec start, `/session`, `/grpc`), or input
+   take the connection over (`Upgrade`, attach, a non-detached exec start, `/session`, `/grpc`), or input
    the filter cannot follow exactly like net/http, switches the rest of the connection to
    plain byte copying; a later create on it then reaches dockerd untranslated and fails
    there, which is safe. The guest-to-client direction is never parsed. A rewritten create
@@ -171,6 +171,12 @@ deletes and recreates the source directory):
 | `hello-world`; `-p 18080:80` nginx from Windows | ok; HTTP 200 |
 | `docker run -i` with 2000 piped lines, and `echo ping \| docker run -i … cat` | `2000`, `ping`: hijacked streams and half-close intact |
 
+The event latencies above are a smoke test, not the REQ-FS-003 measurement (`bench/fs-notify`
+with pinned Vite and webpack, no polling), which has not run through `hyperbutler start`.
+After the integration review two more checks were added and pass (16 of 16): `-v Q:\nope:/x`
+and `--mount` of a missing source come back as `Error response from daemon: hyperbutler: …`
+through the named pipe.
+
 Numbers from one container through the bind mount, against the same script on the
 container's own ext4 (10 ms resolution): 1000 creates 850 ms (20 ms), reading them back
 340 ms (10 ms), `ls -l` 150 ms (0), 256 MiB write with fsync 4.7 s (90 ms), the same
@@ -178,6 +184,28 @@ without fsync 56 MB/s, re-read 603 MB/s; a fresh container's `ls -lR` of the 100
 10 ms. The sequential write rate is far below what hvsock carries and is in the backlog.
 
 ## Adversarial review
+
+### Integration (2026-10-31)
+
+The adversarial review of the integration (steps 1, 2, 3, 6) raised these findings.
+
+| # | Sev | Finding | Resolution |
+|---|---|---|---|
+| I1 | Med | A detached exec start (`{"Detach":true}`, a plain POST the Docker client sends on a pooled connection) matched the hijack paths, so the connection went raw and a later create on it was not rewritten. | **Fixed.** An exec start without `Upgrade` and with a small body is followed when it is detached. Test: `TestFilterFollowsDetachedExecStart`; the fuzz oracle models it. |
+| I2 | Low | `Expect: 100-continue` on a create is not answered: the filter waits for the body before dockerd sees the head. | **Accepted.** The Docker CLI and SDKs never send it; curl sends the body after its 1 s timeout. Answering it would need a write serialized with the guest-to-client copy. |
+| I3 | Low | Stop can wait up to 5 s: `Server.Serve` polls for queue 0 for 5 s on a queue-N connection and closing the connection does not end the wait. | **Accepted.** Bounded, needs a guest that sends only queue ≥ 1 HELLOs. |
+| I4 | Low | One failed hvsock `Accept` ended the share listener for the rest of the run. | **Fixed.** Non-close errors are retried with a backoff (5 ms to 1 s). Test: `TestShareServiceSurvivesAcceptError`. |
+| I5 | Low | The refusal path was tested over TCP only, not the named pipe. | **Fixed end to end:** two refusal checks through `hyperbutler start` (above). |
+| I6 | Low | The README claimed REQ-FS-003 from a smoke test. | **Fixed:** now "not measured as specified". |
+| I7 | Info | `--mount type=bind` created a missing source; dockerd refuses it. | **Fixed.** `share.RewriteCreateMounts` resolves `Mounts` with `Registry.ResolveExisting`. Test: `TestRewriteMountMissingSource`. |
+
+Found sound: the framing against net/http (the filter is never more lenient, and where
+it is stricter it goes raw after forwarding exactly the bytes it consumed), bounded
+memory per connection, the refusal ordering in `forward`, the share service lifecycle,
+the guest relay loop, and the root identity in share names (no security downside; the
+cost is one share per delete-and-recreate until step 5).
+
+### Share server (2026-10-30)
 
 The adversarial review of the code (2026-10-30) raised these findings. Each is fixed with a
 regression test, or answered.

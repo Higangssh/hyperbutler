@@ -9,6 +9,29 @@ import (
 	"testing"
 )
 
+// Review finding 7: --mount must not create a missing source; -v does.
+func TestRewriteMountMissingSource(t *testing.T) {
+	srv := NewServer(Options{NoWatch: true})
+	defer srv.Close()
+	reg := &Registry{Server: srv, MountPoint: "/mnt/hyperbutler"}
+	missing := filepath.Join(t.TempDir(), "nope")
+	js := strings.ReplaceAll(missing, `\`, `\\`)
+	_, err := RewriteCreateMounts([]byte(`{"HostConfig":{"Mounts":[{"Type":"bind","Source":"`+js+`","Target":"/x"}]}}`), reg.Resolve, reg.ResolveExisting)
+	if err == nil || !strings.Contains(err.Error(), "does not exist") {
+		t.Fatalf("--mount of a missing source: %v", err)
+	}
+	if _, serr := os.Stat(missing); !os.IsNotExist(serr) {
+		t.Fatal("--mount created the missing source")
+	}
+	out, err := RewriteCreateMounts([]byte(`{"HostConfig":{"Binds":["`+js+`:/x"]}}`), reg.Resolve, reg.ResolveExisting)
+	if err != nil || !strings.Contains(string(out), "/mnt/hyperbutler/b-") {
+		t.Fatalf("-v of a missing source: %s %v", out, err)
+	}
+	if fi, serr := os.Stat(missing); serr != nil || !fi.IsDir() {
+		t.Fatal("-v did not create the source directory")
+	}
+}
+
 // TestRegistryRecreatedDirectoryGetsNewShare is the e2e failure of 2026-10-31: a bind
 // source deleted and made again under the same path kept resolving to the share of the
 // deleted directory, so containers saw an empty mount and single-file binds failed.

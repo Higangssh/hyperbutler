@@ -138,7 +138,14 @@ func (f *reqFilter) run() error {
 			return err
 		}
 		if hijacks(req) {
-			return f.raw()
+			detached, err := f.detachedExec(req, chunked)
+			if err != nil {
+				return err
+			}
+			if !detached {
+				return f.raw()
+			}
+			continue
 		}
 		if chunked {
 			err := scanChunked(f.br, f.dst, nil)
@@ -184,8 +191,40 @@ func (f *reqFilter) copyN(n int64) (int64, error) {
 	return w, err
 }
 
-// hijacks reports whether dockerd may take the connection over after req.
-func hijacks(req *http.Request) bool {
+// maxExecStartBody bounds the exec start body read to tell a detached start.
+const maxExecStartBody = 64 << 10
+
+// execStartPath matches POST /exec/{id}/start.
+var execStartPath = regexp.MustCompile(`^(/v[0-9.]+)?/exec/[^/]+/start$`)
+
+// detachedExec forwards the body of an exec start that hijacks only by its path (no
+// Upgrade) and reports whether it is detached ({"Detach":true}): dockerd answers that
+// with a plain response and keeps the connection, so the filter keeps following it
+// (the Docker client sends a detached exec start as a plain POST on a pooled
+// connection). Anything else may be hijacked and goes raw; the head was written
+// already and the body has not been read then.
+func (f *reqFilter) detachedExec(req *http.Request, chunked bool) (bool, error) {
+	if req.Method != http.MethodPost || !execStartPath.MatchString(req.URL.Path) || upgrades(req) ||
+		chunked || req.ContentLength <= 0 || req.ContentLength > maxExecStartBody {
+		return false, nil
+	}
+	body := make([]byte, req.ContentLength)
+	n, err := io.ReadFull(f.br, body)
+	if _, werr := f.dst.Write(body[:n]); werr != nil {
+		return false, werr
+	}
+	if err != nil {
+		return false, err
+	}
+	var start struct{ Detach bool }
+	if json.Unmarshal(body, &start) != nil || !start.Detach {
+		return false, nil
+	}
+	return true, nil
+}
+
+// upgrades reports whether req asks to switch protocols.
+func upgrades(req *http.Request) bool {
 	if req.Method == http.MethodConnect || req.Header.Get("Upgrade") != "" {
 		return true
 	}
@@ -196,7 +235,12 @@ func hijacks(req *http.Request) bool {
 			}
 		}
 	}
-	return hijackPath.MatchString(req.URL.Path)
+	return false
+}
+
+// hijacks reports whether dockerd may take the connection over after req.
+func hijacks(req *http.Request) bool {
+	return upgrades(req) || hijackPath.MatchString(req.URL.Path)
 }
 
 // create reads, rewrites and forwards one container create request.

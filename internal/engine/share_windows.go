@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net"
 	"sync"
+	"time"
 
 	"github.com/Microsoft/go-winio"
 	"github.com/Microsoft/go-winio/pkg/guid"
@@ -92,11 +93,24 @@ func (s *shareService) serve(ln net.Listener) {
 	s.mu.Unlock()
 	go func() {
 		defer s.wg.Done()
+		var backoff time.Duration
 		for {
 			c, err := ln.Accept()
 			if err != nil {
-				return
+				s.mu.Lock()
+				closed := s.closed
+				s.mu.Unlock()
+				if closed || errors.Is(err, net.ErrClosed) {
+					return
+				}
+				// A failed accept (a guest connection reset while pending) must not end
+				// bind mounts for the rest of the run: the relay redials.
+				backoff = min(max(2*backoff, 5*time.Millisecond), time.Second)
+				s.log.Warn("guest share accept failed; retrying", "err", err, "backoff", backoff)
+				time.Sleep(backoff)
+				continue
 			}
+			backoff = 0
 			s.mu.Lock()
 			if s.closed {
 				s.mu.Unlock()
@@ -124,12 +138,16 @@ func (s *shareService) serve(ln net.Listener) {
 
 // rewriteCreate is the proxy's container create rewriter.
 func (s *shareService) rewriteCreate(body []byte) ([]byte, error) {
-	return share.RewriteCreate(body, func(p string) (string, error) {
-		if !s.srv.Mounted() {
-			return "", errors.New("bind mounts of Windows paths are not available: the guest has not mounted the share file system (see hyperbutler logs --console)")
+	mounted := func(resolve share.Resolver) share.Resolver {
+		return func(p string) (string, error) {
+			if !s.srv.Mounted() {
+				return "", errors.New("bind mounts of Windows paths are not available: the guest has not mounted the share file system (see hyperbutler logs --console)")
+			}
+			return resolve(p)
 		}
-		return s.reg.Resolve(p)
-	})
+	}
+	// -v creates a missing source (as dockerd does); --mount refuses it.
+	return share.RewriteCreateMounts(body, mounted(s.reg.Resolve), mounted(s.reg.ResolveExisting))
 }
 
 // close stops accepting, closes every guest connection, waits for their goroutines and

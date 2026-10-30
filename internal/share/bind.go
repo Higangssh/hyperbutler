@@ -68,6 +68,13 @@ type Resolver func(windowsPath string) (guestPath string, err error)
 // RewriteCreate rewrites a POST /containers/create body. It returns the body unchanged
 // (same slice) when nothing needed translation.
 func RewriteCreate(body []byte, resolve Resolver) ([]byte, error) {
+	return RewriteCreateMounts(body, resolve, resolve)
+}
+
+// RewriteCreateMounts is RewriteCreate with separate resolvers for HostConfig.Binds
+// (-v, where dockerd creates a missing source) and HostConfig.Mounts (--mount, where a
+// missing source is an error).
+func RewriteCreateMounts(body []byte, resolve, resolveMount Resolver) ([]byte, error) {
 	if len(body) > maxCreateBody {
 		return nil, errors.New("share: container create body too large")
 	}
@@ -123,7 +130,7 @@ func RewriteCreate(body []byte, resolve Resolver) ([]byte, error) {
 			if !WindowsPath(src) {
 				continue
 			}
-			g, err := resolve(src)
+			g, err := resolveMount(src)
 			if err != nil {
 				return nil, err
 			}
