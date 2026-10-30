@@ -5,8 +5,8 @@
 **Status: early development, pre-0.1.** `hyperbutler start`, `stop`, `status`, `logs` and `delete`
 work end to end on Windows 11 Home, and the stock Windows `docker` CLI runs containers
 against it. No release has been published yet. Until one is, build from source
-([CONTRIBUTING.md](CONTRIBUTING.md)). Idle memory does not yet meet the 0.1 target (see
-[Current status](#current-status)).
+([CONTRIBUTING.md](CONTRIBUTING.md)). Idle memory meets the 0.1 target but not yet the 1.0
+one (see [Current status](#current-status)).
 
 hyperbutler boots a minimal Linux VM directly through the Windows Host Compute Service (HCS, the
 same API WSL2 uses), runs dockerd inside it, and exposes the Docker API on a Windows named
@@ -54,18 +54,18 @@ documents.
 
 | Area | Result | Target | Met? |
 |---|---|---|---|
-| Start, `hyperbutler start` → `docker info` ([cli-engine](docs/research/cli-engine.md#measurements)) | median **1.95 s**, p95 1.96 s (n = 20, warm host cache, existing disk). First start with a new data disk: 1.97 s | ≤ 8 s median, p95 ≤ 12 s | Yes. The first start after a host reboot is not measured yet |
-| `hyperbutler stop` | median 1.33 s, orderly guest shutdown every time | none | – |
+| Start, `hyperbutler start` → `docker info` (`bench/start`, 2026-10-31) | median **1.44 s**, p95 1.45 s (n = 20 after one warm-up, warm host cache, existing disk, no other VM running). Earlier (cli-engine): first start with a new data disk 1.97 s | ≤ 8 s median, p95 ≤ 12 s | Yes, also the 1.0 target. The first start after a host reboot is not measured yet |
+| `hyperbutler stop` | median 1.25 s, orderly guest shutdown every time | none | – |
 | Image pull over the internet, *spike*: `hyperbutler-dev`, 1 GiB / 2 vCPU guest ([guest-networking](docs/research/guest-networking.md)) | `alpine` 2.7–3.1 s, `ubuntu:24.04` 3.5–3.7 s, `nginx` 4.7–5.3 s, about the same as the host | none | The LAN-registry comparison of ADR 0006 has not been run |
 | Disk space returned after `docker rmi` + `prune` (cli-engine) | 3 GiB of images deleted: the data disk shrank back to within 322 and 843 MiB of the baseline in ≤ 11 s (2 runs), with no manual step | within 1 GB in ≤ 5 min (REQ-DISK-001) | Yes for this test. The full 10 GB / 24 h bench has not been run |
 | Host disk full, *spike* ([disk-reclaim](docs/research/disk-reclaim.md#free-space-guard-req-disk-004-non-elevated-2026-10-30)) | with the free-space guard: 10/10 writes got `ENOSPC`, no file system errors, no lost files | REQ-DISK-004 | Yes, on a 3 GiB test volume in a spike harness. Not yet repeated with the `hyperbutler` CLI |
-| Idle memory, minutes 5–10 (cli-engine) | **580 MiB**: engine 16 MiB, VM 564 MiB | ≤ 400 MB (REQ-MEM-001) | **No.** The guest keeps its whole root file system in RAM; the planned erofs system disk ([ADR 0005](docs/adr/0005-guest-image.md)) is the fix |
+| Idle memory, minutes 5–10 (`bench/mem-idle`, [ADR 0003](docs/adr/0003-implementation-language.md#consequences)) | **315 MiB** (331 MB): engine 17.7 MiB (Go heap 5.4 MiB), vmmem 292 MiB, vmwp 5.5 MiB, with the erofs system disk | ≤ 400 MB (REQ-MEM-001); 1.0: ≤ 250 MB | Yes for 0.1, **no** for 1.0. The engine commits 65 MiB; a process that reads all of its memory (likely Defender) can make all of it resident |
 | Memory back to the host after a workload, *spike*: `spike/vhdx`, 3 GiB guest ([guest-services](docs/research/guest-services.md)) | 2 GiB of page cache: VM back to 350 MiB (260 MiB at ready) 27 s after the read | REQ-MEM-002 | Partly: the 12 GB / 8 GB bench has not been run |
 | Bind mounts from Windows paths, `docker run -v C:\…` and `--mount type=bind` ([ADR 0007](docs/adr/0007-bind-mounts.md#end-to-end-through-hyperbutler-start-2026-10-31)) | work through `hyperbutler start`: read/write, `:ro`, single files, inotify on Windows-side edits in 52–74 ms (including `docker logs` polling). 1000 creates 850 ms (ext4: 20 ms); sequential write 56 MB/s, cached re-read 603 MB/s | 1.0: REQ-FS-001/002/005; REQ-FS-003 ≤ 200 ms p95 | Not measured as specified: `bench/fs-*` (incl. the Vite/webpack check of REQ-FS-003) not run. Throughput: **no** for writes and creates |
 | Download size | the release zip is about 80 MB | ≤ 150 MB (REQ-UX-002) | Yes (measured on a local build) |
-| Soak (24 h, ADR 0003) | a 13-minute run against `hyperbutler-dev` showed no growth faster than about 14 MB/h | 24 h, no positive trend | **Not run.** It blocks the first release |
+| Soak (ADR 0003), `hyperbutler start`, incl. bind mounts and `-p` | 1 h, 12,827 docker commands, none failed: engine working set +0.56 MiB/h (median 80 MiB), Go heap +0.09 MiB/h, handles, threads and goroutines flat; no leak above about 5 MiB/h | 24 h, no positive trend | 1 h main gate: passed by hand. **24 h: not run.** It blocks the first release |
 
-What is missing for 0.1: the memory target, the 24-hour soak, the ADR 0004 broker (until it
+What is missing for 0.1: the 24-hour soak, the ADR 0004 broker (until it
 ships you need Hyper-V Administrators membership, see below), `hyperbutler doctor`, and
 Compose testing. Bind mounts from Windows paths work but are not yet fast for write-heavy
 trees: use a named volume for `node_modules`. [docs/release.md](docs/release.md) lists every
@@ -167,7 +167,7 @@ Rewriting infrastructure in Rust is popular, so here is why hyperbutler is writt
   `windows-sys`. What Go adds is the reference implementation and the pipe and hvsock helpers
   in the same language.
 - **The cost is small, and we measured it.** The Go host process used 3–7 MB of private
-  memory while serving Docker, and 16 MB idle as the full engine. The VM uses hundreds of
+  memory while serving Docker, and 18 MB idle as the full engine. The VM uses hundreds of
   MB. Rust would save a few MB.
 - **Neither language prevents memory leaks.** Rust prevents memory-safety bugs, and so does
   Go's garbage collector. Leaks in a long-running daemon are design bugs, in either language.

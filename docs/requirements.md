@@ -53,6 +53,18 @@ wanted is marked *withdrawn*, not deleted.
 | REQ-MEM-003 | The VM can be capped without breaking workloads. | With `memory: 2GB`, a container that allocates 3 GB is OOM-killed inside the guest. The VM and the other containers keep running (`bench/mem-cap`). | P1 | M1 |
 | REQ-MEM-004 | Automatic idle suspend. | With no containers running for N minutes (default 10), the VM is paused or stopped, and host memory falls to ≤ 20 MB. The next `docker` command resumes it in ≤ 3 s (`bench/idle-suspend`). | P2 | M1 M2 |
 
+Status on the reference machine (2026-10-31, `hyperbutler start`, 4 GiB / 8 vCPU guest; details in
+[ADR 0003](adr/0003-implementation-language.md#consequences)):
+- REQ-START-001: **met** for 0.1 and 1.0 (`bench/start`): median 1.44 s, p95 1.45 s over 20 runs
+  after one warm-up, no other VM running; `hyperbutler stop` median 1.25 s. The first start
+  after a reboot is still not measured (the host had been up 20 h).
+- REQ-MEM-001: **met for 0.1, not for 1.0** (`bench/mem-idle`): median 315 MiB (331 MB) =
+  engine 17.7 + vmmem 292 + vmwp 5.5 MiB, no other VM running. The engine's commit is
+  65 MiB; a process that reads its whole memory (likely Defender) can make all of it
+  resident, which would add up to about 47 MiB.
+- REQ-MEM-002: **not run.** Its method is defined, but `bench/mem-reclaim` (12 GB VM, 4 GB
+  anonymous + 4 GB page cache) does not exist yet.
+
 ## File sharing
 
 | ID | Requirement | Acceptance criterion (how measured) | Pri | Pain |
