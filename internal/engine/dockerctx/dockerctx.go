@@ -136,6 +136,9 @@ func encodeMeta(name, host, description string) ([]byte, error) {
 // It returns ErrNotOurs, and changes nothing, if a context of that name exists that
 // winbox did not create, or that cannot be read.
 func (s Store) Ensure(name, host, description string) error {
+	if name == "" || !utf8.ValidString(name) || !utf8.ValidString(host) || !utf8.ValidString(description) {
+		return errors.New("dockerctx: context name, host and description must be non-empty UTF-8")
+	}
 	c, err := s.Get(name)
 	switch {
 	case err == nil && !c.Managed:
@@ -227,6 +230,10 @@ func CurrentContext(config []byte) (string, error) {
 // SetCurrentContext returns config with "currentContext" set to name (removed if name
 // is empty). Other keys keep their raw values. An empty config starts a new one.
 func SetCurrentContext(config []byte, name string) ([]byte, error) {
+	if !utf8.ValidString(name) {
+		// JSON cannot carry it: it would be stored as U+FFFD, another name.
+		return nil, fmt.Errorf("dockerctx: context name %q is not UTF-8", name)
+	}
 	m, err := parseConfig(config)
 	if err != nil {
 		return nil, err

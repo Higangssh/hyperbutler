@@ -31,6 +31,21 @@ func SelfCreated() int64 {
 	return t
 }
 
+// CreatedTime returns the creation time of process pid, for comparison with
+// State.PIDCreated. The caller must hold a handle to the process (such as an
+// os.Process it started), or the PID could be reused in between.
+func CreatedTime(pid int) (int64, error) {
+	if pid <= 0 || pid >= maxPID {
+		return 0, ErrProcessGone
+	}
+	h, err := windows.OpenProcess(windows.PROCESS_QUERY_LIMITED_INFORMATION, false, uint32(pid))
+	if err != nil {
+		return 0, fmt.Errorf("engine: open process %d: %w", pid, err)
+	}
+	defer windows.CloseHandle(h)
+	return processCreated(h)
+}
+
 // Process is a handle to another process, checked against its creation time.
 type Process struct {
 	PID int

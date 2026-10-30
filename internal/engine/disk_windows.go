@@ -74,6 +74,10 @@ type dataDisk struct {
 	path    string
 	meta    *DiskMeta
 	created bool
+	// blank means the guest never wrote to the disk: its host allocation is still the
+	// metadata allocation it had when it was created. Only then may the guest format it
+	// (it checks for zeros and for a file system too).
+	blank bool
 }
 
 // prepareDisk returns the data disk of layout l, creating a blank one of size bytes on
@@ -145,5 +149,5 @@ func checkDisk(path string, meta *DiskMeta, created bool) (*dataDisk, error) {
 	if !u.Sparse {
 		return nil, codeErr(CodeDataDisk, fmt.Errorf("%s is not a sparse file, so freed space could not go back to the host", path))
 	}
-	return &dataDisk{path: path, meta: meta, created: created}, nil
+	return &dataDisk{path: path, meta: meta, created: created, blank: u.Allocated <= meta.MetadataBytes}, nil
 }

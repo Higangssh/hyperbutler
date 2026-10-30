@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/Higangssh/winbox/internal/diag"
 	"github.com/Higangssh/winbox/internal/engine"
 	"github.com/Higangssh/winbox/internal/transport"
 )
@@ -31,6 +32,9 @@ func runCmd(args []string) error {
 	diskSize := fs.String("disk-size", "64GiB", "data disk size when -data creates it")
 	readyTimeout := fs.Duration("ready-timeout", 30*time.Second, "how long to wait for dockerd")
 	exitWhenReady := fs.Bool("exit-when-ready", false, "stop after dockerd answers /_ping (boot timing only)")
+	var dcfg diag.Config
+	fs.StringVar(&dcfg.MemoryLimit, "memlimit", "", "Go soft memory limit, GOMEMLIMIT syntax (off by default)")
+	fs.StringVar(&dcfg.DebugPipe, "debug-pipe", "", "serve pprof and runtime stats on this pipe, current user only (off by default)")
 	var nf netFlags
 	nf.register(fs)
 	if err := fs.Parse(args); err != nil {
@@ -40,6 +44,11 @@ func runCmd(args []string) error {
 		fs.Usage()
 		return errors.New("run: -kernel and -initrd are required")
 	}
+	dbg, err := diag.Start(dcfg)
+	if err != nil {
+		return err
+	}
+	defer dbg.Close()
 	sddl, err := engine.CurrentUserSDDL()
 	if err != nil {
 		return err

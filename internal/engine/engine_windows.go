@@ -25,6 +25,17 @@ import (
 	"github.com/Higangssh/winbox/internal/vm"
 )
 
+// GuardConfig is the free-space guard policy: guest writes get ENOSPC before the host
+// volume drops below 5 GiB (REQ-DISK-005's default reserve), and the VM is paused
+// below 1 GiB, the last resort if other host programs fill the volume.
+var GuardConfig = spaceguard.Config{
+	Margin:     5 << 30,
+	Floor:      1 << 30,
+	ResumeGap:  256 << 20,
+	Hysteresis: 64 << 20,
+	Quantum:    1 << 20,
+}
+
 // DockerPort is the AF_VSOCK port of the guest agent's Docker API relay.
 const DockerPort = 2375
 
@@ -49,7 +60,7 @@ type Config struct {
 	// keeps /var/lib/docker in RAM (a development mode).
 	Disk     Layout
 	DiskSize uint64
-	// Guard is the free-space guard policy (spaceguard.DefaultConfig if zero).
+	// Guard is the free-space guard policy (GuardConfig if zero).
 	Guard spaceguard.Config
 	// Net is the guest network.
 	Net NetConfig
@@ -136,7 +147,7 @@ func (c *Config) defaults() {
 		c.VMID = "winbox-" + randomHex(8)
 	}
 	if c.Guard == (spaceguard.Config{}) {
-		c.Guard = spaceguard.DefaultConfig
+		c.Guard = GuardConfig
 	}
 	if c.ReadyTimeout <= 0 {
 		c.ReadyTimeout = 90 * time.Second
@@ -239,6 +250,9 @@ func Run(ctx context.Context, cfg Config) (err error) {
 		}()
 		disks = []vm.Disk{{Path: disk.path, Sparse: true}}
 		cmdline += " winbox.data=sda"
+		if disk.blank {
+			cmdline += " winbox.newdisk=1"
+		}
 	}
 
 	dockerSvc := transport.VsockServiceID(DockerPort)

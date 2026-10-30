@@ -20,9 +20,7 @@ func TestMain(m *testing.M) {
 // pending lists test packages that do not run the leak check yet, with the reason.
 // Remove an entry when its package gets a TestMain; the test fails if an entry is
 // stale, so this list can only shrink.
-var pending = map[string]string{
-	"cmd/winbox-dev": "owned by a parallel change; add a TestMain calling leaktest.VerifyTestMain there",
-}
+var pending = map[string]string{}
 
 // verifyMain matches a TestMain whose first statement is the leak check, with no
 // options other than the narrow, documented ones exported by this package.

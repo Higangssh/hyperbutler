@@ -102,6 +102,23 @@ func Serve(opts ServeOptions) error {
 			cancel()
 		}
 	}()
+	// Sign-out and Windows shutdown: the engine has no console, so it learns of them
+	// through a hidden window, which then holds the session end until the guest is down.
+	finished := make(chan struct{})
+	var stopOnce sync.Once
+	unwatch, err := WatchSessionEnd(func() {
+		stopOnce.Do(func() {
+			log.Info("the Windows session is ending; stopping")
+			go pub.update(func(s *State) { s.Phase = PhaseStopping })
+			cancel()
+		})
+	}, finished)
+	if err != nil {
+		log.Warn("cannot watch for sign-out and shutdown; they will kill the VM uncleanly", "err", err)
+	} else {
+		defer unwatch() // after finished is closed (defers run in reverse)
+	}
+	defer close(finished)
 
 	CleanupOrphans(opts.Backend, l.VMPrefix(), log)
 

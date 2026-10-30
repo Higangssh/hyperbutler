@@ -19,6 +19,7 @@ import (
 
 	"golang.org/x/sys/windows"
 
+	"github.com/Higangssh/winbox/internal/diag"
 	"github.com/Higangssh/winbox/internal/engine"
 	"github.com/Higangssh/winbox/internal/engine/dockerctx"
 	"github.com/Higangssh/winbox/internal/transport"
@@ -59,6 +60,16 @@ func openInstall() (*install, error) {
 		return nil, fmt.Errorf("%w (fix or delete %s)", err, in.l.SettingsPath())
 	}
 	return in, nil
+}
+
+// reload reads the settings again (after taking the ops lock).
+func (in *install) reload() error {
+	fresh, err := openInstall()
+	if err != nil {
+		return err
+	}
+	*in = *fresh
+	return nil
 }
 
 // opsLock serializes start, stop and delete.
@@ -110,6 +121,9 @@ func cmdStart(args []string, stdout, stderr io.Writer) error {
 	timeout := fs.Duration("timeout", 2*time.Minute, "how long to wait for the Docker API")
 	noContext := fs.Bool("no-context", false, `do not create or select the "winbox" docker context`)
 	pipe := fs.String("pipe", "", `Docker API pipe (default \\.\pipe\docker_engine_winbox); kept for later starts`)
+	var dcfg diag.Config
+	fs.StringVar(&dcfg.MemoryLimit, "memlimit", "", "Go soft memory limit of the engine process, GOMEMLIMIT syntax (off by default)")
+	fs.StringVar(&dcfg.DebugPipe, "debug-pipe", "", `serve the engine's pprof and runtime stats on this pipe, current user only (off by default), e.g. \\.\pipe\winbox-engine-debug`)
 	if err := parseArgs(fs, args); err != nil {
 		return err
 	}
@@ -126,6 +140,11 @@ func cmdStart(args []string, stdout, stderr io.Writer) error {
 		return err
 	}
 	defer func() { _ = ops.Unlock() }()
+	// Settings read before the lock may be stale: another start, or a delete, may
+	// have changed them while this command waited.
+	if err := in.reload(); err != nil {
+		return err
+	}
 
 	if err := in.applySettings(*dataDir, *memory, *cpus, diskSize, *pipe); err != nil {
 		return err
@@ -151,13 +170,19 @@ func cmdStart(args []string, stdout, stderr io.Writer) error {
 	}
 	in.noteCrash(stderr)
 
-	cmd, err := spawnEngine(in, kernel, initrd)
+	cmd, err := spawnEngine(in, kernel, initrd, dcfg)
 	if err != nil {
+		return err
+	}
+	// cmd.Process holds a handle, so the PID cannot be reused while this runs.
+	created, err := engine.CreatedTime(cmd.Process.Pid)
+	if err != nil {
+		_ = cmd.Process.Kill()
 		return err
 	}
 	exited := make(chan error, 1)
 	go func() { exited <- cmd.Wait() }()
-	st, err := in.waitReady(cmd.Process.Pid, exited, *timeout)
+	st, err := in.waitReady(cmd.Process, created, exited, *timeout)
 	if err != nil {
 		return in.explainFailure(err, st, stderr)
 	}
@@ -265,6 +290,10 @@ func (in *install) noteCrash(stderr io.Writer) {
 	fmt.Fprintf(stderr, "winbox: the previous engine (pid %d) exited without shutting down; see `winbox logs`.\n", st.PID)
 	if lk, err := engine.TryLock(in.l.LockPath()); err == nil {
 		engine.CleanupOrphans(engine.HCSBackend{}, in.l.VMPrefix(), slog.New(slog.NewTextHandler(stderr, &slog.HandlerOptions{Level: slog.LevelWarn})))
+		// The dead engine could not revoke its VM account's access to the disk.
+		if st.VMID != "" {
+			_ = vm.RevokeVMAccess(st.VMID, in.l.DiskPath())
+		}
 		st.Phase, st.Error, st.ErrorCode = engine.PhaseFailed, "the engine exited without shutting down", ""
 		_ = engine.SaveState(in.l, st)
 		_ = lk.Unlock()
@@ -274,7 +303,7 @@ func (in *install) noteCrash(stderr io.Writer) {
 // spawnEngine starts `winbox engine` as a detached background process whose output
 // goes to engine.log. It breaks away from the caller's job object where allowed, so
 // closing the terminal (or a CI step) does not take the engine with it.
-func spawnEngine(in *install, kernel, initrd string) (*exec.Cmd, error) {
+func spawnEngine(in *install, kernel, initrd string, dcfg diag.Config) (*exec.Cmd, error) {
 	exe, err := os.Executable()
 	if err != nil {
 		return nil, err
@@ -297,7 +326,14 @@ func spawnEngine(in *install, kernel, initrd string) (*exec.Cmd, error) {
 		createBreakawayFromJob = 0x01000000
 	)
 	for _, breakaway := range []bool{true, false} {
-		cmd := exec.Command(exe, "engine", "--home", in.l.Home, "--kernel", kernel, "--initrd", initrd)
+		args := []string{"engine", "--home", in.l.Home, "--kernel", kernel, "--initrd", initrd}
+		if dcfg.MemoryLimit != "" {
+			args = append(args, "--memlimit", dcfg.MemoryLimit)
+		}
+		if dcfg.DebugPipe != "" {
+			args = append(args, "--debug-pipe", dcfg.DebugPipe)
+		}
+		cmd := exec.Command(exe, args...)
 		cmd.Dir = in.l.Home
 		cmd.Stdout, cmd.Stderr = logf, logf
 		flags := uint32(detachedProcess | createNewProcessGroup)
@@ -317,14 +353,18 @@ func spawnEngine(in *install, kernel, initrd string) (*exec.Cmd, error) {
 	return nil, fmt.Errorf("start the engine: %w", err)
 }
 
-// waitReady follows state.json until the engine with this pid is running or failed,
-// or the process exits. On timeout it stops the engine, so nothing is left half up.
-func (in *install) waitReady(pid int, exited <-chan error, timeout time.Duration) (*engine.State, error) {
+// waitReady follows state.json until the engine process proc (created at created) is
+// running or failed, or the process exits. A state.json of an earlier engine whose PID
+// was reused does not match: the creation time differs. On timeout it stops the engine,
+// so nothing is left half up.
+func (in *install) waitReady(proc *os.Process, created int64, exited <-chan error, timeout time.Duration) (*engine.State, error) {
 	deadline := time.Now().Add(timeout)
+	pid := proc.Pid
+	ours := func(st *engine.State) bool { return st.PID == pid && st.PIDCreated == created }
 	var last *engine.State
 	for {
 		st, err := engine.LoadState(in.l)
-		if err == nil && st.PID == pid {
+		if err == nil && ours(st) {
 			last = st
 			switch st.Phase {
 			case engine.PhaseRunning:
@@ -335,7 +375,7 @@ func (in *install) waitReady(pid int, exited <-chan error, timeout time.Duration
 		}
 		select {
 		case err := <-exited:
-			if st, serr := engine.LoadState(in.l); serr == nil && st.PID == pid {
+			if st, serr := engine.LoadState(in.l); serr == nil && ours(st) {
 				if st.Phase == engine.PhaseFailed {
 					return st, engineError(st)
 				}
@@ -345,6 +385,7 @@ func (in *install) waitReady(pid int, exited <-chan error, timeout time.Duration
 		case <-time.After(100 * time.Millisecond):
 		}
 		if time.Now().After(deadline) {
+			stopped := false
 			if last != nil {
 				if p, err := engine.OpenProcess(last.PID, last.PIDCreated); err == nil {
 					_ = engine.RequestStop(last.PID, last.PIDCreated)
@@ -352,7 +393,11 @@ func (in *install) waitReady(pid int, exited <-chan error, timeout time.Duration
 						_ = p.Kill()
 					}
 					p.Close()
+					stopped = true
 				}
+			}
+			if !stopped { // it never published a state: kill it through our own handle
+				_ = proc.Kill()
 			}
 			return last, fmt.Errorf("the Docker API did not answer within %v; the engine was stopped. See `winbox logs` and `winbox logs --console`", timeout)
 		}
@@ -465,6 +510,11 @@ func cmdStop(args []string, stdout, stderr io.Writer) error {
 		return err
 	}
 	defer func() { _ = ops.Unlock() }()
+	// Settings read before the lock may be stale: another start, or a delete, may
+	// have changed them while this command waited.
+	if err := in.reload(); err != nil {
+		return err
+	}
 	forced, took, err := in.stop(*timeout, stderr)
 	if errors.Is(err, errNotRunning) {
 		fmt.Fprintln(stdout, "winbox is not running.")
@@ -729,6 +779,11 @@ func cmdDelete(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 		return err
 	}
 	defer func() { _ = ops.Unlock() }()
+	// Settings read before the lock may be stale: another start, or a delete, may
+	// have changed them while this command waited.
+	if err := in.reload(); err != nil {
+		return err
+	}
 
 	up, err := in.running()
 	if err != nil {
@@ -836,6 +891,9 @@ func cmdEngine(args []string, stderr io.Writer) (int, error) {
 	kernel := fs.String("kernel", "", "guest kernel")
 	initrd := fs.String("initrd", "", "guest initramfs")
 	debugLog := fs.Bool("debug", false, "debug logging")
+	var dcfg diag.Config
+	fs.StringVar(&dcfg.MemoryLimit, "memlimit", "", "Go soft memory limit, GOMEMLIMIT syntax (the GOMEMLIMIT variable wins; off by default)")
+	fs.StringVar(&dcfg.DebugPipe, "debug-pipe", "", "serve pprof and runtime stats on this pipe, current user only (off by default)")
 	if err := parseArgs(fs, args); err != nil {
 		return 2, err
 	}
@@ -851,6 +909,19 @@ func cmdEngine(args []string, stderr io.Writer) (int, error) {
 	s, err := engine.LoadSettings(l)
 	if err != nil {
 		return 1, err
+	}
+	// The debug pipe's DACL names the user's SID, which an elevated token shares with
+	// the same user's unelevated processes: refuse it when elevated (as the broker does).
+	if dcfg.DebugPipe != "" && windows.GetCurrentProcessToken().IsElevated() {
+		return 1, errors.New("--debug-pipe is refused in an elevated engine")
+	}
+	dbg, err := diag.Start(dcfg)
+	if err != nil {
+		return 1, err
+	}
+	defer dbg.Close()
+	if dcfg.DebugPipe != "" {
+		log.Info("debug endpoint", "pipe", dcfg.DebugPipe)
 	}
 	log.Info("engine starting", "pid", os.Getpid(), "home", *home, "data", s.DataDir, "memoryMB", s.MemoryMB, "cpus", s.CPUs)
 	err = engine.Serve(engine.ServeOptions{

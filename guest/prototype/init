@@ -60,6 +60,7 @@ NET=
 MTU=1500
 NETBENCH=
 DATA=
+NEWDISK=
 MEMLOG=
 for arg in $(cat /proc/cmdline); do
 	case "$arg" in
@@ -71,6 +72,7 @@ for arg in $(cat /proc/cmdline); do
 	winbox.mtu=*) MTU=${arg#winbox.mtu=} ;;
 	winbox.netbench=1) NETBENCH="-bench-tcp 5201 -bench-vsock 5202" ;;
 	winbox.data=*) DATA=${arg#winbox.data=} ;;
+	winbox.newdisk=1) NEWDISK=1 ;;
 	winbox.memlog=1) MEMLOG=1 ;;
 	esac
 done
@@ -106,7 +108,7 @@ fi
 t net-done
 
 # The data disk (winbox.data=sdX) holds /var/lib/docker: images, containers, volumes and
-# their json-file logs. It is formatted only when its first MiB is all zero, which is
+# their json-file logs. It is formatted only when it is blank (see data_disk), which is
 # how a new VHDX reads; anything else that is not a clean ext4 is refused, never
 # reformatted. Without winbox.data (the QEMU harness), /var/lib/docker is a tmpfs.
 mkdir -p /var/lib/docker
@@ -122,8 +124,19 @@ data_disk() {
 		t "data-missing $dev"
 		return 1
 	fi
-	n=$(dd if="$dev" bs=65536 count=16 2>/dev/null | tr -d '\000' | wc -c)
-	if [ $((n + 0)) -eq 0 ]; then
+	# Blank means all three: the host says the VHDX was never written (winbox.newdisk=1:
+	# its allocation is still what it was at creation), a complete read of the first MiB
+	# succeeded and is all zero, and blkid finds no file system. A failed or short read
+	# is never taken for a blank disk.
+	blank=
+	if [ -n "$NEWDISK" ] && dd if="$dev" of=/tmp/data-head bs=65536 count=16 2>/dev/null &&
+		[ "$(wc -c </tmp/data-head)" -eq 1048576 ] &&
+		[ "$(tr -d '\000' </tmp/data-head | wc -c)" -eq 0 ] &&
+		[ -z "$(blkid "$dev" 2>/dev/null)" ]; then
+		blank=1
+	fi
+	rm -f /tmp/data-head
+	if [ -n "$blank" ]; then
 		t data-mkfs
 		# -J size=128: journal blocks, once written, stay allocated in the VHDX (they
 		# are never free, so never trimmed). The default for 64 GiB is several times

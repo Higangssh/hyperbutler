@@ -59,6 +59,17 @@ func (h *fakeHandler) Status() Status {
 
 func startPair(t *testing.T, h *fakeHandler, srv *Server, cfg ClientConfig) (*Client, chan error) {
 	t.Helper()
+	return startPairWith(t, h, srv, cfg)
+}
+
+// startPairHandler is startPair with any Handler and the default client config.
+func startPairHandler(t *testing.T, h Handler, srv *Server) (*Client, chan error) {
+	t.Helper()
+	return startPairWith(t, h, srv, ClientConfig{})
+}
+
+func startPairWith(t *testing.T, h Handler, srv *Server, cfg ClientConfig) (*Client, chan error) {
+	t.Helper()
 	a, b := net.Pipe()
 	srv.Handler = h
 	errc := make(chan error, 1)

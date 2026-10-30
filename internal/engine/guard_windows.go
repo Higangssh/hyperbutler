@@ -39,7 +39,9 @@ type hostGuard struct {
 	dead     time.Duration
 	log      *slog.Logger
 
-	// live is when the guest guard last showed progress (UnixNano).
+	// live is when the guest guard last showed progress (UnixNano); 0 until its first
+	// report. Before that (the guest is booting, and its guard fails closed by
+	// reserving everything) only the floor applies.
 	live      atomic.Int64
 	lastSteps atomic.Uint64
 
@@ -61,7 +63,6 @@ func newHostGuard(cfg spaceguard.Config, m Machine, sup *guestctl.Supervisor, di
 		interval: 100 * time.Millisecond, dead: 5 * time.Second, log: log,
 		stop: make(chan struct{}), done: make(chan struct{}),
 	}
-	g.live.Store(time.Now().UnixNano())
 	return g, nil
 }
 
@@ -77,9 +78,18 @@ func (g *hostGuard) onStatus(s guestctl.Status) {
 
 func (g *hostGuard) start() { go g.loop() }
 
+// close stops the loop and resumes a VM it paused, so the guest can still shut down in
+// order (a paused guest cannot hear the request).
 func (g *hostGuard) close() {
 	close(g.stop)
 	<-g.done
+	if g.paused {
+		if err := g.m.Resume(); err != nil {
+			g.log.Warn("resume the paused VM for its shutdown", "err", err)
+		}
+		g.paused = false
+		g.sup.SetPaused(false)
+	}
 }
 
 func (g *hostGuard) loop() {
@@ -116,7 +126,7 @@ func (g *hostGuard) tick() {
 	g.sup.SetBudget(b)
 
 	pcfg := g.cfg
-	if silent := time.Since(time.Unix(0, g.live.Load())); silent > g.dead && !g.paused {
+	if live := g.live.Load(); live != 0 && time.Since(time.Unix(0, live)) > g.dead && !g.paused {
 		// The guest guard is not reporting progress: its reservation may be gone, so
 		// pause at the margin rather than the floor.
 		pcfg.Floor = pcfg.Margin - 1
