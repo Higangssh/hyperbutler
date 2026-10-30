@@ -134,6 +134,21 @@ func TestSnapshot(t *testing.T) {
 	if s.MemStats.HeapAlloc == 0 || s.MemStats.Sys == 0 || s.MemoryLimit <= 0 {
 		t.Errorf("implausible snapshot %+v", s)
 	}
+	switch o := s.OS; {
+	case runtime.GOOS != "windows":
+		if o != nil {
+			t.Errorf("OS memory off Windows: %+v", o)
+		}
+	case o == nil:
+		t.Error("no OS memory on Windows")
+	default:
+		// The process heap always exists; native heaps and Go's own mappings are both
+		// part of the private bytes.
+		if o.Heaps < 1 || o.HeapCommitted == 0 || o.HeapAllocated > o.HeapCommitted ||
+			o.PrivateBytes < o.HeapCommitted || o.WorkingSet == 0 {
+			t.Errorf("implausible OS memory %+v", o)
+		}
+	}
 }
 
 func TestParseSeconds(t *testing.T) {

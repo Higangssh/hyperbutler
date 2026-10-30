@@ -52,7 +52,12 @@ type Summary struct {
 	// (fragmentation inside spans).
 	HeapAlloc, HeapInuse, HeapRetained, StackInuse, GoSys Stat
 	Goroutines, Handles                                   Stat
-	NumGC                                                 uint32 // GCs during the window
+	// OSPrivate is the engine's commit charge (private bytes) as Windows counts it. The
+	// gap to the private working set is committed memory never touched, such as Go
+	// 1.27's 32 MiB FIPS entropy scratch buffer in .bss; anything that reads the whole
+	// process (a scanner, a dump) makes it resident. NativeHeap is the Windows heaps.
+	OSPrivate, NativeHeap Stat
+	NumGC                 uint32 // GCs during the window
 
 	// Theil–Sen slopes over the window, bytes per hour. Five minutes cannot show a slow
 	// leak; these only flag a fast one, and tell heap growth from other growth.
@@ -60,6 +65,13 @@ type Summary struct {
 
 	Target uint64 // REQ-MEM-001 limit on the Total median, bytes
 	Pass   bool
+}
+
+func osField(s Sample, f func(*diag.OSMemory) uint64) float64 {
+	if s.Stats.OS == nil {
+		return 0
+	}
+	return float64(f(s.Stats.OS))
 }
 
 // Stat is a median and range.
@@ -100,6 +112,8 @@ func Summarize(ss []Sample, target uint64) Summary {
 	sum.GoSys = stat(col(func(s Sample) float64 { return float64(s.Stats.MemStats.Sys) }))
 	sum.Goroutines = stat(col(func(s Sample) float64 { return float64(s.Stats.Goroutines) }))
 	sum.Handles = stat(col(func(s Sample) float64 { return float64(s.Stats.Handles) }))
+	sum.OSPrivate = stat(col(func(s Sample) float64 { return osField(s, func(o *diag.OSMemory) uint64 { return o.PrivateBytes }) }))
+	sum.NativeHeap = stat(col(func(s Sample) float64 { return osField(s, func(o *diag.OSMemory) uint64 { return o.HeapCommitted }) }))
 	if len(ss) > 0 {
 		sum.NumGC = ss[len(ss)-1].Stats.MemStats.NumGC - min(ss[0].Stats.MemStats.NumGC, ss[len(ss)-1].Stats.MemStats.NumGC)
 	}
@@ -128,6 +142,8 @@ func (s Summary) Print(w io.Writer) {
 	}
 	fmt.Fprintf(w, "\nEngine Go runtime (medians): heap alloc %s, heap in use %s, GC slack (free but retained) %s, stacks %s, Go Sys %s; goroutines %.0f, handles %.0f; %d GCs in the window\n",
 		mib(s.HeapAlloc.Median), mib(s.HeapInuse.Median), mib(s.HeapRetained.Median), mib(s.StackInuse.Median), mib(s.GoSys.Median), s.Goroutines.Median, s.Handles.Median, s.NumGC)
+	fmt.Fprintf(w, "Engine commit (private bytes) %s, of which Windows heaps %s; the gap to the working set is committed but untouched memory\n",
+		mib(s.OSPrivate.Median), mib(s.NativeHeap.Median))
 	fmt.Fprintf(w, "Slopes over the window: engine WS %+.1f MiB/h, heap alloc %+.1f MiB/h (5 minutes only shows fast growth)\n",
 		s.EngineWSSlope/(1<<20), s.HeapAllocSlope/(1<<20))
 	verdict := "PASS"
@@ -144,7 +160,8 @@ func (s Summary) Print(w io.Writer) {
 
 // csvHeader names the CSV columns WriteCSV writes.
 var csvHeader = []string{"t_seconds", "engine_ws", "vmmem_ws", "vmwp_ws", "helpers_ws", "total", "engine_threads",
-	"goroutines", "handles", "heap_alloc", "heap_inuse", "heap_idle", "heap_released", "stack_inuse", "go_sys", "num_gc", "foreign"}
+	"goroutines", "handles", "heap_alloc", "heap_inuse", "heap_idle", "heap_released", "stack_inuse", "go_sys", "num_gc",
+	"os_private", "os_heap_committed", "foreign"}
 
 // WriteCSV writes every sample.
 func WriteCSV(w io.Writer, ss []Sample) error {
@@ -155,7 +172,9 @@ func WriteCSV(w io.Writer, ss []Sample) error {
 		m := s.Stats.MemStats
 		_ = cw.Write([]string{strconv.FormatFloat(s.T, 'f', 1, 64), u(s.EngineWS), u(s.VMMemWS), u(s.VMWPWS), u(s.HelpersWS), u(s.Total()), u(s.Threads),
 			strconv.Itoa(s.Stats.Goroutines), strconv.FormatInt(s.Stats.Handles, 10), u(m.HeapAlloc), u(m.HeapInuse), u(m.HeapIdle), u(m.HeapReleased),
-			u(m.StackInuse), u(m.Sys), strconv.FormatUint(uint64(m.NumGC), 10), s.Foreign})
+			u(m.StackInuse), u(m.Sys), strconv.FormatUint(uint64(m.NumGC), 10),
+			strconv.FormatFloat(osField(s, func(o *diag.OSMemory) uint64 { return o.PrivateBytes }), 'f', 0, 64),
+			strconv.FormatFloat(osField(s, func(o *diag.OSMemory) uint64 { return o.HeapCommitted }), 'f', 0, 64), s.Foreign})
 	}
 	cw.Flush()
 	return cw.Error()

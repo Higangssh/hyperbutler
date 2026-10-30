@@ -144,6 +144,23 @@ type Stats struct {
 	MemoryLimit int64 `json:"memory_limit"`
 	// MemStats is runtime.ReadMemStats, without the per-size-class table.
 	MemStats MemStats `json:"memstats"`
+	// OS is the operating system's view of the process memory (Windows only), so that
+	// memory outside the Go runtime shows: private bytes minus what Go mapped
+	// (MemStats.Sys - HeapReleased) is DLL heaps, thread stacks and other native
+	// allocations.
+	OS *OSMemory `json:"os,omitempty"`
+}
+
+// OSMemory is the operating system's accounting of the process's memory.
+type OSMemory struct {
+	PrivateBytes uint64 `json:"private_bytes"` // committed private memory
+	WorkingSet   uint64 `json:"working_set"`   // resident, private and shared
+	// Heaps is the number of Windows heaps (-1: too many to read), and HeapCommitted
+	// and HeapAllocated sum their HeapSummary: memory native code took with HeapAlloc
+	// or malloc, invisible to the Go runtime.
+	Heaps         int    `json:"heaps"`
+	HeapCommitted uint64 `json:"heap_committed"`
+	HeapAllocated uint64 `json:"heap_allocated"`
 }
 
 // MemStats is the subset of runtime.MemStats that tells a heap leak from GC slack.
@@ -171,6 +188,7 @@ func Snapshot() Stats {
 		Goroutines:  runtime.NumGoroutine(),
 		Handles:     handleCount(),
 		MemoryLimit: debug.SetMemoryLimit(-1),
+		OS:          osMemory(),
 		MemStats: MemStats{
 			HeapAlloc:    m.HeapAlloc,
 			HeapInuse:    m.HeapInuse,

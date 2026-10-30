@@ -15,8 +15,8 @@ or the VM, grows over time.
   `docker run --name`, `docker logs` (must match the run's output), `docker rm -f`;
   with `-share-dir`, a bind mount of a Windows directory (`docker run -v DIR:/mnt`: the
   container reads a file the host wrote, and writes one the host reads back); with
-  `-port` as well, a published port (`docker run -d -p P:8080 -v DIR\www:/www:ro ...
-  busybox httpd`, then an HTTP GET from the host that must return the page the host
+  `-port` as well, a published port (`docker run -d -p P:8080 -v DIR\www:/www:ro ...`,
+  a one-page HTTP server made of busybox `nc`, then an HTTP GET from the host that must return the page the host
   wrote, then `docker rm -f`). Every operation must succeed (`-max-errors 0` by default).
 - **Samples**, every `-interval`, from `Win32_PerfFormattedData_PerfProc_Process`: the
   engine's private working set (the REQ-MEM-001 metric), private bytes, handle and thread

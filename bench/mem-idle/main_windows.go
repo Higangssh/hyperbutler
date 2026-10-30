@@ -95,6 +95,10 @@ func run() error {
 
 	for attempt := 0; ; attempt++ {
 		ss, err := measure(ctx, c, cfgDir)
+		if errors.Is(err, errAmbiguousVM) && attempt < c.retries {
+			fmt.Printf("\nattempt %d: %v; measuring again\n", attempt+1, err)
+			continue
+		}
 		if err != nil {
 			return err
 		}
@@ -131,6 +135,10 @@ func run() error {
 func logf(format string, a ...any) {
 	fmt.Printf("%s "+format+"\n", append([]any{time.Now().Format(time.TimeOnly)}, a...)...)
 }
+
+// errAmbiguousVM means this attempt's VM could not be told from another one started at
+// the same time; the attempt is repeated.
+var errAmbiguousVM = errors.New("cannot identify this VM's processes")
 
 // measure does one attempt: start, sample, stop.
 func measure(ctx context.Context, c *config, cfgDir string) (ss []Sample, err error) {
@@ -182,7 +190,7 @@ func measure(ctx context.Context, c *config, cfgDir string) (ss []Sample, err er
 	}
 	vm, err := hostmon.FindNewVM(before, after)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("%w: %w", errAmbiguousVM, err)
 	}
 	logf("engine PID %d, vmwp PID %d, vmmem PID %d, debug pipe %s", enginePID, vm.VMWP, vm.VMMem, c.debugPipe)
 	vh, err := hostmon.Pin(vm.VMMem)
