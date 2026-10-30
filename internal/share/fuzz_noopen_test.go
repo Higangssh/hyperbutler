@@ -71,7 +71,7 @@ func FuzzNoOpen(f *testing.F) {
 				c.do(opRename2, root, (&wbuf{}).u64(root).u32(0).u32(0).str(other).str(name).b)
 			case 5:
 				if id != 0 {
-					c.do(opForget, id, (&wbuf{}).u64(1 + uint64(op>>6)).b)
+					c.do(opForget, id, (&wbuf{}).u64(1+uint64(op>>6)).b)
 				}
 			case 6:
 				s.HostChanged(HostEvent{Share: "src", Path: []string{name}, Kind: Removed})
