@@ -8,7 +8,9 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"github.com/Higangssh/hyperbutler/internal/diag"
 	"github.com/Higangssh/hyperbutler/internal/engine"
+	"github.com/Higangssh/hyperbutler/internal/transport"
 )
 
 // sizeFlag is a byte-count flag such as --memory 4GiB or --disk-size 64GiB.
@@ -71,6 +73,42 @@ func parseArgs(fs *flag.FlagSet, args []string) error {
 		return fmt.Errorf("%s: unexpected argument %q", fs.Name(), fs.Arg(0))
 	}
 	return nil
+}
+
+// debugPipeEnv names the variable that turns the engine's debug endpoint on when
+// --debug-pipe is not given (ADR 0003, guardrail 4). It is read by `hyperbutler start`.
+const debugPipeEnv = "HYPERBUTLER_DEBUG_PIPE"
+
+// checkDiagFlags validates the engine's diag settings before anything is started.
+func checkDiagFlags(c diag.Config) error {
+	if c.MemoryLimit != "" {
+		if err := engine.ValidateMemoryLimit(c.MemoryLimit); err != nil {
+			return fmt.Errorf("--memlimit: %w", err)
+		}
+	}
+	if c.DebugPipe != "" {
+		if err := transport.ValidatePipeName(c.DebugPipe); err != nil {
+			return fmt.Errorf("--debug-pipe (or %s): %w", debugPipeEnv, err)
+		}
+	}
+	return nil
+}
+
+// engineArgs is the command line of the background `hyperbutler engine` process.
+func engineArgs(home, kernel, initrd, manifest string, dcfg diag.Config) []string {
+	args := []string{"engine", "--home", home}
+	if manifest != "" {
+		args = append(args, "--image", manifest)
+	} else {
+		args = append(args, "--kernel", kernel, "--initrd", initrd)
+	}
+	if dcfg.MemoryLimit != "" {
+		args = append(args, "--memlimit", dcfg.MemoryLimit)
+	}
+	if dcfg.DebugPipe != "" {
+		args = append(args, "--debug-pipe", dcfg.DebugPipe)
+	}
+	return args
 }
 
 // errUsage asks main to print the command list.

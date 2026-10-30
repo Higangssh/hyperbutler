@@ -13,6 +13,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"runtime/debug"
 	"strings"
 	"syscall"
 	"time"
@@ -123,9 +124,15 @@ func cmdStart(args []string, stdout, stderr io.Writer) error {
 	noContext := fs.Bool("no-context", false, `do not create or select the "hyperbutler" docker context`)
 	pipe := fs.String("pipe", "", `Docker API pipe (default \\.\pipe\docker_engine_hyperbutler); kept for later starts`)
 	var dcfg diag.Config
-	fs.StringVar(&dcfg.MemoryLimit, "memlimit", "", "Go soft memory limit of the engine process, GOMEMLIMIT syntax (off by default)")
-	fs.StringVar(&dcfg.DebugPipe, "debug-pipe", "", `serve the engine's pprof and runtime stats on this pipe, current user only (off by default), e.g. \\.\pipe\hyperbutler-engine-debug`)
+	fs.StringVar(&dcfg.MemoryLimit, "memlimit", "", "Go soft memory limit of the engine process, GOMEMLIMIT syntax (default "+engine.DefaultEngineMemoryLimit+`, "off" for none); kept for later starts. The GOMEMLIMIT variable wins`)
+	fs.StringVar(&dcfg.DebugPipe, "debug-pipe", "", `serve the engine's pprof and runtime stats on this pipe, current user only, e.g. \\.\pipe\hyperbutler-engine-debug (default: $`+debugPipeEnv+`; off when both are empty)`)
 	if err := parseArgs(fs, args); err != nil {
+		return err
+	}
+	if dcfg.DebugPipe == "" {
+		dcfg.DebugPipe = os.Getenv(debugPipeEnv)
+	}
+	if err := checkDiagFlags(dcfg); err != nil {
 		return err
 	}
 	if *cpus < 0 || *cpus > engine.MaxCPUs {
@@ -147,9 +154,11 @@ func cmdStart(args []string, stdout, stderr io.Writer) error {
 		return err
 	}
 
-	if err := in.applySettings(*dataDir, *memory, *cpus, diskSize, *pipe); err != nil {
+	if err := in.applySettings(*dataDir, *memory, *cpus, diskSize, *pipe, dcfg.MemoryLimit); err != nil {
 		return err
 	}
+	memLimitSet := dcfg.MemoryLimit != ""
+	dcfg.MemoryLimit = in.settings.EngineMemoryLimit()
 	kernel, initrd, manifest, err := guestArtifacts(*imageDir)
 	if err != nil {
 		return err
@@ -164,6 +173,9 @@ func cmdStart(args []string, stdout, stderr io.Writer) error {
 		}
 		p.Close()
 		fmt.Fprintf(stdout, "hyperbutler is already running (engine pid %d, %s).\n", st.PID, st.Phase)
+		if dcfg.DebugPipe != "" || memLimitSet {
+			fmt.Fprintln(stderr, "hyperbutler: --debug-pipe and --memlimit apply at the next start; the running engine is unchanged")
+		}
 		if !*noContext {
 			selectContext(st.Pipe, stdout, stderr)
 		}
@@ -197,11 +209,15 @@ func cmdStart(args []string, stdout, stderr io.Writer) error {
 // applySettings creates settings.json on the first start and applies changes to later
 // ones. The data location is fixed once chosen (moving it is REQ-DISK-007's `hyperbutler
 // move`, not implemented yet).
-func (in *install) applySettings(dataDir, memory string, cpus int, diskSize sizeFlag, pipe string) error {
-	s := in.settings
-	first := s == nil
+func (in *install) applySettings(dataDir, memory string, cpus int, diskSize sizeFlag, pipe, memLimit string) error {
+	first := in.settings == nil
+	var s *engine.Settings
 	if first {
 		s = &engine.Settings{Version: engine.SettingsVersion, DataDir: in.l.Home, DiskSize: defaultDiskSize, MemoryMB: defaultMemoryMB, CPUs: defaultCPUs()}
+	} else {
+		// A copy: changes are compared against the saved settings below.
+		cp := *in.settings
+		s = &cp
 	}
 	if dataDir != "" {
 		abs, err := filepath.Abs(dataDir)
@@ -243,6 +259,15 @@ func (in *install) applySettings(dataDir, memory string, cpus int, diskSize size
 		s.Pipe = pipe
 		if pipe == transport.DefaultPipeName {
 			s.Pipe = ""
+		}
+	}
+	if memLimit != "" {
+		if err := engine.ValidateMemoryLimit(memLimit); err != nil {
+			return fmt.Errorf("--memlimit: %w", err)
+		}
+		s.MemoryLimit = memLimit
+		if memLimit == engine.DefaultEngineMemoryLimit {
+			s.MemoryLimit = ""
 		}
 	}
 	if err := s.Validate(); err != nil {
@@ -338,19 +363,7 @@ func spawnEngine(in *install, kernel, initrd, manifest string, dcfg diag.Config)
 		createBreakawayFromJob = 0x01000000
 	)
 	for _, breakaway := range []bool{true, false} {
-		args := []string{"engine", "--home", in.l.Home}
-		if manifest != "" {
-			args = append(args, "--image", manifest)
-		} else {
-			args = append(args, "--kernel", kernel, "--initrd", initrd)
-		}
-		if dcfg.MemoryLimit != "" {
-			args = append(args, "--memlimit", dcfg.MemoryLimit)
-		}
-		if dcfg.DebugPipe != "" {
-			args = append(args, "--debug-pipe", dcfg.DebugPipe)
-		}
-		cmd := exec.Command(exe, args...)
+		cmd := exec.Command(exe, engineArgs(in.l.Home, kernel, initrd, manifest, dcfg)...)
 		cmd.Dir = in.l.Home
 		cmd.Stdout, cmd.Stderr = logf, logf
 		flags := uint32(detachedProcess | createNewProcessGroup)
@@ -910,7 +923,7 @@ func cmdEngine(args []string, stderr io.Writer) (int, error) {
 	manifest := fs.String("image", "", "guest image manifest (image.json), instead of --kernel and --initrd")
 	debugLog := fs.Bool("debug", false, "debug logging")
 	var dcfg diag.Config
-	fs.StringVar(&dcfg.MemoryLimit, "memlimit", "", "Go soft memory limit, GOMEMLIMIT syntax (the GOMEMLIMIT variable wins; off by default)")
+	fs.StringVar(&dcfg.MemoryLimit, "memlimit", "", "Go soft memory limit, GOMEMLIMIT syntax (default: settings.json's, else "+engine.DefaultEngineMemoryLimit+"; the GOMEMLIMIT variable wins)")
 	fs.StringVar(&dcfg.DebugPipe, "debug-pipe", "", "serve pprof and runtime stats on this pipe, current user only (off by default)")
 	if err := parseArgs(fs, args); err != nil {
 		return 2, err
@@ -934,6 +947,12 @@ func cmdEngine(args []string, stderr io.Writer) (int, error) {
 	if dcfg.DebugPipe != "" && windows.GetCurrentProcessToken().IsElevated() {
 		return 1, errors.New("--debug-pipe is refused in an elevated engine")
 	}
+	if dcfg.MemoryLimit == "" {
+		dcfg.MemoryLimit = s.EngineMemoryLimit()
+	}
+	if err := checkDiagFlags(dcfg); err != nil {
+		return 2, err
+	}
 	dbg, err := diag.Start(dcfg)
 	if err != nil {
 		return 1, err
@@ -942,6 +961,7 @@ func cmdEngine(args []string, stderr io.Writer) (int, error) {
 	if dcfg.DebugPipe != "" {
 		log.Info("debug endpoint", "pipe", dcfg.DebugPipe)
 	}
+	log.Info("go memory limit", "bytes", debug.SetMemoryLimit(-1), "configured", dcfg.MemoryLimit, "env", os.Getenv("GOMEMLIMIT"))
 	log.Info("engine starting", "pid", os.Getpid(), "home", *home, "data", s.DataDir, "memoryMB", s.MemoryMB, "cpus", s.CPUs)
 	err = engine.Serve(engine.ServeOptions{
 		Home: *home, Settings: s, KernelPath: *kernel, InitrdPath: *initrd, Image: *manifest,

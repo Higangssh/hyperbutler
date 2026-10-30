@@ -1,4 +1,4 @@
-package main
+package hostmon
 
 import (
 	"strings"
@@ -46,7 +46,7 @@ func TestParseCIMRejects(t *testing.T) {
 		"1,2,3,4,5\nAt line:1 char:1",
 		"1,0x10,3,4,5",
 		"1,2,3,4,5\x00",
-		strings.Repeat("9", maxCIMOutput+1),
+		strings.Repeat("9", MaxCIMOutput+1),
 	} {
 		if m, err := ParseCIM(in); err == nil {
 			t.Errorf("ParseCIM(%.40q) = %v, want error", in, m)
@@ -56,7 +56,7 @@ func TestParseCIMRejects(t *testing.T) {
 
 func TestParseStats(t *testing.T) {
 	good := `{"goroutines":12,"handles":150,"memory_limit":9223372036854775807,"memstats":{"heap_inuse":4194304}}`
-	s, err := parseStats(strings.NewReader(good + "\n"))
+	s, err := ParseStats(strings.NewReader(good + "\n"))
 	if err != nil || s.Goroutines != 12 || s.Handles != 150 || s.MemStats.HeapInuse != 4194304 {
 		t.Fatalf("%+v, %v", s, err)
 	}
@@ -73,8 +73,8 @@ func TestParseStats(t *testing.T) {
 		`[1]`,
 		`{"goroutines":1,"memstats":{"heap_inuse":-1}}`,
 	} {
-		if s, err := parseStats(strings.NewReader(in)); err == nil {
-			t.Errorf("parseStats(%q) = %+v, want error", in, s)
+		if s, err := ParseStats(strings.NewReader(in)); err == nil {
+			t.Errorf("ParseStats(%q) = %+v, want error", in, s)
 		}
 	}
 }

@@ -24,6 +24,7 @@ const usageText = `hyperbutler: a Docker engine for Windows in a small Hyper-V V
 
 Usage:
   hyperbutler start   [--data DIR] [--image-dir DIR] [--memory SIZE] [--cpus N] [--disk-size SIZE]
+                      [--memlimit LIMIT] [--debug-pipe PIPE]
   hyperbutler stop    [--timeout DURATION]
   hyperbutler status  [--json]
   hyperbutler logs    [--console] [-n LINES] [-f]

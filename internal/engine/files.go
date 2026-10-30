@@ -14,6 +14,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/Higangssh/hyperbutler/internal/diag"
 	"github.com/Higangssh/hyperbutler/internal/transport"
 )
 
@@ -163,6 +164,36 @@ type Settings struct {
 	// Pipe is the Docker API pipe; empty means transport.DefaultPipeName. Another name
 	// lets two installations (or a development harness) run side by side.
 	Pipe string `json:"pipe,omitempty"`
+	// MemoryLimit is the engine process's Go soft memory limit in GOMEMLIMIT syntax
+	// ("256MiB", "off"). Empty means DefaultEngineMemoryLimit. The GOMEMLIMIT
+	// environment variable overrides it (ADR 0003, guardrail 4).
+	MemoryLimit string `json:"memoryLimit,omitempty"`
+}
+
+// DefaultEngineMemoryLimit is the engine's Go soft memory limit when settings.json sets
+// none. The engine's live heap is a few MiB (ADR 0003), so the limit acts only on
+// runaway growth: the GC works harder long before the host would page.
+const DefaultEngineMemoryLimit = "256MiB"
+
+// EngineMemoryLimit is the memory limit the engine process applies.
+func (s *Settings) EngineMemoryLimit() string {
+	if s.MemoryLimit == "" {
+		return DefaultEngineMemoryLimit
+	}
+	return s.MemoryLimit
+}
+
+// ValidateMemoryLimit checks an engine memory limit in GOMEMLIMIT syntax: "off", or a
+// byte count of at least diag.MinMemoryLimit.
+func ValidateMemoryLimit(v string) error {
+	n, err := diag.ParseMemoryLimit(v)
+	if err != nil {
+		return err
+	}
+	if n < diag.MinMemoryLimit {
+		return fmt.Errorf("memory limit %q is below %d MiB", v, diag.MinMemoryLimit>>20)
+	}
+	return nil
 }
 
 // SettingsVersion is the current settings.json version.
@@ -193,6 +224,11 @@ func (s *Settings) Validate() error {
 	}
 	if s.Pipe != "" {
 		if err := transport.ValidatePipeName(s.Pipe); err != nil {
+			return fmt.Errorf("settings: %w", err)
+		}
+	}
+	if s.MemoryLimit != "" {
+		if err := ValidateMemoryLimit(s.MemoryLimit); err != nil {
 			return fmt.Errorf("settings: %w", err)
 		}
 	}

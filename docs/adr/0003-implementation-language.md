@@ -135,40 +135,81 @@ For 0.1 that trade favours Go. Two things would re-open it:
 - Option 2 (a Rust broker) stays the first candidate if the broker's audit or a measurement
   argues for it. The broker's wire protocol (`internal/broker/proto`) is small and specified,
   so it could be reimplemented without changing clients.
-- **Guardrail status on 2026-10-30 (updated after the guardrail work):**
+- **Guardrail status on 2026-10-31 (updated after the measurement work):**
   - Bounded resources (2): in place in the broker, transport and `internal/diag`.
   - Goroutine-leak checks (1): **in place.** Every test package's `TestMain` calls
     `internal/leaktest` (goleak), and a meta-test fails CI if a test package lacks it,
     passes any exception other than `leaktest.Ignore*`, or imports goleak directly. The
-    one exception is go-winio's process-lifetime I/O completion goroutine. Only
-    `cmd/hyperbutler-dev` is still listed as pending (owned by a parallel change). A Linux CI
-    job runs the guest packages' tests under goleak and `-race`. Gap: the goroutine
-    loops in `guest/cmd/hyperbutlerd` and `guest/cmd/spaceguard` (`_linux.go`) have no tests
-    yet, so goleak does not exercise them.
-  - Soak gate (3): **built** (`bench/soak`), unit- and fuzz-tested in CI. It needs
-    Hyper-V, so the 24 h release run and the 1 h main run happen on self-hosted
-    hardware, which does not exist yet. Until it does, the gate is run by hand. A 13-minute
-    run against `hyperbutler-dev` from main (3 min warm-up, 1 min buckets, about 2,900 docker
-    commands, none failed) passed: private working set slope −1.4 MB/h over the 10-minute
-    window (median 45.4 MB), handles and threads flat, vmmem +5 MB (limit 64 MB). Such a
-    short window only rules out leaks faster than about 14 MB/h.
-  - The 45 MB private working set under this workload is far above the 3–7 MB in the
-    table above, which came from 200 `docker version` and 50 `docker run` calls. It looks
-    flat, not growing, but it is unexplained and must be profiled through the diag
-    endpoint before the 0.1 budget is claimed.
-  - Runtime limits (4): **built** (`internal/diag`: `GOMEMLIMIT` from config unless set
-    in the environment; pprof, MemStats, goroutine and handle counts on a current-user-only
-    named pipe, off by default). Wired into `hyperbutler-broker` (`-memlimit`, default 64 MiB;
-    `-debug-pipe`). Not yet wired into `hyperbutler-dev`, so the soak cannot yet sample its
-    goroutines or heap.
-  - A release stays blocked until the soak runs on self-hosted hardware with the diag
-    endpoint enabled.
-- The idle measurement above did not follow REQ-MEM-001's method (sampling every 10 s from
-  minute 5 to minute 10). It will be redone with `bench/mem-idle`, recording
-  `runtime.MemStats` heap numbers next to the private working set, so that a leak can be told
-  apart from GC slack.
+    one exception is go-winio's process-lifetime I/O completion goroutine. The pending
+    list is empty: `cmd/hyperbutler-dev` has its `TestMain`. A Linux CI job runs the guest
+    packages' tests under goleak and `-race`. Gap: the goroutine loops in
+    `guest/cmd/hyperbutlerd` and `guest/cmd/spaceguard` (`_linux.go`) have no tests yet, so
+    goleak does not exercise them.
+  - Runtime limits (4): **in place.** `internal/diag` (`GOMEMLIMIT` from config unless set
+    in the environment; pprof, MemStats, goroutine, handle and Windows commit/heap counts
+    on a current-user-only named pipe, off by default) is wired into the engine that
+    `hyperbutler start` spawns: a 256 MiB soft limit by default, `--memlimit` kept in
+    `settings.json`, the endpoint on with `--debug-pipe` or `HYPERBUTLER_DEBUG_PIPE` for one
+    start, refused in an elevated engine. Also in `hyperbutler-dev run` and
+    `hyperbutler-broker`.
+  - Soak gate (3): **built and run for 1 h by hand** (`bench/soak`, unit- and fuzz-tested in
+    CI). It now starts the engine with `hyperbutler start` itself, samples the diag
+    endpoint, and its loop includes a bind mount of a Windows directory and a `-p`
+    published port fetched from the host. The 24 h release run and the 1 h main run still
+    need self-hosted hardware. **1 h run, 2026-10-31** (this machine, 4 GiB / 8 vCPU guest,
+    10 min warm-up, 5 min buckets, 12,827 docker commands, none failed; no other VM ran):
+
+    | Metric (50 min window) | Median | Theil–Sen slope | Allowed growth | Verdict |
+    |---|---|---|---|---|
+    | Engine private working set | 80.2 MiB | +0.56 MiB/h | 4.0 MiB | pass |
+    | Engine private bytes | 82.6 MiB | +0.51 MiB/h | 4.1 MiB | pass |
+    | Go heap in use | 11.9 MiB | +0.09 MiB/h | 1.2 MiB | pass |
+    | Handles / threads / goroutines | 439 / 28 / 126 | 0 / 0 / 0 per h | 22 / 2 / 5 | pass |
+    | vmmem / vmwp private working set | 492 / 5.4 MiB | +8.0 / +0.02 MiB/h | 64 / 8 MiB | pass |
+
+    **No leak** is visible at this resolution (a 50-minute window catches growth above
+    about 5 MiB/h in the engine). Heap profiles from the end of the warm-up and the end of
+    the run hold 11.1 and 9.0 MiB, with the same owners (the share server's buffers, the
+    netstack, gopacket's tables); 2.6 GB were allocated over the run in 278 GCs.
+  - **The soak's working set is explained.** Under the soak the engine's private working
+    set (45 MB in the earlier 13-minute run, 80 MiB now) equals its commit charge, while
+    the Go runtime has mapped only 37 MiB (`Sys`) and the Windows heaps hold 1 MiB.
+    Walking the process with `VirtualQueryEx`/`QueryWorkingSetEx`: 40 MiB of it is the
+    executable's own writable data section, of which **32 MiB is
+    `crypto/internal/fips140/drbg.memory`**, Go 1.27's scratch buffer for the FIPS 140-3
+    entropy source, linked in through `net/http` → `crypto/tls`, plus about 7 MiB of
+    gopacket lookup tables. The buffer is demand-zero and only used in FIPS mode, which is
+    off, so it is normally never resident: idle, the engine's private working set is
+    17.7 MiB against a commit of 65 MiB. In the runs where the soak launched the engine,
+    every committed page became resident within seconds. Making the 32 MiB range
+    `PAGE_NOACCESS` from outside cut the launched soak's working set from 78 to 49 MiB and
+    the engine never faulted, so no engine code touches it: another process read the
+    engine's whole address space (most likely Defender's behaviour-monitoring memory scan;
+    a non-elevated user cannot list who holds the handle, so this is not proven). It is
+    not a leak and not GC slack. Consequences: the engine's private working set can be
+    anywhere between about 18 MiB and its commit (65 MiB idle, 83 MiB under load)
+    depending on outside readers, so REQ-MEM-001 budgets should assume the commit. The
+    32 MiB is Go's to fix (or avoidable only by dropping every `crypto/tls` importer).
+    Twice, at about minute 10 after start, an idle engine's working set also jumped by
+    14 MiB with no workload; this looks like the same outside reader but was not traced.
+- REQ-MEM-001 was re-measured with `bench/mem-idle` as specified (every 10 s from minute 5
+  to minute 10, 31 samples, `runtime.MemStats` from the diag endpoint per sample), on
+  2026-10-31 with no other VM running: total **315 MiB (331 MB)**, under the 0.1 target of
+  400 MB and over the 1.0 target of 250 MB. Engine 17.7 MiB (Go heap in use 5.4 MiB, of it
+  2.5 MiB free but retained: GC slack; stacks 1.4 MiB), this VM's vmmem 292 MiB, vmwp
+  5.5 MiB. Two earlier runs that overlapped another VM read 299 and 301 MiB. The table at
+  the top of this ADR predates the method.
 - Go's runtime cost (a few MB, GC) is accepted. If REQ-MEM-001's 1.0 budget of 250 MB is
   missed, the host process is not the first suspect, but it will be measured.
+- **Bug found by the soak (bind mounts, ADR 0007):** when a Windows program creates a file
+  in a shared directory and writes it right away, the guest can cache the size it had at
+  creation (0) for the attribute TTL (1 h): `docker run -v` then reads an empty file.
+  Reproduced 1–8 times in 15 tries; a 2 s pause after the write does not help; writing a
+  temporary file and renaming it into place does (0 in 25). Likely cause: `HostChanged`
+  answers the replayed create with the attributes it read when the create event arrived,
+  and drops the following modify event because the node is not yet known
+  (`internal/share/inject.go`). The soak writes via rename until this is fixed; the fix
+  belongs to the bind-mount track.
 
 ## Adversarial review
 
@@ -190,3 +231,15 @@ The adversarial review on 2026-10-30, arguing the strongest case for Rust, raise
    triggers that would re-open it.
 6. **Low. Binary sizes were missing.** **Fixed:** sizes are recorded.
 7. **Low. TinyGo was not mentioned.** **Fixed:** listed as considered and rejected.
+
+### Review of the measurement tooling (2026-10-31)
+
+A adversarial review of the diag wiring and of `bench/mem-idle`, `bench/start` and `bench/soak`
+raised ten findings. Fixed: `bench/start` stopped an installation it had not started; a
+start cut short left the detached engine running; foreign VMs were only looked for at the
+sample instants (now a background watcher from the start command on); `vmmemWSL` and
+similar were not counted as foreign; the vmmem PID could be reused unnoticed (each sample
+now checks it is still a vmmem under its vmwp); a schedule could overflow; retries with
+`-keep-running`; profiles after Ctrl+C; no notice that `--memlimit` waits for the next
+start. Accepted: `HeapSummary` on a heap without serialization can be skewed while a DLL
+allocates; it runs only when the debug endpoint is asked.

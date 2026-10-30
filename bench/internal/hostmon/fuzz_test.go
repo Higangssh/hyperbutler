@@ -1,4 +1,4 @@
-package main
+package hostmon
 
 import (
 	"fmt"
@@ -68,11 +68,13 @@ func FuzzParseStats(f *testing.F) {
 		`{"goroutines":1}{"goroutines":1}`,
 		`{"goroutines":1,"x":1}`,
 		`{"goroutines":1e3}`,
+		`{"goroutines":3,"handles":9,"memory_limit":1,"memstats":{},"os":{"private_bytes":1,"working_set":2,"heaps":3,"heap_committed":4,"heap_allocated":5}}`,
+		`{"goroutines":3,"os":{"heaps":1,"extra":0}}`,
 	} {
 		f.Add(s)
 	}
 	f.Fuzz(func(t *testing.T, s string) {
-		st, err := parseStats(strings.NewReader(s))
+		st, err := ParseStats(strings.NewReader(s))
 		if err != nil {
 			return
 		}
