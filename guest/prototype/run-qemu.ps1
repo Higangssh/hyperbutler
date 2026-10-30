@@ -28,7 +28,7 @@ param(
     [int]$GapSeconds = 0,
     [string]$Qemu = 'C:\Program Files\qemu\qemu-system-x86_64.exe',
     [string]$Out = '',
-    [string]$Initrd = 'initramfs-winbox.gz',
+    [string]$Initrd = 'initramfs-stage1.gz',
     [string]$Append = ''
 )
 
@@ -81,7 +81,9 @@ function Measure-Run([int]$run) {
         '-accel', 'whpx', '-m', "$MemoryMB", '-smp', "$Cpus",
         '-display', 'none', '-monitor', 'none', '-serial', "file:$log",
         '-kernel', "`"$kernel`"", '-initrd', "`"$initrdPath`"",
-        '-append', "`"console=ttyS0 panic=-1 $Append`"",
+        # The read-only system disk (ADR 0005 A2b) is the first virtio disk, so vda.
+        '-drive', "`"file=$(Join-Path $Out 'system.vhd'),format=vpc,if=virtio,readonly=on`"",
+        '-append', "`"console=ttyS0 panic=-1 winbox.system=vda $Append`"",
         '-netdev', "user,id=n0,hostfwd=tcp:127.0.0.1:$Port-10.0.2.15:2375",
         '-device', 'virtio-net-pci,netdev=n0',
         '-device', $balloon,

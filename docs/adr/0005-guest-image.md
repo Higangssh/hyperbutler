@@ -176,6 +176,10 @@ Files are under `guest/` (throwaway, but builds and tests on its own):
   - `build.ps1`: fetch, verify, unpack with Windows' own `tar.exe`, resolve the module
     closure from `modules.dep`, gunzip the modules, cross-compile, and build the cpio.
   - `run-qemu.ps1`: boot and measure.
+  - Since the A2b implementation (below): `initramfs-init` (stage 1), `modules-boot.txt`,
+    `system.spec`; `init` became the system disk's `/sbin/init`.
+- `guest/image`: the fixed-VHD footer and the `image.json` manifest, with fuzz tests.
+- `guest/cmd/mksysdisk`: wraps the erofs image as `system.vhd` and writes `image.json`.
 
 Reproduce (PowerShell, non-elevated, Go on `PATH`):
 
@@ -366,8 +370,8 @@ Some limits on that:
 
    Two paths for contributors without WSL:
    - The initramfs can be rebuilt natively on Windows. That works today, with `guest/cmd/mkinitramfs`.
-   - The erofs image can be built inside a QEMU-WHPX Alpine VM using the same script.
-     This isn't demonstrated yet; see Follow-ups.
+   - The erofs image is built by `mkfs.erofs` in a pinned Alpine container on any Docker
+     Engine, winbox's own included (see "A2b implementation"). No QEMU VM is needed.
 5. **Kernel command line:** keep the serial console and no `quiet` (needed to debug boots).
    Revisit log volume once boot time is measured on HCS.
 
@@ -410,6 +414,109 @@ license texts, and the source bundle from the lock file, so nothing ships withou
 Today's `sources.lock` records only binary packages. It must gain a pinned source entry
 (aports commit, kernel.org and BusyBox tarball hashes) for every GPL binary, plus a check that
 fails the build when one is missing (Follow-up 6).
+
+## A2b implementation (2026-10-30)
+
+Decision 1 is now built and measured under HCS. Numbers and method are in
+[docs/research/idle-memory.md](../research/idle-memory.md).
+
+**Layout.** One image directory holds four files, all release artifacts (never git):
+
+| File | What | Size |
+|---|---|---|
+| `vmlinuz-virt` | the pinned Alpine kernel, unchanged | 12.6 MB |
+| `initramfs-stage1.gz` | stage 1 (a new name, so an older `winbox.exe` that knows only `initramfs-winbox.gz` fails with "file not found" instead of booting a stage 1 without its system disk): BusyBox, `initramfs-init`, the modules to reach the disk (`modules-boot.txt`: hv_storvsc, sd_mod, virtio_blk, erofs) | 0.9 MB |
+| `system.vhd` | a fixed VHD (raw erofs, lz4hc, padded to whole MiB, plus the 512-byte footer) holding everything else: `init`, BusyBox and its applet links, dockerd, containerd, runc, the guest services, e2fsprogs, the CA bundle, all modules | 88 MiB |
+| `image.json` | the manifest: name, size and SHA-256 of the three files | 0.5 KB |
+
+**Boot.** Stage 1 loads its modules, finds the system disk by SCSI LUN
+(`winbox.system=lun:1`, or a device name such as `vda` on QEMU), mounts it as erofs
+read-only and `switch_root`s into it, which deletes the initramfs. The root is then a
+real, read-only mount: runc uses `pivot_root` and `DOCKER_RAMDISK` is gone. What must be
+writable is a mount (`/run`, `/tmp`, `/dev/shm` as tmpfs, `/var/lib/docker` on the data
+disk) or a link into one (`/etc/resolv.conf` → `/run/resolv.conf`). The data disk is now
+`winbox.data=lun:0` as well: the kernel named the system disk `sda` in some boots and
+`sdb` in others, so device names are not stable with two disks. No overlay is needed.
+
+**Build.** `build.ps1` builds the system tree as an uncompressed, deterministic cpio
+(`system.spec`, `guest/cmd/mkinitramfs`), streams it into `mkfs.erofs` (erofs-utils
+1.9.1-r0) in `alpine:3.24` pinned by digest on any Docker Engine (`-DockerHost`), and wraps
+the result with `guest/cmd/mksysdisk`. `mkfs.erofs` gets `-T0`, `--all-root`, `-x-1` and a
+UUID derived from the cpio's SHA-256; the VHD footer's id comes from the erofs bytes and
+its timestamp from `-mtime`. Two builds from empty caches gave byte-identical files (all
+four SHA-256 equal). Building takes about 12 s.
+
+**Integrity.** Each start, the engine reads `image.json`, opens the three files with
+`FILE_SHARE_READ` only, refuses reparse points and non-files, checks size and SHA-256
+against the manifest, and checks the VHD footer (fixed type, checksum, size equal to the
+bytes before it). It keeps the handles open until the VM is gone. So:
+
+- a half-copied update or files from two builds never boot (the start fails with the
+  file name);
+- nothing can rewrite or delete a file between the check and HCS opening it, or while the
+  guest reads its system disk (`TestOpenImage` checks the sharing violation);
+- the guest cannot write the system disk: HCS attaches it `ReadOnly`, and the root is
+  mounted `ro`.
+
+The check costs about 70 ms (105 MB of SHA-256 from the host file cache) on each start.
+
+**dm-verity: not now.** It verifies each block on read against a root hash, which only
+helps if the root hash comes from somewhere the attacker cannot write. Here it would come
+from the initramfs, which sits in the same directory as the disk and is checked by the same
+manifest. What dm-verity would add is protection against a change to `system.vhd` while it
+is held deny-write and attached read-only. Doing that takes a kernel-mode or
+administrator-level attacker, who also owns the hypervisor host. Its costs are
+`dm-mod` + `dm-verity` in stage 1, a hash tree (about 1% of the image), userland or a
+device-mapper ioctl helper, and hashing on every read. Revisit it if a less-trusted party
+ever caches or serves the image, or if one image is shared between users.
+
+The manifest beside the image is not a trust anchor. Anyone who can write the image
+directory can also replace `winbox.exe`. The release build should embed the manifest's
+SHA-256 in `winbox.exe` (Decision 4) so a replaced image is refused even with a matching
+`image.json`. That is not done yet.
+
+**Update path.**
+
+- An update replaces the four files and writes `image.json` last (`build.ps1` does).
+- While winbox runs, the files cannot be overwritten, renamed or deleted. An updater must
+  stop winbox first, and it gets a sharing violation instead of a torn image if it does
+  not.
+- A crash mid-copy leaves a set that fails the manifest check, with a clear error, until
+  the copy is redone. Nothing boots a mixed set.
+- The data disk is untouched by an image change (REQ-DISK-008). Its format (ext4, made by
+  the guest) is the same for every image so far.
+- Docker Engine upgrades migrate `/var/lib/docker` forward only. A rollback to an older
+  image after a newer dockerd ran is not guaranteed to work, as with any Docker install.
+- Better later: versioned image directories plus a pointer, switched atomically, so the
+  old set stays as the rollback (installer track).
+- The engine needs `HcsGrantVmAccess` on `system.vhd` (as on the data disk), which changes
+  the file's DACL. That works in a user-owned directory. Under `Program Files` it needs the
+  ADR 0004 broker or an install-time ACE for the VM group.
+
+**Review of the A2b implementation.** The adversarial reviewer got the diff, the
+requirements and the measurement scripts. Disposition:
+
+| # | Finding | Disposition |
+|---|---|---|
+| A1 high | Lowering `read_ahead_kb` 10 s after boot does nothing for dockerd and containerd: a file's readahead is copied at `open()`. The M5 log showed the old 33–114 MiB swing. | **Fixed.** `init` reads the four big binaries once with 128 KiB, then sets 16 KiB *before* dockerd starts. Re-measured (idle-memory.md, M6). |
+| A2 medium | The memory script omitted `vmwp.exe` (the VM worker), and a bug left the "new vmmem" filter empty, so attribution rested on creation time alone. | **Fixed.** The script snapshots `vmmem` before the start, takes `vmwp` as its parent, sums engine + vmmem + vmwp, and checks that the `vmmem` is gone after `winbox stop`. Before and after re-measured with it. |
+| A3 medium | Start-time numbers had no saved log; REQ-START-001's first start after a reboot is not reported. | **Fixed:** the runs are logged and the doc records the run set, the phases and the dial-timeout cause (raw logs stay out of git); **cold start rejected for now:** it needs a host reboot, which this session must not do. Listed under Open. |
+| A4 medium | `apk add erofs-utils=1.9.1-r0` is not pinned by hash, and Alpine drops old revisions. | **Accepted as a known gap.** It fails closed (the build stops when the revision disappears; it cannot silently change), apk checks the signature, and two clean builds were byte-identical. Follow-up 8: a builder image pinned by digest with erofs-utils in it, or the `.apk`s in `sources.lock`. |
+| A5 medium | An older `winbox.exe` with a new image directory would boot stage 1 without `winbox.system=` and only time out. | **Fixed.** Stage 1 is now `initramfs-stage1.gz`, a name older engines do not look for, so they fail at once with "not found". Test: `TestGuestArtifacts`. |
+| A6 low | No committed fuzz corpus; no test for `guestArtifacts`; LUN resolution and reparse rejection untested. | **Fixed** for the corpus (`guest/image/testdata/fuzz`) and `guestArtifacts`. **Rejected** for the shell LUN logic and reparse points: the shell is exercised on every boot (and the probes show the right disk at `/` and `/var/lib/docker` even when the kernel swapped `sda` and `sdb`), and creating a symlink needs Developer Mode or admin here. |
+| A7 low | The manifest is not a trust anchor; VM-account ACEs pile up on `system.vhd` after crashes. | **Accepted.** Both are stated above (embedding the hash in `winbox.exe`; the same ACE issue exists on `data.vhdx`). Open item. |
+| A8 low | The research doc still had placeholders. | **Fixed.** |
+
+The reviewer also checked and found fine: manifest and footer parsing (no traversal,
+geometry re-derived), `openDenyWrite` sharing and reparse handling, the `ReadOnly`
+attachment and LUN mapping, that the blank-disk check can never target the system disk,
+the `winbox.*` argument validation, the read-only root's writable paths, `swiotlb=noforce`
+on non-isolated Hyper-V, THP `madvise`, the 400 ms dial timeout, and the dm-verity
+rejection.
+
+**Old images still work.** A directory without `image.json` is an initramfs-only image:
+the engine boots it as before, with `winbox.data=sda`. The QEMU harness (`run-qemu.ps1`)
+now attaches `system.vhd` as `vda`. This was not run: QEMU was not part of this work.
 
 ## Adversarial review
 
@@ -481,9 +588,10 @@ These are owned by the guest track unless noted.
 1. Run the same initramfs under HCS. That needs a non-elevated path or explicit approval to
    run elevated (ADR 0002). Verify hv_storvsc, hv_sock, hv_balloon, and free page reporting
    end to end.
-2. Prototype A2b and measure it against A2a, using the same harness and n ≥ 11. Expected: no
-   ≈ 0.8 s unpack, and ≈ 170 MB less guest RAM. These are estimates until measured.
-3. Run the image build inside a QEMU-WHPX Alpine VM on Windows Home and record its duration.
+2. ~~Prototype A2b and measure it against A2a.~~ Done under HCS, see "A2b
+   implementation": `Shmem` 178 → 0 MiB, first console output 0.65 → 0.08 s.
+3. ~~Run the image build inside a QEMU-WHPX Alpine VM.~~ Superseded: the build runs
+   `mkfs.erofs` in a container on winbox's own Docker Engine, in about 12 s.
 4. Add iptables or nft userspace and turn Docker's firewalling back on. Measure the
    start-time delta.
 5. Pin the Go toolchain (`toolchain` in `go.mod`) so initramfs bytes are reproducible
@@ -493,6 +601,10 @@ These are owned by the guest track unless noted.
 7. (disk track) Measure the discard path on both backends: ext4 `discard` vs periodic
    `fstrim`, hv_storvsc UNMAP on a dynamic VHDX attached without admin, and virtio-blk
    discard on QEMU-WHPX. QEMU may share the missing-MADVISE problem for raw files.
+8. Pin the erofs builder completely: an image by digest with erofs-utils installed, or the
+   erofs-utils `.apk`s (with SHA-256) in `sources.lock`. Today it is a version pin.
+9. Embed the image manifest's SHA-256 in release `winbox.exe` builds, so `image.json` stops
+   being self-certifying.
 
 **What would make us revisit**
 

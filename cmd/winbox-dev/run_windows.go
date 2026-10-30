@@ -23,7 +23,7 @@ func runCmd(args []string) error {
 	fs := flag.NewFlagSet("run", flag.ContinueOnError)
 	kernel := fs.String("kernel", "", "guest kernel (vmlinuz-virt), required")
 	initrd := fs.String("initrd", "", "guest initramfs with the winbox agent, required")
-	cmdline := fs.String("cmdline", "console=ttyS0 quiet", "kernel command line")
+	cmdline := fs.String("cmdline", engine.DefaultCmdLine, "kernel command line")
 	memMB := fs.Int("mem", 1024, "guest memory in MB (512 is too small for dockerd)")
 	cpus := fs.Int("cpus", 2, "vCPUs")
 	pipe := fs.String("pipe", transport.DefaultPipeName, "named pipe to serve the Docker API on")

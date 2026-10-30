@@ -19,6 +19,7 @@ import (
 
 	"golang.org/x/sys/windows"
 
+	"github.com/Higangssh/winbox/guest/image"
 	"github.com/Higangssh/winbox/internal/diag"
 	"github.com/Higangssh/winbox/internal/engine"
 	"github.com/Higangssh/winbox/internal/engine/dockerctx"
@@ -149,7 +150,7 @@ func cmdStart(args []string, stdout, stderr io.Writer) error {
 	if err := in.applySettings(*dataDir, *memory, *cpus, diskSize, *pipe); err != nil {
 		return err
 	}
-	kernel, initrd, err := guestArtifacts(*imageDir)
+	kernel, initrd, manifest, err := guestArtifacts(*imageDir)
 	if err != nil {
 		return err
 	}
@@ -170,7 +171,7 @@ func cmdStart(args []string, stdout, stderr io.Writer) error {
 	}
 	in.noteCrash(stderr)
 
-	cmd, err := spawnEngine(in, kernel, initrd, dcfg)
+	cmd, err := spawnEngine(in, kernel, initrd, manifest, dcfg)
 	if err != nil {
 		return err
 	}
@@ -259,25 +260,36 @@ func (in *install) applySettings(dataDir, memory string, cpus int, diskSize size
 
 func defaultCPUs() int { return min(max(runtime.NumCPU()/2, 2), 8) }
 
-func guestArtifacts(dir string) (kernel, initrd string, err error) {
+// guestArtifacts finds the guest image in dir. A directory with an image.json (ADR
+// 0005: kernel, stage-1 initramfs and system disk) is used through that manifest, which
+// the engine verifies; one without it is an initramfs-only image.
+func guestArtifacts(dir string) (kernel, initrd, manifest string, err error) {
 	if dir == "" {
 		exe, err := os.Executable()
 		if err != nil {
-			return "", "", err
+			return "", "", "", err
 		}
 		dir = filepath.Dir(exe)
 	}
 	dir, err = filepath.Abs(dir)
 	if err != nil {
-		return "", "", err
+		return "", "", "", err
+	}
+	if m := filepath.Join(dir, image.ManifestName); isRegular(m) {
+		return "", "", m, nil
 	}
 	kernel, initrd = filepath.Join(dir, kernelName), filepath.Join(dir, initrdName)
 	for _, p := range []string{kernel, initrd} {
-		if fi, err := os.Stat(p); err != nil || !fi.Mode().IsRegular() {
-			return "", "", fmt.Errorf("guest image file %s not found; pass --image-dir with %s and %s (built by guest/prototype/build.ps1)", p, kernelName, initrdName)
+		if !isRegular(p) {
+			return "", "", "", fmt.Errorf("guest image file %s not found; pass --image-dir with %s, or with %s and %s (built by guest/prototype/build.ps1)", p, image.ManifestName, kernelName, initrdName)
 		}
 	}
-	return kernel, initrd, nil
+	return kernel, initrd, "", nil
+}
+
+func isRegular(p string) bool {
+	fi, err := os.Stat(p)
+	return err == nil && fi.Mode().IsRegular()
 }
 
 // noteCrash reports and clears a state left by an engine that died without cleaning
@@ -303,7 +315,7 @@ func (in *install) noteCrash(stderr io.Writer) {
 // spawnEngine starts `winbox engine` as a detached background process whose output
 // goes to engine.log. It breaks away from the caller's job object where allowed, so
 // closing the terminal (or a CI step) does not take the engine with it.
-func spawnEngine(in *install, kernel, initrd string, dcfg diag.Config) (*exec.Cmd, error) {
+func spawnEngine(in *install, kernel, initrd, manifest string, dcfg diag.Config) (*exec.Cmd, error) {
 	exe, err := os.Executable()
 	if err != nil {
 		return nil, err
@@ -326,7 +338,12 @@ func spawnEngine(in *install, kernel, initrd string, dcfg diag.Config) (*exec.Cm
 		createBreakawayFromJob = 0x01000000
 	)
 	for _, breakaway := range []bool{true, false} {
-		args := []string{"engine", "--home", in.l.Home, "--kernel", kernel, "--initrd", initrd}
+		args := []string{"engine", "--home", in.l.Home}
+		if manifest != "" {
+			args = append(args, "--image", manifest)
+		} else {
+			args = append(args, "--kernel", kernel, "--initrd", initrd)
+		}
 		if dcfg.MemoryLimit != "" {
 			args = append(args, "--memlimit", dcfg.MemoryLimit)
 		}
@@ -890,6 +907,7 @@ func cmdEngine(args []string, stderr io.Writer) (int, error) {
 	home := fs.String("home", "", "state directory")
 	kernel := fs.String("kernel", "", "guest kernel")
 	initrd := fs.String("initrd", "", "guest initramfs")
+	manifest := fs.String("image", "", "guest image manifest (image.json), instead of --kernel and --initrd")
 	debugLog := fs.Bool("debug", false, "debug logging")
 	var dcfg diag.Config
 	fs.StringVar(&dcfg.MemoryLimit, "memlimit", "", "Go soft memory limit, GOMEMLIMIT syntax (the GOMEMLIMIT variable wins; off by default)")
@@ -897,8 +915,9 @@ func cmdEngine(args []string, stderr io.Writer) (int, error) {
 	if err := parseArgs(fs, args); err != nil {
 		return 2, err
 	}
-	if *home == "" || *kernel == "" || *initrd == "" {
-		return 2, errors.New("engine: --home, --kernel and --initrd are required (it is started by winbox start)")
+	legacy := *kernel != "" || *initrd != ""
+	if *home == "" || (*manifest != "") == legacy || legacy && (*kernel == "" || *initrd == "") {
+		return 2, errors.New("engine: --home and either --image or --kernel and --initrd are required (it is started by winbox start)")
 	}
 	level := slog.LevelInfo
 	if *debugLog {
@@ -925,7 +944,7 @@ func cmdEngine(args []string, stderr io.Writer) (int, error) {
 	}
 	log.Info("engine starting", "pid", os.Getpid(), "home", *home, "data", s.DataDir, "memoryMB", s.MemoryMB, "cpus", s.CPUs)
 	err = engine.Serve(engine.ServeOptions{
-		Home: *home, Settings: s, KernelPath: *kernel, InitrdPath: *initrd,
+		Home: *home, Settings: s, KernelPath: *kernel, InitrdPath: *initrd, Image: *manifest,
 		Pipe: s.PipeName(), Net: engine.NetConfig{AutoPublish: true}, Logger: log,
 	})
 	if engine.ErrorCode(err) == engine.CodeAlreadyRunning {
