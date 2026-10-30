@@ -518,3 +518,176 @@ only. Before an ADR, run these against the NBD design:
 - the REQ-DISK-003 kill test;
 - the REQ-DISK-004 disk-full test (it inherits WSL's sparse-file host-full risk);
 - an ext4 churn test that measures both the reclaim ratio and fragmentation.
+
+## Free-space guard (REQ-DISK-004, non-elevated, 2026-10-30)
+
+The "Host disk full" run showed that HCS does not pause the VM when the host volume fills,
+so the guest gets `EIO`. The guard makes the guest hit `ENOSPC` first.
+
+**Code:**
+- `internal/spaceguard` holds the pure policy and the budget wire format.
+- `guest/cmd/spaceguard` is the guest daemon.
+- `spike/vhdx/guard_windows.go` is the host loop, plus `-mode guard`/`guardcheck` in
+  `spike/vhdx`.
+
+### Design
+
+The guest keeps an `fallocate`d reservation file on its ext4 data file system. `fallocate`
+creates unwritten extents. ext4 takes the blocks, but nothing is written, so the sparse VHDX
+does not grow.
+
+**Invariant.** Take these quantities:
+- D: the guest block device size;
+- R: the reservation;
+- A: the VHDX's host allocation;
+- M: the part of A that is VHDX metadata (the allocation of the empty VHDX);
+- F_h: host free space.
+
+If the guest wrote every block outside the reservation, the VHDX could grow by at most
+`exposure = D ??R ??(A ??M)`. The guard keeps `exposure ??F_h ??margin`.
+
+- **Why not "guest free ??host free ??margin".** That simpler rule failed on the first
+  measured run. ext4 counts the journal and inode tables as used, but `mke2fs` writes them as
+  zeros, and vhdmp leaves zero-written blocks unallocated. So the guest's first writes to its
+  own metadata grew the VHDX by about 46 MiB more than the budget, and host free fell to
+  3.2 MiB (only the hard-floor pause stopped it). A file written as zeros and overwritten
+  later does the same thing. The exposure rule counts all of these, and dirty data that is
+  not yet on disk too, with no guess about which used blocks are backed.
+- **No TOCTOU with the guest's own writes.** When the guest writes W new bytes, A grows by W
+  and F_h shrinks by W. Both sides of the inequality move together, so a budget measured
+  before a write burst is still exact after it, whatever the write rate.
+  `TestGuestWriteDoesNotStaleBudget` checks this, and `FuzzPlan` asserts it on random
+  inputs. Only *other* host writers consume F_h behind the guard. The margin covers one
+  update interval of those, and the hard floor covers the rest.
+- **Where it is optimistic:**
+  - when the reservation sits on blocks that are still backed (deleted, not yet trimmed).
+    The guest daemon runs `FITRIM` before growing the reservation, at most every 10 s, to
+    keep this small;
+  - when a 1 MiB VHDX block is shared between reservation and data. The margin covers this.
+
+**Split:**
+- The host sends `budget <F_h ??margin> <A ??M>` (or `budget unlimited` when
+  `VHDXMax ??A ??F_h ??margin`) every 100 ms.
+- The guest computes `need = D ??(A ??M) ??budget`, capped at free + reserved.
+- **Hysteresis:**
+  - when growing, the guard overshoots to need + H/2;
+  - it shrinks only above need + H;
+  - when nothing is needed, it releases everything.
+- Targets are rounded up to 1 MiB.
+- `Short > 0` means the exposure cannot be brought under the budget even with every free
+  block reserved.
+
+**Last resort.** The host pauses the VM (`HcsPauseComputeSystem`) when F_h < floor. It
+resumes it once F_h ??floor + resume gap. The floor must be below the margin, which
+`Config.Validate` enforces. If the guest daemon stops reporting for 5 s, the host pauses at
+the margin instead of the floor, because the reservation may be gone.
+
+**Fail closed:**
+- **Guest:** before the first budget, after the control channel breaks, and after `-stale`
+  (30 s) worth of its own 100 ms ticks without a budget, the budget is treated as 0. The
+  guard counts ticks, not wall-clock time, so a paused VM or a sleeping host, whose guest
+  clock jumps on resume, does not trip it.
+- **Host:** a measurement error sends budget 0 and still runs the pause check.
+
+**Transport (spike only).** Text lines on COM2 (`/dev/ttyS1`, a second HCS `ComPorts`
+entry). The host opens the pipe for overlapped I/O. With a synchronous handle, Windows
+serializes the pending `ReadFile` and the `WriteFile`, so budgets were delayed until the
+guest printed a status line (review finding 1). The guest agent over hvsock replaces this.
+
+### Results
+
+**Setup:**
+- 2 GiB sparse VHDX, 1 MiB blocks, in `T:\guard\` on the 3 GiB test volume. The volume
+  had about 384 MiB free, since older files at the root are not this test's to delete.
+- ext4 with `lazy_itable_init=0,lazy_journal_init=0`.
+- 256 KiB files from `/dev/urandom` written with `dd` until 10 writes in a row fail. busybox
+  `head` prints "I/O error" for any write error, so it cannot tell `ENOSPC` from `EIO`.
+- Margin 64 MiB, floor 24 MiB, resume gap 32 MiB, hysteresis 16 MiB.
+- After the fill: delete half, `fstrim`, and a manifest (file count and SHA-1 over all files,
+  read after `drop_caches`).
+- `guardcheck` boots the same VHDX and runs these checks:
+  - `e2fsck -fn`;
+  - a read-only mount;
+  - a re-read and size check of every file;
+  - the manifest;
+  - `e2fsck -fn` again after mount.
+
+| Run | Failed writes | Min host free | Pauses | dmesg ext4/IO errors | `e2fsck` (before / after mount) | Files written ??kept ??read back | Manifest |
+|---|---|---|---|---|---|---|---|
+| Baseline, no guard (section above, 4 GiB disk) | `EIO`, journal aborted | 0 | 0 (HCS never pauses) | yes | clean after freeing space | ~700 in-flight files lost | n/a |
+| First guard (guest free ??budget) | none: host hit floor first | **3.2 MiB** | 1 (VM stuck paused, nothing could free space) | ??| not checked | ??| ??|
+| **Guard (exposure rule)** | **10/10 `ENOSPC`**, 0 `EIO` | 179 MiB | 0 | **0** | **0 / 0** | 805 ??400 ??**400** | match |
+| Guard + 150 MiB zero file overwritten after the fill | 10/10 `ENOSPC` | 188 MiB | 0 | 0 | 0 / 0 | 173 (+ zero file) ??86 ??86 | match |
+| Guard + host process fills the volume to 12 MiB | 10/10 `ENOSPC` | 12.0 MiB | **1: paused 10.8 s, resumed** | 0 | 0 / 0 | 773 ??384 ??384 | match |
+
+**What the runs show:**
+- **REQ-DISK-004 is met on this setup:** `ENOSPC` before the host fills, no ext4 errors,
+  clean `e2fsck`, and every file the writer saw succeed is intact. The failed partial file of
+  each `ENOSPC` is deleted by the script, because its writer was told. In the zero-file run,
+  the zero file is the one `wrong_size` entry: it is 150 MiB, not 256 KiB.
+- **The zero-file case grew the VHDX by 150 MiB with no change in guest free space.** The
+  guard had already reserved for it, so host free stayed at 188 MiB or more.
+- **Pause works and is safe.**
+  - `HcsPauseComputeSystem` took 3??5 ms and the state became `Paused`.
+  - After the filler was deleted, `HcsResumeComputeSystem` took 2??7 ms.
+  - The guest continued and its writes then ended in `ENOSPC`.
+  - Pause is not recovery: in the first guard run nothing could free space, so the VM
+    stayed paused until it was killed. winbox has to tell the user.
+- **The guard costs slack.** With a working guard the guest stopped with about 115 MiB more
+  host free space than the margin. That slack is real worst-case exposure, not error:
+  - inode tables and journal blocks that ext4 has not written yet (about 100 MiB on 2 GiB);
+  - 16 MiB of ext4 `s_resv_clusters`, which `statfs` reports free but `fallocate` cannot
+    take.
+
+  Inode tables are about 1.6% of the disk at the default inode ratio. The cost only
+  matters when the host is nearly full; `mke2fs -i` (fewer inodes) reduces it.
+- **Not tested:**
+  - other host writers faster than the margin per 100 ms;
+  - several VHDXs on one volume, which each get the full spare today;
+  - host sleep;
+  - the guest-root attacks listed below.
+
+### Fuzzing
+
+`internal/spaceguard/fuzz_test.go` has three targets, each run for 90 s on the final code:
+
+| Target | Execs |
+|---|---|
+| `FuzzPlan` | 22.6M |
+| `FuzzParseBudget` | 30.9M |
+| `FuzzBudgetWireRoundTrip` | 30.5M |
+
+**`FuzzPlan` asserts, with `math/big`:**
+- exposure over budget equals `Short` exactly;
+- Target ??free + reserved;
+- Target ??Need;
+- the pause hysteresis;
+- no flapping (re-planning after applying the target gives the same target);
+- monotonicity (less host free never lowers the need);
+- the TOCTOU property above;
+- errors exactly when the inputs fail `Validate`.
+
+**Bugs found:**
+- `FuzzParseBudget` found one bug: a bare trailing `\r` was accepted. It is fixed, and the
+  input is kept in `testdata/fuzz/FuzzParseBudget/`.
+- Unit tests caught two overflow bugs before fuzzing: `Used+Free` in `Validate`, and the
+  saturated pending sum.
+
+### Adversarial review
+
+| # | Finding | Resolution |
+|---|---|---|
+| 1 | High: the COM2 pipe was a synchronous handle, so the sender's write waited for the reader's pending read. Budgets reached the guest only when it printed a status line (~1 s lag; seen in run 3's log). | **Fixed:** the host opens the pipe with go-winio (overlapped). |
+| 2 | High: used-but-unbacked blocks (zero-written files, preallocated files, unwritten metadata) can grow the VHDX without changing guest free. | **Fixed** by the exposure invariant, and tested with the zero-file run. **Rejected for a hostile guest root** that writes into the reservation file itself (`dd conv=notrunc`): the guard protects against cooperative workloads, and the hard floor is the guarantee against a hostile guest. In winbox the file lives outside every container mount. |
+| 3 | Medium: `grow` started at `st_size`, so a file with holes was never filled. | **Fixed:** `grow` allocates from offset 0 in chunks; this is idempotent on allocated ranges. |
+| 4 | Medium: `Overhead` counted all metadata forever, causing permanent early `ENOSPC`. The runs never came within the margin. | **Fixed** by the exposure rule: metadata stops counting once it is written. The remaining slack is real exposure (see above). The tight-margin case is covered by the host-filler run, which drove the host to 12 MiB. |
+| 5 | Medium: wall-clock staleness after a pause or host sleep would fail closed and give spurious `ENOSPC`. | **Fixed:** staleness counts the daemon's own ticks. |
+| 6 | Medium: a control-channel error killed the daemon and froze the reservation. The host did not notice a dead guard. | **Fixed:** the daemon fails closed and reopens the channel. The host pauses at the margin after 5 s without status. |
+| 7 | Medium: a VHDX measurement error skipped the pause check. | **Fixed:** the host sends budget 0 and the pause check always runs. |
+| 8 | Low: `freeBytes` hid API errors; several VHDXs on one volume each get the full spare. | **Fixed** (the guard logs the error and treats free space as 0). **Deferred** the multi-VHDX split to the real implementation, which must divide the spare across the VHDXs on a volume. |
+
+**Still open:**
+- Move the budget to the guest agent over hvsock.
+- Divide the spare across several VHDXs.
+- Run `bench/disk-full` once it exists.
+- Repeat with `docker pull` as the writer.

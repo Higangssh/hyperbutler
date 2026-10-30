@@ -182,7 +182,7 @@ func hcsConfig(kernel, initrd, cmdline, pipe, vhdx string, sparse bool, schemaMi
 				"Processor": map[string]any{"Count": 2},
 			},
 			"Devices": map[string]any{
-				"ComPorts": map[string]any{"0": map[string]any{"NamedPipe": pipe}},
+				"ComPorts": comPorts(pipe),
 				"Scsi": map[string]any{
 					"0": map[string]any{"Attachments": map[string]any{"0": attachment}},
 				},
@@ -213,7 +213,14 @@ func runHCS(args []string) error {
 	keep := fs.Bool("keep", false, "reuse the existing VHDX in -dir instead of creating a fresh one (for -mode check)")
 	reserve := fs.String("reserve", "", "host-full test: file to delete if the guest stalls, freeing host space")
 	stall := fs.Duration("stall", 30*time.Second, "host-full test: guest silence that counts as a stall")
+	gopts := guardFlags(fs)
 	fs.Parse(args)
+	if gopts.on {
+		if *extraDir == "" {
+			return fmt.Errorf("-guard needs -extra (mke2fs, e2fsck)")
+		}
+		initrdExtraFiles = append(initrdExtraFiles, gopts.bin)
+	}
 
 	var mods, names []string
 	if *modDir != "" {
@@ -254,6 +261,9 @@ func runHCS(args []string) error {
 
 	id := fmt.Sprintf("winbox-vhdx-spike-%d", time.Now().UnixNano())
 	pipe := `\\.\pipe\` + id + "-com1"
+	if gopts.on {
+		guardPipe = `\\.\pipe\` + id + "-com2"
+	}
 	cmdline := fmt.Sprintf("console=ttyS0 rdinit=/wbinit loglevel=3 WB_DEV=sda WB_MB=%d WB_MODS=%s WB_MODE=%s", *writeMB, strings.Join(names, ","), *mode)
 	if *fsync {
 		cmdline += " WB_FSYNC=1"
@@ -261,6 +271,7 @@ func runHCS(args []string) error {
 	if *group > 0 {
 		cmdline += fmt.Sprintf(" WB_GROUP=%d", *group)
 	}
+	cmdline += gopts.cmdline()
 	memory := map[string]any{"SizeInMB": *memMB, "AllowOvercommit": true}
 	for _, h := range strings.Split(*memHints, ",") {
 		if h != "" {
@@ -288,7 +299,7 @@ func runHCS(args []string) error {
 	defer procHcsRevokeVmAccess.Call(uintptr(unsafe.Pointer(u16(id))), uintptr(unsafe.Pointer(u16(vhdx))))
 
 	fmt.Printf("hcs sparse=%v image=%s guest writes %d MiB\n", *sparse, vhdx, *writeMB)
-	report("before boot", vhdx)
+	u0 := report("before boot", vhdx)
 	start := time.Now()
 	var system uintptr
 	if _, err := hcsCall("HcsCreateComputeSystem", 30*time.Second, func(op uintptr) uintptr {
@@ -340,6 +351,13 @@ func runHCS(args []string) error {
 		w.touch()
 		conn = w
 		go watchStall(w, system, *stall, *reserve, vhdx, start)
+	}
+	if gopts.on {
+		g, err := startHostGuard(gopts, system, vhdx, uint64(*diskSize), uint64(u0.Allocated), start)
+		if err != nil {
+			return err
+		}
+		defer g.close()
 	}
 	done, err := driveGuest(conn, vhdx, start, *settle, before)
 	if err != nil {
