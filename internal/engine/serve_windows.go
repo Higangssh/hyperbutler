@@ -23,8 +23,10 @@ import (
 type ServeOptions struct {
 	Home     string
 	Settings *Settings
-	// KernelPath and InitrdPath are the guest artifacts.
+	// KernelPath and InitrdPath are the guest artifacts; Image, if set, is an image
+	// manifest that replaces them (see Config.Image).
 	KernelPath, InitrdPath string
+	Image                  string
 	// Pipe is where the Docker API is served (transport.DefaultPipeName if empty).
 	Pipe    string
 	Net     NetConfig
@@ -129,7 +131,7 @@ func Serve(opts ServeOptions) error {
 	defer console.Close()
 
 	runErr := Run(ctx, Config{
-		KernelPath: opts.KernelPath, InitrdPath: opts.InitrdPath,
+		KernelPath: opts.KernelPath, InitrdPath: opts.InitrdPath, Image: opts.Image,
 		MemoryMB: opts.Settings.MemoryMB, CPUs: opts.Settings.CPUs,
 		Pipe: opts.Pipe, VMID: l.VMPrefix() + randomHex(6),
 		Disk: l, DiskSize: opts.Settings.DiskSize,

@@ -1,0 +1,77 @@
+#!/bin/busybox sh
+# winbox guest stage 1 (PID 1 in the initramfs). See docs/adr/0005-guest-image.md.
+#
+# The initramfs holds only BusyBox, this script and the modules needed to reach the
+# system disk. It mounts the read-only erofs system disk (winbox.system=lun:N on
+# Hyper-V, a device name such as vdb on QEMU) and switch_roots into it. switch_root
+# deletes the initramfs, so none of it stays in guest RAM, and the new root is a real
+# mount, so runc can pivot_root (no DOCKER_RAMDISK). The system disk's /sbin/init
+# (guest/prototype/init) does the rest.
+
+/bin/busybox --install -s /bin
+PATH=/bin
+export PATH
+
+mount -t proc -o nosuid,nodev,noexec proc /proc
+mount -t sysfs -o nosuid,nodev,noexec sysfs /sys
+mount -t devtmpfs -o nosuid,mode=0755 devtmpfs /dev
+
+t() { read -r up _ </proc/uptime; echo "winbox-t $up $*"; }
+fail() {
+	echo "winbox: $*" >/dev/console
+	t "boot-failed"
+	sleep 1
+	poweroff -f
+}
+t stage1-start
+
+SYSTEM=
+for arg in $(cat /proc/cmdline); do
+	case "$arg" in
+	winbox.system=*) SYSTEM=${arg#winbox.system=} ;;
+	esac
+done
+[ -n "$SYSTEM" ] || fail "no winbox.system= on the kernel command line; this initramfs needs its system disk"
+
+if [ -d /sys/bus/vmbus ]; then
+	modprobe -a hv_storvsc sd_mod erofs
+else
+	modprobe -a virtio_blk erofs
+fi
+
+# lun:N is the SCSI disk at LUN N of the (single) controller, whatever name the
+# kernel gave it. A bare name (vdb) is used as is.
+resolve() {
+	case "$1" in
+	lun:*)
+		lun=${1#lun:}
+		case "$lun" in "" | *[!0-9]*) return 1 ;; esac
+		for d in /sys/block/sd*; do
+			[ -e "$d/device" ] || continue
+			addr=$(basename "$(readlink "$d/device")")
+			case "$addr" in
+			*:0:0:"$lun") echo "/dev/${d##*/}"; return 0 ;;
+			esac
+		done
+		return 1
+		;;
+	*[!a-z0-9]* | "") return 1 ;;
+	*) [ -b "/dev/$1" ] && echo "/dev/$1" ;;
+	esac
+}
+i=0
+while ! dev=$(resolve "$SYSTEM") && [ $i -lt 500 ]; do
+	sleep 0.01
+	i=$((i + 1))
+done
+[ -n "$dev" ] || fail "system disk $SYSTEM did not appear"
+
+mkdir -p /newroot
+mount -t erofs -o ro,nodev "$dev" /newroot || fail "cannot mount the system disk $dev as erofs"
+[ -x /newroot/sbin/init ] || fail "the system disk $dev has no /sbin/init"
+t "system-mounted $dev"
+
+umount /sys
+umount /dev
+umount /proc
+exec switch_root /newroot /sbin/init

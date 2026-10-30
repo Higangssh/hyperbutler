@@ -1,0 +1,6 @@
+# Modules stage 1 (initramfs-init) needs to mount the system disk. Dependencies come
+# from modules.dep. They go into the initramfs; the system disk carries them too.
+hv_storvsc
+sd_mod
+virtio_blk
+erofs

@@ -36,6 +36,16 @@ var GuardConfig = spaceguard.Config{
 	Quantum:    1 << 20,
 }
 
+// DefaultCmdLine is the base kernel command line.
+//
+// swiotlb=noforce: a guest with RAM above 4 GiB of physical address space (any VM of
+// 4 GiB, because of the MMIO gap below 4 GiB) otherwise reserves and zeroes a 64 MiB
+// bounce-buffer pool at boot, which then stays committed on the host. Nothing here
+// needs it: the Hyper-V synthetic devices (vmbus storage, network, hvsock) are not
+// DMA-limited, and this is not an isolated (confidential) VM, where Linux forces bounce
+// buffers regardless. See docs/research/idle-memory.md.
+const DefaultCmdLine = "console=ttyS0 quiet swiotlb=noforce"
+
 // DockerPort is the AF_VSOCK port of the guest agent's Docker API relay.
 const DockerPort = 2375
 
@@ -44,9 +54,13 @@ const agentMaxConns = 256
 
 // Config is one VM run.
 type Config struct {
-	// KernelPath and InitrdPath are the guest artifacts.
+	// KernelPath and InitrdPath are the guest artifacts of an initramfs-only image.
 	KernelPath, InitrdPath string
-	// CmdLine is the base kernel command line ("console=ttyS0 quiet" if empty).
+	// Image, if set, is an image manifest (image.json, ADR 0005): the kernel, the
+	// stage-1 initramfs and the read-only system disk it names are verified and used
+	// instead of KernelPath and InitrdPath.
+	Image string
+	// CmdLine is the base kernel command line (DefaultCmdLine if empty).
 	CmdLine string
 	// MemoryMB and CPUs size the VM (4096 and 2 if zero).
 	MemoryMB, CPUs int
@@ -132,7 +146,7 @@ func ErrorCode(err error) string {
 
 func (c *Config) defaults() {
 	if c.CmdLine == "" {
-		c.CmdLine = "console=ttyS0 quiet"
+		c.CmdLine = DefaultCmdLine
 	}
 	if c.MemoryMB == 0 {
 		c.MemoryMB = 4096
@@ -195,17 +209,27 @@ func Run(ctx context.Context, cfg Config) (err error) {
 	step := func(format string, a ...any) {
 		log.Info(fmt.Sprintf("[%7.1f ms] %s", float64(time.Since(t0).Microseconds())/1000, fmt.Sprintf(format, a...)))
 	}
-	kpath, err := filepath.Abs(cfg.KernelPath)
-	if err != nil {
-		return err
-	}
-	ipath, err := filepath.Abs(cfg.InitrdPath)
-	if err != nil {
-		return err
-	}
-	for _, p := range []string{kpath, ipath} {
-		if fi, err := os.Stat(p); err != nil || !fi.Mode().IsRegular() {
-			return fmt.Errorf("engine: guest artifact %s is missing (use --image-dir)", p)
+	var kpath, ipath string
+	var img *guestImage
+	if cfg.Image != "" {
+		// Held open (deny-write) until Run returns, after the VM is gone.
+		if img, err = openImage(cfg.Image); err != nil {
+			return err
+		}
+		defer img.Close()
+		kpath, ipath = img.kernel, img.initrd
+		step("verified guest image %s (system disk %s)", cfg.Image, HumanSize(img.man.System.Size))
+	} else {
+		if kpath, err = filepath.Abs(cfg.KernelPath); err != nil {
+			return err
+		}
+		if ipath, err = filepath.Abs(cfg.InitrdPath); err != nil {
+			return err
+		}
+		for _, p := range []string{kpath, ipath} {
+			if fi, err := os.Stat(p); err != nil || !fi.Mode().IsRegular() {
+				return fmt.Errorf("engine: guest artifact %s is missing (use --image-dir)", p)
+			}
 		}
 	}
 
@@ -249,10 +273,27 @@ func Run(ctx context.Context, cfg Config) (err error) {
 			}
 		}()
 		disks = []vm.Disk{{Path: disk.path, Sparse: true}}
-		cmdline += " winbox.data=sda"
+		if img != nil {
+			cmdline += " winbox.data=lun:0"
+		} else {
+			cmdline += " winbox.data=sda" // what the initramfs-only image understands
+		}
 		if disk.blank {
 			cmdline += " winbox.newdisk=1"
 		}
+	}
+	if img != nil {
+		// The system disk, read-only at the hypervisor: the guest cannot change it.
+		if err := cfg.Backend.GrantAccess(cfg.VMID, img.system); err != nil {
+			return err
+		}
+		defer func() {
+			if err := cfg.Backend.RevokeAccess(cfg.VMID, img.system); err != nil {
+				log.Warn("revoke VM access to the system disk", "err", err)
+			}
+		}()
+		cmdline += fmt.Sprintf(" winbox.system=lun:%d", len(disks))
+		disks = append(disks, vm.Disk{Path: img.system, ReadOnly: true})
 	}
 
 	dockerSvc := transport.VsockServiceID(DockerPort)
@@ -324,8 +365,11 @@ func Run(ctx context.Context, cfg Config) (err error) {
 
 	// The guest control channel and, with a data disk, the free-space guard.
 	sup := &guestctl.Supervisor{
-		Dial:        guestctl.HvsockDialer(vmid),
-		DialTimeout: time.Second,
+		Dial: guestctl.HvsockDialer(vmid),
+		// An hvsock connect to a port nobody listens on yet waits for the whole timeout,
+		// and dockerd waits for winboxd's first budget: a short timeout lets the first
+		// connect land soon after winboxd listens (about 0.3 s into a system-disk boot).
+		DialTimeout: 400 * time.Millisecond,
 		MaxBackoff:  2 * time.Second,
 		Logf:        func(f string, a ...any) { log.Debug(fmt.Sprintf(f, a...)) },
 	}
@@ -514,6 +558,7 @@ type guestStats struct {
 	trims, cacheTrims   uint64
 	trimmed, cacheFreed uint64
 	seen                bool
+	lastMem             time.Time
 }
 
 func (g *guestStats) onStatus(s guestctl.Status) {
@@ -524,4 +569,12 @@ func (g *guestStats) onStatus(s guestctl.Status) {
 		g.log.Info("guest page-cache reclaim", "reclaims", s.CacheTrims, "freed", HumanSize(s.CacheFreed-min(s.CacheFreed, g.cacheFreed)), "memFree", HumanSize(s.MemFree))
 	}
 	g.trims, g.trimmed, g.cacheTrims, g.cacheFreed, g.seen = s.Trims, s.Trimmed, s.CacheTrims, s.CacheFreed, true
+	// The guest's own view of its memory, once a minute: with the host's vmmem private
+	// working set it splits the idle footprint (REQ-MEM-001) into guest use and the rest.
+	if now := time.Now(); now.Sub(g.lastMem) >= time.Minute {
+		g.lastMem = now
+		used := s.MemTotal - min(s.MemTotal, s.MemFree+s.FileCache+s.Shmem)
+		g.log.Info("guest memory", "totalMiB", s.MemTotal>>20, "freeMiB", s.MemFree>>20,
+			"usedMiB", used>>20, "fileCacheMiB", s.FileCache>>20, "shmemMiB", s.Shmem>>20)
+	}
 }

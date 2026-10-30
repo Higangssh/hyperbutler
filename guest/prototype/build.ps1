@@ -1,23 +1,40 @@
-# Builds the ADR 0005 prototype initramfs on Windows, with no WSL and no Linux tools.
+# Builds the ADR 0005 (A2b) guest image on Windows, with no WSL: a stage-1 initramfs, a
+# read-only erofs system disk, the kernel, and the manifest that ties them together.
 #
 #   powershell -ExecutionPolicy Bypass -File guest\prototype\build.ps1 [-Cache DIR] [-Out DIR]
+#       [-Docker docker.exe] [-DockerHost npipe:////./pipe/docker_engine_winbox]
 #
 # 1. Downloads every input in sources.lock into its own directory under -Cache and
 #    checks its SHA-256 pin. A mismatch is fatal.
 # 2. Unpacks them with the bsdtar that ships with Windows (System32\tar.exe).
-# 3. Picks the kernel modules in modules.txt plus their modules.dep closure and
-#    decompresses them (CONFIG_MODULE_DECOMPRESS is off in linux-virt).
-# 4. Cross-compiles guest/cmd/agent, sockfwd, netfwd and winboxd for linux/amd64, builds out\initramfs-winbox.gz
-#    with guest/cmd/mkinitramfs, and copies the matching vmlinuz-virt next to it.
+# 3. Picks the kernel modules in modules-boot.txt (initramfs) and modules.txt plus
+#    modules-boot.txt (system disk), with their modules.dep closures, and decompresses
+#    them (CONFIG_MODULE_DECOMPRESS is off in linux-virt).
+# 4. Builds guest/cmd/mkinitramfs and mksysdisk, and cross-compiles guest/cmd/agent,
+#    sockfwd, netfwd and winboxd for linux/amd64.
+# 5. Builds the system tree (system.spec) as a cpio, turns it into erofs with mkfs.erofs
+#    in a pinned Alpine container on a Docker Engine (winbox's own is fine), and wraps
+#    that as out\system.vhd (a fixed VHD).
+# 6. Builds out\initramfs-stage1.gz (initramfs.spec) and copies vmlinuz-virt.
+# 7. Writes out\image.json, the SHA-256 and size of all three, last.
 #
-# Needs: Go (go.mod version), Windows 10 1803+ for tar.exe. Runs as a standard user.
+# Needs: Go (go.mod version), Windows 10 1803+ for tar.exe, a docker CLI and a running
+# Docker Engine with network access (for apk). Runs as a standard user.
 
 [CmdletBinding()]
 param(
     [string]$Cache = (Join-Path $env:TEMP 'winbox-guest-build'),
     [string]$Out = '',
     [int]$GzipLevel = 9,          # 0 writes an uncompressed cpio
-    [string]$Name = 'initramfs-winbox.gz'
+    [string]$Name = 'initramfs-stage1.gz',
+    [string]$Docker = 'docker',
+    [string]$DockerHost = '',     # empty: the docker CLI's current context
+    # The mkfs.erofs container, pinned by digest, and the erofs-utils it installs. apk
+    # checks the package signature; the version pin keeps the image bytes stable.
+    [string]$Builder = 'alpine:3.24@sha256:be2656061b536c1883c4034790e21d0a09c5aaaf51968b89368a3c0371ea2c9a',
+    [string]$ErofsUtils = '1.9.1-r0',
+    # lz4hc: small image, decompression cheap enough that boot does not notice.
+    [string]$Compress = 'lz4hc,level=12'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -97,49 +114,61 @@ foreach ($l in Get-Content "$kmod\modules.dep") {
     $n = ([IO.Path]::GetFileName($path) -replace '\.ko(\.gz|\.xz|\.zst)?$', '') -replace '-', '_'
     $byName[$n] = $path
 }
-$want = [Collections.Generic.SortedSet[string]]::new([StringComparer]::Ordinal)
-$queue = [Collections.Generic.Queue[string]]::new()
-foreach ($m in Get-Content (Join-Path $proto 'modules.txt')) {
-    $m = $m.Trim()
-    if ($m -eq '' -or $m.StartsWith('#')) { continue }
-    $p = $byName[$m -replace '-', '_']
-    if (-not $p) { throw "module $m is not in modules.dep (built in, or misspelled?)" }
-    $queue.Enqueue($p)
-}
-while ($queue.Count) {
-    $p = $queue.Dequeue()
-    if ($want.Add($p)) { foreach ($d in $dep[$p]) { $queue.Enqueue($d) } }
-}
 
-$stage = Join-Path $Cache 'stage\modules'
-if (Test-Path $stage) { Remove-Item -Recurse -Force $stage }
-$sdir = Join-Path $stage $kver
-New-Item -ItemType Directory -Force $sdir | Out-Null
-$depOut = [Text.StringBuilder]::new()
-foreach ($p in $want) {
-    $plain = $p -replace '\.gz$', ''
-    $dst = Join-Path $sdir ($plain -replace '/', '\')
-    New-Item -ItemType Directory -Force (Split-Path $dst) | Out-Null
-    $in = [IO.File]::OpenRead((Join-Path $kmod ($p -replace '/', '\')))
-    try {
-        $gz = [IO.Compression.GZipStream]::new($in, [IO.Compression.CompressionMode]::Decompress)
-        $o = [IO.File]::Create($dst)
-        try { $gz.CopyTo($o) } finally { $o.Dispose(); $gz.Dispose() }
-    } finally { $in.Dispose() }
-    $deps = ($dep[$p] | ForEach-Object { $_ -replace '\.gz$', '' }) -join ' '
-    [void]$depOut.Append("${plain}:").Append($(if ($deps) { " $deps" } else { '' })).Append("`n")
+# Stage-Modules decompresses the modules named in $lists, plus their modules.dep
+# closure, into $stage\<kver> with a matching modules.dep.
+function Stage-Modules([string[]]$lists, [string]$stage) {
+    $want = [Collections.Generic.SortedSet[string]]::new([StringComparer]::Ordinal)
+    $queue = [Collections.Generic.Queue[string]]::new()
+    foreach ($list in $lists) {
+        foreach ($m in Get-Content (Join-Path $proto $list)) {
+            $m = $m.Trim()
+            if ($m -eq '' -or $m.StartsWith('#')) { continue }
+            $p = $byName[$m -replace '-', '_']
+            if (-not $p) { throw "module $m ($list) is not in modules.dep (built in, or misspelled?)" }
+            $queue.Enqueue($p)
+        }
+    }
+    while ($queue.Count) {
+        $p = $queue.Dequeue()
+        if ($want.Add($p)) { foreach ($d in $dep[$p]) { $queue.Enqueue($d) } }
+    }
+    if (Test-Path $stage) { Remove-Item -Recurse -Force $stage }
+    $sdir = Join-Path $stage $kver
+    New-Item -ItemType Directory -Force $sdir | Out-Null
+    $depOut = [Text.StringBuilder]::new()
+    foreach ($p in $want) {
+        $plain = $p -replace '\.gz$', ''
+        $dst = Join-Path $sdir ($plain -replace '/', '\')
+        New-Item -ItemType Directory -Force (Split-Path $dst) | Out-Null
+        $in = [IO.File]::OpenRead((Join-Path $kmod ($p -replace '/', '\')))
+        try {
+            $gz = [IO.Compression.GZipStream]::new($in, [IO.Compression.CompressionMode]::Decompress)
+            $o = [IO.File]::Create($dst)
+            try { $gz.CopyTo($o) } finally { $o.Dispose(); $gz.Dispose() }
+        } finally { $in.Dispose() }
+        $deps = ($dep[$p] | ForEach-Object { $_ -replace '\.gz$', '' }) -join ' '
+        [void]$depOut.Append("${plain}:").Append($(if ($deps) { " $deps" } else { '' })).Append("`n")
+    }
+    [IO.File]::WriteAllText("$sdir\modules.dep", $depOut.ToString())
+    foreach ($f in 'modules.builtin', 'modules.order') { Copy-Item "$kmod\$f" $sdir }
+    Write-Host "modules $kver ($($lists -join ', ')): $($want.Count) files"
 }
-[IO.File]::WriteAllText("$sdir\modules.dep", $depOut.ToString())
-foreach ($f in 'modules.builtin', 'modules.order') { Copy-Item "$kmod\$f" $sdir }
-Write-Host "modules $kver : $($want.Count) files"
+$bootStage = Join-Path $Cache 'stage\modules-boot'
+$sysStage = Join-Path $Cache 'stage\modules'
+Stage-Modules @('modules-boot.txt') $bootStage
+Stage-Modules @('modules-boot.txt', 'modules.txt') $sysStage
 
-# --- 4. build -------------------------------------------------------------------------
-$tool = Join-Path $Out 'mkinitramfs.exe'
+# --- 4. build the tools and the guest binaries ----------------------------------------
 Push-Location $repo
 try {
-    & go build -trimpath -o $tool ./guest/cmd/mkinitramfs
-    if ($LASTEXITCODE -ne 0) { throw 'go build failed' }
+    foreach ($t in 'mkinitramfs', 'mksysdisk') {
+        & go build -trimpath -o (Join-Path $Out "$t.exe") "./guest/cmd/$t"
+        if ($LASTEXITCODE -ne 0) { throw "go build $t failed" }
+    }
 } finally { Pop-Location }
+$mkinitramfs = Join-Path $Out 'mkinitramfs.exe'
+$mksysdisk = Join-Path $Out 'mksysdisk.exe'
 
 $guestBin = Join-Path $Out 'guest-bin'
 New-Item -ItemType Directory -Force $guestBin | Out-Null
@@ -153,13 +182,58 @@ try {
     }
 } finally { $env:GOOS, $env:GOARCH, $env:CGO_ENABLED = $saved; Pop-Location }
 
+# --- 5. the system disk ----------------------------------------------------------------
+# The tree is a deterministic uncompressed cpio (mtime 0, uid/gid 0), so file modes and
+# links never touch NTFS. mkfs.erofs runs in a pinned Alpine container on any Docker
+# Engine (winbox's own works: no WSL); the cpio goes in on stdin and the image comes back
+# on stdout. -T0 and a UUID derived from the cpio make the image a function of its input.
+$cpio = Join-Path $Cache 'stage\system.cpio'
+& $mkinitramfs -spec (Join-Path $proto 'system.spec') -mtime 0 -level 0 -o $cpio `
+    -D "PROTO=$proto" -D "BUSYBOX=$x\busybox-static" -D "DOCKER=$x\docker-static\docker" -D "MODULES=$sysStage" -D "GUESTBIN=$guestBin" -D "CACERTS=$x\ca-certificates-bundle" -D "E2FS=$e2fs" -D "MUSL=$x\musl"
+if ($LASTEXITCODE -ne 0) { throw 'mkinitramfs (system) failed' }
+$h = (Get-FileHash -Algorithm SHA256 $cpio).Hash.ToLowerInvariant()
+$uuid = '{0}-{1}-4{2}-8{3}-{4}' -f $h.Substring(0, 8), $h.Substring(8, 4), $h.Substring(13, 3), $h.Substring(17, 3), $h.Substring(20, 12)
+$erofs = Join-Path $Cache 'stage\system.erofs'
+$script = @"
+set -e
+apk add --no-cache --quiet erofs-utils=$ErofsUtils >&2
+mkdir /r && cd /r && cpio -i -d -m 2>/dev/null
+chroot /r /bin/busybox --install -s
+mkfs.erofs --quiet -z$Compress -x-1 -T0 -U $uuid --all-root -L winbox-system /sys.img /r >&2
+cat /sys.img
+"@ -replace "`r", ''
+# The script travels base64-encoded, which survives cmd.exe and docker quoting; stdin
+# stays free for the cpio.
+$b64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($script))
+$dargs = @()
+if ($DockerHost) { $dargs += '-H', $DockerHost }
+$dargs += 'run', '--rm', '-i', '--pull=missing', $Builder, 'sh', '-c', "`"echo $b64 | base64 -d >/b.sh && exec sh /b.sh`""
+# cmd.exe redirection keeps stdin and stdout binary (PowerShell 5.1 pipes are text). A
+# batch file avoids PowerShell's native-argument quoting.
+$bat = Join-Path $Cache 'stage\mkfs-erofs.cmd'
+[IO.File]::WriteAllText($bat, "@`"$Docker`" $($dargs -join ' ') < `"$cpio`" > `"$erofs.part`"`r`n@exit /b %ERRORLEVEL%`r`n")
+& cmd.exe /d /c $bat
+if ($LASTEXITCODE -ne 0) { throw "mkfs.erofs in $Builder failed (exit $LASTEXITCODE)" }
+Move-Item -Force "$erofs.part" $erofs
+$sys = Join-Path $Out 'system.vhd'
+& $mksysdisk -erofs $erofs -o $sys -mtime 0
+if ($LASTEXITCODE -ne 0) { throw 'mksysdisk failed' }
+
+# --- 6. the stage-1 initramfs and the kernel -------------------------------------------
 $img = Join-Path $Out $Name
-& $tool -spec (Join-Path $proto 'initramfs.spec') -mtime 0 -level $GzipLevel -o $img `
-    -D "PROTO=$proto" -D "BUSYBOX=$x\busybox-static" -D "DOCKER=$x\docker-static\docker" -D "MODULES=$stage" -D "GUESTBIN=$guestBin" -D "CACERTS=$x\ca-certificates-bundle" -D "E2FS=$e2fs" -D "MUSL=$x\musl"
+& $mkinitramfs -spec (Join-Path $proto 'initramfs.spec') -mtime 0 -level $GzipLevel -o $img `
+    -D "PROTO=$proto" -D "BUSYBOX=$x\busybox-static" -D "BOOTMODULES=$bootStage"
 if ($LASTEXITCODE -ne 0) { throw 'mkinitramfs failed' }
 Copy-Item -Force "$x\linux-virt\boot\vmlinuz-virt" (Join-Path $Out 'vmlinuz-virt')
 
-foreach ($f in 'vmlinuz-virt', $Name) {
+# --- 7. the manifest, last: a directory with image.json holds a complete set -----------
+$man = Join-Path $Out 'image.json'
+Remove-Item -Force $man -ErrorAction SilentlyContinue
+& $mksysdisk -manifest $man -kernel (Join-Path $Out 'vmlinuz-virt') -initrd $img -system $sys
+if ($LASTEXITCODE -ne 0) { throw 'mksysdisk -manifest failed' }
+
+foreach ($f in 'vmlinuz-virt', $Name, 'system.vhd', 'image.json') {
     $p = Join-Path $Out $f
     '{0}  {1,11:N0} bytes  {2}' -f (Get-FileHash -Algorithm SHA256 $p).Hash.ToLowerInvariant(), (Get-Item $p).Length, $f
 }
+

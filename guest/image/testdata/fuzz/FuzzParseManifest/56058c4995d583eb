@@ -1,0 +1,2 @@
+go test fuzz v1
+[]byte("{\n  \"version\": 1,\n \x19\"kernel\": {\n    \"name\": \"vmlinuz-virt\",\n    \"size\": 12641280,\n    \"sha256\": \"abababababababababababababababababababababababababababababababab\"\n  },\n  \"initrd\": {\n    \"name\": \"initramfs-winbox.gz\",\n    \"size\": 3145728,\n    \"sha256\": \"abababababababababababababababababababababababababababababababab\"\n  },\n  \"system\": {\n    \"name\": \"system.vhd\",\n    \"size\": 83886592,\n    \"sha256\": \"abababababababababababababababababababababababababababababababab\"\n  }\n}\n")
