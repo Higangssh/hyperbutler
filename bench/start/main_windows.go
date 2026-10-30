@@ -12,7 +12,6 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"golang.org/x/sys/windows"
@@ -88,10 +87,8 @@ func run() error {
 	if up, err := c.hb.Running(); err != nil {
 		return err
 	} else if up {
-		logf("the bench installation is running; stopping it first")
-		if _, err := c.hb.Stop(ctx); err != nil {
-			return err
-		}
+		// Never stop an engine this tool did not start: -home may name someone's install.
+		return fmt.Errorf("the installation in %s is already running; stop it first (start is measured with no VM running)", c.hb.Home)
 	}
 	firstBoot, uptime := bootMarker(c.hb.Home)
 	logf("host uptime %s; first start since boot as far as this installation knows: %v", uptime.Round(time.Second), firstBoot)
@@ -169,32 +166,7 @@ func once(ctx context.Context, c *config, cfgDir string) (r Run) {
 
 	// Watch the host during the run. Our own processes are the bench's descendants
 	// (the hyperbutler CLI, docker) and, once known, the engine and its VM.
-	mctx, stopMon := context.WithCancel(ctx)
-	var mu sync.Mutex
-	seen := map[uint32]string{} // foreign candidates: PID -> image name
-	var wg sync.WaitGroup
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		self := uint32(os.Getpid())
-		for mctx.Err() == nil {
-			if ps, err := hostmon.Snapshot(); err == nil {
-				mine := hostmon.Descendants(ps, self)
-				mu.Lock()
-				for _, p := range ps {
-					if !mine[p.PID] && (strings.EqualFold(p.Name, hostmon.VMMemName) || strings.EqualFold(p.Name, hostmon.VMWPName) ||
-						strings.EqualFold(p.Name, hostmon.EngineName) || strings.EqualFold(p.Name, hostmon.DevName)) {
-						seen[p.PID] = p.Name
-					}
-				}
-				mu.Unlock()
-			}
-			select {
-			case <-mctx.Done():
-			case <-time.After(250 * time.Millisecond):
-			}
-		}
-	}()
+	watch := hostmon.Watch(250 * time.Millisecond)
 
 	d := &hostmon.Docker{Exe: c.docker, Host: hostmon.NpipeHost(pipe), ConfigDir: cfgDir}
 	sctx, cancel := context.WithTimeout(ctx, c.timeout)
@@ -255,18 +227,12 @@ func once(ctx context.Context, c *config, cfgDir string) (r Run) {
 			break
 		}
 	}
-	stopMon()
-	wg.Wait()
-	mu.Lock()
-	var other []string
-	for pid, name := range seen {
-		if !ours[pid] {
-			other = append(other, fmt.Sprintf("%s %d", name, pid))
-		}
+	watch.Stop()
+	for pid := range ours {
+		watch.SetOurs(pid)
 	}
-	mu.Unlock()
-	if len(other) > 0 {
-		r.Foreign = joinNote(r.Foreign, strings.Join(other, ", "))
+	if other := watch.Take(); other != "" {
+		r.Foreign = joinNote(r.Foreign, other)
 	}
 	return r
 }

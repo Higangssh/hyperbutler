@@ -94,6 +94,23 @@ func checkDiagFlags(c diag.Config) error {
 	return nil
 }
 
+// engineArgs is the command line of the background `hyperbutler engine` process.
+func engineArgs(home, kernel, initrd, manifest string, dcfg diag.Config) []string {
+	args := []string{"engine", "--home", home}
+	if manifest != "" {
+		args = append(args, "--image", manifest)
+	} else {
+		args = append(args, "--kernel", kernel, "--initrd", initrd)
+	}
+	if dcfg.MemoryLimit != "" {
+		args = append(args, "--memlimit", dcfg.MemoryLimit)
+	}
+	if dcfg.DebugPipe != "" {
+		args = append(args, "--debug-pipe", dcfg.DebugPipe)
+	}
+	return args
+}
+
 // errUsage asks main to print the command list.
 var errUsage = errors.New("usage")
 

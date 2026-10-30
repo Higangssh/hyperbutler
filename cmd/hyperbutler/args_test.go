@@ -5,7 +5,21 @@ import (
 	"strings"
 	"testing"
 	"unicode/utf8"
+
+	"github.com/Higangssh/hyperbutler/internal/diag"
 )
+
+func TestEngineArgs(t *testing.T) {
+	got := strings.Join(engineArgs(`C:\h`, "", "", `C:\i\image.json`, diag.Config{MemoryLimit: "256MiB", DebugPipe: `\\.\pipe\d`}), " ")
+	if got != `engine --home C:\h --image C:\i\image.json --memlimit 256MiB --debug-pipe \\.\pipe\d` {
+		t.Fatal(got)
+	}
+	// The debug endpoint is off unless asked for.
+	got = strings.Join(engineArgs(`C:\h`, "k", "i", "", diag.Config{}), " ")
+	if got != `engine --home C:\h --kernel k --initrd i` {
+		t.Fatal(got)
+	}
+}
 
 func TestParseMemoryMB(t *testing.T) {
 	for in, want := range map[string]int{"4096": 4096, "4GiB": 4096, "4g": 4096, "2048MiB": 2048, " 8192 ": 8192, "1T": 1 << 20} {

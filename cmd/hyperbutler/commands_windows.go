@@ -157,6 +157,7 @@ func cmdStart(args []string, stdout, stderr io.Writer) error {
 	if err := in.applySettings(*dataDir, *memory, *cpus, diskSize, *pipe, dcfg.MemoryLimit); err != nil {
 		return err
 	}
+	memLimitSet := dcfg.MemoryLimit != ""
 	dcfg.MemoryLimit = in.settings.EngineMemoryLimit()
 	kernel, initrd, manifest, err := guestArtifacts(*imageDir)
 	if err != nil {
@@ -172,8 +173,8 @@ func cmdStart(args []string, stdout, stderr io.Writer) error {
 		}
 		p.Close()
 		fmt.Fprintf(stdout, "hyperbutler is already running (engine pid %d, %s).\n", st.PID, st.Phase)
-		if dcfg.DebugPipe != "" {
-			fmt.Fprintln(stderr, "hyperbutler: the debug endpoint applies at the next start; stop the engine first to turn it on")
+		if dcfg.DebugPipe != "" || memLimitSet {
+			fmt.Fprintln(stderr, "hyperbutler: --debug-pipe and --memlimit apply at the next start; the running engine is unchanged")
 		}
 		if !*noContext {
 			selectContext(st.Pipe, stdout, stderr)
@@ -362,19 +363,7 @@ func spawnEngine(in *install, kernel, initrd, manifest string, dcfg diag.Config)
 		createBreakawayFromJob = 0x01000000
 	)
 	for _, breakaway := range []bool{true, false} {
-		args := []string{"engine", "--home", in.l.Home}
-		if manifest != "" {
-			args = append(args, "--image", manifest)
-		} else {
-			args = append(args, "--kernel", kernel, "--initrd", initrd)
-		}
-		if dcfg.MemoryLimit != "" {
-			args = append(args, "--memlimit", dcfg.MemoryLimit)
-		}
-		if dcfg.DebugPipe != "" {
-			args = append(args, "--debug-pipe", dcfg.DebugPipe)
-		}
-		cmd := exec.Command(exe, args...)
+		cmd := exec.Command(exe, engineArgs(in.l.Home, kernel, initrd, manifest, dcfg)...)
 		cmd.Dir = in.l.Home
 		cmd.Stdout, cmd.Stderr = logf, logf
 		flags := uint32(detachedProcess | createNewProcessGroup)

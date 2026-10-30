@@ -95,7 +95,7 @@ func run() error {
 
 	for attempt := 0; ; attempt++ {
 		ss, err := measure(ctx, c, cfgDir)
-		if errors.Is(err, errAmbiguousVM) && attempt < c.retries {
+		if errors.Is(err, errAmbiguousVM) && attempt < c.retries && !c.keep {
 			fmt.Printf("\nattempt %d: %v; measuring again\n", attempt+1, err)
 			continue
 		}
@@ -120,7 +120,7 @@ func run() error {
 			}
 		}
 		switch {
-		case sum.Overlapped > 0 && attempt < c.retries:
+		case sum.Overlapped > 0 && attempt < c.retries && !c.keep:
 			fmt.Printf("\nattempt %d overlapped another VM or engine; measuring again\n", attempt+1)
 			continue
 		case sum.Overlapped > 0:
@@ -157,12 +157,11 @@ func measure(ctx context.Context, c *config, cfgDir string) (ss []Sample, err er
 	if err != nil {
 		return nil, err
 	}
-	t0 := time.Now()
-	out, err := c.hb.Start(ctx, append([]string{"--debug-pipe", c.debugPipe}, c.startArgs...)...)
-	if err != nil {
-		return nil, err
-	}
-	logf("%s", out)
+	// Watch the host for the whole attempt, minutes 0-5 included, not just at samples.
+	watch := hostmon.Watch(time.Second)
+	defer watch.Stop()
+	// Registered before the start: a start cut short (Ctrl+C) leaves the detached
+	// engine running, and only this installation's own stop can end it.
 	if !c.keep {
 		defer func() {
 			sctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Minute)
@@ -174,6 +173,12 @@ func measure(ctx context.Context, c *config, cfgDir string) (ss []Sample, err er
 			}
 		}()
 	}
+	t0 := time.Now()
+	out, err := c.hb.Start(ctx, append([]string{"--debug-pipe", c.debugPipe}, c.startArgs...)...)
+	if err != nil {
+		return nil, err
+	}
+	logf("%s", out)
 	st, err := c.hb.State()
 	if err != nil {
 		return nil, err
@@ -220,7 +225,7 @@ func measure(ctx context.Context, c *config, cfgDir string) (ss []Sample, err er
 		return nil, err
 	}
 
-	ours := map[uint32]bool{enginePID: true, vm.VMMem: true, vm.VMWP: true}
+	watch.SetOurs(enginePID, vm.VMMem, vm.VMWP)
 	for _, off := range Schedule(c.from, c.to, c.every) {
 		select {
 		case <-ctx.Done():
@@ -233,6 +238,9 @@ func measure(ctx context.Context, c *config, cfgDir string) (ss []Sample, err er
 		ps, err := hostmon.Snapshot()
 		if err != nil {
 			return ss, err
+		}
+		if !hostmon.StillOurs(ps, vm) {
+			return ss, errors.New("this VM's vmmem/vmwp are gone (or their PIDs were reused)")
 		}
 		helpers := hostmon.ChildrenOf(ps, enginePID)
 		pids := append([]uint32{enginePID, vm.VMMem, vm.VMWP}, helpers...)
@@ -259,9 +267,9 @@ func measure(ctx context.Context, c *config, cfgDir string) (ss []Sample, err er
 		for _, h := range helpers {
 			s.HelpersWS += sm[h].WorkingSetPriv
 		}
-		if f := hostmon.FindForeign(ps, ours); f.Any() {
-			s.Foreign = f.String()
-		}
+		// Everything foreign seen since the previous sample (for the first sample: since
+		// the start command), so a VM that came and went in between still counts.
+		s.Foreign = watch.Take()
 		logf("t=%3.0fs engine %s vmmem %s vmwp %s total %s heap %s goroutines %d%s", s.T, mib(float64(s.EngineWS)), mib(float64(s.VMMemWS)),
 			mib(float64(s.VMWPWS)), mib(float64(s.Total())), mib(float64(st.MemStats.HeapAlloc)), st.Goroutines, foreignNote(s.Foreign))
 		ss = append(ss, s)

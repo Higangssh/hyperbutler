@@ -60,6 +60,9 @@ func osMemory() *OSMemory {
 		return m
 	}
 	m.Heaps = int(n)
+	// HeapSummary takes each heap's lock. A heap a DLL created with HEAP_NO_SERIALIZE
+	// has none, so a concurrent allocation could skew that heap's numbers; this runs
+	// only when /debug/stats is asked for, off by default, so the risk is accepted.
 	for _, h := range heaps[:n] {
 		s := heapSummary{cb: uint32(unsafe.Sizeof(heapSummary{}))}
 		if r, _, _ := procHeapSummary.Call(uintptr(h), 0, uintptr(unsafe.Pointer(&s))); r == 0 {

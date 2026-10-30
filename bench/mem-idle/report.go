@@ -30,15 +30,19 @@ func (s Sample) Total() uint64 { return s.EngineWS + s.VMMemWS + s.VMWPWS + s.He
 // and including to. REQ-MEM-001 samples every 10 s from minute 5 to minute 10, which
 // is 31 samples.
 func Schedule(from, to, interval time.Duration) []time.Duration {
-	if interval <= 0 || to < from || from < 0 {
+	if interval <= 0 || to < from || from < 0 || (to-from)/interval >= maxSamples {
 		return nil
 	}
-	var s []time.Duration
-	for t := from; t <= to; t += interval {
-		s = append(s, t)
+	n := int((to-from)/interval) + 1
+	s := make([]time.Duration, n)
+	for i := range s {
+		s[i] = from + time.Duration(i)*interval
 	}
 	return s
 }
+
+// maxSamples bounds a schedule (a day at 1 s).
+const maxSamples = 86400
 
 // Summary is the result of one idle measurement.
 type Summary struct {

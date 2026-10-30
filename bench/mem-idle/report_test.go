@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/csv"
+	"math"
 	"strings"
 	"testing"
 	"time"
@@ -20,10 +21,15 @@ func TestSchedule(t *testing.T) {
 	if len(s) != 31 || s[0] != 5*time.Minute || s[30] != 10*time.Minute {
 		t.Fatalf("REQ-MEM-001 schedule: %d samples, %v..%v", len(s), s[0], s[len(s)-1])
 	}
-	for _, bad := range [][3]time.Duration{{0, 0, 0}, {time.Minute, 0, time.Second}, {-time.Second, time.Second, time.Second}} {
+	for _, bad := range [][3]time.Duration{{0, 0, 0}, {time.Minute, 0, time.Second}, {-time.Second, time.Second, time.Second},
+		{0, math.MaxInt64, time.Nanosecond}} {
 		if Schedule(bad[0], bad[1], bad[2]) != nil {
 			t.Errorf("Schedule%v accepted", bad)
 		}
+	}
+	// Near the top of the range nothing overflows.
+	if s := Schedule(math.MaxInt64-5, math.MaxInt64, 1); len(s) != 6 || s[5] != math.MaxInt64 {
+		t.Errorf("top of range: %v", s)
 	}
 }
 

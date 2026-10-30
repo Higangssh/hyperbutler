@@ -195,11 +195,6 @@ func launch(ctx context.Context, c *config) (target, func() error, error) {
 	if err != nil {
 		return target{}, nil, err
 	}
-	out, err := c.hb.Start(ctx, append([]string{"--debug-pipe", c.diagPipe}, c.startArgs...)...)
-	if err != nil {
-		return target{}, nil, err
-	}
-	logf("%s", out)
 	stop := func() error {
 		sctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 		defer cancel()
@@ -207,6 +202,12 @@ func launch(ctx context.Context, c *config) (target, func() error, error) {
 		logf("%s", out)
 		return err
 	}
+	out, err := c.hb.Start(ctx, append([]string{"--debug-pipe", c.diagPipe}, c.startArgs...)...)
+	if err != nil {
+		// A start cut short (Ctrl+C) can leave the detached engine running.
+		return target{}, nil, errors.Join(err, stop())
+	}
+	logf("%s", out)
 	st, err := c.hb.State()
 	if err != nil {
 		return target{}, nil, errors.Join(err, stop())
@@ -344,7 +345,9 @@ func run() (err error) {
 			pids = append(pids, p)
 		}
 	}
-	ours := map[uint32]bool{tg.engine: true, tg.vmmem: true, tg.vmwp: true}
+	watch := hostmon.Watch(time.Second)
+	defer watch.Stop()
+	watch.SetOurs(tg.engine, tg.vmmem, tg.vmwp)
 	overlapped := 0
 	profiledWarmup := false
 	tick := time.NewTicker(c.interval)
@@ -407,12 +410,17 @@ sampling:
 				}
 			}
 		}
-		if ps, err := hostmon.Snapshot(); err == nil {
-			if f := hostmon.FindForeign(ps, ours); f.Any() {
-				// Other VMs do not change this engine's counters, but they compete for
-				// host memory; note them so a reader can judge.
-				extra["foreign"] = f.String()
-				overlapped++
+		// Other VMs do not change this engine's counters, but they compete for host
+		// memory; note every one seen since the previous sample so a reader can judge.
+		if f := watch.Take(); f != "" {
+			extra["foreign"] = f
+			overlapped++
+		}
+		if tg.vmmem != 0 && tg.vmwp != 0 {
+			// vmmem cannot be pinned: notice a dead VM whose PID was reused.
+			if ps, err := hostmon.Snapshot(); err == nil && !hostmon.StillOurs(ps, hostmon.VMProcs{VMWP: tg.vmwp, VMMem: tg.vmmem}) {
+				fatal = fmt.Errorf("vmmem PID %d / vmwp PID %d are no longer this VM's: the VM stopped", tg.vmmem, tg.vmwp)
+				break
 			}
 		}
 		if runCtx.Err() != nil {
@@ -451,7 +459,7 @@ sampling:
 		case <-tick.C:
 		}
 	}
-	if dc != nil && c.profileDir != "" && fatal == nil {
+	if dc != nil && c.profileDir != "" && fatal == nil && ctx.Err() == nil {
 		// Still under load: the workload stops only after cancel below.
 		fetchProfiles(context.WithoutCancel(ctx), dc, c.profileDir, "end")
 	}

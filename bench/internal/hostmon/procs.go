@@ -22,6 +22,29 @@ const (
 
 func isName(p Proc, name string) bool { return strings.EqualFold(p.Name, name) }
 
+// isVMMem matches every VM memory process: HCS's "vmmem" and its variants such as
+// WSL's "vmmemWSL" or Windows Sandbox's "vmmemCmZygote".
+func isVMMem(p Proc) bool {
+	return len(p.Name) >= len(VMMemName) && strings.EqualFold(p.Name[:len(VMMemName)], VMMemName)
+}
+
+// StillOurs reports whether vm's processes are still in ps as the pair FindNewVM
+// found: the vmmem PID still a vmmem whose parent is the vmwp PID. vmmem cannot be
+// opened (pinned) by a non-elevated user, so this is how a bench notices that its VM
+// died and its PID was reused.
+func StillOurs(ps []Proc, vm VMProcs) bool {
+	mem, wp := false, false
+	for _, p := range ps {
+		switch p.PID {
+		case vm.VMMem:
+			mem = isName(p, VMMemName) && p.PPID == vm.VMWP
+		case vm.VMWP:
+			wp = isName(p, VMWPName)
+		}
+	}
+	return mem && wp
+}
+
 // VMProcs are one VM's host processes.
 type VMProcs struct {
 	VMWP, VMMem uint32
@@ -90,7 +113,7 @@ func FindForeign(ps []Proc, ours map[uint32]bool) Foreign {
 			continue
 		}
 		switch {
-		case isName(p, VMMemName):
+		case isVMMem(p):
 			f.VMs = append(f.VMs, p.PID)
 		case isName(p, VMWPName):
 			f.Workers = append(f.Workers, p.PID)

@@ -51,6 +51,28 @@ func TestFindForeign(t *testing.T) {
 	if f := FindForeign(ps[7:], nil); f.Any() || f.String() != "none" {
 		t.Fatalf("explorer counted: %+v", f)
 	}
+	// Other hypervisor users' VMs: WSL 2, Windows Sandbox.
+	if f := FindForeign([]Proc{{PID: 1, Name: "vmmemWSL"}, {PID: 2, Name: "VmmemCmZygote"}, {PID: 3, Name: "vmm"}}, nil); !slices.Equal(f.VMs, []uint32{1, 2}) {
+		t.Fatalf("%+v", f)
+	}
+}
+
+func TestStillOurs(t *testing.T) {
+	vm := VMProcs{VMWP: 30, VMMem: 31}
+	ok := []Proc{{PID: 30, PPID: 10, Name: "vmwp.exe"}, {PID: 31, PPID: 30, Name: "vmmem"}}
+	if !StillOurs(ok, vm) {
+		t.Fatal("live VM not ours")
+	}
+	for name, ps := range map[string][]Proc{
+		"vmmem gone":                  ok[:1],
+		"vmwp gone":                   ok[1:],
+		"vmmem PID reused elsewhere":  {ok[0], {PID: 31, PPID: 77, Name: "vmmem"}},
+		"PID reused by another image": {ok[0], {PID: 31, PPID: 30, Name: "notepad.exe"}},
+	} {
+		if StillOurs(ps, vm) {
+			t.Errorf("%s: still ours", name)
+		}
+	}
 }
 
 func TestChildrenOf(t *testing.T) {
