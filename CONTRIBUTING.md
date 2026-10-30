@@ -8,7 +8,7 @@ changes before writing code.
 - Windows 11 (Home, Pro, or Enterprise), x64 or ARM64
 - Virtualization enabled in firmware, plus the **Virtual Machine Platform** and
   **Windows Hypervisor Platform** optional features (`optionalfeatures.exe`, then reboot)
-- Go (version in `go.mod` once it exists), Git
+- Go (the version in `go.mod`), Git
 
 ```powershell
 go build ./...
@@ -46,9 +46,35 @@ under the project's license.
 ## Pull requests
 
 - Keep PRs focused. Link the issue and any requirement IDs (`REQ-...`) it addresses.
-- CI must pass. CI is being set up along with the first Go code. It will run build, `go vet`,
-  `golangci-lint`, tests with `-race` (windows/amd64 and linux; `-race` isn't supported on
-  windows/arm64), a short fuzz run, and `govulncheck`.
+- CI must pass. It runs on `windows-latest` (windows/amd64) with the Go version from
+  `go.mod`, and is defined in `.github/workflows/ci.yml`:
+  - `go vet ./...` and a `gofmt -l` check, plus `go vet` cross-compiled for windows/arm64,
+    linux/amd64, and linux/arm64 (platforms with no packages yet are skipped)
+  - `go test -race ./...` (this also runs every fuzz seed corpus as a regular test)
+  - fuzz smoke: every `Fuzz*` target in every package is fuzzed for 30 seconds. Crashing
+    inputs are uploaded in the `fuzz-crashers` artifact (with the rest of `testdata/fuzz/`).
+    Commit the crasher under `testdata/fuzz/` with the fix. When you add a Fuzz target,
+    raise `FUZZ_MIN_TARGETS` in `ci.yml` so the job fails if a target goes missing.
+  - `golangci-lint` with the v2 config in `.golangci.yml`, including its gofmt/goimports
+    formatter check
+  - `govulncheck ./...`
+
+  Tests tagged `integration` are never run in CI because they need a hypervisor. Run them
+  locally with `go test -tags integration ./...` and say in the PR which Windows edition
+  you used. Tests only run on windows/amd64; there is no Linux or windows/arm64 test job
+  yet.
+
+  To run the same checks locally:
+
+  ```powershell
+  go vet ./...
+  gofmt -l .
+  go test -race ./...    # needs cgo and gcc on PATH; drop -race without them
+  golangci-lint config verify
+  golangci-lint run ./...
+  golangci-lint fmt --diff ./...
+  go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...   # version pinned in ci.yml
+  ```
 - Include benchmark numbers (from `bench/`) for changes that claim a performance effect.
 - New dependencies need a reason in the PR description and a compatible license.
 
