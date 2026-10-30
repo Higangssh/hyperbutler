@@ -1,0 +1,2 @@
+go test fuzz v1
+string("[\"3afee72c1-e7c-4cb2-9fbc-f9663a27c59f\"]")
