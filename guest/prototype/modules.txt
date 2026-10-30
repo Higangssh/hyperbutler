@@ -1,0 +1,18 @@
+# Top-level kernel modules for the prototype initramfs. Dependencies come from
+# modules.dep. Built-in (=y) drivers such as hv_vmbus, hv_netvsc and virtio_pci are
+# not listed.
+hv_storvsc
+sd_mod
+hv_sock
+hv_balloon
+hv_utils
+virtio_net
+virtio_blk
+virtio_balloon
+virtio_rng
+vmw_vsock_virtio_transport
+overlay
+ext4
+bridge
+br_netfilter
+veth
