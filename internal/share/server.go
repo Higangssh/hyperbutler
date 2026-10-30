@@ -99,6 +99,10 @@ type node struct {
 	dir     bool
 	orphan  bool      // unlinked or replaced; its path is gone
 	touched time.Time // last change made by the guest itself (inject.go)
+	// list is a directory's listing from its last READDIR at offset 0, for the
+	// READDIRs that continue it (nodeListing). Counted in Server.dirEntries.
+	list   []DirEntry
+	listed bool
 }
 
 type handle struct {
@@ -119,8 +123,9 @@ type handle struct {
 	dir    []DirEntry
 }
 
-// maxDirBudget bounds directory entries held in all open directory handles together.
-const maxDirBudget = 4 << 20
+// maxDirBudget bounds directory entries held in listing snapshots (nodes and directory
+// handles) together.
+var maxDirBudget = 4 << 20
 
 // closeLocked marks hd released and closes its file if no request uses it.
 func (s *Server) closeLocked(hd *handle) {
@@ -176,7 +181,7 @@ type Server struct {
 	nconns     int    // live connections, bounded by 2*maxQueues
 	injector   uint32 // guest thread id that replays host events
 	pending    map[nodeKey]*injection
-	dirEntries int // entries held by all directory handles (maxDirBudget)
+	dirEntries int // entries held by listing snapshots (maxDirBudget)
 }
 
 // NewServer returns a server with no shares.
@@ -203,6 +208,7 @@ func (s *Server) resetNodes() {
 		s.closeLocked(h)
 	}
 	s.handles = map[uint64]*handle{}
+	s.dirEntries = 0 // every node and handle that held a listing is gone
 }
 
 // AddShare registers sh. The guest sees it at once.
@@ -917,6 +923,7 @@ func (s *Server) forget(id, n uint64) {
 		return
 	}
 	if n >= nd.nlookup {
+		s.dropListLocked(nd)
 		delete(s.nodes, id)
 		if !nd.orphan && s.index[nodeKey{nd.parent, nd.name}] == id {
 			delete(s.index, nodeKey{nd.parent, nd.name})
@@ -1298,6 +1305,14 @@ func (s *Server) doOpen(h *inHeader, flags uint32, dir bool) []byte {
 		}
 		return s.openReply(u, fh, false)
 	}
+	if dir && !s.opt.NoCache {
+		// No directory handles: the kernel then stops sending OPENDIR and RELEASEDIR
+		// (two round trips per directory a walk opens) and opens every directory with
+		// FOPEN_KEEP_CACHE | FOPEN_CACHE_DIR, so a warm walk is answered from its
+		// readdir cache. READDIR comes with fh 0 (nodeListing). Host changes reach
+		// that cache as FUSE_NOTIFY_INVAL_INODE of the directory, which drops it.
+		return errReply(u, int(ENOSYS))
+	}
 	if h.NodeID == rootNode {
 		if !dir {
 			return errReply(u, int(EISDIR))
@@ -1450,47 +1465,152 @@ func (nopFile) WriteAt([]byte, int64) (int, error) { return 0, EBADF }
 func (nopFile) Sync() error                        { return nil }
 func (nopFile) Close() error                       { return nil }
 
-func (s *Server) doReaddir(h *inHeader, in readIn, plus bool) []byte {
-	u := h.Unique
+// loadDir lists a share directory, applying Share.Only at the share root.
+func loadDir(sh *Share, path []string) ([]DirEntry, error) {
+	list, err := sh.FS.ReadDir(path)
+	if err != nil {
+		return nil, err
+	}
+	if sh.Only != nil && len(path) == 0 {
+		kept := list[:0]
+		for _, e := range list {
+			if allowed(sh, true, e.Name) {
+				kept = append(kept, e)
+			}
+		}
+		list = kept
+	}
+	return list, nil
+}
+
+// rootListing lists the shares (the virtual root).
+func (s *Server) rootListing() []DirEntry {
 	s.mu.Lock()
-	hd := s.handles[in.Fh]
-	ok := hd != nil && hd.isDir && hd.node == h.NodeID && !hd.closed
+	es := make([]DirEntry, 0, len(s.shares))
+	for name := range s.shares {
+		es = append(es, DirEntry{Name: name, Attr: Attr{Mode: sIFDIR | 0o755}})
+	}
+	s.mu.Unlock()
+	sort.Slice(es, func(i, j int) bool { return es[i].Name < es[j].Name })
+	return es
+}
+
+// nodeListing returns the listing of directory node id for a READDIR at offset off
+// without a handle. Offset 0 starts a listing: the directory is read from the host and
+// kept on the node for the READDIRs that continue it, as a directory handle would keep
+// it. (Whether the guest needs to ask at all is the guest's readdir cache's business:
+// it is kept coherent by host invalidations, like every other cache.)
+func (s *Server) nodeListing(id, off uint64) ([]DirEntry, *Share, error) {
+	if id == rootNode {
+		return s.rootListing(), nil, nil
+	}
+	s.mu.Lock()
+	path, sh, err := s.pathLocked(id)
+	n := s.nodes[id]
+	if err == nil && !n.dir {
+		err = ENOTDIR
+	}
+	if err != nil {
+		s.mu.Unlock()
+		return nil, nil, err
+	}
+	if off != 0 && n.listed {
+		es := n.list
+		s.mu.Unlock()
+		return es, sh, nil
+	}
+	s.mu.Unlock()
+	list, err := loadDir(sh, path)
+	if err != nil {
+		return nil, nil, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.nodes[id] != n {
+		return list, sh, nil // forgotten meanwhile: answer, keep nothing
+	}
+	s.dropListLocked(n)
+	if s.dirEntries+len(list) > maxDirBudget {
+		// Snapshots of listings nobody finished reading: drop them all. A READDIR
+		// that continues one reads its directory again.
+		for _, o := range s.nodes {
+			s.dropListLocked(o)
+		}
+	}
+	if s.dirEntries+len(list) > maxDirBudget {
+		return nil, nil, ENOMEM
+	}
+	n.list, n.listed = list, true
+	s.dirEntries += len(list)
+	return list, sh, nil
+}
+
+// dropListLocked forgets the listing snapshot of n (which may be nil).
+func (s *Server) dropListLocked(n *node) {
+	if n != nil && n.listed {
+		s.dirEntries -= len(n.list)
+		n.list, n.listed = nil, false
+	}
+}
+
+// handleListing returns the listing of an OPENDIR handle (Options.NoCache), read from
+// the host on the handle's first READDIR.
+func (s *Server) handleListing(id, fh uint64) ([]DirEntry, *Share, error) {
+	s.mu.Lock()
+	hd := s.handles[fh]
+	ok := hd != nil && hd.isDir && hd.node == id && !hd.closed
 	s.mu.Unlock()
 	if !ok {
-		return errReply(u, int(EBADF))
+		return nil, nil, EBADF
 	}
-	path, sh, err := s.pathOf(h.NodeID)
-	if h.NodeID != rootNode && err != nil {
-		return errReply(u, toErrno(err))
+	path, sh, err := s.pathOf(id)
+	if id != rootNode && err != nil {
+		return nil, nil, err
 	}
 	hd.dmu.Lock()
-	if !hd.loaded && h.NodeID != rootNode {
-		list, err := sh.FS.ReadDir(path)
+	defer hd.dmu.Unlock()
+	if !hd.loaded && id != rootNode {
+		list, err := loadDir(sh, path)
 		if err != nil {
-			hd.dmu.Unlock()
-			return errReply(u, toErrno(err))
-		}
-		if sh.Only != nil && len(path) == 0 {
-			kept := list[:0]
-			for _, e := range list {
-				if allowed(sh, true, e.Name) {
-					kept = append(kept, e)
-				}
-			}
-			list = kept
+			return nil, nil, err
 		}
 		s.mu.Lock()
 		if hd.closed || s.dirEntries+len(list) > maxDirBudget {
 			s.mu.Unlock()
-			hd.dmu.Unlock()
-			return errReply(u, int(ENOMEM))
+			return nil, nil, ENOMEM
 		}
 		s.dirEntries += len(list)
 		hd.dir, hd.loaded = list, true
 		s.mu.Unlock()
 	}
-	es := hd.dir
-	hd.dmu.Unlock()
+	return hd.dir, sh, nil
+}
+
+func (s *Server) doReaddir(h *inHeader, in readIn, plus bool) []byte {
+	u := h.Unique
+	var es []DirEntry
+	var sh *Share
+	if in.Fh == 0 {
+		// No directory handle (OPENDIR answers ENOSYS, see doOpen).
+		var err error
+		es, sh, err = s.nodeListing(h.NodeID, in.Offset)
+		if err != nil {
+			return errReply(u, toErrno(err))
+		}
+		if in.Offset > uint64(len(es))+1 {
+			// The end: the kernel asks once more and gets nothing. The snapshot is no
+			// longer needed.
+			s.mu.Lock()
+			s.dropListLocked(s.nodes[h.NodeID])
+			s.mu.Unlock()
+		}
+	} else {
+		var err error
+		es, sh, err = s.handleListing(h.NodeID, in.Fh)
+		if err != nil {
+			return errReply(u, toErrno(err))
+		}
+	}
 	w := newReply(u, 0)
 	start := len(w.b)
 	max := int(in.Size)
