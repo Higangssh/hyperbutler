@@ -79,6 +79,56 @@ func TestCLIFreshInstall(t *testing.T) {
 	}
 }
 
+// TestCLIDiagSettings: --memlimit is validated and kept in settings.json, the default
+// is not written, and a bad --debug-pipe or HYPERBUTLER_DEBUG_PIPE is refused before
+// anything is saved or spawned.
+func TestCLIDiagSettings(t *testing.T) {
+	home, _ := testHome(t)
+	nope := filepath.Join(home, "nope")
+	load := func() *engine.Settings {
+		t.Helper()
+		s, err := engine.LoadSettings(engine.Layout{Home: home})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return s
+	}
+	for _, bad := range []string{"1MiB", "64MB", "-1", "lots"} {
+		if code, _, e := runCLI(t, "start", "--memlimit", bad, "--image-dir", nope); code != 1 || !strings.Contains(e, "--memlimit") {
+			t.Fatalf("--memlimit %s: %d %q", bad, code, e)
+		}
+	}
+	runCLI(t, "start", "--memlimit", "128MiB", "--image-dir", nope)
+	if s := load(); s.MemoryLimit != "128MiB" || s.EngineMemoryLimit() != "128MiB" {
+		t.Fatalf("settings %+v", s)
+	}
+	// Later starts keep it; the default clears the field.
+	runCLI(t, "start", "--image-dir", nope)
+	if s := load(); s.MemoryLimit != "128MiB" {
+		t.Fatalf("not kept: %+v", s)
+	}
+	runCLI(t, "start", "--memlimit", engine.DefaultEngineMemoryLimit, "--image-dir", nope)
+	if s := load(); s.MemoryLimit != "" || s.EngineMemoryLimit() != engine.DefaultEngineMemoryLimit {
+		t.Fatalf("default not cleared: %+v", s)
+	}
+	// Regression: a later start's changes were applied to the loaded settings in place,
+	// compared equal to themselves and never saved.
+	runCLI(t, "start", "--memory", "3GiB", "--cpus", "5", "--image-dir", nope)
+	if s := load(); s.MemoryMB != 3072 || s.CPUs != 5 {
+		t.Fatalf("later --memory/--cpus not saved: %+v", s)
+	}
+	if code, _, e := runCLI(t, "start", "--debug-pipe", `C:\not-a-pipe`, "--memlimit", "off", "--image-dir", nope); code != 1 || !strings.Contains(e, "--debug-pipe") {
+		t.Fatalf("bad --debug-pipe: %d %q", code, e)
+	}
+	t.Setenv(debugPipeEnv, `\\.\pipe\a\b`)
+	if code, _, e := runCLI(t, "start", "--memlimit", "off", "--image-dir", nope); code != 1 || !strings.Contains(e, debugPipeEnv) {
+		t.Fatalf("bad %s: %d %q", debugPipeEnv, code, e)
+	}
+	if s := load(); s.MemoryLimit != "" {
+		t.Fatalf("a refused start saved settings: %+v", s)
+	}
+}
+
 func TestCLIDataLocationIsFixed(t *testing.T) {
 	home, _ := testHome(t)
 	data := filepath.Join(filepath.Dir(home), "data")

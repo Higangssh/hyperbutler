@@ -44,6 +44,8 @@ func FuzzParseSettings(f *testing.F) {
 	f.Add([]byte(`{"version":1,"dataDir":"C:\\Users\\x\\AppData\\Local\\hyperbutler","diskSizeBytes":68719476736,"memoryMB":4096,"cpus":4}`))
 	f.Add([]byte(`{"version":1,"dataDir":"/home/x","diskSizeBytes":68719476736,"memoryMB":4096,"cpus":4,"pipe":"\\\\.\\pipe\\x"}`))
 	f.Add([]byte(`{"version":1,"dataDir":"C:\\x","diskSizeBytes":-1,"memoryMB":4096,"cpus":4}`))
+	f.Add([]byte(`{"version":1,"dataDir":"C:\\x","diskSizeBytes":68719476736,"memoryMB":4096,"cpus":4,"memoryLimit":"128MiB"}`))
+	f.Add([]byte(`{"version":1,"dataDir":"C:\\x","diskSizeBytes":68719476736,"memoryMB":4096,"cpus":4,"memoryLimit":"1KiB"}`))
 	f.Fuzz(func(t *testing.T, b []byte) {
 		s, err := ParseSettings(b)
 		if err != nil {
@@ -54,6 +56,9 @@ func FuzzParseSettings(f *testing.F) {
 		}
 		if s.DiskSize%(1<<20) != 0 || s.MemoryMB < MinMemoryMB || s.CPUs < 1 {
 			t.Fatalf("out of range: %+v", s)
+		}
+		if ValidateMemoryLimit(s.EngineMemoryLimit()) != nil {
+			t.Fatalf("accepted memory limit %q", s.MemoryLimit)
 		}
 		again, err := encode(s)
 		if err != nil {
