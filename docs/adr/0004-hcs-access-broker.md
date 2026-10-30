@@ -188,3 +188,128 @@ The first review (2026-10-30) raised eight findings. All eight were accepted:
    line-count target was replaced by a surface budget (rule 10).
 8. **Low. "Signature or hash" was underspecified.** Fixed by rule 3: ed25519 with the public
    key embedded in the broker.
+
+## Implementation notes
+
+The first implementation of the broker's protocol and request handling is in
+`internal/broker` (server, handle validation, named pipe) and `internal/broker/proto` (wire
+format). `cmd/winbox-broker` runs it in the foreground with an in-memory fake backend. It
+never installs, registers or starts a service. There is no HCS backend yet.
+
+### Wire format
+
+- Each frame is `uint16` big-endian length, version byte (1), type byte, then TLV fields
+  (`tag u8`, `size u8`, value). A frame is at most 512 bytes.
+- Every type has a fixed schema. Decoding rejects all of the following:
+  - unknown versions, types and tags;
+  - repeated or out-of-order tags;
+  - wrong value sizes;
+  - missing required fields;
+  - optional fields encoded with their zero value;
+  - non-printable strings;
+  - a length that disagrees with the input, which covers trailing bytes.
+- Decoding is therefore canonical: re-encoding an accepted frame gives the same bytes. The
+  fuzzers check this.
+- The only verbs are version, start, stop, status, resize and set-data-location. The
+  version verb and the frame header must stay stable across protocol versions.
+
+### Identity and state
+
+- The caller is the user SID of the pipe client's token. The broker reads it by
+  impersonating after the first frame, because a pipe cannot be impersonated before data
+  has been read from it.
+- Anonymous, AppContainer, restricted and below-medium-integrity tokens are rejected.
+- Clients must connect at impersonation level. go-winio's default dial is anonymous and is
+  rejected.
+- State is keyed by SID. Each user may have at most 2 concurrent connections
+  (`MaxConnsPerUser`).
+
+### Data location
+
+1. The handle is duplicated from the client process. That process is opened while
+   impersonating the caller, its token user must be the caller, and the pipe's client PID
+   is checked again under the connection's lock.
+2. The object type must be `File`.
+3. The broker opens the same object again, relative to the handle with an empty name:
+   - as the caller;
+   - with `FILE_DIRECTORY_FILE`, `FILE_OPEN_REPARSE_POINT` and `OBJ_DONT_REPARSE`;
+   - with an anonymous security QoS.
+
+   So a pipe or device handle is never opened, and so never connected to. The broker's
+   handle has a private file object, so pending synchronous I/O on the caller's handle
+   cannot stall it. Both cases are tested.
+4. `ValidateDataDir` then checks rule 2 from the handle:
+   - device type disk and not remote;
+   - NTFS;
+   - a directory and not a reparse point;
+   - the owner is the caller;
+   - every allow ACE is for the caller, SYSTEM or Administrators. An inherit-only ACE may
+     also be for CREATOR OWNER. Deny ACEs are allowed, and any other ACE type is rejected.
+5. The check runs again on every start.
+6. The whole take-and-check is bounded by a 10-second timeout, because a remote or
+   provider-backed file system may never answer.
+
+### Pipe
+
+- All instances are created up front, the first with `FILE_FLAG_FIRST_PIPE_INSTANCE`.
+- The pipe is byte mode, overlapped, and rejects remote clients.
+- The DACL is protected. The broker account has full access; the client SID, or IU for a
+  shared endpoint, gets `0x12019b`, which is read and write without
+  `FILE_CREATE_PIPE_INSTANCE`.
+- If the name is taken, the error is `ErrPipeExists`, and the broker does not fall back to
+  another name.
+
+### Testing
+
+- Unit tests cover:
+  - junctions, both opened as themselves and followed to a system directory;
+  - symlinks (skipped without Developer Mode);
+  - hard links;
+  - wide and NULL DACLs;
+  - an owner that is not the caller;
+  - pipe, event and invalid handles;
+  - a non-disk device (the NPFS root);
+  - pipe squatting;
+  - cross-user isolation, using a simulated `Peer`;
+  - that the reopen impersonates and validation does not.
+- Fuzz targets: `FuzzDecodeRequest`, `FuzzDecodeReply`, `FuzzReadFrame`, `FuzzServeConn`.
+- `go test -race` was not run, because the dev machine has no C compiler.
+
+### Still needs an elevated or multi-account test
+
+- Running as SYSTEM or the virtual account against a second, non-admin user:
+  - the pipe ACL denies that user, and denies FILE_CREATE_PIPE_INSTANCE to the client;
+  - the reopen-as-caller denies directories the caller cannot open;
+  - that user's tokens and handles are refused.
+- Network shares (SMB) and ProjFS or cloud-filter directories, against the real timeout.
+- Option C (the virtual account).
+
+### Review findings (2026-10-30)
+
+1. **Medium. A non-cancellable reopen on a caller-chosen file system held the per-user lock
+   and the pipe instance.** Fixed by bounding the check with a timeout. After a timeout the
+   abandoned goroutine closes its handle. The pipe peer is closed before the instance is
+   reused, so the abandoned goroutine can never impersonate the next client.
+2. **Medium. One user could hold every instance of a shared endpoint.** Fixed with
+   `MaxConnsPerUser` (default 2). The cap is enforced after identification. Slow clients
+   from many distinct users remain bounded only by the instance count. Per-user endpoints
+   (rule 5) are the real fix.
+3. **Medium. The impersonation around the reopen was not observable in tests.** Fixed with a
+   test that asserts the reopen runs while impersonating, validation runs without it, and a
+   failed impersonation opens and validates nothing.
+4. **Low. `Serve` could be called twice and share an instance's OVERLAPPED.** Fixed: a
+   second call returns `ErrAlreadyServing`.
+5. **Low. Rule 2 rejects common directories when the broker is SYSTEM.** Not changed. This
+   matches the rule as written. Rejected directories include ones owned by Administrators
+   after elevated creation, ones that inherit BU or AU from a drive root, and directories
+   on Dev Drive (ReFS). The CLI must create the data directory itself with the user as
+   owner and a protected DACL. `winbox doctor` must explain each rejection reason. Whether
+   to allow ReFS for Dev Drive is an open question.
+6. **Low. Untested branches.** Fixed:
+   - the not-local-disk branch is tested through the NPFS root;
+   - the IU ACL is tested on a live pipe;
+   - a persistently failing instance now backs off up to 5 seconds instead of logging every
+     100 ms.
+
+   The "not NTFS" branch still has no test, because it needs a FAT or ReFS volume.
+7. **Nit. The `MaxHandle` comment was misleading.** Fixed.
