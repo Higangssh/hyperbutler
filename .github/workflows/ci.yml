@@ -1,0 +1,220 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  # Superseded PR runs are cancelled. Runs on main always finish so every commit there
+  # gets a result.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  # Use exactly the Go that setup-go installed; never download another toolchain.
+  GOTOOLCHAIN: local
+
+defaults:
+  run:
+    shell: pwsh
+
+# Most winbox code is Windows-only (_windows.go files, HCS/WHP syscalls), so every job
+# runs on Windows. Tests tagged `integration` need a hypervisor; nothing here passes
+# `-tags integration`, so they are never built or run in CI.
+jobs:
+  test:
+    name: vet, gofmt, test -race
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          check-latest: true
+          cache-dependency-path: |
+            go.mod
+            go.sum
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: gofmt
+        run: |
+          $files = gofmt -l .
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if ($files) {
+            $files | ForEach-Object { Write-Host "::error file=$_::file is not gofmt-formatted" }
+            Write-Host 'Run "gofmt -w ." and commit the result.'
+            exit 1
+          }
+
+      # Catch code that only builds on the host platform: windows/arm64 for the
+      # syscall code, linux for guest/. A platform with no packages yet is skipped.
+      - name: go vet (cross-compile)
+        env:
+          CGO_ENABLED: "0"
+        run: |
+          $ErrorActionPreference = 'Stop'
+          foreach ($target in 'windows/arm64', 'linux/amd64', 'linux/arm64') {
+            $env:GOOS, $env:GOARCH = $target -split '/'
+            $pkgs = @(go list ./... 2>$null)
+            if ($LASTEXITCODE -ne 0) { throw "go list failed for $target" }
+            if ($pkgs.Count -eq 0) { Write-Host "$target`: no packages, skipped"; continue }
+            Write-Host "$target`: vetting $($pkgs.Count) package(s)"
+            go vet ./...
+            if ($LASTEXITCODE -ne 0) { throw "go vet failed for $target" }
+          }
+
+      - name: go test -race
+        env:
+          CGO_ENABLED: "1" # the race detector needs cgo (gcc ships with windows-latest)
+        run: go test -race -count=1 ./...
+
+  fuzz:
+    name: fuzz smoke (30s per target)
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          check-latest: true
+          cache-dependency-path: |
+            go.mod
+            go.sum
+
+      - name: Run every Fuzz target
+        env:
+          FUZZTIME: 30s
+          # Fail if fewer targets than this are found, so a renamed or mis-tagged target
+          # can't make the job pass silently. Raise it whenever a Fuzz target is added.
+          FUZZ_MIN_TARGETS: "0"
+        # `go test -fuzz` accepts one target in one package per run, so discover them
+        # first. Seed corpora already run as plain tests in the test job.
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          $pkgs = @(go list ./...)
+          if ($LASTEXITCODE -ne 0) { throw "go list ./... failed (exit $LASTEXITCODE)" }
+          if ($pkgs.Count -eq 0) { throw 'go list ./... matched no packages' }
+
+          $ran = 0
+          $failed = @()
+          foreach ($pkg in $pkgs) {
+            # -list prints matching test names one per line, then an "ok" summary line.
+            # A build failure stops the job instead of looking like "no targets".
+            $out = @(go test -list '^Fuzz' $pkg)
+            if ($LASTEXITCODE -ne 0) { $out | Write-Host; throw "go test -list failed for $pkg" }
+            $targets = @($out | Where-Object { $_ -match '^Fuzz\w*$' })
+            foreach ($target in $targets) {
+              Write-Host "::group::$pkg $target"
+              go test -run '^$' -fuzz "^$target`$" -fuzztime $env:FUZZTIME $pkg
+              $rc = $LASTEXITCODE
+              Write-Host '::endgroup::'
+              $ran++
+              if ($rc -ne 0) {
+                Write-Host "::error title=fuzz smoke::$target in $pkg failed (exit $rc)"
+                $failed += "$pkg $target"
+              }
+            }
+          }
+
+          if ($ran -lt [int]$env:FUZZ_MIN_TARGETS) {
+            Write-Host "::error title=fuzz smoke::Found $ran Fuzz target(s), expected at least $env:FUZZ_MIN_TARGETS."
+            exit 1
+          }
+          if ($ran -eq 0) {
+            Write-Host "::warning title=fuzz smoke::No Fuzz targets found in $($pkgs.Count) package(s); nothing was fuzzed."
+            exit 0
+          }
+          Write-Host "Fuzzed $ran target(s) across $($pkgs.Count) package(s); $($failed.Count) failed."
+          if ($failed.Count -gt 0) { exit 1 }
+
+      - name: Upload crashing inputs
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: fuzz-crashers
+          path: '**/testdata/fuzz/**'
+          if-no-files-found: ignore
+          retention-days: 14
+
+  govulncheck:
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          # Scan the latest patch release of the Go line in go.mod, not whatever older
+          # patch the runner image happens to cache.
+          check-latest: true
+          cache-dependency-path: |
+            go.mod
+            go.sum
+
+      # Fetched through the Go module proxy and verified against sum.golang.org.
+      - name: govulncheck
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...
+
+  golangci-lint:
+    runs-on: windows-latest
+    timeout-minutes: 15
+    env:
+      # Bump both together. The hash is the release asset's SHA-256, as published in
+      # golangci-lint-<version>-checksums.txt and in the GitHub release asset digest.
+      GOLANGCI_LINT_VERSION: 2.15.0
+      GOLANGCI_LINT_SHA256: cd7ea6063c95de245e17e5246e42bdc14bb221792c429dbd239ab3a6ade6ca6a
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          check-latest: true
+          cache-dependency-path: |
+            go.mod
+            go.sum
+
+      - name: Install golangci-lint (checksum-pinned)
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $ProgressPreference = 'SilentlyContinue'
+          $name ="golangci-lint-$env:GOLANGCI_LINT_VERSION-windows-amd64"
+          $zip = Join-Path $env:RUNNER_TEMP "$name.zip"
+          $url = "https://github.com/golangci/golangci-lint/releases/download/v$env:GOLANGCI_LINT_VERSION/$name.zip"
+          Invoke-WebRequest -Uri $url -OutFile $zip
+          $got = (Get-FileHash -Algorithm SHA256 $zip).Hash.ToLowerInvariant()
+          if ($got -ne $env:GOLANGCI_LINT_SHA256) {
+            throw "golangci-lint checksum mismatch: got $got, want $env:GOLANGCI_LINT_SHA256"
+          }
+          Expand-Archive -Path $zip -DestinationPath $env:RUNNER_TEMP -Force
+          Join-Path $env:RUNNER_TEMP $name | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+
+      - name: Verify config
+        run: golangci-lint config verify
+
+      - name: golangci-lint run
+        run: golangci-lint run ./...
+
+      - name: Formatting (gofmt, goimports)
+        run: golangci-lint fmt --diff ./...

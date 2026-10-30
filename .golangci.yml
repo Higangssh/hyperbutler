@@ -1,0 +1,74 @@
+# golangci-lint v2 configuration. See https://golangci-lint.run/docs/configuration/file/
+version: "2"
+
+run:
+  # Integration tests (//go:build integration) need a hypervisor. They are still
+  # linted so they keep compiling; linting never runs them.
+  build-tags:
+    - integration
+
+linters:
+  # "standard" = errcheck, govet, ineffassign, staticcheck, unused.
+  default: standard
+  enable:
+    - bodyclose # unclosed HTTP response bodies (Docker API server and clients)
+    - errorlint # errors.Is/As instead of == and type assertions on wrapped errors
+    - gosec # security footguns; important for code that parses untrusted input
+    - misspell # typos in comments and strings (public project)
+    - nolintlint # //nolint directives must be specific and justified
+    - unconvert # needless conversions, common around syscall/unsafe code
+    - usestdlibvars # http.MethodGet etc. instead of literals
+  settings:
+    errcheck:
+      exclude-functions:
+        # LazyProc.Call always returns a non-nil error (GetLastError). Win32 and HCS
+        # report failure through r1 (BOOL/HRESULT), which callers check instead.
+        - (*syscall.LazyProc).Call
+        - (*syscall.Proc).Call
+        - (*golang.org/x/sys/windows.LazyProc).Call
+        - (*golang.org/x/sys/windows.Proc).Call
+    gosec:
+      excludes:
+        - G103 # use of unsafe: required for Win32/HCS syscalls, reviewed by hand
+        - G104 # unhandled errors: errcheck covers this, with the exceptions above
+    misspell:
+      locale: US
+    nolintlint:
+      require-explanation: true
+      require-specific: true
+  # No exclusion presets: std-error-handling hides unchecked Close/Flush/os.Remove (where
+  # disk write errors surface) and common-false-positives hides gosec G204/G304 (command
+  # and path injection). Ignore an error explicitly with `_ =` or a justified //nolint.
+  exclusions:
+    rules:
+      # Tests may ignore errors and use weak randomness or temp files freely.
+      - path: _test\.go
+        linters:
+          - errcheck
+          - gosec
+      # spike/ is throwaway research code (see its ADRs). HRESULT and DWORD values come
+      # back from syscalls as uintptr, so the uint32 narrowing that G115 flags is intended
+      # there. Production packages keep G115: it matters for wire framing lengths.
+      - path: ^spike/
+        linters:
+          - gosec
+        text: G115
+      # Spike code may drop errors from read-only handle cleanup; production code may not.
+      - path: ^spike/
+        linters:
+          - errcheck
+        text: "`[A-Za-z_.]*Close` is not checked"
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
+  settings:
+    goimports:
+      local-prefixes:
+        - github.com/Higangssh/winbox
+
+issues:
+  # Report everything, not just the first few per linter.
+  max-issues-per-linter: 0
+  max-same-issues: 0
