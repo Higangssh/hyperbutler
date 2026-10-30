@@ -195,10 +195,47 @@ The guest sees discard support: `provisioning_mode=unmap`, `discard_granularity=
     alignment: vhdmp unmaps only whole 32 MiB blocks, and FAT32's data area does not start on
     a 32 MiB boundary. This is not proven. ext4, aligned to 32 MiB and mounted with
     `discard`, or run through periodic `fstrim`, is the next test.
+#### Follow-up runs (non-elevated, Hyper-V Administrators member, 2026-10-30)
+
+These were run after the account joined Hyper-V Administrators, without elevation. That also
+answers ADR 0002 open question (b): group membership is enough.
+
+There are two new guest modes:
+- `-mode align` fills the raw device with `dd conv=fsync`, then discards 256 MiB starting at
+  4 MiB (off a 32 MiB boundary) and then 256 MiB starting at 512 MiB (on a boundary).
+- `-mode trimonly` is the FAT32 flow with a second `fstrim` in place of `blkdiscard`.
+
+| Host allocation (MiB) | written | unaligned discard | aligned discard | after VM exit |
+|---|---|---|---|---|
+| Sparse VHDX, `align` | 1028 | **772** | **516** | 516 |
+| Plain VHDX, `align` | 1028 | 1028 | 1028 | 1028 |
+
+| Host allocation (MiB) | written | deleted | 1st `fstrim` | rewritten | rm + 2nd `fstrim` | after VM exit |
+|---|---|---|---|---|---|---|
+| Sparse VHDX, `trimonly` | 1032 | 1032 | 1032 | 1060 | **36** | 36 |
+| Plain VHDX, `trimonly` | 1060 | 1060 | 1060 | 1060 | 1060 | **36** |
+
+What this shows:
+- **Alignment is not the cause.** On the sparse VHDX, a discard that started off a block
+  boundary freed its full 256 MiB as well.
+- **`fstrim` does work on HCS.** The second FAT32 `fstrim` freed the space online on the
+  sparse VHDX. On the plain VHDX it freed the space when the VM exited.
+- **Why the first `fstrim` freed nothing (hypothesis).** Before the first `fstrim`, the data
+  had only been `sync`ed, and FAT `sync` sends no device flush. Before the second, the file
+  system had been unmounted and remounted, which flushes. The `align` run wrote with
+  `conv=fsync`, and its discards worked at once. So vhdmp seems to ignore an unmap of blocks
+  whose writes have not yet been flushed. To confirm, flush before the first `fstrim`. ext4
+  commits its journal with flushes, so normal use is likely fine, but it needs a test.
+- **Plain VHDX gives space back only when the disk is closed.** That makes it fit for
+  "reclaim on `winbox stop`", not for REQ-DISK-001's "while running".
+- **Sparse VHDX with `AlwaysAllowSparseFiles` gives space back online.** It is the candidate
+  for REQ-DISK-001 on HCS. WSL marks this path as experimental, so it is not yet trusted.
+
 - **Still open:**
-  - Run `fstrim` alone, without `blkdiscard`, and then exit, to tell "shrinks on close" apart
-    from "shrinks after a full discard".
-  - Repeat with ext4 and with the WSL corruption scenario (host disk full, WSL issue #41837).
+  - Confirm the flush hypothesis: `fsync`, or unmount, before the first `fstrim`.
+  - Repeat with ext4 and many small files.
+  - Repeat the WSL corruption scenario: host disk full while a sparse VHDX grows (WSL issue
+    #41837).
 
 ## Q3: Can a non-admin call `CompactVirtualDisk`?
 

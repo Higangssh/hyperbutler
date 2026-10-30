@@ -78,9 +78,14 @@ Elevated run with the ADR 0005 prototype guest (initramfs with dockerd 29.9.2), 
 - With 512 MB the same image failed. The kernel reported `Initramfs unpacking failed: write
   error`, and dockerd later could not create its bridge.
 
-Disk reclaim on HCS SCSI is recorded in `docs/research/disk-reclaim.md`. A sparse VHDX with
-`AlwaysAllowSparseFiles` returned space online after a whole-device discard. FAT32 `fstrim`
-did not.
+Disk reclaim on HCS SCSI is recorded in `docs/research/disk-reclaim.md`:
+- **Sparse VHDX** with `AlwaysAllowSparseFiles`: guest discards, including `fstrim`, return
+  space to the host while the VM runs. This seems to need the data flushed first.
+- **Plain VHDX:** space comes back only when the VM exits.
+
+This answers open question (b): **yes.** After the account joined Hyper-V Administrators and
+signed in again, a non-elevated process booted the same Alpine VM through HCS. `Alpine Init`
+was reached in 744 ms, the same as elevated.
 
 QEMU-WHPX baseline, same day. Run non-elevated, so no group membership was needed:
 

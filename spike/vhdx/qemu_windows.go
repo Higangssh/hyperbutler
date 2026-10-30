@@ -51,6 +51,18 @@ i=0; while [ ! -b $D ] && [ $i -lt 100 ]; do sleep 0.1; i=$((i+1)); done
 [ -b $D ] || { echo "@@E no $D"; ls /sys/block | sed 's/^/@@E have: /'; echo "@@DONE"; poweroff -f; }
 echo "@@I discard_granularity=$(cat $Q/discard_granularity) discard_max_bytes=$(cat $Q/discard_max_bytes) write_zeroes_max_bytes=$(cat $Q/write_zeroes_max_bytes)"
 for f in /sys/block/${WB_DEV:-vda}/device/scsi_disk/*/provisioning_mode; do [ -f $f ] && echo "@@I provisioning_mode=$(cat $f)"; done
+# WB_MODE=align: no filesystem. Fill the device, then discard 256 MiB starting off a 32 MiB
+# boundary (4 MiB) and 256 MiB starting on one (512 MiB), measuring after each.
+if [ "$WB_MODE" = align ]; then
+	echo "@@I write: $(dd if=/dev/urandom of=$D bs=1M count=$WB_MB conv=fsync 2>&1 | tail -n 1)"
+	m written
+	echo "@@I unaligned: $(blkdiscard -o 4194304 -l 268435456 $D 2>&1 && echo ok || echo failed)"
+	m discard-unaligned-256M
+	echo "@@I aligned: $(blkdiscard -o 536870912 -l 268435456 $D 2>&1 && echo ok || echo failed)"
+	m discard-aligned-256M
+	echo "@@DONE"
+	poweroff -f
+fi
 mkfs.vfat -F 32 $D >/dev/null || echo "@@E mkfs"
 mount -t vfat -o iocharset=ascii $D /mnt || echo "@@E mount"
 m formatted
@@ -70,9 +82,16 @@ umount /mnt
 mount -t vfat -o iocharset=ascii $D /mnt
 sha2=$(sha1sum /mnt/big2 | cut -d' ' -f1)
 [ "$sha1" = "$sha2" ] && echo "@@I reread_ok" || echo "@@E reread_mismatch"
-rm /mnt/big2; umount /mnt
-echo "@@I blkdiscard: $(blkdiscard $D 2>&1 && echo ok || echo failed)"
-m blkdiscarded
+rm /mnt/big2
+if [ "$WB_MODE" = trimonly ]; then
+	echo "@@I fstrim2: $(fstrim -v /mnt 2>&1)"
+	umount /mnt
+	m fstrimmed-again
+else
+	umount /mnt
+	echo "@@I blkdiscard: $(blkdiscard $D 2>&1 && echo ok || echo failed)"
+	m blkdiscarded
+fi
 echo "@@DONE"
 poweroff -f
 `

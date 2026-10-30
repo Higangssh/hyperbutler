@@ -125,6 +125,7 @@ func runHCS(args []string) error {
 	settle := fs.Duration("settle", 5*time.Second, "measure again this long after each marker")
 	printCfg := fs.Bool("print-config", false, "print the HCS document and exit")
 	schemaMinor := fs.Int("schema-minor", 1, "HCS schema 2.x minor version; raise it if HCS rejects AlwaysAllowSparseFiles")
+	mode := fs.String("mode", "", `guest test: "" (FAT32 write/delete/fstrim/blkdiscard), "trimonly" (same, no blkdiscard), or "align" (raw device, unaligned vs 32 MiB-aligned discards)`)
 	fs.Parse(args)
 
 	var mods, names []string
@@ -160,7 +161,7 @@ func runHCS(args []string) error {
 
 	id := fmt.Sprintf("winbox-vhdx-spike-%d", time.Now().UnixNano())
 	pipe := `\\.\pipe\` + id + "-com1"
-	cmdline := fmt.Sprintf("console=ttyS0 rdinit=/wbinit loglevel=3 WB_DEV=sda WB_MB=%d WB_MODS=%s", *writeMB, strings.Join(names, ","))
+	cmdline := fmt.Sprintf("console=ttyS0 rdinit=/wbinit loglevel=3 WB_DEV=sda WB_MB=%d WB_MODS=%s WB_MODE=%s", *writeMB, strings.Join(names, ","), *mode)
 	cfg, err := hcsConfig(filepath.Join(*guestDir, "vmlinuz-virt"), initrd, cmdline, pipe, vhdx, *sparse, *schemaMinor)
 	if err != nil {
 		return err
