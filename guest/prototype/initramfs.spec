@@ -39,6 +39,7 @@ file usr/bin/docker-proxy ${DOCKER}/docker-proxy 0755
 # Guest binaries cross-compiled from this repo (GOOS=linux).
 file usr/bin/agent ${GUESTBIN}/agent 0755
 file usr/bin/sockfwd ${GUESTBIN}/sockfwd 0755
+file usr/bin/netfwd ${GUESTBIN}/netfwd 0755
 
 # Only the modules listed in modules.txt and their dependencies, decompressed.
 tree lib/modules ${MODULES} 0755 0644

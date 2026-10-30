@@ -85,6 +85,37 @@ func TestDocumentHvSocket(t *testing.T) {
 	}
 }
 
+func TestDocumentBindService(t *testing.T) {
+	c := testConfig(t)
+	sddl := c.Services[0].ConnectSDDL
+	c.Services = append(c.Services, Service{ID: mustGUID(t, "00000400-facb-11e6-bd58-64006a7986d3"), BindSDDL: sddl})
+	b, err := c.Document()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc struct {
+		VirtualMachine struct {
+			Devices struct {
+				HvSocket struct {
+					HvSocketConfig struct {
+						ServiceTable map[string]struct {
+							BindSecurityDescriptor    string
+							ConnectSecurityDescriptor string
+						}
+					}
+				}
+			}
+		}
+	}
+	if err := json.Unmarshal(b, &doc); err != nil {
+		t.Fatal(err)
+	}
+	svc := doc.VirtualMachine.Devices.HvSocket.HvSocketConfig.ServiceTable["00000400-facb-11e6-bd58-64006a7986d3"]
+	if svc.BindSecurityDescriptor != sddl || svc.ConnectSecurityDescriptor != DenyAllSDDL {
+		t.Fatalf("bind-only service rendered as %+v", svc)
+	}
+}
+
 func TestDocumentNoConsole(t *testing.T) {
 	c := testConfig(t)
 	c.ConsolePipe = ""
@@ -107,6 +138,7 @@ func TestValidate(t *testing.T) {
 		{"memory too small", func(c *Config) { c.MemoryMB = 128 }},
 		{"no cpus", func(c *Config) { c.ProcessorCount = 0 }},
 		{"service without sddl", func(c *Config) { c.Services[0].ConnectSDDL = "" }},
+		{"service without any sddl", func(c *Config) { c.Services[0] = Service{ID: c.Services[0].ID} }},
 		{"duplicate service", func(c *Config) { c.Services = append(c.Services, c.Services[0]) }},
 	}
 	for _, tt := range tests {

@@ -38,18 +38,22 @@ type Config struct {
 	ProcessorCount int
 	// ConsolePipe, if set, is the named pipe HCS serves COM1 on.
 	ConsolePipe string
-	// Services are the guest hvsock services (typically AF_VSOCK ports, see
-	// transport.VsockServiceID) that host processes may connect to. Every other service
-	// is closed to host connections, and no host process may bind (listen for
-	// connections from the guest).
+	// Services are the hvsock services (typically AF_VSOCK ports, see
+	// transport.VsockServiceID) that host processes may connect to in the guest, or bind
+	// on the host to accept connections from the guest. Every other service is closed in
+	// both directions.
 	Services []Service
 }
 
-// Service grants connect access to one guest hvsock service.
+// Service grants access to one hvsock service. An empty descriptor denies everyone.
 type Service struct {
 	ID guid.GUID
-	// ConnectSDDL says which host principals may connect, for example UserOnlySDDL.
+	// ConnectSDDL says which host principals may connect to the guest's service, for
+	// example UserOnlySDDL.
 	ConnectSDDL string
+	// BindSDDL says which host principals may listen on the service for connections
+	// from the guest (for example the user-mode network stack of ADR 0006).
+	BindSDDL string
 }
 
 const (
@@ -71,8 +75,8 @@ func (c *Config) Validate() error {
 	}
 	seen := make(map[guid.GUID]bool, len(c.Services))
 	for _, s := range c.Services {
-		if s.ConnectSDDL == "" {
-			return fmt.Errorf("vm: service %s has no connect security descriptor", s.ID)
+		if s.ConnectSDDL == "" && s.BindSDDL == "" {
+			return fmt.Errorf("vm: service %s has no connect or bind security descriptor", s.ID)
 		}
 		if seen[s.ID] {
 			return fmt.Errorf("vm: service %s is listed twice", s.ID)
@@ -80,6 +84,13 @@ func (c *Config) Validate() error {
 		seen[s.ID] = true
 	}
 	return nil
+}
+
+func orDenyAll(sddl string) string {
+	if sddl == "" {
+		return DenyAllSDDL
+	}
+	return sddl
 }
 
 // Document renders the HCS schema 2.1 compute system document.
@@ -90,8 +101,8 @@ func (c *Config) Document() ([]byte, error) {
 	table := make(map[string]hvSocketService, len(c.Services))
 	for _, s := range c.Services {
 		table[s.ID.String()] = hvSocketService{
-			BindSecurityDescriptor:    DenyAllSDDL,
-			ConnectSecurityDescriptor: s.ConnectSDDL,
+			BindSecurityDescriptor:    orDenyAll(s.BindSDDL),
+			ConnectSecurityDescriptor: orDenyAll(s.ConnectSDDL),
 		}
 	}
 	doc := document{

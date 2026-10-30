@@ -203,6 +203,108 @@ DNS forwarder asks the Windows resolver rather than fixed upstream servers. This
 tested. The traffic also leaves as winbox's own sockets, so VPN clients, firewalls and
 proxies see an ordinary host process.
 
+## The user-mode stack: gVisor in winbox-dev
+
+This is the implementation ADR 0006 asked for (`internal/netstack`, `guest/cmd/netfwd`).
+The machine and VPN are the same as above. The guest is the ADR 0005 prototype initramfs
+with dockerd 29.9.2, 1024 MB and 2 vCPUs. The design is in the ADR's "Implementation"
+section.
+
+### Boot and Docker
+
+| Step | Result |
+|---|---|
+| Guest link up (netfwd connected over hvsock) | 0.89–1.17 s after `HcsCreateComputeSystem` |
+| dockerd `/_ping` | 1.15–1.39 s (unchanged) |
+| `docker pull alpine`, fresh boot (3.6 MB compressed) | 2.86, 3.06 s; repeated pulls 2.7–2.9 s |
+| `docker pull ubuntu:24.04`, fresh boot | 3.66, 3.49 s |
+| `docker pull python:3.13-slim`, fresh boot | 4.02, 3.97 s |
+| `docker pull nginx` | 4.7–5.3 s |
+| winbox-dev CPU during those pulls | 47–344 ms, 0.02–0.09 cores |
+| `docker run --rm alpine wget -qO- https://example.com` | 214–478 ms including container start; prints the page |
+| `docker run -d -p 8080:80 nginx`, then curl on the host | `127.0.0.1:8080`, `[::1]:8080` and `localhost:8080` serve nginx 26–99 ms after start; unpublished on `docker rm` |
+
+Pulls are dominated by registry round trips (token, manifest, redirects), not by
+bandwidth. For bandwidth, the same 100 MiB HTTPS file
+(`proof.ovh.net/files/100Mb.dat`) was downloaded by the host (`curl.exe`) and by a
+container (`busybox wget`), alternating, n=3 each: **host 41, 31, 51 Mbit/s; container
+32, 65, 52 Mbit/s**, with winbox-dev at 0.05–0.08 cores. Both are limited by the internet
+path. The guest cannot be told apart from the host at this n.
+
+### Local throughput and CPU against raw hvsock
+
+`winbox-dev run -bench-bytes N` boots with `winbox.netbench=1`. netfwd then serves a zero
+source, a sink and an echo on TCP 5201/5203/5205 (reached through `Publish`, so through
+the stack plus one Windows loopback hop) and on vsock 5202/5204/5206 (raw hvsock). Each
+run moves 1 GiB. "Cores" is winbox-dev's own CPU time over wall time, so the
+hypervisor's (vmwp, vmmem) is not included.
+
+| Configuration | Guest to host, stack | Guest to host, raw | Host to guest, stack | Host to guest, raw |
+|---|---|---|---|---|
+| First build: MTU 1500, 1 MiB buffers, RACK on | 3.35–3.87 Gbit/s | 8.2–16.7 | **0.18–0.21** (85% of segments retransmitted) | 22–29 |
+| MTU 1500, RACK off | 3.16–3.39 | 5.6–9.0 | 2.88–3.38 | 23–33 |
+| MTU 9000, 1 MiB buffers, RACK off | 4.69–4.83 (0.31–0.33 cores per Gbit/s) | 7.2–14.2 | 2.62–4.10 | 23–25 |
+| MTU 65520, 1 MiB buffers, RACK off | 4.13–4.43 | 9.5–10.6 | 2.88–3.98 | 23–26 |
+| **Shipped:** MTU 9000, 256 KiB buffers, boot 1 | 3.68–3.79 (0.22–0.24) | 9.35–10.12 | 4.20–4.88 (0.17–0.24) | 24–27 |
+| **Shipped**, boot 2 | 1.76–4.48 (0.28–0.63) | 7.75–13.29 | 4.68–5.43 (0.19–0.32) | 23–26 |
+
+- The host-to-guest collapse in the first build was not loss. The guest reported no drops
+  (`rx_dropped` 0, softnet drops 0), but `TCPDSACKOldSent` was 284,812 after a 64 MiB
+  transfer: gVisor's RACK and tail loss probe re-sent segments that had arrived. Raising
+  the guest's `netdev_max_backlog` alone changed nothing. Turning RACK off fixed it.
+- Batching was needed in both directions. netfwd drains the TAP until EAGAIN into one
+  vsock write, and the host queues frames for the guest and writes them in one hvsock write.
+- The raw hvsock figure varies by 2x between runs of the same boot, so the ratio is noisy.
+
+### Small-request latency (ADR 0003)
+
+64-byte request and 64-byte reply, one at a time, n=20000 per row, timed with
+`QueryPerformanceCounter` (Go's monotonic clock on Windows ticks about every 0.5 ms).
+"Under load" runs a host-to-guest bulk transfer through the stack at the same time.
+
+| Path | p50 | p99 | p99.9 | max |
+|---|---|---|---|---|
+| raw hvsock, idle | 53–56 µs | 80–154 µs | 144–267 µs | 0.75–1.3 ms |
+| stack, idle | 120–131 µs | 185–271 µs | 0.35–2.0 ms | 1.9–10.6 ms |
+| raw hvsock, under load | 50–52 µs | 103–273 µs | 0.5–2.0 ms | 4–30 ms |
+| stack, under load | 154–171 µs | 444–710 µs | **11.6–13.5 ms** | 17–40 ms |
+
+The stack adds about 70 µs at the median and about 120 µs at p99 when idle. Under load,
+p99.9 sits at 11–13 ms on every run. That is longer than the 1 MiB guest-bound queue
+takes to drain at the measured rates (2–3 ms), so a GC pause or scheduler delay is the
+likely cause. A `GODEBUG=gctrace=1` run would tell them apart; this was not done.
+
+### VPN (Tailscale), from a container
+
+| Check | Result |
+|---|---|
+| `nslookup peer-a.<tailnet>.ts.net` (MagicDNS through NRPT) | 100.64.0.10 |
+| `nslookup peer-a` (single label; the host applies the tailnet search suffix) | 100.64.0.10 |
+| `nslookup registry-1.docker.io` in the same run | 8 public addresses |
+| `nslookup nosuch.<tailnet>.ts.net` | NXDOMAIN |
+| TCP to tailnet peers by IP (`100.64.0.10:80`, `100.64.0.11:445`) and by MagicDNS name (`:80`, `:22`) | connected |
+| TCP to the host's own Tailscale address (`100.64.0.2:445`, `:135`) | refused by the policy |
+| TCP to 169.254.169.254:80 | refused |
+
+The host resolver's NRPT rules apply to the stack's DNS forwarder, so split DNS works
+with zero configuration. Only Tailscale was tested; full-tunnel VPNs were not.
+
+### Memory
+
+winbox-dev idle with the stack: 21 MB working set, 56 MB private. After the pulls and
+downloads: 42 MB and 77 MB. The stack's TCP buffers are bounded at 256 MiB in total
+(512 connections x 2 x 256 KiB). No test stressed this bound.
+
+### Reproducing
+
+```powershell
+powershell -ExecutionPolicy Bypass -File guest\prototype\build.ps1 -Out $env:TEMP\winbox-out
+go build -o $env:TEMP\winbox-dev.exe ./cmd/winbox-dev
+& $env:TEMP\winbox-dev.exe run -kernel $env:TEMP\winbox-out\vmlinuz-virt -initrd $env:TEMP\winbox-out\initramfs-winbox.gz
+docker -H npipe:////./pipe/docker_engine_winbox run --rm alpine wget -qO- https://example.com
+& $env:TEMP\winbox-dev.exe run ... -bench-bytes 1073741824 [-net-mtu 1500]   # throughput and latency
+```
+
 ## Comparison
 
 | | HNS NAT (or ICS) | User-mode stack over hvsock |
@@ -223,9 +325,9 @@ proxies see an ordinary host process.
 
 ## Open items
 
-- gvisor-tap-vsock itself was **not run**. Its source and binaries were not downloaded in
-  this session. The next spike should run its `gvproxy` on hvsock against this guest and
-  measure CPU and throughput. That is the number that could overturn ADR 0006.
+- The gVisor stack now runs in winbox-dev; see "The user-mode stack" above. It misses the
+  50% gate under the 256 KiB buffer bound (medians 36–38% of raw hvsock), and the LAN registry
+  comparison against HNS NAT has not been run.
 - Whether a non-member of Hyper-V Administrators can call HCN.
 - Full-tunnel VPN clients, and coexistence with WSL and Docker Desktop installed
   (`bench/net-vpn`, `bench/coexist`).

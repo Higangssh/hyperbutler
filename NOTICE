@@ -6,7 +6,14 @@ This product is licensed under the Apache License, Version 2.0 (see LICENSE).
 Third-party code included in or adapted for this project is listed below with its source
 and license.
 
-(none yet)
+- internal/netstack/stack.go: the TCP and UDP forwarders (a gVisor tcp/udp.Forwarder
+  whose handler dials the destination with a host socket and proxies the bytes) and
+  the use of gvisor-tap-vsock's tap.LinkEndpoint in a promiscuous, spoofing gVisor stack
+  follow gvisor-tap-vsock v0.9.0 (pkg/virtualnetwork, pkg/services/forwarder),
+  https://github.com/containers/gvisor-tap-vsock, Apache License 2.0, Copyright The
+  gvisor-tap-vsock Authors. The code was written for winbox; no file was copied.
+- internal/netstack/frame: the 4-byte big-endian length prefix is gvisor-tap-vsock's
+  "qemu" stream protocol (same source and license).
 
 Third-party Go modules linked into winbox binaries:
 
@@ -20,4 +27,39 @@ Third-party Go modules linked into winbox binaries:
 - golang.org/x/sys v0.49.0
   https://cs.opensource.google/go/x/sys
   BSD 3-Clause License, Copyright 2009 The Go Authors.
-  Used by internal/transport for Windows API calls (security descriptors, pipe I/O).
+  Used by internal/transport for Windows API calls (security descriptors, pipe I/O),
+  and by guest/cmd/netfwd for the TAP device and AF_VSOCK.
+
+The user-mode guest network (internal/netstack, ADR 0006) links these into winbox-dev:
+
+- github.com/containers/gvisor-tap-vsock v0.9.0
+  https://github.com/containers/gvisor-tap-vsock
+  Apache License 2.0, Copyright The gvisor-tap-vsock Authors.
+  pkg/tap (the gateway link endpoint) only.
+
+- gvisor.dev/gvisor v0.0.0-20260413194555-9680d69bf798
+  https://github.com/google/gvisor
+  Apache License 2.0, Copyright The gVisor Authors.
+  The TCP/IP stack (pkg/tcpip) and its buffer and sync packages.
+
+- github.com/miekg/dns v1.1.73
+  https://github.com/miekg/dns
+  BSD 3-Clause License, Copyright (c) 2009 The Go Authors, extensions Copyright (c)
+  2011 Miek Gieben. DNS message parsing and packing for the guest DNS forwarder.
+
+- github.com/google/gopacket v1.1.19
+  https://github.com/google/gopacket
+  BSD 3-Clause License, Copyright (c) 2012 Google, Inc., Copyright (c) 2009-2011
+  Andreas Krennmair. Imported by gvisor-tap-vsock pkg/tap (debug packet dumps).
+
+- github.com/sirupsen/logrus v1.10.2
+  https://github.com/sirupsen/logrus
+  MIT License, Copyright (c) 2014 Simon Eskildsen. Imported by gvisor-tap-vsock pkg/tap.
+
+- github.com/google/btree v1.1.2
+  https://github.com/google/btree
+  Apache License 2.0, Copyright Google Inc. Imported by gVisor.
+
+- golang.org/x/exp v0.0.0-20231110203233-9a3e6036ecaa and golang.org/x/time v0.12.0
+  https://cs.opensource.google/go/x/exp, https://cs.opensource.google/go/x/time
+  BSD 3-Clause License, Copyright 2009 The Go Authors. Imported by gVisor.

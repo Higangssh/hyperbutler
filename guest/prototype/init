@@ -42,19 +42,50 @@ modprobe -a overlay bridge br_netfilter veth
 t modules-done
 
 ip link set lo up
-# The prototype only knows QEMU user networking (slirp). Override with winbox.ip=.
+# Defaults are QEMU user networking (slirp). On Hyper-V, winbox passes the user-mode
+# network of ADR 0006 on the command line: winbox.net=<host vsock port> starts netfwd,
+# which creates eth0 as a TAP relayed to the host stack, and winbox.ip/gw/dns configure it.
 ADDR=10.0.2.15/24
 GW=10.0.2.2
 DNS=10.0.2.3
 LOGLEVEL=warn
+NET=
+MTU=1500
+NETBENCH=
 for arg in $(cat /proc/cmdline); do
 	case "$arg" in
 	winbox.ip=*) ADDR=${arg#winbox.ip=} ;;
 	winbox.gw=*) GW=${arg#winbox.gw=} ;;
 	winbox.dns=*) DNS=${arg#winbox.dns=} ;;
 	winbox.loglevel=*) LOGLEVEL=${arg#winbox.loglevel=} ;;
+	winbox.net=*) NET=${arg#winbox.net=} ;;
+	winbox.mtu=*) MTU=${arg#winbox.mtu=} ;;
+	winbox.netbench=1) NETBENCH="-bench-tcp 5201 -bench-vsock 5202" ;;
 	esac
 done
+if [ -n "$NET" ] && [ -d /sys/bus/vmbus ]; then
+	modprobe tun
+	# Restart netfwd if it dies. The TAP is persistent, so eth0 keeps its address.
+	(while :; do
+		# shellcheck disable=SC2086
+		netfwd -port "$NET" -dev eth0 -mtu "$MTU" $NETBENCH >/dev/console 2>&1
+		t "netfwd-exit $?"
+		sleep 1
+	done) &
+	i=0
+	while [ ! -e /sys/class/net/eth0 ] && [ $i -lt 250 ]; do
+		sleep 0.02
+		i=$((i + 1))
+	done
+	ip link set eth0 mtu "$MTU"
+	# Containers on docker0 are routed, not NATed: the host stack sends replies for
+	# them back to this guest address.
+	echo 1 >/proc/sys/net/ipv4/ip_forward
+	# Every frame netfwd writes to the TAP lands in the per-CPU input backlog; the
+	# default of 1000 drops bursts from the host (one hvsock read carries hundreds of
+	# frames) and turns host-to-guest TCP into retransmissions.
+	echo 16384 >/proc/sys/net/core/netdev_max_backlog
+fi
 if ip link show eth0 >/dev/null 2>&1; then
 	ip link set eth0 up
 	ip addr add "$ADDR" dev eth0
