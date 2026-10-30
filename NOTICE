@@ -20,4 +20,13 @@ Third-party Go modules linked into winbox binaries:
 - golang.org/x/sys v0.49.0
   https://cs.opensource.google/go/x/sys
   BSD 3-Clause License, Copyright 2009 The Go Authors.
-  Used by internal/transport for Windows API calls (security descriptors, pipe I/O).
+  Used by internal/transport for Windows API calls (security descriptors, pipe I/O),
+  and by internal/diag and bench/soak (process handle count, process snapshots).
+
+Third-party Go modules used only by tests (never linked into a shipped binary):
+
+- go.uber.org/goleak v1.3.0
+  https://github.com/uber-go/goleak
+  MIT License, Copyright (c) 2018 Uber Technologies, Inc.
+  Used by internal/leaktest, which every package's TestMain calls to fail tests that
+  leave goroutines running (ADR 0003, guardrail 1).
