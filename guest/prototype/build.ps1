@@ -7,7 +7,7 @@
 # 2. Unpacks them with the bsdtar that ships with Windows (System32\tar.exe).
 # 3. Picks the kernel modules in modules.txt plus their modules.dep closure and
 #    decompresses them (CONFIG_MODULE_DECOMPRESS is off in linux-virt).
-# 4. Cross-compiles guest/cmd/sockfwd for linux/amd64, builds out\initramfs-winbox.gz
+# 4. Cross-compiles guest/cmd/agent and guest/cmd/sockfwd for linux/amd64, builds out\initramfs-winbox.gz
 #    with guest/cmd/mkinitramfs, and copies the matching vmlinuz-virt next to it.
 #
 # Needs: Go (go.mod version), Windows 10 1803+ for tar.exe. Runs as a standard user.
@@ -138,8 +138,10 @@ Push-Location $repo
 $saved = $env:GOOS, $env:GOARCH, $env:CGO_ENABLED
 try {
     $env:GOOS = 'linux'; $env:GOARCH = 'amd64'; $env:CGO_ENABLED = '0'
-    & go build -trimpath -buildvcs=false -ldflags '-s -w -buildid=' -o (Join-Path $guestBin 'sockfwd') ./guest/cmd/sockfwd
-    if ($LASTEXITCODE -ne 0) { throw 'go build sockfwd failed' }
+    foreach ($cmd in 'agent', 'sockfwd') {
+        & go build -trimpath -buildvcs=false -ldflags '-s -w -buildid=' -o (Join-Path $guestBin $cmd) "./guest/cmd/$cmd"
+        if ($LASTEXITCODE -ne 0) { throw "go build $cmd failed" }
+    }
 } finally { $env:GOOS, $env:GOARCH, $env:CGO_ENABLED = $saved; Pop-Location }
 
 $img = Join-Path $Out $Name
