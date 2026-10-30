@@ -112,6 +112,18 @@ jobs:
           CGO_ENABLED: "1"
         run: go test -race -count=1 ./guest/... ./internal/leaktest/...
 
+  # The canonical guest image build (ADR 0005), the same one release.yml runs, so a
+  # change that breaks it fails here and not on the tag. Not strict: the prototype still
+  # carries the unsigned Docker static tarball, which only a release refuses. Pushes to
+  # main also build the source bundle and license texts, so that path is tested before
+  # a tag needs it.
+  guest-image:
+    uses: ./.github/workflows/guest-image.yml
+    permissions:
+      contents: read
+    with:
+      with-sources: ${{ github.event_name == 'push' }}
+
   fuzz:
     name: fuzz smoke (30s per target)
     runs-on: windows-latest

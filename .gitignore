@@ -1,6 +1,6 @@
 # Build output
 /bin/
-/dist/
+/dist/out/
 *.exe
 *.test
 /*.out
