@@ -22,6 +22,9 @@ slink var/run ../run
 dir  var/lib 0755
 dir  var/lib/docker 0710
 dir  etc 0755
+# The mount point of the bind-mount file system (ADR 0007).
+dir  mnt 0755
+dir  mnt/hyperbutler 0755
 # containerd's "opt" plugin wants /opt/containerd to exist; it stays empty.
 dir  opt 0755
 dir  opt/containerd 0711

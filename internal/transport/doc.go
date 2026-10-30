@@ -11,6 +11,11 @@
 // open. Docker attach, exec, and any hijacked or upgraded HTTP connection depend on this,
 // because the client closes stdin while it is still reading output.
 //
+// The one exception is Proxy.RewriteCreate (rewrite.go, ADR 0007): with it set, the
+// client-to-guest direction follows HTTP request boundaries so that container create
+// bodies can be rewritten; every other byte, and the whole guest-to-client direction,
+// still passes unchanged.
+//
 // The named-pipe listener and the hvsock dialer are Windows-only. Proxy, Dialer,
 // TCPDialer, and the address parsers build on every platform.
 package transport

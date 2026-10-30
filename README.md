@@ -61,12 +61,14 @@ documents.
 | Host disk full, *spike* ([disk-reclaim](docs/research/disk-reclaim.md#free-space-guard-req-disk-004-non-elevated-2026-10-30)) | with the free-space guard: 10/10 writes got `ENOSPC`, no file system errors, no lost files | REQ-DISK-004 | Yes, on a 3 GiB test volume in a spike harness. Not yet repeated with the `hyperbutler` CLI |
 | Idle memory, minutes 5–10 (cli-engine) | **580 MiB**: engine 16 MiB, VM 564 MiB | ≤ 400 MB (REQ-MEM-001) | **No.** The guest keeps its whole root file system in RAM; the planned erofs system disk ([ADR 0005](docs/adr/0005-guest-image.md)) is the fix |
 | Memory back to the host after a workload, *spike*: `spike/vhdx`, 3 GiB guest ([guest-services](docs/research/guest-services.md)) | 2 GiB of page cache: VM back to 350 MiB (260 MiB at ready) 27 s after the read | REQ-MEM-002 | Partly: the 12 GB / 8 GB bench has not been run |
+| Bind mounts from Windows paths, `docker run -v C:\…` and `--mount type=bind` ([ADR 0007](docs/adr/0007-bind-mounts.md#end-to-end-through-hyperbutler-start-2026-10-31)) | work through `hyperbutler start`: read/write, `:ro`, single files, inotify on Windows-side edits in 52–74 ms (including `docker logs` polling). 1000 creates 850 ms (ext4: 20 ms); sequential write 56 MB/s, cached re-read 603 MB/s | 1.0: REQ-FS-001/002/005; REQ-FS-003 ≤ 200 ms p95 | Not measured as specified: `bench/fs-*` (incl. the Vite/webpack check of REQ-FS-003) not run. Throughput: **no** for writes and creates |
 | Download size | the release zip is about 80 MB | ≤ 150 MB (REQ-UX-002) | Yes (measured on a local build) |
 | Soak (24 h, ADR 0003) | a 13-minute run against `hyperbutler-dev` showed no growth faster than about 14 MB/h | 24 h, no positive trend | **Not run.** It blocks the first release |
 
 What is missing for 0.1: the memory target, the 24-hour soak, the ADR 0004 broker (until it
-ships you need Hyper-V Administrators membership, see below), `hyperbutler doctor`, bind mounts
-from Windows paths, and Compose testing. [docs/release.md](docs/release.md) lists every
+ships you need Hyper-V Administrators membership, see below), `hyperbutler doctor`, and
+Compose testing. Bind mounts from Windows paths work but are not yet fast for write-heavy
+trees: use a named volume for `node_modules`. [docs/release.md](docs/release.md) lists every
 release gate.
 
 ## Quick start

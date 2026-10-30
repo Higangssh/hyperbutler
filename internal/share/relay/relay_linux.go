@@ -209,7 +209,10 @@ func (r *Relay) injector(tid chan<- int) {
 		}
 		code := int32(binary.LittleEndian.Uint32(f[4:]))
 		if code == notifyInject {
-			if err := r.replay(f[outHeaderLen:]); err != nil {
+			// ENOENT is routine: the change is to a name the guest no longer has (or
+			// a share whose root was deleted), and a log line per file of a removed
+			// tree would flood the console.
+			if err := r.replay(f[outHeaderLen:]); err != nil && !errors.Is(err, unix.ENOENT) {
 				r.cfg.Logf("relay: replay: %v", err)
 			}
 			continue

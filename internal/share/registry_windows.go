@@ -31,12 +31,23 @@ func shareName(key string) string {
 // Resolve returns the guest path for a Windows bind source, sharing it first if needed.
 // A directory becomes a share of its own; a file shares its directory with only that
 // file visible. A missing source is created as a directory, as dockerd does for -v.
-func (r *Registry) Resolve(winPath string) (string, error) {
+func (r *Registry) Resolve(winPath string) (string, error) { return r.resolve(winPath, true) }
+
+// ResolveExisting is Resolve for --mount sources: a missing source is an error, as
+// dockerd reports it ("bind source path does not exist").
+func (r *Registry) ResolveExisting(winPath string) (string, error) {
+	return r.resolve(winPath, false)
+}
+
+func (r *Registry) resolve(winPath string, create bool) (string, error) {
 	if !WindowsPath(winPath) {
 		return "", fmt.Errorf("share: %q is not an absolute Windows path", winPath)
 	}
 	p := filepath.Clean(strings.TrimPrefix(winPath, `\\?\`))
 	fi, err := os.Stat(p)
+	if os.IsNotExist(err) && !create {
+		return "", fmt.Errorf("bind source path does not exist: %s", p)
+	}
 	if os.IsNotExist(err) {
 		if err := os.MkdirAll(p, 0o755); err != nil {
 			return "", err
@@ -60,7 +71,10 @@ func (r *Registry) Resolve(winPath string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	key := fs.RootPath()
+	// The root's identity is part of the key: a share holds its root open, so after the
+	// directory is deleted and made again the old share still serves the deleted one.
+	// The same path then gets a new share (an old container keeps the old one).
+	key := fs.RootPath() + "\x00" + fs.RootID()
 	if only != "" {
 		key += "\x00" + only
 	}

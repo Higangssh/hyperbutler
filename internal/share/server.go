@@ -294,6 +294,14 @@ func (s *Server) Close() error {
 	return nil
 }
 
+// Mounted reports whether a guest session is live: a queue-0 connection is being
+// served, so the guest has (or is about to have) the file system mounted.
+func (s *Server) Mounted() bool {
+	s.cmu.Lock()
+	defer s.cmu.Unlock()
+	return s.conn != nil
+}
+
 // Shares returns the registered share names.
 func (s *Server) Shares() []string {
 	s.mu.Lock()

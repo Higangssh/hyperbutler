@@ -374,7 +374,7 @@ func TestForwardWithoutHalfClose(t *testing.T) {
 	uProxy, uApp := net.Pipe()
 	done := make(chan struct{})
 	go func() {
-		forward(context.Background(), cProxy, uProxy, time.Second, discardLogger)
+		forward(context.Background(), cProxy, uProxy, time.Second, discardLogger, nil)
 		close(done)
 	}()
 	go func() { _, _ = io.Copy(io.Discard, uApp) }()
@@ -400,7 +400,7 @@ func TestForwardContextCancel(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() {
-		forward(ctx, cProxy, uProxy, time.Second, discardLogger)
+		forward(ctx, cProxy, uProxy, time.Second, discardLogger, nil)
 		close(done)
 	}()
 	cancel()
@@ -437,7 +437,7 @@ func TestForwardPeerProbe(t *testing.T) {
 	fp := &fakeProber{TCPConn: cProxy}
 	done := make(chan struct{})
 	go func() {
-		forward(context.Background(), fp, uProxy, 10*time.Millisecond, discardLogger)
+		forward(context.Background(), fp, uProxy, 10*time.Millisecond, discardLogger, nil)
 		close(done)
 	}()
 	_ = cApp.CloseWrite()

@@ -79,6 +79,8 @@ type Config struct {
 	Guard spaceguard.Config
 	// Net is the guest network.
 	Net NetConfig
+	// Share is the bind-mount file server for Windows paths (ADR 0007).
+	Share ShareConfig
 	// ReadyTimeout bounds the wait for dockerd (90 s). ShutdownTimeout bounds the guest's
 	// orderly power-off before the VM is terminated (25 s).
 	ReadyTimeout, ShutdownTimeout time.Duration
@@ -254,8 +256,15 @@ func Run(ctx context.Context, cfg Config) (err error) {
 		defer gnet.close()
 	}
 
+	shares, shareSvcs, shareArgs := setupShares(cfg.Share, sddl, log)
+	if shares != nil {
+		// Deferred before the VM's own teardown, so it runs after it: the guest keeps
+		// its shares through the orderly shutdown.
+		defer shares.close()
+	}
+
 	var disk *dataDisk
-	cmdline := cfg.CmdLine + netArgs + cfg.ExtraCmdLine
+	cmdline := cfg.CmdLine + netArgs + shareArgs + cfg.ExtraCmdLine
 	var disks []vm.Disk
 	if cfg.Disk.Data != "" {
 		if disk, err = prepareDisk(cfg.Disk, cfg.DiskSize); err != nil {
@@ -300,7 +309,7 @@ func Run(ctx context.Context, cfg Config) (err error) {
 	dockerSvc := transport.VsockServiceID(DockerPort)
 	consolePipe := `\\.\pipe\` + cfg.VMID + "-com1"
 	svcs := []vm.Service{{ID: dockerSvc, ConnectSDDL: sddl}, {ID: guestctl.ServiceID, ConnectSDDL: sddl}}
-	svcs = append(append(svcs, netSvcs...), cfg.ExtraServices...)
+	svcs = append(append(append(svcs, netSvcs...), shareSvcs...), cfg.ExtraServices...)
 	m, err := cfg.Backend.Create(cfg.VMID, &vm.Config{
 		Owner:          VMOwner,
 		KernelPath:     kpath,
@@ -346,6 +355,13 @@ func Run(ctx context.Context, cfg Config) (err error) {
 	}
 	target := transport.HvsockTarget{VMID: vmid, ServiceID: dockerSvc}
 	step("runtime id %s", vmid)
+	var rewrite transport.CreateRewriter
+	if shares != nil {
+		if err := shares.listen(vmid); err != nil {
+			return err
+		}
+		rewrite = shares.rewriteCreate
+	}
 
 	// runCtx ends with ctx or when the VM stops on its own.
 	runCtx, cancelRun := context.WithCancel(ctx)
@@ -435,6 +451,8 @@ func Run(ctx context.Context, cfg Config) (err error) {
 		// instead of timing out on an hvsock dial the agent will not accept.
 		MaxConns: agentMaxConns,
 		Logger:   slog.New(levelFilter{h: log.Handler(), min: slog.LevelWarn}),
+		// Windows bind sources in container creates become shares (ADR 0007).
+		RewriteCreate: rewrite,
 	}
 	step("serving %s", cfg.Pipe)
 	if err := p.Serve(runCtx, ln); err != nil && runCtx.Err() == nil {

@@ -71,6 +71,7 @@ func runDemo() error {
 		Pipe:          *demoEngine,
 		VMID:          fmt.Sprintf("hyperbutler-share-demo-%d", time.Now().UnixNano()%1e6),
 		Logger:        log,
+		Share:         engine.ShareConfig{Off: true}, // the demo wires its own share server
 		ExtraServices: []vm.Service{{ID: transport.VsockServiceID(fusePort), BindSDDL: sddl}},
 		ExtraCmdLine:  fmt.Sprintf(" rdinit=/sharebench sbwrap=1 sbfuseport=%d sbqueues=%d", fusePort, *fuseQueues),
 		OnCreated: func(_ string, rid guid.GUID) {

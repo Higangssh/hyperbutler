@@ -17,3 +17,6 @@ bridge
 br_netfilter
 veth
 tun
+# Bind mounts from Windows paths (ADR 0007): hyperbutlerd's share relay mounts the host's
+# FUSE server at /mnt/hyperbutler.
+fuse

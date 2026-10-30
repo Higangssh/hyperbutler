@@ -57,10 +57,19 @@ wanted is marked *withdrawn*, not deleted.
 
 | ID | Requirement | Acceptance criterion (how measured) | Pri | Pain |
 |---|---|---|---|---|
-| REQ-FS-001 | Fast sequential I/O on bind mounts from Windows paths. | Sequential read and write on a bind-mounted Windows path are within 2× of the guest's own ext4 (`bench/fs-seq`). | P1 | F1 |
-| REQ-FS-002 | Fast metadata on bind mounts. | On a bind-mounted Windows checkout of a pinned reference repo, `git status`, `npm ci`, and creating, stat-ing, and deleting 10k files are each within 3× of the same work on guest ext4 (`bench/fs-meta`). Baseline: 9P is about 5–60× slower. | P1 | F1 |
+| REQ-FS-001 | Fast sequential I/O on bind mounts from Windows paths. | Sequential reads of a bind-mounted Windows file are within 2× of the guest's own ext4 once cached. Sequential writes are at least 3× as fast as WSL 2's 9P mount of the same directory on the same machine (`bench/fs-seq`). *Amended 2026-10-31 ([ADR 0007](adr/0007-bind-mounts.md)): no mechanism HCS offers gets writes within 2× of ext4, so writes are measured against the 9P baseline.* | P1 | F1 |
+| REQ-FS-002 | Fast metadata reads on bind mounts. | On a bind-mounted Windows checkout of a pinned reference repo, once the guest has seen the tree: `lstat`, negative lookups and `git status` are each within 3× of the same work on guest ext4 (`bench/fs-meta`). *Amended 2026-10-31 (ADR 0007): creates and deletes moved to REQ-FS-005.* | P1 | F1 |
 | REQ-FS-003 | File changes made on Windows reach containers as inotify events. | When a Windows process edits a bind-mounted file, the container gets an `IN_MODIFY` event within 200 ms p95, without polling. A scripted check confirms that pinned versions of Vite and webpack hot-reload with default config (`bench/fs-notify`). | P1 | F2 |
 | REQ-FS-004 | Mounts behave correctly on Windows paths. | The `bench/fs-compat` suite passes. It covers case-sensitivity rules, symlinks, permission mapping, paths longer than 260 characters, and paths with spaces or non-ASCII characters. | P1 | F1 |
+| REQ-FS-005 | Creates and deletes on bind mounts beat 9P. | On the REQ-FS-002 checkout, `npm ci` and creating, stat-ing and deleting 10k files are each at least 3× as fast as on WSL 2's 9P mount of the same directory on the same machine (`bench/fs-meta`). The docs point write-heavy trees (`node_modules`) at a named volume, or at the sync mode once it exists. *Added 2026-10-31 (ADR 0007): the write half of the old REQ-FS-002.* | P1 | F1 |
+
+Backlog for bind mounts (work items, not requirements; ADR 0007):
+- a guest readdir cache (`FUSE_CACHE_READDIR`) and a host listing cache: a warm directory
+  walk is 54× ext4 today;
+- share lifetime: shares live until the engine stops; reference-count them by container
+  through the Docker events stream and call `Server.RemoveShare` (integration step 5);
+- sequential write throughput: 56 MB/s through `hyperbutler start` on the reference machine
+  (2026-10-31), far below hvsock's bandwidth.
 
 ## Networking
 

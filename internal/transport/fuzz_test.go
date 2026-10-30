@@ -81,7 +81,7 @@ func FuzzForward(f *testing.F) {
 
 		done := make(chan struct{})
 		go func() {
-			forward(context.Background(), cProxy, uProxy, time.Second, discardLogger)
+			forward(context.Background(), cProxy, uProxy, time.Second, discardLogger, nil)
 			close(done)
 		}()
 
