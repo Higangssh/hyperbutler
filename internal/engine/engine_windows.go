@@ -444,6 +444,9 @@ func Run(ctx context.Context, cfg Config) (err error) {
 	if gnet != nil && cfg.Net.AutoPublish {
 		gnet.startAutoPublish(runCtx, target, step)
 	}
+	if shares != nil {
+		shares.startLifetime(runCtx, target)
+	}
 
 	p := &transport.Proxy{
 		Upstream: &transport.HvsockDialer{Target: target, Retries: 2, RetryWait: 100 * time.Millisecond},

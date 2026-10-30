@@ -3,14 +3,23 @@
 package engine
 
 import (
+	"context"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
+	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
+
+	"github.com/Higangssh/hyperbutler/internal/share"
 )
 
 // flakyListener fails its first Accept with a transient error.
@@ -140,5 +149,75 @@ func TestShareServiceCloseEndsConnections(t *testing.T) {
 	s.serve(ln2)
 	if _, err := ln2.Accept(); err == nil {
 		t.Fatal("listener still open")
+	}
+}
+
+// Integration step 5 (ADR 0007): after a container is destroyed, the shares no
+// container lists any more are removed; those still listed stay.
+func TestShareLifetimePrunesAfterDestroy(t *testing.T) {
+	s, _, _ := setupShares(ShareConfig{Options: share.Options{NoWatch: true}}, "D:P", slog.New(slog.DiscardHandler))
+	defer s.close()
+	s.grace, s.debounce = 0, 10*time.Millisecond
+	base := t.TempDir()
+	keep, err := s.reg.Resolve(filepath.Join(base, "keep"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.reg.Resolve(filepath.Join(base, "drop")); err != nil {
+		t.Fatal(err)
+	}
+	var mu sync.Mutex
+	listed := `[{"Id":"x","Mounts":[{"Type":"bind","Source":"` + keep + `"}]}]`
+	destroy := make(chan struct{})
+	mux := http.NewServeMux()
+	mux.HandleFunc("/events", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(200)
+		w.(http.Flusher).Flush()
+		select {
+		case <-destroy:
+			fmt.Fprintln(w, `{"Type":"container","Action":"destroy","Actor":{"ID":"x"}}`)
+			w.(http.Flusher).Flush()
+		case <-r.Context().Done():
+			return
+		}
+		<-r.Context().Done()
+	})
+	mux.HandleFunc("/containers/json", func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		io.WriteString(w, listed)
+	})
+	hs := httptest.NewServer(mux)
+	defer hs.Close()
+	u, _ := url.Parse(hs.URL)
+	client := &http.Client{Transport: &http.Transport{
+		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+			return (&net.Dialer{}).DialContext(ctx, "tcp", u.Host)
+		},
+		DisableKeepAlives: true,
+	}}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { s.lifetime(ctx, client); close(done) }()
+	defer func() { cancel(); <-done }()
+	wait := func(n int) {
+		t.Helper()
+		deadline := time.Now().Add(5 * time.Second)
+		for s.reg.Len() != n {
+			if time.Now().After(deadline) {
+				t.Fatalf("%d shares, want %d", s.reg.Len(), n)
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+	}
+	// The prune when the stream opens removes the share no container lists.
+	wait(1)
+	mu.Lock()
+	listed = `[]`
+	mu.Unlock()
+	close(destroy)
+	wait(0)
+	if got := s.srv.Shares(); len(got) != 0 {
+		t.Fatalf("server still serves %v", got)
 	}
 }
