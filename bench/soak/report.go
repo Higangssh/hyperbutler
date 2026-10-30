@@ -8,7 +8,7 @@ import (
 )
 
 // metrics are the CSV columns after t_seconds, in order.
-var metrics = []string{"ws_private", "private_bytes", "handles", "threads", "goroutines", "heap_inuse", "vmmem_ws_private"}
+var metrics = []string{"ws_private", "private_bytes", "handles", "threads", "goroutines", "heap_inuse", "vmmem_ws_private", "vmwp_ws_private"}
 
 // verdictConfig is what report needs from the run's configuration.
 type verdictConfig struct {
@@ -16,7 +16,7 @@ type verdictConfig struct {
 	maxErrors                 int
 	limits                    map[string]Limit
 	// optedOut lists metrics the operator explicitly chose not to sample
-	// (-diag-pipe none, -vmmem-pid -1). Any other metric without samples fails.
+	// (-diag-pipe none, -vmmem-pid -1, -vmwp-pid -1). Any other metric without samples fails.
 	optedOut map[string]bool
 }
 

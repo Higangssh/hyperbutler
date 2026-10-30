@@ -11,23 +11,34 @@ import (
 	"math"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
 	"golang.org/x/sys/windows"
+
+	"github.com/Higangssh/hyperbutler/bench/internal/hostmon"
 )
 
 type config struct {
 	docker, host, imageTar, image string
 	process                       string
 	pid                           uint
-	vmmemPID                      int
+	vmmemPID, vmwpPID             int
 	diagPipe                      string
 	duration                      time.Duration
 	interval, opTimeout, pause    time.Duration
 	maxSampleErrors               int
 	out                           string
+	profileDir                    string
+	shareDir                      string
+	port                          int
+	// Launch mode: the soak starts and stops the engine itself.
+	hb        hostmon.Hyperbutler
+	startArgs []string
+	waitQuiet time.Duration
 	verdictConfig
 }
 
@@ -42,13 +53,22 @@ func parseFlags() (*config, error) {
 	c := &config{}
 	fs := flag.NewFlagSet("soak", flag.ContinueOnError)
 	fs.StringVar(&c.docker, "docker", "", "path to the stock docker.exe (required)")
-	fs.StringVar(&c.host, "host", "npipe:////./pipe/docker_engine_hyperbutler", "docker -H endpoint")
+	fs.StringVar(&c.host, "host", "", "docker -H endpoint (default: the installation's pipe in launch mode, else npipe:////./pipe/docker_engine_hyperbutler)")
 	fs.StringVar(&c.imageTar, "image-tar", "", "`docker load` tar, e.g. from `hyperbutler-dev mkimage` (required)")
-	fs.StringVar(&c.image, "image", "hyperbutler-test/busybox:latest", "image name:tag inside -image-tar; its default command must print and exit 0")
-	fs.StringVar(&c.process, "process", "hyperbutler-dev.exe", "image name of the target process when -pid is 0")
-	fs.UintVar(&c.pid, "pid", 0, "PID of the target process (0: the single running -process)")
-	fs.IntVar(&c.vmmemPID, "vmmem-pid", 0, "PID of the VM's vmmem process (0: the single running vmmem, -1: don't sample)")
-	fs.StringVar(&c.diagPipe, "diag-pipe", "", `target's internal/diag endpoint, e.g. \\.\pipe\hyperbutler-dev-debug (required; "none" skips goroutine and heap samples)`)
+	fs.StringVar(&c.image, "image", "hyperbutler-test/busybox:latest", "image name:tag inside -image-tar; it holds /bin/busybox and its default command prints and exits 0")
+	fs.StringVar(&c.hb.Exe, "hyperbutler", "", "launch mode: run `hyperbutler start` with this hyperbutler.exe, sample its engine and VM, and stop it at the end")
+	fs.StringVar(&c.hb.Home, "home", "", "launch mode: HYPERBUTLER_HOME of the bench installation (required with -hyperbutler)")
+	fs.StringVar(&c.hb.ImageDir, "image-dir", "", "launch mode: guest image directory (--image-dir)")
+	startArgs := fs.String("start-args", "", "launch mode: extra `hyperbutler start` flags, space separated")
+	fs.DurationVar(&c.waitQuiet, "wait-quiet", 30*time.Minute, "launch mode: how long to wait for other VMs and engines to go away first")
+	fs.StringVar(&c.process, "process", "hyperbutler.exe", "attach mode: image name of the target process when -pid is 0")
+	fs.UintVar(&c.pid, "pid", 0, "attach mode: PID of the target process (0: the single running -process)")
+	fs.IntVar(&c.vmmemPID, "vmmem-pid", 0, "attach mode: PID of the VM's vmmem process (0: the single running vmmem, -1: don't sample)")
+	fs.IntVar(&c.vmwpPID, "vmwp-pid", -1, "attach mode: PID of the VM's vmwp process (-1: don't sample)")
+	fs.StringVar(&c.diagPipe, "diag-pipe", "", `target's internal/diag endpoint (launch mode: default \\.\pipe\hyperbutler-soak-<pid>, started with the engine; attach mode: required, "none" skips goroutine and heap samples)`)
+	fs.StringVar(&c.shareDir, "share-dir", "", `Windows directory to bind-mount in the loop (docker run -v DIR:/mnt); "none" leaves bind mounts out (required)`)
+	fs.IntVar(&c.port, "port", 18480, "first host port of the published-port step (-p PORT:8080), 0 leaves it out; it rotates through 8 ports")
+	fs.StringVar(&c.profileDir, "profile-dir", "", "fetch heap, allocs and goroutine profiles from the diag endpoint into this directory at the end of the warm-up and of the run")
 	fs.DurationVar(&c.duration, "duration", 24*time.Hour, "total run time (main gate: 1h with -warmup 10m)")
 	fs.DurationVar(&c.warmup, "warmup", time.Hour, "samples before this are left out of the trend fit")
 	fs.DurationVar(&c.minWindow, "min-window", 0, "fail unless the steady-state window is at least this long (0: 80% of duration-warmup)")
@@ -70,11 +90,34 @@ func parseFlags() (*config, error) {
 	heapRel := fs.Float64("heap-rel", 0.10, "Go heap in use: allowed growth as a fraction of its median")
 	vmAbs := fs.Int64("vmmem-abs", 64<<20, "vmmem private working set: allowed growth in bytes over the window")
 	vmRel := fs.Float64("vmmem-rel", 0.10, "vmmem private working set: allowed growth as a fraction of its median")
+	wpAbs := fs.Int64("vmwp-abs", 8<<20, "vmwp private working set: allowed growth in bytes over the window")
+	wpRel := fs.Float64("vmwp-rel", 0.10, "vmwp private working set: allowed growth as a fraction of its median")
 	if err := fs.Parse(os.Args[1:]); err != nil {
 		return nil, err
 	}
 	if c.docker == "" || c.imageTar == "" {
 		return nil, errors.New("-docker and -image-tar are required")
+	}
+	if c.hb.Exe != "" && c.hb.Home == "" {
+		return nil, errors.New("-hyperbutler needs -home (a bench installation, never the user's)")
+	}
+	switch c.shareDir {
+	case "":
+		return nil, errors.New(`-share-dir is required; pass -share-dir none to leave bind mounts and published ports out`)
+	case "none":
+		c.shareDir, c.port = "", 0
+	default:
+		abs, err := filepath.Abs(c.shareDir)
+		if err != nil {
+			return nil, err
+		}
+		if fi, err := os.Stat(abs); err != nil || !fi.IsDir() {
+			return nil, fmt.Errorf("-share-dir %s is not a directory", c.shareDir)
+		}
+		c.shareDir = abs
+	}
+	if c.port < 0 || c.port+PortSpan > 65536 {
+		return nil, errors.New("bad -port")
 	}
 	if c.interval <= 0 || c.duration <= c.warmup || c.warmup < 0 {
 		return nil, errors.New("need -interval > 0 and 0 <= -warmup < -duration")
@@ -86,16 +129,27 @@ func parseFlags() (*config, error) {
 		return nil, fmt.Errorf("need -bucket >= 3 x -interval and -duration - -warmup >= %d x -bucket", minBuckets)
 	}
 	c.optedOut = map[string]bool{}
-	switch c.diagPipe {
-	case "":
-		return nil, errors.New(`-diag-pipe is required; pass -diag-pipe none to run without goroutine and heap samples`)
-	case "none":
+	switch {
+	case c.diagPipe == "none":
 		c.diagPipe = ""
 		c.optedOut["goroutines"], c.optedOut["heap_inuse"] = true, true
+	case c.diagPipe == "" && c.hb.Exe != "":
+		c.diagPipe = fmt.Sprintf(`\\.\pipe\hyperbutler-soak-%d`, os.Getpid())
+	case c.diagPipe == "":
+		return nil, errors.New(`-diag-pipe is required in attach mode; pass -diag-pipe none to run without goroutine and heap samples`)
 	}
-	if c.vmmemPID < 0 {
-		c.optedOut["vmmem_ws_private"] = true
+	if c.hb.Exe == "" {
+		if c.vmmemPID < 0 {
+			c.optedOut["vmmem_ws_private"] = true
+		}
+		if c.vmwpPID < 0 {
+			c.optedOut["vmwp_ws_private"] = true
+		}
+		if c.host == "" {
+			c.host = "npipe:////./pipe/docker_engine_hyperbutler"
+		}
 	}
+	c.startArgs = strings.Fields(*startArgs)
 	c.limits = map[string]Limit{
 		"ws_private":       {Abs: float64(*wsAbs), Rel: *wsRel},
 		"private_bytes":    {Abs: float64(*wsAbs), Rel: *wsRel},
@@ -104,41 +158,129 @@ func parseFlags() (*config, error) {
 		"goroutines":       {Abs: *gAbs},
 		"heap_inuse":       {Abs: float64(*heapAbs), Rel: *heapRel},
 		"vmmem_ws_private": {Abs: float64(*vmAbs), Rel: *vmRel},
+		"vmwp_ws_private":  {Abs: float64(*wpAbs), Rel: *wpRel},
 	}
 	return c, nil
 }
 
-func run() error {
+// target is what the soak samples.
+type target struct {
+	engine, vmmem, vmwp uint32
+}
+
+func logf(format string, a ...any) {
+	fmt.Printf("%s "+format+"\n", append([]any{time.Now().Format(time.TimeOnly)}, a...)...)
+}
+
+// launch starts the bench installation's engine with the diag endpoint on and finds
+// its VM. The returned stop function stops it again.
+func launch(ctx context.Context, c *config) (target, func() error, error) {
+	pipe := c.hb.DockerPipe()
+	if up, err := c.hb.Running(); err != nil {
+		return target{}, nil, err
+	} else if up {
+		return target{}, nil, fmt.Errorf("the installation in %s is already running; launch mode starts it itself", c.hb.Home)
+	}
+	f, busy, err := hostmon.WaitQuiet(ctx, pipe, 15*time.Second, c.waitQuiet, logf)
+	if err != nil {
+		return target{}, nil, err
+	}
+	if busy {
+		return target{}, nil, fmt.Errorf("the Docker API pipe %s is still in use", pipe)
+	}
+	if f.Any() {
+		logf("other VMs or engines still run (%s); they will be noted per sample", f)
+	}
+	before, err := hostmon.Snapshot()
+	if err != nil {
+		return target{}, nil, err
+	}
+	out, err := c.hb.Start(ctx, append([]string{"--debug-pipe", c.diagPipe}, c.startArgs...)...)
+	if err != nil {
+		return target{}, nil, err
+	}
+	logf("%s", out)
+	stop := func() error {
+		sctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		defer cancel()
+		out, err := c.hb.Stop(sctx)
+		logf("%s", out)
+		return err
+	}
+	st, err := c.hb.State()
+	if err != nil {
+		return target{}, nil, errors.Join(err, stop())
+	}
+	after, err := hostmon.Snapshot()
+	if err != nil {
+		return target{}, nil, errors.Join(err, stop())
+	}
+	vm, err := hostmon.FindNewVM(before, after)
+	if err != nil {
+		return target{}, nil, errors.Join(err, stop())
+	}
+	if c.host == "" {
+		c.host = hostmon.NpipeHost(pipe)
+	}
+	return target{engine: uint32(st.PID), vmmem: vm.VMMem, vmwp: vm.VMWP}, stop, nil
+}
+
+func attach(c *config) (target, error) {
+	var t target
+	var err error
+	if t.engine, err = pickPID(c.pid, c.process); err != nil {
+		return t, err
+	}
+	switch {
+	case c.vmmemPID > math.MaxUint32:
+		return t, fmt.Errorf("bad -vmmem-pid %d", c.vmmemPID)
+	case c.vmmemPID > 0:
+		t.vmmem = uint32(c.vmmemPID)
+	case c.vmmemPID == 0:
+		if t.vmmem, err = pickPID(0, hostmon.VMMemName); err != nil {
+			return t, fmt.Errorf("%w (pass -vmmem-pid, or -vmmem-pid -1 to skip)", err)
+		}
+	}
+	switch {
+	case c.vmwpPID > math.MaxUint32:
+		return t, fmt.Errorf("bad -vmwp-pid %d", c.vmwpPID)
+	case c.vmwpPID > 0:
+		t.vmwp = uint32(c.vmwpPID)
+	}
+	return t, nil
+}
+
+func run() (err error) {
 	c, err := parseFlags()
 	if err != nil {
 		return err
 	}
-	target, err := pickPID(c.pid, c.process)
-	if err != nil {
+	ctx, stopSignals := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer stopSignals()
+
+	var tg target
+	if c.hb.Exe != "" {
+		var stopEngine func() error
+		tg, stopEngine, err = launch(ctx, c)
+		if err != nil {
+			return err
+		}
+		defer func() { err = errors.Join(err, stopEngine()) }()
+	} else if tg, err = attach(c); err != nil {
 		return err
 	}
-	var vmmem uint32
-	switch {
-	case c.vmmemPID > math.MaxUint32:
-		return fmt.Errorf("bad -vmmem-pid %d", c.vmmemPID)
-	case c.vmmemPID > 0:
-		vmmem = uint32(c.vmmemPID)
-	case c.vmmemPID == 0:
-		if vmmem, err = pickPID(0, "vmmem"); err != nil {
-			return fmt.Errorf("%w (pass -vmmem-pid, or -vmmem-pid -1 to skip)", err)
-		}
-	}
-	// Pin both PIDs so they cannot be reused by another process mid-run. vmmem is a
-	// protected process; if it cannot be opened, its disappearance from the counters
+
+	// Pin the PIDs so they cannot be reused by another process mid-run. vmmem and vmwp
+	// are protected; if they cannot be opened, their disappearance from the counters
 	// still ends the run.
-	targetH, err := pinProcess(target)
+	targetH, err := hostmon.Pin(tg.engine)
 	if err != nil {
 		return err
 	}
 	defer windows.CloseHandle(targetH)
 	var vmmemH windows.Handle
-	if vmmem != 0 {
-		if h, err := pinProcess(vmmem); err == nil {
+	if tg.vmmem != 0 {
+		if h, err := hostmon.Pin(tg.vmmem); err == nil {
 			vmmemH = h
 			defer windows.CloseHandle(vmmemH)
 		}
@@ -150,23 +292,20 @@ func run() error {
 	}
 	defer os.RemoveAll(cfgDir)
 
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
-	defer stop()
-
 	w := &Workload{Docker: c.docker, Host: c.host, ImageTar: c.imageTar, Image: c.image,
-		OpTimeout: c.opTimeout, Pause: c.pause, ConfigDir: cfgDir}
+		OpTimeout: c.opTimeout, Pause: c.pause, ConfigDir: cfgDir, ShareDir: c.shareDir, Port: c.port}
 	if _, ok := w.op(ctx, "version", nil, "version"); !ok {
 		_, _, _, f := w.Totals()
 		return fmt.Errorf("engine at %s does not answer: %v", c.host, f)
 	}
 	w = &Workload{Docker: w.Docker, Host: w.Host, ImageTar: w.ImageTar, Image: w.Image,
-		OpTimeout: w.OpTimeout, Pause: w.Pause, ConfigDir: w.ConfigDir}
+		OpTimeout: w.OpTimeout, Pause: w.Pause, ConfigDir: w.ConfigDir, ShareDir: w.ShareDir, Port: w.Port}
 
-	var dc *diagClient
+	var dc *hostmon.DiagClient
 	if c.diagPipe != "" {
-		dc = newDiagClient(c.diagPipe)
-		defer dc.close()
-		if _, err := dc.stats(ctx); err != nil {
+		dc = hostmon.NewDiagClient(c.diagPipe)
+		defer dc.Close()
+		if _, err := dc.Stats(ctx); err != nil {
 			return err
 		}
 	}
@@ -180,11 +319,11 @@ func run() error {
 		defer f.Close()
 		csvw = csv.NewWriter(f)
 		defer csvw.Flush()
-		_ = csvw.Write(append([]string{"t_seconds"}, metrics...))
+		_ = csvw.Write(append(append([]string{"t_seconds"}, metrics...), extraColumns...))
 	}
 
-	fmt.Printf("soak: target PID %d, vmmem PID %d, diag %q, %s (warm-up %s), sample every %s\n",
-		target, vmmem, c.diagPipe, c.duration, c.warmup, c.interval)
+	fmt.Printf("soak: engine PID %d, vmmem PID %d, vmwp PID %d, diag %q, bind mounts %q, port %d, %s (warm-up %s), sample every %s\n",
+		tg.engine, tg.vmmem, tg.vmwp, c.diagPipe, c.shareDir, c.port, c.duration, c.warmup, c.interval)
 
 	runCtx, cancel := context.WithTimeout(ctx, c.duration)
 	defer cancel()
@@ -199,54 +338,78 @@ func run() error {
 	var sampleErrs []string
 	var fatal error
 	start := time.Now()
-	pids := []uint32{target}
-	if vmmem != 0 {
-		pids = append(pids, vmmem)
+	pids := []uint32{tg.engine}
+	for _, p := range []uint32{tg.vmmem, tg.vmwp} {
+		if p != 0 {
+			pids = append(pids, p)
+		}
 	}
+	ours := map[uint32]bool{tg.engine: true, tg.vmmem: true, tg.vmwp: true}
+	overlapped := 0
+	profiledWarmup := false
 	tick := time.NewTicker(c.interval)
 	defer tick.Stop()
 sampling:
 	for {
 		t := time.Since(start).Seconds()
 		row := map[string]float64{}
-		if exited(targetH) {
-			fatal = fmt.Errorf("target PID %d exited after %s", target, time.Since(start).Round(time.Second))
+		extra := map[string]string{}
+		if hostmon.Exited(targetH) {
+			fatal = fmt.Errorf("engine PID %d exited after %s", tg.engine, time.Since(start).Round(time.Second))
 			break
 		}
-		if vmmemH != 0 && exited(vmmemH) {
-			fatal = fmt.Errorf("vmmem PID %d exited after %s: the VM stopped", vmmem, time.Since(start).Round(time.Second))
+		if vmmemH != 0 && hostmon.Exited(vmmemH) {
+			fatal = fmt.Errorf("vmmem PID %d exited after %s: the VM stopped", tg.vmmem, time.Since(start).Round(time.Second))
 			break
 		}
-		s, err := sampleCIM(runCtx, pids)
+		s, err := hostmon.SampleCIM(runCtx, pids)
 		switch {
 		case runCtx.Err() != nil:
 		case err != nil:
 			sampleErrs = append(sampleErrs, err.Error())
 		default:
-			ts, ok := s[target]
+			ts, ok := s[tg.engine]
 			if !ok {
-				fatal = fmt.Errorf("target PID %d is gone after %s", target, time.Since(start).Round(time.Second))
+				fatal = fmt.Errorf("engine PID %d is gone after %s", tg.engine, time.Since(start).Round(time.Second))
 				break sampling
 			}
 			row["ws_private"] = float64(ts.WorkingSetPriv)
 			row["private_bytes"] = float64(ts.PrivateBytes)
 			row["handles"] = float64(ts.HandleCount)
 			row["threads"] = float64(ts.ThreadCount)
-			if vmmem != 0 {
-				vs, ok := s[vmmem]
+			for _, v := range []struct {
+				pid  uint32
+				name string
+			}{{tg.vmmem, "vmmem_ws_private"}, {tg.vmwp, "vmwp_ws_private"}} {
+				if v.pid == 0 {
+					continue
+				}
+				vs, ok := s[v.pid]
 				if !ok {
-					fatal = fmt.Errorf("vmmem PID %d is gone: the VM stopped", vmmem)
+					fatal = fmt.Errorf("%s PID %d is gone: the VM stopped", v.name, v.pid)
 					break sampling
 				}
-				row["vmmem_ws_private"] = float64(vs.WorkingSetPriv)
+				row[v.name] = float64(vs.WorkingSetPriv)
 			}
 		}
 		if dc != nil && runCtx.Err() == nil {
-			if st, err := dc.stats(runCtx); err != nil {
+			if st, err := dc.Stats(runCtx); err != nil {
 				sampleErrs = append(sampleErrs, err.Error())
 			} else {
 				row["goroutines"] = float64(st.Goroutines)
 				row["heap_inuse"] = float64(st.MemStats.HeapInuse)
+				m := st.MemStats
+				u := func(v uint64) string { return strconv.FormatUint(v, 10) }
+				extra["heap_alloc"], extra["heap_idle"], extra["heap_released"] = u(m.HeapAlloc), u(m.HeapIdle), u(m.HeapReleased)
+				extra["stack_inuse"], extra["go_sys"], extra["num_gc"] = u(m.StackInuse), u(m.Sys), strconv.FormatUint(uint64(m.NumGC), 10)
+			}
+		}
+		if ps, err := hostmon.Snapshot(); err == nil {
+			if f := hostmon.FindForeign(ps, ours); f.Any() {
+				// Other VMs do not change this engine's counters, but they compete for
+				// host memory; note them so a reader can judge.
+				extra["foreign"] = f.String()
+				overlapped++
 			}
 		}
 		if runCtx.Err() != nil {
@@ -263,10 +426,17 @@ sampling:
 					rec = append(rec, "")
 				}
 			}
+			for _, k := range extraColumns {
+				rec = append(rec, extra[k])
+			}
 			if csvw != nil {
 				_ = csvw.Write(rec)
 				csvw.Flush()
 			}
+		}
+		if !profiledWarmup && dc != nil && c.profileDir != "" && time.Since(start) >= c.warmup {
+			profiledWarmup = true
+			fetchProfiles(runCtx, dc, c.profileDir, "warmup")
 		}
 		if len(sampleErrs) > c.maxSampleErrors {
 			fatal = fmt.Errorf("%d failed samples, last: %s", len(sampleErrs), sampleErrs[len(sampleErrs)-1])
@@ -278,11 +448,47 @@ sampling:
 		case <-tick.C:
 		}
 	}
+	if dc != nil && c.profileDir != "" && fatal == nil {
+		// Still under load: the workload stops only after cancel below.
+		fetchProfiles(context.WithoutCancel(ctx), dc, c.profileDir, "end")
+	}
 	cancel()
 	wg.Wait()
+	if overlapped > 0 {
+		fmt.Printf("\nnote: other VMs or engines ran during %d samples (see the CSV's foreign column)\n", overlapped)
+	}
 
 	ops, errs, byKind, failures := w.Totals()
 	return report(os.Stdout, c.verdictConfig, series, ops, errs, byKind, failures, sampleErrs, fatal, ctx.Err() != nil)
+}
+
+// extraColumns are CSV columns recorded for analysis but not judged.
+var extraColumns = []string{"heap_alloc", "heap_idle", "heap_released", "stack_inuse", "go_sys", "num_gc", "foreign"}
+
+// fetchProfiles saves the engine's heap, allocs and goroutine profiles, so growth or a
+// large working set can be traced afterwards (`go tool pprof`).
+func fetchProfiles(ctx context.Context, dc *hostmon.DiagClient, dir, tag string) {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		logf("profiles: %v", err)
+		return
+	}
+	for _, p := range []struct{ path, file string }{
+		{"/debug/pprof/heap", "heap"}, {"/debug/pprof/allocs", "allocs"}, {"/debug/pprof/goroutine?debug=1", "goroutine.txt"},
+		{"/debug/stats", "stats.json"},
+	} {
+		pctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		b, err := dc.Get(pctx, p.path)
+		cancel()
+		if err != nil {
+			logf("profile %s: %v", p.path, err)
+			continue
+		}
+		name := filepath.Join(dir, tag+"-"+p.file)
+		if err := os.WriteFile(name, b, 0o600); err != nil {
+			logf("profile %s: %v", name, err)
+		}
+	}
+	logf("profiles (%s) written to %s", tag, dir)
 }
 
 func pickPID(pid uint, name string) (uint32, error) {
@@ -292,9 +498,15 @@ func pickPID(pid uint, name string) (uint32, error) {
 		}
 		return uint32(pid), nil
 	}
-	pids, err := findProcesses(name)
+	ps, err := hostmon.Snapshot()
 	if err != nil {
 		return 0, err
+	}
+	var pids []uint32
+	for _, p := range ps {
+		if strings.EqualFold(p.Name, name) {
+			pids = append(pids, p.PID)
+		}
 	}
 	if len(pids) != 1 {
 		return 0, fmt.Errorf("found %d processes named %s, want exactly 1: %v", len(pids), name, pids)

@@ -1,4 +1,4 @@
-package main
+package hostmon
 
 import (
 	"fmt"
@@ -72,7 +72,7 @@ func FuzzParseStats(f *testing.F) {
 		f.Add(s)
 	}
 	f.Fuzz(func(t *testing.T, s string) {
-		st, err := parseStats(strings.NewReader(s))
+		st, err := ParseStats(strings.NewReader(s))
 		if err != nil {
 			return
 		}
