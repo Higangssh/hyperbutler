@@ -70,11 +70,23 @@ mount -t tmpfs -o mode=0710 docker /var/lib/docker
 # DOCKER_RAMDISK makes runc fall back to MS_MOVE + chroot. The production image must
 # not need this (see ADR 0005).
 export DOCKER_RAMDISK=true
-# dockerd listens on its Unix socket only. sockfwd relays TCP from the host (QEMU
-# hostfwd) to it, standing in for the hvsock/vsock relay of the future guest agent.
-# Prototype only: the relay has no authentication, so anything that can reach
-# eth0:2375 (including containers) gets root-equivalent access to dockerd.
-sockfwd -listen "${ADDR%/*}:2375" -unix /run/docker.sock >/dev/console 2>&1 &
+# dockerd listens on its Unix socket only. On Hyper-V the guest agent relays AF_VSOCK
+# port 2375 (hvsock from the host, which HCS restricts to the user who created the VM)
+# to it, and accepts connections from the host CID only.
+#
+# QEMU for Windows has no vsock device, so there sockfwd relays TCP from QEMU hostfwd
+# instead. QEMU harness only: that relay has no authentication, so anything that can
+# reach eth0:2375 (including containers) gets root-equivalent access to dockerd.
+if [ -d /sys/bus/vmbus ]; then
+	# Restart the agent if it dies; without it dockerd is unreachable.
+	(while :; do
+		agent -port 2375 -unix /run/docker.sock >/dev/console 2>&1
+		t "agent-exit $?"
+		sleep 1
+	done) &
+else
+	sockfwd -listen "${ADDR%/*}:2375" -unix /run/docker.sock >/dev/console 2>&1 &
+fi
 t dockerd-exec
 dockerd --host=unix:///run/docker.sock --iptables=false --ip6tables=false \
 	--log-level="$LOGLEVEL" >/dev/console 2>&1 &
