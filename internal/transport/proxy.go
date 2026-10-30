@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -36,6 +37,10 @@ type Proxy struct {
 	MaxConns int
 	// Logger receives connection-level errors. Nil discards them.
 	Logger *slog.Logger
+	// RewriteCreate, if set, rewrites the body of every POST /containers/create (see
+	// rewrite.go); all other traffic still passes unchanged. Nil keeps the proxy
+	// byte-level.
+	RewriteCreate CreateRewriter
 
 	// peerPollInterval is how often a half-closed client is checked for having gone
 	// away entirely. Zero means defaultPeerPollInterval. Tests shorten it.
@@ -121,7 +126,7 @@ func (p *Proxy) handle(ctx context.Context, client net.Conn) {
 		}
 		return
 	}
-	forward(ctx, client, upstream, p.pollInterval(), p.logger())
+	forward(ctx, client, upstream, p.pollInterval(), p.logger(), p.RewriteCreate)
 }
 
 func (p *Proxy) dialTimeout() time.Duration {
@@ -212,6 +217,10 @@ func (h *halfConn) Close() error {
 	return h.conn.Close()
 }
 
+// rejectWait bounds how long a refused create waits for dockerd to finish the responses
+// it owes on the connection, and then for the client to read the refusal.
+const rejectWait = 10 * time.Second
+
 // forward copies bytes in both directions between client and upstream until both
 // directions have finished, ctx is done, or either side fails. It always closes both
 // connections and returns only after its goroutines have exited.
@@ -219,7 +228,10 @@ func (h *halfConn) Close() error {
 // A clean EOF in one direction is forwarded as CloseWrite on the destination, and the
 // other direction keeps running. Any other error, or a destination that cannot
 // half-close, tears down both connections.
-func forward(ctx context.Context, client, upstream net.Conn, poll time.Duration, log *slog.Logger) {
+//
+// With rw set, the client-to-upstream direction runs through the request filter
+// (rewrite.go).
+func forward(ctx context.Context, client, upstream net.Conn, poll time.Duration, log *slog.Logger, rw CreateRewriter) {
 	c := &halfConn{conn: client}
 	u := &halfConn{conn: upstream}
 
@@ -233,15 +245,32 @@ func forward(ctx context.Context, client, upstream net.Conn, poll time.Duration,
 	stop := context.AfterFunc(ctx, abort)
 
 	upDone := make(chan struct{}) // closed when upstream->client has finished
+	// rejecting is set before a refused create half-closes the upstream: the
+	// upstream->client direction then leaves the client open for the refusal.
+	var rejecting atomic.Bool
 	var wg sync.WaitGroup
 	wg.Add(2)
 
 	// client -> upstream
 	go func() {
 		defer wg.Done()
-		if !copyHalf(u, client, log, "client->upstream") {
-			abort()
-			return
+		if rw == nil {
+			if !copyHalf(u, client, log, "client->upstream") {
+				abort()
+				return
+			}
+		} else {
+			err := newReqFilter(readerOnly{client}, writerOnly{u.conn}, rw).run()
+			var rej *rejection
+			if errors.As(err, &rej) {
+				rejecting.Store(true)
+				refuse(ctx, c, u, client, upDone, rej, abort, log)
+				return
+			}
+			if !closeHalf(u, err, log, "client->upstream") {
+				abort()
+				return
+			}
 		}
 		// The client finished sending. If it can tell us that it disconnected
 		// entirely, watch for that: otherwise a client that vanished without reading
@@ -270,7 +299,7 @@ func forward(ctx context.Context, client, upstream net.Conn, poll time.Duration,
 	go func() {
 		defer wg.Done()
 		defer close(upDone)
-		if !copyHalf(c, upstream, log, "upstream->client") {
+		if !copyHalfThen(c, upstream, log, "upstream->client", func() bool { return !rejecting.Load() }) {
 			abort()
 		}
 	}()
@@ -282,13 +311,64 @@ func forward(ctx context.Context, client, upstream net.Conn, poll time.Duration,
 	abort()
 }
 
+// refuse answers a refused create: no more requests go upstream, dockerd finishes the
+// responses it owes, then the client gets the refusal and the connection closes. What
+// the client still sends is read and discarded meanwhile (bounded), so a client blocked
+// writing a large body can get to reading the answer.
+func refuse(ctx context.Context, c, u *halfConn, client net.Conn, upDone <-chan struct{}, rej *rejection, abort func(), log *slog.Logger) {
+	defer abort()
+	log.Warn("transport: refused a container create", "err", rej.msg)
+	drained := make(chan struct{})
+	go func() {
+		defer close(drained)
+		_, _ = io.Copy(io.Discard, io.LimitReader(readerOnly{client}, maxRejectDrain))
+	}()
+	defer func() { abort(); <-drained }()
+	t := time.AfterFunc(rejectWait, abort)
+	defer t.Stop()
+	if err := u.CloseWrite(); err != nil {
+		return
+	}
+	select {
+	case <-upDone:
+	case <-ctx.Done():
+		return
+	}
+	if _, err := c.conn.Write(rej.response()); err != nil {
+		return
+	}
+	if err := c.CloseWrite(); err != nil {
+		return
+	}
+	// The client reads the answer and closes; the drain sees that as EOF.
+	select {
+	case <-drained:
+	case <-ctx.Done():
+	}
+}
+
 // copyHalf copies src into dst and then half-closes dst. It reports whether the direction
 // finished cleanly.
 func copyHalf(dst *halfConn, src net.Conn, log *slog.Logger, dir string) bool {
+	return copyHalfThen(dst, src, log, dir, nil)
+}
+
+// copyHalfThen is copyHalf; when the copy ends cleanly and halfClose returns false,
+// dst is left open.
+func copyHalfThen(dst *halfConn, src net.Conn, log *slog.Logger, dir string, halfClose func() bool) bool {
 	bp := bufPool.Get().(*[]byte)
 	defer bufPool.Put(bp)
 	// Hide ReadFrom/WriteTo so io.CopyBuffer always uses the pooled, bounded buffer.
 	_, err := io.CopyBuffer(writerOnly{dst.conn}, readerOnly{src}, *bp)
+	if halfClose != nil && err == nil && !halfClose() {
+		return true
+	}
+	return closeHalf(dst, err, log, dir)
+}
+
+// closeHalf finishes one direction after its copy returned err: it half-closes dst if
+// the copy was clean, and reports whether the direction finished cleanly.
+func closeHalf(dst *halfConn, err error, log *slog.Logger, dir string) bool {
 	if err != nil {
 		if !errors.Is(err, net.ErrClosed) {
 			log.Debug("transport: copy failed", "dir", dir, "err", err)
