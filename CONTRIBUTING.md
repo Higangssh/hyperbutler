@@ -46,8 +46,8 @@ under the project's license.
 ## Pull requests
 
 - Keep PRs focused. Link the issue and any requirement IDs (`REQ-...`) it addresses.
-- CI must pass. It runs on `windows-latest` (windows/amd64) with the Go version from
-  `go.mod`, and is defined in `.github/workflows/ci.yml`:
+- CI must pass. It runs mostly on `windows-latest` (windows/amd64) with the Go version
+  from `go.mod`, and is defined in `.github/workflows/ci.yml`:
   - `go vet ./...` and a `gofmt -l` check, plus `go vet` cross-compiled for windows/arm64,
     linux/amd64, and linux/arm64 (platforms with no packages yet are skipped)
   - `go test -race ./...` (this also runs every fuzz seed corpus as a regular test)
@@ -58,11 +58,27 @@ under the project's license.
   - `golangci-lint` with the v2 config in `.golangci.yml`, including its gofmt/goimports
     formatter check
   - `govulncheck ./...`
+  - on `ubuntu-latest`: `go test -race` for the Linux-only guest packages (`./guest/...`:
+    `netfwd`, `winboxd`, `guest/internal/...`)
+  - on `ubuntu-latest`: the canonical guest image build (`guest-image.yml`), the same one
+    the release uses. It runs in a digest-pinned Alpine container, checks every input in
+    `guest/prototype/sources.lock` against its SHA-256 pin, and checks every Alpine
+    package's signature with `apk verify`. The image is uploaded as the `guest-image`
+    artifact. Images for releases are built only there, never on a developer machine.
 
   Tests tagged `integration` are never run in CI because they need a hypervisor. Run them
   locally with `go test -tags integration ./...` and say in the PR which Windows edition
-  you used. Tests only run on windows/amd64; there is no Linux or windows/arm64 test job
-  yet.
+  you used. There is no windows/arm64 test job yet.
+
+  Releases are built by `.github/workflows/release.yml` from a version tag; the checklist
+  and the gates are in [docs/release.md](docs/release.md). To try the packaging locally
+  with an image from `guest/prototype/build.ps1` (the result is marked as a snapshot, not
+  for redistribution):
+
+  ```powershell
+  powershell -ExecutionPolicy Bypass -File guest\prototype\build.ps1 -Out $env:TEMP\guest
+  powershell -ExecutionPolicy Bypass -File dist\package.ps1 -ImageDir $env:TEMP\guest -Snapshot
+  ```
 
   To run the same checks locally:
 

@@ -1,0 +1,247 @@
+name: Release
+
+# Runs only when a version tag is pushed. It builds everything from that tag on hosted
+# runners and leaves a DRAFT release: a maintainer publishes it by hand after the gates in
+# docs/release.md (soak, host-full, etc.), which hosted runners cannot run.
+#
+#   guest-image  canonical guest image + GPL source bundle (strict: signed inputs only)
+#   package      winbox.exe and the portable zip (dist/package.ps1), on Windows
+#   sbom         SPDX SBOM of the zip contents (syft), with no write permissions
+#   publish      SHA256SUMS, build provenance attestation, draft release
+#
+# Artifacts move between jobs of this run only, and each consumer checks them against a
+# digest passed as a job output, so a swapped artifact fails the run.
+
+on:
+  push:
+    tags: ['v[0-9]+.[0-9]+.[0-9]+', 'v[0-9]+.[0-9]+.[0-9]+-*']
+
+permissions: {}
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  GOTOOLCHAIN: local
+
+jobs:
+  guest-image:
+    uses: ./.github/workflows/guest-image.yml
+    permissions:
+      contents: read
+    with:
+      strict: true
+      with-sources: true
+      artifact-name: guest-image-release # must not match the release-* pattern in publish
+
+  package:
+    needs: guest-image
+    runs-on: windows-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    outputs:
+      name: ${{ steps.pkg.outputs.name }}
+      zip-sha256: ${{ steps.pkg.outputs.sha256 }}
+      sources-sha256: ${{ steps.src.outputs.sources }}
+      inputs-sha256: ${{ steps.src.outputs.inputs }}
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0 # git describe and the ancestry check need history and tags
+
+      - name: Check the tag
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:TAG -notmatch '^v\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?$') { throw "not a release tag: $env:TAG" }
+          $head = git rev-parse HEAD
+          $tagged = git rev-parse "refs/tags/$env:TAG^{commit}"
+          if ($head -ne $tagged) { throw "HEAD $head is not the tagged commit $tagged" }
+          # Releases are cut from main only.
+          git merge-base --is-ancestor HEAD origin/main
+          if ($LASTEXITCODE -ne 0) { throw "$env:TAG is not on origin/main" }
+
+      # No cache: the release must not read state that a PR run could have written.
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          check-latest: true
+          cache: false
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: ${{ needs.guest-image.outputs.artifact-name }}
+          path: ${{ runner.temp }}/guest
+
+      - name: Verify the guest image artifact
+        env:
+          WANT: ${{ needs.guest-image.outputs.sums-sha256 }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $dir = Join-Path $env:RUNNER_TEMP 'guest'
+          $got = (Get-FileHash -Algorithm SHA256 (Join-Path $dir 'SHA256SUMS')).Hash.ToLowerInvariant()
+          if ($got -ne $env:WANT) { throw "guest SHA256SUMS digest $got, the build job reported $env:WANT" }
+          foreach ($l in Get-Content (Join-Path $dir 'SHA256SUMS')) {
+            if ($l -notmatch '^([0-9a-f]{64}) [ *](.+)$') { throw "bad SHA256SUMS line: $l" }
+            $h = (Get-FileHash -Algorithm SHA256 -LiteralPath (Join-Path $dir $Matches[2])).Hash.ToLowerInvariant()
+            if ($h -ne $Matches[1]) { throw "checksum mismatch: $($Matches[2])" }
+          }
+
+      - name: Package
+        id: pkg
+        env:
+          TAG: ${{ github.ref_name }}
+          RELEASE_URL: ${{ github.server_url }}/${{ github.repository }}/releases/download/${{ github.ref_name }}
+        run: |
+          $g = Join-Path $env:RUNNER_TEMP 'guest'
+          ./dist/package.ps1 -ImageDir $g -SourceBundle (Join-Path $g 'guest-sources.tar') `
+            -ReleaseUrl $env:RELEASE_URL -Version $env:TAG -Out (Join-Path $env:RUNNER_TEMP 'dist')
+
+      - name: Stage the source bundle and the input mirror
+        id: src
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          foreach ($k in 'sources', 'inputs') {
+            $dst = Join-Path $env:RUNNER_TEMP "dist/winbox-$env:TAG-guest-$k.tar"
+            Copy-Item (Join-Path $env:RUNNER_TEMP "guest/guest-$k.tar") $dst
+            "$k=$((Get-FileHash -Algorithm SHA256 $dst).Hash.ToLowerInvariant())" | Out-File -Append -Encoding utf8 $env:GITHUB_OUTPUT
+          }
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-package
+          path: |
+            ${{ runner.temp }}/dist/*.zip
+            ${{ runner.temp }}/dist/*-guest-sources.tar
+            ${{ runner.temp }}/dist/*-guest-inputs.tar
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
+
+  sbom:
+    needs: package
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions: {}
+    env:
+      # Bump both together. The hash is the release asset's SHA-256, as published in
+      # syft_<version>_checksums.txt and in the GitHub release asset digest.
+      SYFT_VERSION: 1.55.0
+      SYFT_SHA256: bb65249542db5fedeeb4d3f9b018b75e7264dbfbbb10486f044581a92f90490d
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release-package
+          path: ${{ runner.temp }}/pkg
+
+      - name: Install syft (checksum-pinned)
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP"
+          name="syft_${SYFT_VERSION}_linux_amd64.tar.gz"
+          curl --proto '=https' -fsSL -o "$name" "https://github.com/anchore/syft/releases/download/v${SYFT_VERSION}/$name"
+          echo "$SYFT_SHA256  $name" | sha256sum --check --strict
+          mkdir syft && tar -xzf "$name" -C syft syft
+
+      - name: Generate the SBOM
+        env:
+          NAME: ${{ needs.package.outputs.name }}
+          WANT: ${{ needs.package.outputs.zip-sha256 }}
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/pkg"
+          echo "$WANT  $NAME.zip" | sha256sum --check --strict
+          unzip -q "$NAME.zip" -d "$RUNNER_TEMP/unpacked"
+          # Covers winbox.exe's Go modules and the files in the archive. The guest
+          # packages are listed in THIRD-PARTY/README.txt and the source bundle manifest;
+          # syft cannot see inside the initramfs.
+          "$RUNNER_TEMP/syft/syft" scan "dir:$RUNNER_TEMP/unpacked/$NAME" \
+            --source-name winbox --source-version "${NAME#winbox-}" \
+            -o "spdx-json=$RUNNER_TEMP/$NAME.spdx.json"
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-sbom
+          path: ${{ runner.temp }}/*.spdx.json
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    needs: [package, sbom]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # Configure required reviewers for this environment in the repository settings.
+    environment: release
+    permissions:
+      contents: write # create the draft release
+      id-token: write # Sigstore certificate for the attestation
+      attestations: write
+    steps:
+      # No checkout: nothing from the repository runs in the job that holds write tokens.
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: release-*
+          merge-multiple: true
+          path: ${{ runner.temp }}/assets
+
+      - name: Verify and checksum the assets
+        env:
+          NAME: ${{ needs.package.outputs.name }}
+          TAG: ${{ github.ref_name }}
+          ZIP_SHA256: ${{ needs.package.outputs.zip-sha256 }}
+          SRC_SHA256: ${{ needs.package.outputs.sources-sha256 }}
+          INPUTS_SHA256: ${{ needs.package.outputs.inputs-sha256 }}
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/assets"
+          src="winbox-$TAG-guest-sources.tar"
+          inputs="winbox-$TAG-guest-inputs.tar"
+          printf '%s  %s\n' "$ZIP_SHA256" "$NAME.zip" "$SRC_SHA256" "$src" "$INPUTS_SHA256" "$inputs" |
+            sha256sum --check --strict
+          for f in *; do
+            case "$f" in
+              "$NAME.zip" | "$src" | "$inputs" | "$NAME.spdx.json") ;;
+              *) echo "unexpected file in the release assets: $f"; exit 1 ;;
+            esac
+          done
+          sha256sum "$NAME.zip" "$src" "$inputs" "$NAME.spdx.json" >SHA256SUMS
+          cat SHA256SUMS
+
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-checksums: ${{ runner.temp }}/assets/SHA256SUMS
+
+      - name: Create the draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+          NAME: ${{ needs.package.outputs.name }}
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/assets"
+          pre=()
+          case "$TAG" in *-*) pre=(--prerelease) ;; esac
+          cat >notes.md <<EOF
+          Built by the Release workflow from $TAG ($GITHUB_SHA).
+
+          - \`$NAME.zip\`: unzip, add the folder to PATH, run \`winbox start\`.
+          - \`winbox-$TAG-guest-sources.tar\`: corresponding source of the guest image's GPL components.
+          - \`winbox-$TAG-guest-inputs.tar\`: the signed Alpine packages the guest image was built from.
+          - \`$NAME.spdx.json\`: SBOM. \`SHA256SUMS\`: checksums of the above.
+
+          Verify: \`gh attestation verify $NAME.zip --repo $GITHUB_REPOSITORY\`
+
+          This is a draft. It is published only after the gates in docs/release.md pass.
+          EOF
+          gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --draft --verify-tag "${pre[@]}" \
+            --title "winbox $TAG" --notes-file notes.md \
+            "$NAME.zip" "winbox-$TAG-guest-sources.tar" "winbox-$TAG-guest-inputs.tar" "$NAME.spdx.json" SHA256SUMS

@@ -72,3 +72,29 @@ Third-party Go modules used only by tests (never linked into a shipped binary):
   MIT License, Copyright (c) 2018 Uber Technologies, Inc.
   Used by internal/leaktest, which every package's TestMain calls to fail tests that
   leave goroutines running (ADR 0003, guardrail 1).
+
+Release archives (winbox-<version>-windows-amd64.zip) also contain a Linux guest image
+(vmlinuz-virt and the initramfs), built by .github/workflows/guest-image.yml from the
+Alpine Linux packages pinned in guest/prototype/sources.lock. It is a separate program
+that winbox.exe runs in a VM, distributed alongside winbox (mere aggregation); its
+components keep their own licenses, among them:
+
+- Linux kernel and modules (Alpine linux-virt): GPL-2.0-only
+- BusyBox (busybox-static): GPL-2.0-only
+- e2fsprogs, e2fsprogs-libs and libcom_err: GPL-2.0-or-later AND LGPL-2.0-or-later AND
+  BSD-3-Clause AND MIT
+- libblkid: LGPL-2.1-or-later; libuuid: BSD-3-Clause (util-linux); libeconf: MIT
+- musl libc: MIT
+- CA certificate bundle: MPL-2.0 AND MIT
+- Docker Engine (Moby) dockerd, containerd, runc, docker-proxy, and tini (docker-init):
+  Apache-2.0 and MIT
+
+Each release archive carries THIRD-PARTY/ (the license texts, generated from the
+upstream sources) and SOURCE-OFFER.txt, and each release publishes the corresponding
+source of the guest image as winbox-<version>-guest-sources.tar. docs/release.md
+describes how these are produced and checked.
+
+Only archives attached to a published GitHub release meet the above. A local
+dist/package.ps1 -Snapshot build is not a release: it may contain inputs without
+license texts or source (the prototype's Docker static binaries) and must not be
+redistributed.

@@ -1,0 +1,125 @@
+name: Guest image
+
+# The canonical guest image build (ADR 0005, Decision 4): on a GitHub-hosted Linux runner,
+# inside a digest-pinned Alpine container, from the pinned inputs in sources.lock, with
+# every Alpine package's signature checked by `apk verify`. Release images come only from
+# here, never from a developer machine.
+#
+# Reusable: ci.yml calls it on every push and PR, release.yml calls it on a tag with
+# strict mode and the source bundle on. The build script, lock file and output names are
+# inputs, so the guest track can move to the erofs layout without editing this file.
+
+on:
+  workflow_call:
+    inputs:
+      build-script:
+        description: Build script, relative to the repository root (contract in scripts/guest-image/build-prototype.sh)
+        type: string
+        default: scripts/guest-image/build-prototype.sh
+      lock:
+        description: Pinned input list, relative to the repository root
+        type: string
+        default: guest/prototype/sources.lock
+      outputs:
+        description: Space-separated file names the build script must produce
+        type: string
+        default: vmlinuz-virt initramfs-winbox.gz
+      strict:
+        description: Accept only signed Alpine packages (inputs whose source can be bundled)
+        type: boolean
+        default: false
+      with-sources:
+        description: Also build the GPL corresponding-source bundle and license texts
+        type: boolean
+        default: false
+      artifact-name:
+        type: string
+        default: guest-image
+    outputs:
+      artifact-name:
+        description: Name of the uploaded artifact
+        value: ${{ jobs.build.outputs.artifact-name }}
+      sums-sha256:
+        description: SHA-256 of the artifact's SHA256SUMS file, for the consumer to check
+        value: ${{ jobs.build.outputs.sums-sha256 }}
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: guest image (alpine container)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    outputs:
+      artifact-name: ${{ inputs.artifact-name }}
+      sums-sha256: ${{ steps.sums.outputs.sha256 }}
+    env:
+      # Bump together with the Alpine release in sources.lock. The digest is the
+      # multi-arch index of alpine:3.24.3 on Docker Hub; /etc/apk/keys in this image
+      # is the trust root for `apk verify`.
+      ALPINE_IMAGE: alpine:3.24.3@sha256:be2656061b536c1883c4034790e21d0a09c5aaaf51968b89368a3c0371ea2c9a
+      WINBOX_BUILD_SCRIPT: ${{ inputs.build-script }}
+      WINBOX_LOCK: ${{ inputs.lock }}
+      WINBOX_OUTPUTS: ${{ inputs.outputs }}
+      WINBOX_STRICT: ${{ inputs.strict && '1' || '0' }}
+      WINBOX_WITH_SOURCES: ${{ inputs.with-sources && '1' || '0' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # No cache: a release build must not read state that a PR run could have written.
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          check-latest: true
+          cache: false
+
+      - name: Build in the Alpine container
+        run: |
+          set -euo pipefail
+          out="$RUNNER_TEMP/guest-image"
+          mkdir -p "$out"
+          docker pull --quiet "$ALPINE_IMAGE"
+          docker run --rm \
+            -v "$GITHUB_WORKSPACE:/src:ro" \
+            -v "$(go env GOROOT):/usr/local/go:ro" \
+            -v "$out:/out" \
+            -e WINBOX_BUILD_SCRIPT -e WINBOX_LOCK -e WINBOX_OUTPUTS \
+            -e WINBOX_STRICT -e WINBOX_WITH_SOURCES \
+            -e WINBOX_IMAGE="$ALPINE_IMAGE" -e WINBOX_HOST_UID="$(id -u)" \
+            "$ALPINE_IMAGE" /bin/sh /src/scripts/guest-image/ci-entry.sh
+
+      - name: Check and summarize
+        id: sums
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/guest-image"
+          sha256sum --check --strict --quiet SHA256SUMS
+          echo "sha256=$(sha256sum SHA256SUMS | cut -d' ' -f1)" >>"$GITHUB_OUTPUT"
+          {
+            echo '### Guest image'
+            echo
+            echo '| File | Bytes | SHA-256 |'
+            echo '|---|---:|---|'
+            for f in $WINBOX_OUTPUTS guest-sources.tar; do
+              [ -f "$f" ] || continue
+              echo "| \`$f\` | $(stat -c %s "$f") | \`$(sha256sum "$f" | cut -d' ' -f1)\` |"
+            done
+            echo
+            echo '```'
+            cat BUILDINFO.txt
+            echo '```'
+          } >>"$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ${{ inputs.artifact-name }}
+          path: ${{ runner.temp }}/guest-image/
+          if-no-files-found: error
+          retention-days: 14
+          # The outputs are already gzip/xz; zipping them again only costs time.
+          compression-level: 0
