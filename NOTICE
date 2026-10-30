@@ -28,7 +28,8 @@ Third-party Go modules linked into winbox binaries:
   https://cs.opensource.google/go/x/sys
   BSD 3-Clause License, Copyright 2009 The Go Authors.
   Used by internal/transport for Windows API calls (security descriptors, pipe I/O),
-  and by guest/cmd/netfwd for the TAP device and AF_VSOCK.
+  by guest/cmd/netfwd for the TAP device and AF_VSOCK,
+  and by internal/diag and bench/soak (process handle count, process snapshots).
 
 The user-mode guest network (internal/netstack, ADR 0006) links these into winbox-dev:
 
@@ -63,3 +64,11 @@ The user-mode guest network (internal/netstack, ADR 0006) links these into winbo
 - golang.org/x/exp v0.0.0-20231110203233-9a3e6036ecaa and golang.org/x/time v0.12.0
   https://cs.opensource.google/go/x/exp, https://cs.opensource.google/go/x/time
   BSD 3-Clause License, Copyright 2009 The Go Authors. Imported by gVisor.
+
+Third-party Go modules used only by tests (never linked into a shipped binary):
+
+- go.uber.org/goleak v1.3.0
+  https://github.com/uber-go/goleak
+  MIT License, Copyright (c) 2018 Uber Technologies, Inc.
+  Used by internal/leaktest, which every package's TestMain calls to fail tests that
+  leave goroutines running (ADR 0003, guardrail 1).

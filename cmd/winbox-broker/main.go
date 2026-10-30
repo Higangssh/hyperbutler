@@ -17,8 +17,10 @@ import (
 	"os"
 	"os/signal"
 
-	"github.com/Higangssh/winbox/internal/broker"
 	"golang.org/x/sys/windows"
+
+	"github.com/Higangssh/winbox/internal/broker"
+	"github.com/Higangssh/winbox/internal/diag"
 )
 
 const defaultPipe = `\\.\pipe\winbox-broker-dev`
@@ -26,19 +28,41 @@ const defaultPipe = `\\.\pipe\winbox-broker-dev`
 // version is set at link time (-ldflags "-X main.version=...").
 var version = "dev"
 
+// defaultMemLimit is the broker's Go soft memory limit (ADR 0003, guardrail 4). The
+// broker has no data plane, so its heap stays small; GOMEMLIMIT in the environment
+// overrides this.
+const defaultMemLimit = "64MiB"
+
 func main() {
 	pipe := flag.String("pipe", defaultPipe, "named pipe to serve on")
 	fake := flag.Bool("fake-backend", false, "use the in-memory fake backend (required for now)")
+	var dcfg diag.Config
+	flag.StringVar(&dcfg.MemoryLimit, "memlimit", defaultMemLimit, "Go soft memory limit, GOMEMLIMIT syntax (the GOMEMLIMIT variable wins)")
+	flag.StringVar(&dcfg.DebugPipe, "debug-pipe", "", `serve pprof and runtime stats on this pipe, current user only (off when empty), e.g. \\.\pipe\winbox-broker-debug`)
 	flag.Parse()
-	if err := run(*pipe, *fake); err != nil {
+	if err := run(*pipe, *fake, dcfg); err != nil {
 		fmt.Fprintln(os.Stderr, "winbox-broker:", err)
 		os.Exit(1)
 	}
 }
 
-func run(pipe string, fake bool) error {
+func run(pipe string, fake bool, dcfg diag.Config) error {
 	if !fake {
 		return fmt.Errorf("no HCS backend yet; run with -fake-backend")
+	}
+	// The debug pipe's DACL names the user's SID, which an elevated token shares with
+	// the same user's medium-integrity processes. Exposing heap dumps and profiles of an
+	// elevated broker to those would cross the ADR 0004 boundary, so refuse it.
+	if dcfg.DebugPipe != "" && windows.GetCurrentProcessToken().IsElevated() {
+		return fmt.Errorf("-debug-pipe is refused in an elevated broker")
+	}
+	dbg, err := diag.Start(dcfg)
+	if err != nil {
+		return err
+	}
+	defer dbg.Close()
+	if dcfg.DebugPipe != "" {
+		log.Printf("debug endpoint on %s", dcfg.DebugPipe)
 	}
 	tu, err := windows.GetCurrentProcessToken().GetTokenUser()
 	if err != nil {

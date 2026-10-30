@@ -6,6 +6,7 @@ require (
 	github.com/Microsoft/go-winio v0.6.4
 	github.com/containers/gvisor-tap-vsock v0.9.0
 	github.com/miekg/dns v1.1.73
+	go.uber.org/goleak v1.3.0
 	golang.org/x/sys v0.49.0
 	gvisor.dev/gvisor v0.0.0-20260413194555-9680d69bf798
 )

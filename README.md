@@ -71,9 +71,9 @@ Rewriting infrastructure in Rust is popular, so here is why winbox is written in
   memory while serving Docker. The VM uses about 200 MB. Rust would save a few MB.
 - **Neither language prevents memory leaks.** Rust prevents memory-safety bugs, and so does
   Go's garbage collector. Leaks in a long-running daemon are design bugs, in either language.
-  winbox bounds every queue and connection set today. Goroutine-leak checks in every package
-  and a 24-hour soak test that fails on memory growth are being built, and they block any
-  release.
+  winbox bounds every queue and connection set, and every package's tests fail on a leaked
+  goroutine. A soak test (`bench/soak`) fails on memory, handle or goroutine growth; its
+  24-hour run needs Hyper-V, so it runs on self-hosted hardware, and it blocks any release.
 
 If a measurement ever shows that a component misses its budget because of the language, that
 component gets rewritten. The broker's protocol is small and specified for exactly that

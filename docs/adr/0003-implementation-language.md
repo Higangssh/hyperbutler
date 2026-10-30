@@ -135,12 +135,34 @@ For 0.1 that trade favours Go. Two things would re-open it:
 - Option 2 (a Rust broker) stays the first candidate if the broker's audit or a measurement
   argues for it. The broker's wire protocol (`internal/broker/proto`) is small and specified,
   so it could be reimplemented without changing clients.
-- **Guardrail status on 2026-10-30:**
-  - Bounded resources (2): in place in the broker and transport.
-  - Goroutine-leak checks (1): only in `internal/transport`, as goroutine-count deltas.
-    `goleak` is not yet wired into every package.
-  - Soak gate (3) and runtime limits (4): not built yet.
-  - These are the next work items, and a release is blocked until 1, 3 and 4 exist.
+- **Guardrail status on 2026-10-30 (updated after the guardrail work):**
+  - Bounded resources (2): in place in the broker, transport and `internal/diag`.
+  - Goroutine-leak checks (1): **in place.** Every test package's `TestMain` calls
+    `internal/leaktest` (goleak), and a meta-test fails CI if a test package lacks it,
+    passes any exception other than `leaktest.Ignore*`, or imports goleak directly. The
+    one exception is go-winio's process-lifetime I/O completion goroutine. Only
+    `cmd/winbox-dev` is still listed as pending (owned by a parallel change). A Linux CI
+    job runs the guest packages' tests under goleak and `-race`. Gap: the goroutine
+    loops in `guest/cmd/winboxd` and `guest/cmd/spaceguard` (`_linux.go`) have no tests
+    yet, so goleak does not exercise them.
+  - Soak gate (3): **built** (`bench/soak`), unit- and fuzz-tested in CI. It needs
+    Hyper-V, so the 24 h release run and the 1 h main run happen on self-hosted
+    hardware, which does not exist yet. Until it does, the gate is run by hand. A 13-minute
+    run against `winbox-dev` from main (3 min warm-up, 1 min buckets, about 2,900 docker
+    commands, none failed) passed: private working set slope −1.4 MB/h over the 10-minute
+    window (median 45.4 MB), handles and threads flat, vmmem +5 MB (limit 64 MB). Such a
+    short window only rules out leaks faster than about 14 MB/h.
+  - The 45 MB private working set under this workload is far above the 3–7 MB in the
+    table above, which came from 200 `docker version` and 50 `docker run` calls. It looks
+    flat, not growing, but it is unexplained and must be profiled through the diag
+    endpoint before the 0.1 budget is claimed.
+  - Runtime limits (4): **built** (`internal/diag`: `GOMEMLIMIT` from config unless set
+    in the environment; pprof, MemStats, goroutine and handle counts on a current-user-only
+    named pipe, off by default). Wired into `winbox-broker` (`-memlimit`, default 64 MiB;
+    `-debug-pipe`). Not yet wired into `winbox-dev`, so the soak cannot yet sample its
+    goroutines or heap.
+  - A release stays blocked until the soak runs on self-hosted hardware with the diag
+    endpoint enabled.
 - The idle measurement above did not follow REQ-MEM-001's method (sampling every 10 s from
   minute 5 to minute 10). It will be redone with `bench/mem-idle`, recording
   `runtime.MemStats` heap numbers next to the private working set, so that a leak can be told
