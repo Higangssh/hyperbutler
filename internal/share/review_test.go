@@ -172,7 +172,6 @@ func TestNotifyNeverBlocks(t *testing.T) {
 	_ = binary.LittleEndian
 }
 
-
 // A directory the guest just changed something in is reported by the host as modified
 // (its times changed). That echo must not invalidate the directory (a GETATTR per
 // create, and the guest's readdir cache dropped); a Windows change inside it must.

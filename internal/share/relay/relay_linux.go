@@ -44,7 +44,7 @@ type Config struct {
 // about 15 ms, so sequential writes ran at 4-56 MB/s (ADR 0007, 2026-10-31).
 type Relay struct {
 	cfg  Config
-	fd   int    // the mounted /dev/fuse descriptor
+	fd   int           // the mounted /dev/fuse descriptor
 	conn atomic.Uint64 // the FUSE connection number (the mount's device), for abort
 	done chan struct{}
 	once sync.Once
