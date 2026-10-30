@@ -1,0 +1,353 @@
+//go:build windows
+
+package broker
+
+import (
+	"bytes"
+	"context"
+	"errors"
+	"io"
+	"os"
+	"strings"
+	"testing"
+
+	"github.com/Higangssh/winbox/internal/broker/proto"
+	"golang.org/x/sys/windows"
+)
+
+const (
+	sidA = "S-1-5-21-1000-2000-3000-1001"
+	sidB = "S-1-5-21-1000-2000-3000-1002"
+)
+
+// localPeer is a Peer for a client in this process: the identity is simulated, but
+// handles are duplicated from this process for real, and impersonation is a no-op
+// because the client is the current user.
+type localPeer struct {
+	sid         string
+	identifyErr error
+	identified  int
+}
+
+func (p *localPeer) Identify() (Identity, error) {
+	p.identified++
+	if p.identifyErr != nil {
+		return Identity{}, p.identifyErr
+	}
+	return Identity{SID: p.sid}, nil
+}
+
+func (p *localPeer) DuplicateHandle(v uint64) (windows.Handle, error) {
+	var dup windows.Handle
+	cur := windows.CurrentProcess()
+	err := windows.DuplicateHandle(cur, windows.Handle(v), cur, &dup, 0, false, windows.DUPLICATE_SAME_ACCESS)
+	return dup, err
+}
+
+func (p *localPeer) Impersonate(fn func() error) error { return fn() }
+
+// conn is an in-memory connection: reads come from in, writes go to out.
+type conn struct {
+	in  io.Reader
+	out bytes.Buffer
+}
+
+func (c *conn) Read(b []byte) (int, error)  { return c.in.Read(b) }
+func (c *conn) Write(b []byte) (int, error) { return c.out.Write(b) }
+
+func newTestServer(t *testing.T, cfg Config) (*Server, *FakeBackend) {
+	t.Helper()
+	be := NewFakeBackend()
+	if cfg.Backend == nil {
+		cfg.Backend = be
+	}
+	s, err := New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { s.Close() })
+	return s, be
+}
+
+func acceptAll(windows.Handle, string) error { return nil }
+
+func encode(t *testing.T, reqs ...proto.Request) []byte {
+	t.Helper()
+	var b []byte
+	for _, r := range reqs {
+		f, err := proto.EncodeRequest(r)
+		if err != nil {
+			t.Fatal(err)
+		}
+		b = append(b, f...)
+	}
+	return b
+}
+
+func decodeReplies(t *testing.T, b []byte) []proto.Reply {
+	t.Helper()
+	var out []proto.Reply
+	r := bytes.NewReader(b)
+	var buf [proto.MaxFrameSize]byte
+	for r.Len() > 0 {
+		f, err := proto.ReadFrame(r, &buf)
+		if err != nil {
+			t.Fatalf("reply stream: %v", err)
+		}
+		rep, err := proto.DecodeReply(f)
+		if err != nil {
+			t.Fatalf("invalid reply %x: %v", f, err)
+		}
+		out = append(out, rep)
+	}
+	return out
+}
+
+// call sends reqs on one connection as peer p and returns the replies.
+func call(t *testing.T, s *Server, p Peer, reqs ...proto.Request) []proto.Reply {
+	t.Helper()
+	c := &conn{in: bytes.NewReader(encode(t, reqs...))}
+	if err := s.ServeConn(context.Background(), c, p); err != nil {
+		t.Fatalf("ServeConn: %v", err)
+	}
+	return decodeReplies(t, c.out.Bytes())
+}
+
+func call1(t *testing.T, s *Server, p Peer, req proto.Request) proto.Reply {
+	t.Helper()
+	r := call(t, s, p, req)
+	if len(r) != 1 {
+		t.Fatalf("%d replies", len(r))
+	}
+	return r[0]
+}
+
+func wantCode(t *testing.T, r proto.Reply, code proto.Code) {
+	t.Helper()
+	if !r.IsError() || r.Code != code {
+		t.Fatalf("reply %+v, want error code %d", r, code)
+	}
+}
+
+func wantOK(t *testing.T, r proto.Reply, op proto.Op) {
+	t.Helper()
+	if r.Type != proto.ReplyFlag|uint8(op) {
+		t.Fatalf("reply %+v, want success for %s", r, op)
+	}
+}
+
+// tempDirHandle opens a fresh temp directory and returns its handle value in this
+// process.
+func tempDirHandle(t *testing.T) uint64 {
+	t.Helper()
+	f, err := os.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { f.Close() })
+	return uint64(f.Fd())
+}
+
+func TestVersion(t *testing.T) {
+	s, _ := newTestServer(t, Config{Version: "1.2.3"})
+	r := call1(t, s, &localPeer{sid: sidA}, proto.Request{Op: proto.OpVersion})
+	wantOK(t, r, proto.OpVersion)
+	if r.ProtoVersion != proto.Version || r.BrokerVersion != "1.2.3" {
+		t.Fatalf("version reply %+v", r)
+	}
+}
+
+func TestStartNeedsDataLocation(t *testing.T) {
+	s, be := newTestServer(t, Config{})
+	wantCode(t, call1(t, s, &localPeer{sid: sidA}, proto.Request{Op: proto.OpStart}), proto.CodeNoDataLocation)
+	if be.Starts[sidA] != 0 {
+		t.Fatal("backend started without a data location")
+	}
+}
+
+// TestCallerIsolation: per-user state is keyed by the SID the peer reports, and one
+// caller can neither see nor change another caller's VM or settings.
+func TestCallerIsolation(t *testing.T) {
+	s, be := newTestServer(t, Config{validateDataDir: acceptAll})
+	a, b := &localPeer{sid: sidA}, &localPeer{sid: sidB}
+
+	wantOK(t, call1(t, s, a, proto.Request{Op: proto.OpSetDataLocation, Handle: tempDirHandle(t)}), proto.OpSetDataLocation)
+	wantOK(t, call1(t, s, a, proto.Request{Op: proto.OpResize, CPUs: 4}), proto.OpResize)
+	started := call1(t, s, a, proto.Request{Op: proto.OpStart})
+	wantOK(t, started, proto.OpStart)
+	if started.State != proto.StateRunning || started.CPUs != 4 || started.VMID == ([16]byte{}) {
+		t.Fatalf("A start: %+v", started)
+	}
+
+	// B sees none of A's state.
+	st := call1(t, s, b, proto.Request{Op: proto.OpStatus})
+	if st.State != proto.StateStopped || st.DataLocationSet || st.VMID != ([16]byte{}) || st.CPUs != 2 {
+		t.Fatalf("B status leaks A's state: %+v", st)
+	}
+	// B cannot stop, resize or start A's VM.
+	wantCode(t, call1(t, s, b, proto.Request{Op: proto.OpStop, Force: true}), proto.CodeNotRunning)
+	wantOK(t, call1(t, s, b, proto.Request{Op: proto.OpResize, CPUs: 1}), proto.OpResize)
+	wantCode(t, call1(t, s, b, proto.Request{Op: proto.OpStart}), proto.CodeNoDataLocation)
+
+	st = call1(t, s, a, proto.Request{Op: proto.OpStatus})
+	if st.State != proto.StateRunning || st.CPUs != 4 || st.VMID != started.VMID || !st.DataLocationSet {
+		t.Fatalf("A status after B's requests: %+v", st)
+	}
+	if be.Starts[sidB] != 0 || be.Starts[sidA] != 1 {
+		t.Fatalf("starts: %v", be.Starts)
+	}
+	wantOK(t, call1(t, s, a, proto.Request{Op: proto.OpStop}), proto.OpStop)
+}
+
+func TestIdentityFromPeerOnce(t *testing.T) {
+	s, _ := newTestServer(t, Config{})
+	p := &localPeer{sid: sidA}
+	r := call(t, s, p, proto.Request{Op: proto.OpStatus}, proto.Request{Op: proto.OpVersion}, proto.Request{Op: proto.OpStatus})
+	if len(r) != 3 || p.identified != 1 {
+		t.Fatalf("%d replies, identified %d times", len(r), p.identified)
+	}
+	// No bytes, no identification.
+	p = &localPeer{sid: sidA}
+	if r := call(t, s, p); len(r) != 0 || p.identified != 0 {
+		t.Fatalf("empty connection: %d replies, identified %d times", len(r), p.identified)
+	}
+}
+
+func TestIdentityRejected(t *testing.T) {
+	s, _ := newTestServer(t, Config{AllowedSIDs: []string{sidA}})
+	for _, p := range []*localPeer{
+		{sid: sidB},
+		{sid: ""},
+		{sid: sidA, identifyErr: errors.New("anonymous")},
+	} {
+		c := &conn{in: bytes.NewReader(encode(t, proto.Request{Op: proto.OpStatus}, proto.Request{Op: proto.OpStatus}))}
+		if err := s.ServeConn(context.Background(), c, p); err == nil {
+			t.Errorf("peer %+v: ServeConn returned nil", p)
+		}
+		r := decodeReplies(t, c.out.Bytes())
+		if len(r) != 1 {
+			t.Fatalf("peer %+v: %d replies, want 1 then close", p, len(r))
+		}
+		wantCode(t, r[0], proto.CodeAccessDenied)
+	}
+	wantOK(t, call1(t, s, &localPeer{sid: sidA}, proto.Request{Op: proto.OpStatus}), proto.OpStatus)
+}
+
+func TestMalformedClosesConnection(t *testing.T) {
+	s, _ := newTestServer(t, Config{})
+	status := encode(t, proto.Request{Op: proto.OpStatus})
+	v2 := append([]byte{}, status...)
+	v2[2] = 2
+	for _, tt := range []struct {
+		name string
+		in   []byte
+		code proto.Code
+	}{
+		{"oversize length", append(append([]byte{}, status...), 0xff, 0xff, 1, 4), proto.CodeBadRequest},
+		{"length 0", append(append([]byte{}, status...), 0, 0), proto.CodeBadRequest},
+		{"unknown op", append(append([]byte{}, status...), 0, 2, 1, 9), proto.CodeBadRequest},
+		{"version 2", append(append([]byte{}, status...), v2...), proto.CodeUnsupportedVersion},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			c := &conn{in: bytes.NewReader(append(tt.in, status...))}
+			if err := s.ServeConn(context.Background(), c, &localPeer{sid: sidA}); err == nil {
+				t.Fatal("ServeConn returned nil")
+			}
+			r := decodeReplies(t, c.out.Bytes())
+			if len(r) != 2 {
+				t.Fatalf("%d replies, want status then error then close", len(r))
+			}
+			wantOK(t, r[0], proto.OpStatus)
+			wantCode(t, r[1], tt.code)
+		})
+	}
+}
+
+func TestResizeLimits(t *testing.T) {
+	s, _ := newTestServer(t, Config{MaxCPUs: 4, MinMemoryMB: 1024, MaxMemoryMB: 4096})
+	p := &localPeer{sid: sidA}
+	wantCode(t, call1(t, s, p, proto.Request{Op: proto.OpResize, CPUs: 5}), proto.CodeOutOfRange)
+	wantCode(t, call1(t, s, p, proto.Request{Op: proto.OpResize, MemoryMB: 512}), proto.CodeOutOfRange)
+	wantCode(t, call1(t, s, p, proto.Request{Op: proto.OpResize, MemoryMB: 8192}), proto.CodeOutOfRange)
+	r := call1(t, s, p, proto.Request{Op: proto.OpResize, CPUs: 4, MemoryMB: 4096})
+	wantOK(t, r, proto.OpResize)
+	if r.CPUs != 4 || r.MemoryMB != 4096 {
+		t.Fatalf("resize: %+v", r)
+	}
+}
+
+func TestResizeRunningVM(t *testing.T) {
+	s, _ := newTestServer(t, Config{validateDataDir: acceptAll})
+	p := &localPeer{sid: sidA}
+	call1(t, s, p, proto.Request{Op: proto.OpSetDataLocation, Handle: tempDirHandle(t)})
+	wantOK(t, call1(t, s, p, proto.Request{Op: proto.OpStart}), proto.OpStart)
+	r := call1(t, s, p, proto.Request{Op: proto.OpResize, MemoryMB: 4096})
+	if r.State != proto.StateRunning || r.MemoryMB != 4096 {
+		t.Fatalf("resize running VM: %+v", r)
+	}
+}
+
+func TestDataLocationBusyWhileRunning(t *testing.T) {
+	s, _ := newTestServer(t, Config{validateDataDir: acceptAll})
+	p := &localPeer{sid: sidA}
+	call1(t, s, p, proto.Request{Op: proto.OpSetDataLocation, Handle: tempDirHandle(t)})
+	wantOK(t, call1(t, s, p, proto.Request{Op: proto.OpStart}), proto.OpStart)
+	wantCode(t, call1(t, s, p, proto.Request{Op: proto.OpSetDataLocation, Handle: tempDirHandle(t)}), proto.CodeBusy)
+}
+
+func TestStartRevalidatesDataLocation(t *testing.T) {
+	ok := true
+	s, be := newTestServer(t, Config{validateDataDir: func(windows.Handle, string) error {
+		if ok {
+			return nil
+		}
+		return reject("DACL grants access to another account", nil)
+	}})
+	p := &localPeer{sid: sidA}
+	wantOK(t, call1(t, s, p, proto.Request{Op: proto.OpSetDataLocation, Handle: tempDirHandle(t)}), proto.OpSetDataLocation)
+	ok = false
+	r := call1(t, s, p, proto.Request{Op: proto.OpStart})
+	wantCode(t, r, proto.CodeDataLocationRejected)
+	if be.Starts[sidA] != 0 {
+		t.Fatal("started with a data location that no longer validates")
+	}
+}
+
+func TestInvalidHandle(t *testing.T) {
+	s, _ := newTestServer(t, Config{validateDataDir: acceptAll})
+	wantCode(t, call1(t, s, &localPeer{sid: sidA}, proto.Request{Op: proto.OpSetDataLocation, Handle: 0xFFFFF0}), proto.CodeInvalidHandle)
+}
+
+func TestBackendErrorsAreNotEchoed(t *testing.T) {
+	be := NewFakeBackend()
+	be.Err = errors.New(`HCS failed on C:\Users\secret\vm.vhdx`)
+	var logged []string
+	s, _ := newTestServer(t, Config{Backend: be, Logf: func(f string, a ...any) { logged = append(logged, f) }})
+	r := call1(t, s, &localPeer{sid: sidA}, proto.Request{Op: proto.OpStatus})
+	wantCode(t, r, proto.CodeInternal)
+	if strings.Contains(r.Message, "secret") || len(logged) == 0 {
+		t.Fatalf("message %q, logged %d", r.Message, len(logged))
+	}
+}
+
+func TestNewRejectsBadConfig(t *testing.T) {
+	for _, cfg := range []Config{
+		{},
+		{Backend: NewFakeBackend(), Version: "bad\nversion"},
+		{Backend: NewFakeBackend(), MaxCPUs: proto.MaxCPUs + 1},
+		{Backend: NewFakeBackend(), MinMemoryMB: 4096, MaxMemoryMB: 1024},
+		{Backend: NewFakeBackend(), DefaultCPUs: 16},
+	} {
+		if _, err := New(cfg); err == nil {
+			t.Errorf("New(%+v) accepted", cfg)
+		}
+	}
+}
+
+func TestCloseReleasesDataDirs(t *testing.T) {
+	s, _ := newTestServer(t, Config{validateDataDir: acceptAll})
+	p := &localPeer{sid: sidA}
+	call1(t, s, p, proto.Request{Op: proto.OpSetDataLocation, Handle: tempDirHandle(t)})
+	s.Close()
+	wantCode(t, call1(t, s, p, proto.Request{Op: proto.OpStatus}), proto.CodeBusy)
+}
