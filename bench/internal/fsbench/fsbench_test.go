@@ -1,6 +1,7 @@
 package fsbench
 
 import (
+	"errors"
 	"math"
 	"strings"
 	"testing"
@@ -60,5 +61,17 @@ func TestWSLPath(t *testing.T) {
 	}
 	if q := Quantile([]float64{3, 1, 2}, 0.5); q != 2 {
 		t.Fatalf("median %v", q)
+	}
+}
+
+func TestVerdict(t *testing.T) {
+	if err := Verdict([]Row{{Req: "R", Verdict: "pass"}, {Verdict: "info"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := Verdict([]Row{{Req: "R", Verdict: "pass"}, {Req: "R", Verdict: "not measured"}}); !errors.Is(err, ErrIncomplete) {
+		t.Fatalf("unmeasured requirement: %v", err)
+	}
+	if err := Verdict([]Row{{Req: "R", Verdict: "FAIL"}, {Req: "R", Verdict: "not measured"}}); err == nil || errors.Is(err, ErrIncomplete) {
+		t.Fatalf("failed requirement: %v", err)
 	}
 }

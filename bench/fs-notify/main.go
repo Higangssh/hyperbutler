@@ -25,10 +25,7 @@ import (
 )
 
 func main() {
-	if err := run(); err != nil {
-		fmt.Fprintln(os.Stderr, "fs-notify:", err)
-		os.Exit(1)
-	}
+	fsbench.Exit("fs-notify", run())
 }
 
 // Pinned framework versions (REQ-FS-003).
@@ -60,9 +57,14 @@ func run() error {
 	if err := os.MkdirAll(filepath.Join(dir, "sub"), 0o755); err != nil {
 		return err
 	}
-	edit := filepath.Join(dir, "sub", "edit.txt")
-	if err := os.WriteFile(edit, []byte("0\n"), 0o644); err != nil {
-		return err
+	// One file per modify edit, made before the watcher starts: a single Windows write
+	// can produce more than one IN_MODIFY, and a late one must not be taken for the
+	// next edit's.
+	editFile := func(i int) string { return filepath.Join(dir, "sub", fmt.Sprintf("edit-%d.txt", i)) }
+	for i := 1; i <= *n; i++ {
+		if err := os.WriteFile(editFile(i), []byte("0\n"), 0o644); err != nil {
+			return err
+		}
 	}
 	st, err := c.Start("hyperbutler-fs-notify", c.Image, []fsbench.Mount{fsbench.Bind(dir, "/w")}, "exec /bench/fs-guest notify -dir /w")
 	if err != nil {
@@ -102,7 +104,7 @@ func run() error {
 		return lat, missed, nil
 	}
 	modLat, modMissed, err := measure("modify", func(i int) (string, uint32, error) {
-		return "/w/sub/edit.txt", inModify, os.WriteFile(edit, []byte(fmt.Sprintf("%d\n", i)), 0o644)
+		return fmt.Sprintf("/w/sub/edit-%d.txt", i), inModify, os.WriteFile(editFile(i), []byte(fmt.Sprintf("%d\n", i)), 0o644)
 	})
 	if err != nil {
 		return err
@@ -138,15 +140,14 @@ func run() error {
 			return err
 		}
 		rows = append(rows, fr...)
+	} else {
+		rows = append(rows, fsbench.Row{Req: "REQ-FS-003", What: "Vite and webpack hot reload", Verdict: "not checked (pass -frameworks)"})
 	}
-	ok := fsbench.Report(os.Stdout, fmt.Sprintf("bench/fs-notify: %d edits of each kind, %v apart, latency measured on Windows", *n, *gap), rows)
+	fsbench.Report(os.Stdout, fmt.Sprintf("bench/fs-notify: %d edits of each kind, %v apart, latency measured on Windows", *n, *gap), rows)
 	if err := c.Save(map[string]any{"machine": c.Machine(), "rows": rows, "modify_s": modLat, "create_s": createLat}); err != nil {
 		return err
 	}
-	if !ok {
-		return fmt.Errorf("a requirement failed")
-	}
-	return nil
+	return fsbench.Verdict(rows)
 }
 
 // viteClient loads the page's module into Vite's module graph and prints every HMR

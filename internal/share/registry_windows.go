@@ -3,8 +3,6 @@
 package share
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -58,12 +56,6 @@ func (r *Registry) Len() int {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return len(r.names)
-}
-
-// shareName is stable for a host path, so the same source maps to the same share.
-func shareName(key string) string {
-	h := sha256.Sum256([]byte(strings.ToLower(key)))
-	return "b-" + hex.EncodeToString(h[:8])
 }
 
 // Resolve returns the guest path for a Windows bind source, sharing it first if needed.

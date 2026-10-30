@@ -29,10 +29,7 @@ import (
 )
 
 func main() {
-	if err := run(); err != nil {
-		fmt.Fprintln(os.Stderr, "fs-meta:", err)
-		os.Exit(1)
-	}
+	fsbench.Exit("fs-meta", run())
 }
 
 // The pinned reference repository: a JavaScript project with a package-lock.json.
@@ -121,7 +118,9 @@ func run() error {
 			if err != nil {
 				fmt.Fprintln(os.Stderr, "fs-meta: 9P npm ci:", err)
 			}
-			exec.Command("wsl.exe", "-d", c.WSL, "-e", "rm", "-rf", "node_modules").Run()
+			if _, err := c.WSLRun(co, "exec", "-name", "rm", "-dir", "{dir}", "--", "rm", "-rf", "{dir}/node_modules"); err != nil {
+				fmt.Fprintln(os.Stderr, "fs-meta: 9P cleanup:", err)
+			}
 		}
 	}
 	get := func(set, name, field string) float64 {
@@ -137,8 +136,9 @@ func run() error {
 		row.Ratio, row.Verdict = fsbench.Slower(b, x, 3)
 		rows = append(rows, row)
 	}
-	slower("REQ-FS-002", "lstat, p50", "lstat", "p50_us", 1e-6)
-	slower("REQ-FS-002", "lstat of a missing name, p50", "lstat-missing", "p50_us", 1e-6)
+	// The same work: the total over every path and round (p50 and p99 are in -json).
+	slower("REQ-FS-002", "lstat of every path, total", "lstat", "s", 1)
+	slower("REQ-FS-002", "lstat of a missing name next to every path, total", "lstat-missing", "s", 1)
 	slower("REQ-FS-002", "git status, median", "git-status", "p50_us", 1e-6)
 	walk := fsbench.Row{What: "walk (readdir + lstat), warm, median", Bind: fsbench.Dur(get("tree-bind", "walk-warm", "p50_us") * 1e-6),
 		Base: "ext4 " + fsbench.Dur(get("tree-ext4", "walk-warm", "p50_us")*1e-6)}
@@ -160,14 +160,11 @@ func run() error {
 		rows = append(rows, rm)
 	}
 	entries := get("tree-bind", "walk-cold", "entries")
-	ok := fsbench.Report(os.Stdout, fmt.Sprintf("bench/fs-meta: %s@%s (%.0f paths), %d rounds after a warm-up", *repo, *ref, entries, *rounds), rows)
+	fsbench.Report(os.Stdout, fmt.Sprintf("bench/fs-meta: %s@%s (%.0f paths), %d rounds after a warm-up", *repo, *ref, entries, *rounds), rows)
 	if err := c.Save(map[string]any{"machine": c.Machine(), "rows": rows, "raw": res}); err != nil {
 		return err
 	}
-	if !ok {
-		return fmt.Errorf("a requirement failed")
-	}
-	return nil
+	return fsbench.Verdict(rows)
 }
 
 // checkout clones repo at ref into dir (once) and checks the commit. Line endings are

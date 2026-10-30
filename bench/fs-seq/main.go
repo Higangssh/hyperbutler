@@ -20,10 +20,7 @@ import (
 )
 
 func main() {
-	if err := run(); err != nil {
-		fmt.Fprintln(os.Stderr, "fs-seq:", err)
-		os.Exit(1)
-	}
+	fsbench.Exit("fs-seq", run())
 }
 
 func run() error {
@@ -99,12 +96,9 @@ func run() error {
 	add("", "write + fsync (context)", "seq-write-fsync", "ext4", 0, false)
 	add("", "write, no fsync (context)", "seq-write", "ext4", 0, false)
 	add("", "read, guest cache dropped (context)", "seq-read-cold", "ext4", 0, false)
-	ok := fsbench.Report(os.Stdout, fmt.Sprintf("bench/fs-seq: %d MiB, 1 MiB writes, median of %d", *mb, *rounds), rows)
+	fsbench.Report(os.Stdout, fmt.Sprintf("bench/fs-seq: %d MiB, 1 MiB writes, median of %d", *mb, *rounds), rows)
 	if err := c.Save(map[string]any{"machine": c.Machine(), "rows": rows, "raw": targets}); err != nil {
 		return err
 	}
-	if !ok {
-		return fmt.Errorf("a requirement failed")
-	}
-	return nil
+	return fsbench.Verdict(rows)
 }

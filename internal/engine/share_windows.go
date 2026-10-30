@@ -248,13 +248,21 @@ func (s *shareService) lifetime(ctx context.Context, client *http.Client) {
 	follow.Add(1)
 	go func() {
 		defer follow.Done()
+		// A stream that keeps failing at once (each (re)open kicks a full container
+		// list) backs off to a minute.
+		var backoff time.Duration
 		for ctx.Err() == nil {
+			t0 := time.Now()
 			if err := events(); err != nil && ctx.Err() == nil {
 				s.log.Debug("shares: event stream ended", "err", err)
 			}
+			if time.Since(t0) > time.Minute {
+				backoff = 0
+			}
+			backoff = min(max(2*backoff, time.Second), time.Minute)
 			select {
 			case <-ctx.Done():
-			case <-time.After(time.Second):
+			case <-time.After(backoff):
 			}
 		}
 	}()

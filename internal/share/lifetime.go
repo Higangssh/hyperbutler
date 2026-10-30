@@ -7,10 +7,32 @@ package share
 // and periodically (Registry.Prune).
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"strings"
 )
+
+// shareName is stable for a host path, so the same source maps to the same share.
+func shareName(key string) string {
+	h := sha256.Sum256([]byte(strings.ToLower(key)))
+	return "b-" + hex.EncodeToString(h[:8])
+}
+
+// isShareName reports whether s has the form shareName makes: "b-" and 16 lowercase
+// hex digits.
+func isShareName(s string) bool {
+	if len(s) != 18 || !strings.HasPrefix(s, "b-") {
+		return false
+	}
+	for _, c := range s[2:] {
+		if !(c >= '0' && c <= '9' || c >= 'a' && c <= 'f') {
+			return false
+		}
+	}
+	return true
+}
 
 // MaxContainerList bounds the GET /containers/json?all=1 reply SharesInUse accepts.
 const MaxContainerList = 32 << 20
@@ -41,7 +63,7 @@ func SharesInUse(list []byte, mountPoint string) (map[string]bool, error) {
 				continue
 			}
 			name, _, _ := strings.Cut(m.Source[len(prefix):], "/")
-			if checkName(name) == nil {
+			if isShareName(name) {
 				used[name] = true
 			}
 		}

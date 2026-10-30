@@ -110,28 +110,30 @@ func Start(cfg Config) (*Relay, error) {
 		r.closeFD()
 		return nil, fmt.Errorf("relay: mount %s: %w", cfg.Mountpoint, err)
 	}
+	// The connection's device, from mountinfo: a stat(2) of the mount would be a FUSE
+	// request, and would hang if the host went away before the readers answered it.
+	info, err := os.ReadFile("/proc/self/mountinfo")
+	maj, mnr, ok := mountDev(info, cfg.Mountpoint)
+	if err != nil || !ok {
+		unix.Unmount(cfg.Mountpoint, unix.MNT_DETACH)
+		r.fail(errors.New("relay: mount not in mountinfo"))
+		r.closeFD()
+		return nil, fmt.Errorf("relay: %s is not in /proc/self/mountinfo (%v)", cfg.Mountpoint, err)
+	}
+	// fusectl names a connection by the kernel's dev_t (major<<20 | minor).
+	r.conn.Store(uint64(maj)<<20 | uint64(mnr))
 	for _, c := range cfg.Conns {
 		r.wg.Add(2)
 		go r.fromKernel(c)
 		go r.fromHost(c)
 	}
-	// Only now: a stat of the mount needs the readers to answer it.
-	var st unix.Stat_t
-	if err := unix.Stat(cfg.Mountpoint, &st); err == nil {
-		// fusectl names a connection by the kernel's dev_t (major<<20 | minor), not
-		// by the encoding stat(2) returns.
-		r.conn.Store(uint64(unix.Major(st.Dev))<<20 | uint64(unix.Minor(st.Dev)))
-	}
-	r.setReadAhead(st)
+	r.setReadAhead(maj, mnr)
 	return r, nil
 }
 
 // setReadAhead raises the readahead of the mount's backing device info.
-func (r *Relay) setReadAhead(st unix.Stat_t) {
-	if st.Dev == 0 {
-		return
-	}
-	p := fmt.Sprintf("/sys/class/bdi/%d:%d/read_ahead_kb", unix.Major(st.Dev), unix.Minor(st.Dev))
+func (r *Relay) setReadAhead(maj, mnr uint32) {
+	p := fmt.Sprintf("/sys/class/bdi/%d:%d/read_ahead_kb", maj, mnr)
 	if err := os.WriteFile(p, []byte(fmt.Sprint(r.cfg.ReadAheadKB)), 0); err != nil {
 		r.cfg.Logf("relay: readahead: %v", err)
 	}
@@ -194,10 +196,21 @@ func (r *Relay) abortConn() error {
 		return errors.New("connection unknown")
 	}
 	p := fmt.Sprintf("%s/%d/abort", fusectl, conn)
-	err := os.WriteFile(p, []byte("1"), 0)
+	abort := func() error {
+		f, err := os.OpenFile(p, os.O_WRONLY, 0)
+		if err != nil {
+			return err
+		}
+		_, err = f.Write([]byte("1"))
+		if cerr := f.Close(); err == nil {
+			err = cerr
+		}
+		return err
+	}
+	err := abort()
 	if errors.Is(err, os.ErrNotExist) {
 		if merr := unix.Mount("fusectl", fusectl, "fusectl", unix.MS_NOSUID|unix.MS_NODEV|unix.MS_NOEXEC, ""); merr == nil || errors.Is(merr, unix.EBUSY) {
-			err = os.WriteFile(p, []byte("1"), 0)
+			err = abort()
 		}
 	}
 	if errors.Is(err, os.ErrNotExist) {

@@ -187,6 +187,44 @@ type Row struct {
 	Limit, Verdict, Req string
 }
 
+// ErrIncomplete is returned by Verdict when nothing failed but a requirement row was not
+// measured: such a run says nothing about that requirement.
+var ErrIncomplete = errors.New("not every requirement was measured")
+
+// Verdict is nil when every requirement row passed, an error naming the failures when
+// any failed, and ErrIncomplete when the rest passed but some were not measured.
+func Verdict(rows []Row) error {
+	var failed, missing []string
+	for _, r := range rows {
+		switch {
+		case r.Req == "":
+		case strings.HasPrefix(r.Verdict, "FAIL"):
+			failed = append(failed, r.Req+" "+r.What)
+		case r.Verdict != "pass":
+			missing = append(missing, r.Req+" "+r.What)
+		}
+	}
+	if len(failed) > 0 {
+		return fmt.Errorf("failed: %s", strings.Join(failed, "; "))
+	}
+	if len(missing) > 0 {
+		return fmt.Errorf("%w: %s", ErrIncomplete, strings.Join(missing, "; "))
+	}
+	return nil
+}
+
+// Exit prints err and exits: 0 for nil, 2 for ErrIncomplete, 1 otherwise.
+func Exit(cmd string, err error) {
+	if err == nil {
+		return
+	}
+	fmt.Fprintf(os.Stderr, "%s: %v\n", cmd, err)
+	if errors.Is(err, ErrIncomplete) {
+		os.Exit(2)
+	}
+	os.Exit(1)
+}
+
 // Report prints rows as a table and returns whether every verdict passed.
 func Report(w io.Writer, title string, rows []Row) bool {
 	fmt.Fprintf(w, "\n%s\n\n", title)
