@@ -1,0 +1,5 @@
+go test fuzz v1
+[]byte("POST /containers/x/attach?stream=1&stdin=1 HTTP/1.1\r\nConnection: Upgrade\r\nUpgrade: tcp\r\n\r\nls\n")
+[]byte("HTTP/1.1 101 UPGRADED\r\nConnection: Upgrade\r\nUpgrade: tcp\r\n\r\n\x01\x00\x00\x00\x00\x00\x00\x03ok\n")
+byte('\x00')
+bool(true)
