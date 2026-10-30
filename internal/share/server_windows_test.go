@@ -447,4 +447,3 @@ func TestInjectedCreateAndDelete(t *testing.T) {
 		t.Fatal("injector removed a host file")
 	}
 }
-
