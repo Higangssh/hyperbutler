@@ -120,4 +120,4 @@ The adversarial reviewer reviewed the diff. Every finding and what was done:
 - The pipe is only as private as `transport.ListenPipe`'s DACL; the hvsock entry adds the
   same restriction one hop further. Neither authenticates the guest to the host.
 - winbox-dev has no reconnect on guest restart and no host sleep/resume handling.
-- No guest network; images come only from `docker load`.
+- No guest network; images come only from `docker load`. (Since superseded: the user-mode network of ADR 0006 is on by default, so `--network none` is no longer needed; see guest-networking.md.)

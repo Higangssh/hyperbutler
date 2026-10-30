@@ -40,6 +40,8 @@ func runCmd(args []string) error {
 	consoleLog := fs.String("console-log", "", "write the guest serial console to this file (default: discard)")
 	readyTimeout := fs.Duration("ready-timeout", 30*time.Second, "how long to wait for dockerd")
 	exitWhenReady := fs.Bool("exit-when-ready", false, "stop after dockerd answers /_ping (boot timing only)")
+	var nf netFlags
+	nf.register(fs)
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -75,6 +77,14 @@ func runCmd(args []string) error {
 	}
 	defer ln.Close()
 
+	gnet, netSvcs, netArgs, err := setupNet(&nf, sddl)
+	if err != nil {
+		return err
+	}
+	if gnet != nil {
+		defer gnet.close()
+	}
+
 	id := "winbox-dev-" + randomHex(8)
 	consolePipe := `\\.\pipe\` + id + "-com1"
 	svc := transport.VsockServiceID(uint32(*port))
@@ -82,11 +92,11 @@ func runCmd(args []string) error {
 		Owner:          "winbox-dev",
 		KernelPath:     kpath,
 		InitrdPath:     ipath,
-		KernelCmdLine:  *cmdline,
+		KernelCmdLine:  *cmdline + netArgs,
 		MemoryMB:       *memMB,
 		ProcessorCount: *cpus,
 		ConsolePipe:    consolePipe,
-		Services:       []vm.Service{{ID: svc, ConnectSDDL: sddl}},
+		Services:       append([]vm.Service{{ID: svc, ConnectSDDL: sddl}}, netSvcs...),
 	})
 	if err != nil {
 		return err
@@ -126,13 +136,24 @@ func runCmd(args []string) error {
 	}
 	target := transport.HvsockTarget{VMID: vmid, ServiceID: svc}
 	step("runtime id %s, hvsock target %s", vmid, target)
+	if gnet != nil {
+		if err := gnet.start(ctx, vmid, step); err != nil {
+			return err
+		}
+	}
 
 	if err := waitPing(ctx, target, *readyTimeout); err != nil {
 		return err
 	}
 	step("dockerd answered /_ping over hvsock")
+	if gnet != nil && nf.benchBytes > 0 {
+		return gnet.bench(ctx, vmid, nf.benchBytes, step)
+	}
 	if *exitWhenReady {
 		return nil
+	}
+	if gnet != nil && nf.autoPublish {
+		gnet.startAutoPublish(ctx, target, step)
 	}
 
 	p := &transport.Proxy{
