@@ -236,7 +236,8 @@ func (s *Server) pinLocked(id uint64, f File, w bool) {
 		if f != nil {
 			f.Close()
 		}
-		if !e.pinned {
+		if !e.pinned && s.pins < s.opt.MaxHandles {
+			// Past the bound it stays an ordinary cached handle and closes when idle.
 			e.pinned = true
 			s.pins++
 		}

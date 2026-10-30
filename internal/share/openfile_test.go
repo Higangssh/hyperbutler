@@ -19,6 +19,7 @@ type hookFS struct {
 	inos   map[string]uint64
 	opens  int
 	closes int
+	misuse int                 // I/O on a closed file, or a second close
 	hook   func(path []string) // called after reading the host
 }
 
@@ -55,16 +56,58 @@ func (h *hookFS) ReadDir(p []string) ([]DirEntry, error) {
 	return es, err
 }
 
+// hookFile counts closes and records use after close and double closes in misuse.
 type hookFile struct {
 	File
-	h *hookFS
+	h      *hookFS
+	closed bool // under h.imu
 }
 
 func (f *hookFile) Close() error {
 	f.h.imu.Lock()
+	if f.closed {
+		f.h.misuse++
+	}
+	f.closed = true
 	f.h.closes++
 	f.h.imu.Unlock()
 	return f.File.Close()
+}
+
+func (f *hookFile) check() {
+	f.h.imu.Lock()
+	if f.closed {
+		f.h.misuse++
+	}
+	f.h.imu.Unlock()
+}
+
+func (f *hookFile) ReadAt(p []byte, off int64) (int, error) {
+	f.check()
+	return f.File.ReadAt(p, off)
+}
+
+func (f *hookFile) WriteAt(p []byte, off int64) (int, error) {
+	f.check()
+	return f.File.WriteAt(p, off)
+}
+
+func (f *hookFile) Sync() error {
+	f.check()
+	return f.File.Sync()
+}
+
+// Create counts like Open.
+func (h *hookFS) Create(p []string, flags, mode uint32, o Owner) (File, Attr, error) {
+	f, a, err := h.memFS.Create(p, flags, mode, o)
+	if err != nil {
+		return nil, a, err
+	}
+	a.Ino = h.ino(key(p))
+	h.imu.Lock()
+	h.opens++
+	h.imu.Unlock()
+	return &hookFile{File: f, h: h}, a, nil
 }
 
 func (h *hookFS) Open(p []string, flags uint32) (File, error) {
