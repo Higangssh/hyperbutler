@@ -17,8 +17,13 @@ import (
 
 	"github.com/Microsoft/go-winio"
 
+	"github.com/Higangssh/winbox/internal/guestctl"
 	"github.com/Higangssh/winbox/internal/spaceguard"
 )
+
+type guestctlSupervisor = guestctl.Supervisor
+
+func guestctlServiceID() string { return guestctl.ServiceID.String() }
 
 // The guard mode tests the free-space guard (REQ-DISK-004) against a filling host volume.
 //
@@ -114,6 +119,8 @@ type hostGuard struct {
 	vmeta  uint64 // VHDX metadata: its allocation before the guest wrote anything
 	start  time.Time
 	pipe   net.Conn
+	// sup, when set, carries budgets over guestctl instead of the COM2 pipe.
+	sup *guestctl.Supervisor
 	// lastStatus is when the guest guard last reported (UnixNano). If it goes silent, the
 	// host stops trusting the reservation and pauses at the margin instead of the floor.
 	lastStatus atomic.Int64
@@ -131,7 +138,23 @@ type hostGuard struct {
 
 // startHostGuard starts the host loop. vmeta is the VHDX's allocation before the guest
 // wrote to it; it stands in for the VHDX metadata size (overstating it is safe).
-func startHostGuard(o *guardOpts, system uintptr, vhdx string, virtSize, vmeta uint64, start time.Time) (*hostGuard, error) {
+func startHostGuard(o *guardOpts, system uintptr, vhdx string, virtSize, vmeta uint64, start time.Time, sup *guestctl.Supervisor) (*hostGuard, error) {
+	if sup != nil {
+		g := &hostGuard{
+			o: o, cfg: o.config(), system: system, vhdx: vhdx, vdir: filepath.Dir(vhdx),
+			vmax: virtSize + o.vhdxMaxOverhead, vmeta: vmeta, start: start, sup: sup,
+			minFree: ^uint64(0), stop: make(chan struct{}), done: make(chan struct{}),
+		}
+		g.lastStatus.Store(time.Now().UnixNano())
+		if err := g.cfg.Validate(); err != nil {
+			return nil, err
+		}
+		if o.hostFill {
+			g.fill = &hostFiller{path: filepath.Join(g.vdir, "hostfill.bin"), target: o.floor / 2, hold: o.hostFillHold, at: o.hostFillAt, g: g}
+		}
+		go g.loop()
+		return g, nil
+	}
 	// The pipe is opened for overlapped I/O (go-winio). With a synchronous handle, Windows
 	// serializes the reader's pending ReadFile and the sender's WriteFile, so budgets
 	// only got through when the guest happened to print a status line.
@@ -241,7 +264,14 @@ func (g *hostGuard) loop() {
 		if g.o.pauseOnly {
 			b = spaceguard.Budget{Unlimited: true}
 		}
-		g.send(spaceguard.FormatBudget(b))
+		if g.sup != nil {
+			g.sup.SetBudget(b)
+			if t := ctlStatusAt.Load(); t > g.lastStatus.Load() {
+				g.lastStatus.Store(t)
+			}
+		} else {
+			g.send(spaceguard.FormatBudget(b))
+		}
 
 		g.mu.Lock()
 		if free < g.minFree {
@@ -278,11 +308,21 @@ func (g *hostGuard) setPaused(pause bool, free uint64) {
 	if pause {
 		name, proc = "HcsPauseComputeSystem", procHcsPauseSystem
 	}
+	if pause && g.sup != nil {
+		g.sup.SetPaused(true) // before the guest goes silent
+	}
 	t0 := time.Now()
 	_, err := hcsCall(name, 30*time.Second, func(op uintptr) uintptr {
 		hr, _, _ := proc.Call(g.system, op, 0)
 		return hr
 	})
+	if g.sup != nil && (!pause || err != nil) {
+		// Resumed (or the pause failed): the guest could not report while paused, so
+		// restart the silence clock instead of treating the pause as a dead guard.
+		g.sup.SetPaused(false)
+		g.lastStatus.Store(time.Now().UnixNano())
+		ctlStatusAt.Store(time.Now().UnixNano())
+	}
 	g.logf("guard: host free %.1f MiB: %s: %s (%v)", float64(free)/mb, name, errString(err), time.Since(t0).Round(time.Millisecond))
 	printState(g.system)
 	if err != nil {
@@ -308,8 +348,10 @@ func (g *hostGuard) close() {
 	if g.fill != nil {
 		g.fill.remove()
 	}
-	close(g.sendq)
-	g.pipe.Close()
+	if g.pipe != nil {
+		close(g.sendq)
+		g.pipe.Close()
+	}
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	fmt.Printf("  guard summary: min host free %.1f MiB, pauses %d\n", float64(g.minFree)/mb, g.pauses)

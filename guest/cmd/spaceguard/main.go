@@ -22,16 +22,14 @@ package main
 import (
 	"errors"
 	"flag"
-	"fmt"
 	"io"
 	"log"
-	"math"
 	"os"
 	"time"
-	"unsafe"
 
 	"golang.org/x/sys/unix"
 
+	"github.com/Higangssh/winbox/guest/internal/fsguard"
 	"github.com/Higangssh/winbox/internal/spaceguard"
 )
 
@@ -56,18 +54,14 @@ func main() {
 	if err := cfg.Validate(); err != nil {
 		log.Fatal(err)
 	}
-	f, err := os.OpenFile(*file, os.O_RDWR|os.O_CREATE, 0o600)
+	g, err := fsguard.Open(*file, *dev, cfg)
 	if err != nil {
 		log.Fatal(err)
 	}
-	devSize, err := blockDevSize(*dev)
-	if err != nil {
-		log.Fatalf("spaceguard: size of %s: %v", *dev, err)
-	}
-
-	g := &guard{f: f, cfg: cfg, devSize: devSize, trimEvery: *trimEvery}
+	g.TrimEvery = *trimEvery
+	g.Trim = &fsguard.FSTrimmer{F: g.F}
 	if *stale > 0 {
-		g.staleTicks = max(1, int(*stale / *interval))
+		g.StaleTicks = max(1, int(*stale / *interval))
 	}
 	events := make(chan event, 1)
 	outs := make(chan io.Writer, 1)
@@ -81,17 +75,17 @@ func main() {
 		case e := <-events:
 			if e.lost {
 				log.Printf("spaceguard: control channel lost; failing closed")
-				g.have = false
+				g.Lost()
 			} else {
-				g.budget, g.have, g.ticksSince = e.b, true, 0
+				g.SetBudget(e.b)
 			}
 		case w := <-outs:
-			g.out = w
+			g.Out = w
 		case <-tick.C:
-			g.ticksSince++
+			g.Tick()
 		}
-		g.step()
-		if !readyDone && g.have {
+		g.Step()
+		if !readyDone && g.Have() {
 			if err := os.WriteFile(*ready, nil, 0o644); err != nil {
 				log.Printf("spaceguard: ready file: %v", err)
 			}
@@ -128,155 +122,6 @@ func control(path string, events chan event, outs chan io.Writer) {
 		c.Close()
 		time.Sleep(time.Second)
 	}
-}
-
-type guard struct {
-	f          *os.File
-	cfg        spaceguard.Config
-	out        io.Writer // nil until the control channel is open
-	devSize    uint64
-	staleTicks int // 0: never stale
-	trimEvery  time.Duration
-
-	budget     spaceguard.Budget
-	have       bool // a host budget has arrived on the current channel
-	ticksSince int
-
-	lastTrim    time.Time
-	lastStatus  time.Time
-	lastTarget  uint64
-	staleLogged bool
-}
-
-func (g *guard) step() {
-	b := g.budget
-	switch {
-	case !g.have:
-		b = spaceguard.Budget{} // fail closed until the host speaks
-	case g.staleTicks > 0 && g.ticksSince > g.staleTicks:
-		if !g.staleLogged {
-			log.Printf("spaceguard: no budget for %d ticks; failing closed", g.ticksSince)
-			g.staleLogged = true
-		}
-		b = spaceguard.Budget{}
-	default:
-		g.staleLogged = false
-	}
-
-	m, err := g.measure()
-	if err != nil {
-		log.Printf("spaceguard: measure: %v", err)
-		return
-	}
-	r, err := spaceguard.GuestReservation(m, b, g.cfg)
-	if err != nil {
-		log.Printf("spaceguard: %v", err)
-		return
-	}
-	var aerr error
-	switch {
-	case r.Target > m.Reserved:
-		aerr = g.grow(r.Target)
-	case r.Target < m.Reserved:
-		aerr = unix.Ftruncate(int(g.f.Fd()), int64(r.Target))
-	}
-	if aerr != nil && !errors.Is(aerr, unix.ENOSPC) {
-		log.Printf("spaceguard: set reservation to %d: %v", r.Target, aerr)
-	}
-	// ext4 keeps a few clusters (s_resv_clusters, up to 16 MiB) that statfs reports as free
-	// but fallocate cannot take, so ENOSPC on grow is normal when the budget is tight. It
-	// is reported at most once a second, like the rest.
-	if g.out != nil && (r.Target != g.lastTarget || time.Since(g.lastStatus) >= time.Second) {
-		after, _ := g.measure()
-		fmt.Fprintf(g.out, "status budget=%s device=%d free=%d reserved=%d target=%d need=%d short=%d err=%v\n",
-			b, after.Device, after.Free, after.Reserved, r.Target, r.Need, r.Short, aerr)
-		g.lastStatus, g.lastTarget = time.Now(), r.Target
-	}
-}
-
-// grow extends the reservation to target bytes. fallocate mode 0 allocates unwritten
-// extents, so ext4 takes the blocks without writing data and the VHDX does not grow.
-//
-// Before growing it trims free space (rate-limited), so that the blocks fallocate picks
-// are not still backed on the host from deleted data: the policy assumes the
-// reservation is unbacked.
-//
-// It allocates from offset 0 in chunks, so holes anywhere in the file (someone truncated
-// it up) are filled too, and if guest writes race it to the last free blocks it keeps
-// what it got instead of failing as a whole.
-func (g *guard) grow(target uint64) error {
-	fd := int(g.f.Fd())
-	if g.trimEvery > 0 && time.Since(g.lastTrim) >= g.trimEvery {
-		g.lastTrim = time.Now()
-		r := fstrimRange{Len: math.MaxUint64}
-		if _, _, e := unix.Syscall(unix.SYS_IOCTL, uintptr(fd), fitrim, uintptr(unsafe.Pointer(&r))); e != 0 {
-			log.Printf("spaceguard: FITRIM: %v", e)
-		}
-	}
-	chunk := uint64(64 << 20)
-	var off uint64
-	for off < target && chunk >= g.cfg.Quantum {
-		n := min(chunk, target-off)
-		err := unix.Fallocate(fd, 0, int64(off), int64(n))
-		if err == nil {
-			off += n
-			continue
-		}
-		if !errors.Is(err, unix.ENOSPC) {
-			return err
-		}
-		if chunk/2 < g.cfg.Quantum {
-			return err
-		}
-		chunk /= 2
-	}
-	return nil
-}
-
-// fitrim is FITRIM from linux/fs.h: _IOWR('X', 121, struct fstrim_range). x/sys/unix
-// does not export it.
-const fitrim = 0xC0185879
-
-// fstrimRange is struct fstrim_range from linux/fs.h.
-type fstrimRange struct {
-	Start, Len, MinLen uint64
-}
-
-func (g *guard) measure() (spaceguard.Guest, error) {
-	fd := int(g.f.Fd())
-	var fs unix.Statfs_t
-	if err := unix.Fstatfs(fd, &fs); err != nil {
-		return spaceguard.Guest{}, err
-	}
-	var st unix.Stat_t
-	if err := unix.Fstat(fd, &st); err != nil {
-		return spaceguard.Guest{}, err
-	}
-	bs := uint64(fs.Frsize)
-	if bs == 0 {
-		bs = uint64(fs.Bsize)
-	}
-	size, free := fs.Blocks*bs, fs.Bfree*bs
-	used := size - free
-	reserved := uint64(st.Blocks) * 512
-	if reserved > used {
-		reserved = used // st_blocks and statfs are not read atomically
-	}
-	return spaceguard.Guest{Device: g.devSize, Size: size, Used: used, Free: free, Reserved: reserved}, nil
-}
-
-// blockDevSize returns the size of a block device in bytes.
-func blockDevSize(path string) (uint64, error) {
-	f, err := os.Open(path)
-	if err != nil {
-		return 0, err
-	}
-	defer f.Close()
-	var n uint64
-	if _, _, e := unix.Syscall(unix.SYS_IOCTL, f.Fd(), unix.BLKGETSIZE64, uintptr(unsafe.Pointer(&n))); e != 0 {
-		return 0, e
-	}
-	return n, nil
 }
 
 // rawTTY turns off echo and output processing, so budget lines are not echoed back to

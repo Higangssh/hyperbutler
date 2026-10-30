@@ -130,6 +130,51 @@ if [ "$WB_MODE" = full ] || [ "$WB_MODE" = check ]; then
 	echo "@@DONE"
 	poweroff -f
 fi
+# winboxd (WB_CTL): the guest services daemon over the guestctl hvsock channel. Needs the
+# vsock, hv_sock (and hv_balloon) modules in WB_MODS. WB_DARGS are extra flags, with commas
+# for spaces.
+startwinboxd() {
+	ready=$1; shift
+	mount -t cgroup2 cgroup2 /sys/fs/cgroup 2>/dev/null
+	(/wbextra/winboxd -mount /mnt -dev $D -file /mnt/.winbox-reserve -ready $ready "$@" $(echo "$WB_DARGS" | tr ',' ' ') 2>&1 | sed 's/^/@@I winboxd: /') &
+}
+# WB_MODE=ctl: winboxd policies. Write WB_MB MiB in 16 MiB files; page-cache test (drop
+# caches once as setup, read everything back so the page cache holds it, then idle while
+# the host follows vmmem); re-read cost after the policy ran; then delete everything and
+# idle while the host waits for the VHDX to shrink. No manual fstrim or drop_caches after
+# the setup: winboxd must do it.
+if [ "$WB_MODE" = ctl ]; then
+	export LD_LIBRARY_PATH=/wbextra
+	up() { cut -d' ' -f1 /proc/uptime; }
+	mi() { echo "@@I meminfo: $(grep -E '^(MemFree|Cached|Shmem|Active.file.|Inactive.file.):' /proc/meminfo | tr -s ' ' | tr '\n' ' ')"; }
+	/wbextra/mke2fs -q -F -t ext4 -E nodiscard,lazy_itable_init=0,lazy_journal_init=0 $D 2>&1 | sed 's/^/@@E mke2fs: /'
+	mount -t ext4 $D /mnt || echo "@@E mount"
+	mkdir /mnt/d; sync
+	dmesg | grep -iE 'balloon|page.?report|hv_sock|vsock' | sed 's/^/@@I dmesg: /'
+	startwinboxd /tmp/wb.ready
+	i=0; while [ ! -e /tmp/wb.ready ] && [ $i -lt 300 ]; do sleep 0.1; i=$((i + 1)); done
+	[ -e /tmp/wb.ready ] && echo "@@I winboxd ready after $i ticks" || echo "@@E winboxd not ready"
+	sleep 2; mi
+	m ready
+	n=$((WB_MB / 16)); i=0
+	a=$(up); while [ $i -lt $n ]; do dd if=/dev/urandom of=/mnt/d/f$i bs=1M count=16 2>/dev/null; i=$((i + 1)); done; sync; b=$(up)
+	echo "@@I wrote $n x 16 MiB in $a..$b; df: $(df -k /mnt | tail -n 1)"
+	mi; m written
+	echo 3 >/proc/sys/vm/drop_caches
+	a=$(up); cat /mnt/d/* >/dev/null; b=$(up); echo "@@I cold read $a..$b"
+	a=$(up); cat /mnt/d/* >/dev/null; b=$(up); echo "@@I hot read $a..$b"
+	mi; m cache-filled
+	mi
+	a=$(up); cat /mnt/d/* >/dev/null; b=$(up); echo "@@I read after policy $a..$b"
+	rm -rf /mnt/d; sync
+	echo "@@I deleted; df: $(df -k /mnt | tail -n 1)"
+	mi; m deleted
+	mi; m end
+	killall winboxd 2>/dev/null; sleep 1
+	echo "@@I umount: $(umount /mnt 2>&1; echo exit=$?)"
+	echo "@@DONE"
+	poweroff -f
+fi
 # WB_MODE=guard: free-space guard test (guard_windows.go). ext4; with WB_GUARD, start
 # spaceguard on /dev/ttyS1 and wait until it has applied the host's first budget. Then write
 # 256 KiB files until writes keep failing, classify each failure (ENOSPC, EIO, other), and
@@ -147,7 +192,11 @@ if [ "$WB_MODE" = guard ] || [ "$WB_MODE" = guardcheck ]; then
 		m formatted
 		if [ -n "$WB_GUARD" ]; then
 			echo "@@I ttys: $(ls /dev/ttyS* | tr '\n' ' ')"
-			(/wbextra/spaceguard -dev $D -file /mnt/.winbox-reserve -ctl /dev/ttyS1 -ready /tmp/sg.ready -hysteresis "$WB_HYST" 2>&1 | sed 's/^/@@I guard: /') &
+			if [ -n "$WB_CTL" ]; then
+				startwinboxd /tmp/sg.ready -hysteresis "$WB_HYST"
+			else
+				(/wbextra/spaceguard -dev $D -file /mnt/.winbox-reserve -ctl /dev/ttyS1 -ready /tmp/sg.ready -hysteresis "$WB_HYST" 2>&1 | sed 's/^/@@I guard: /') &
+			fi
 			i=0; while [ ! -e /tmp/sg.ready ] && [ $i -lt 150 ]; do sleep 0.1; i=$((i + 1)); done
 			[ -e /tmp/sg.ready ] && echo "@@I guard ready" || echo "@@E guard not ready"
 			sleep 1
@@ -196,7 +245,7 @@ if [ "$WB_MODE" = guard ] || [ "$WB_MODE" = guardcheck ]; then
 		m half-deleted-trimmed
 		manifest
 		echo "@@I dmesg_errors=$(dmesg | grep -ciE "$errs")"
-		killall spaceguard 2>/dev/null; sleep 1
+		killall spaceguard winboxd 2>/dev/null; sleep 1
 		echo "@@I umount: $(umount /mnt 2>&1; echo exit=$?)"
 	else
 		echo "@@I e2fsck: $(/wbextra/e2fsck -fn $D >/tmp/fsck.log 2>&1; echo exit=$?)"
@@ -409,6 +458,9 @@ func driveGuest(conn io.ReadWriter, image string, start time.Time, settle time.D
 			if settle > 0 {
 				time.Sleep(settle)
 				report(fmt.Sprintf("[%6.1fs] %s +%v", time.Since(start).Seconds(), line[4:], settle), image)
+			}
+			if markerHook != nil {
+				markerHook(line[4:])
 			}
 			if _, err := conn.Write([]byte("ok\n")); err != nil {
 				return false, err
