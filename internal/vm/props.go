@@ -33,3 +33,47 @@ func parseRuntimeID(doc string) (guid.GUID, error) {
 	}
 	return id, nil
 }
+
+// Summary is one entry of an HcsEnumerateComputeSystems result.
+type Summary struct {
+	ID    string `json:"Id"`
+	Owner string `json:"Owner"`
+	State string `json:"State"`
+}
+
+// maxSummaries bounds the entries parseSummaries returns.
+const maxSummaries = 4096
+
+// parseSummaries decodes an HcsEnumerateComputeSystems result: a JSON array of
+// properties documents. An empty or "null" document is an empty list.
+func parseSummaries(doc string) ([]Summary, error) {
+	if len(doc) > maxPropertiesLen {
+		return nil, errors.New("vm: enumeration document is too large")
+	}
+	if doc == "" || doc == "null" {
+		return nil, nil
+	}
+	var list []Summary
+	if err := json.Unmarshal([]byte(doc), &list); err != nil {
+		return nil, fmt.Errorf("vm: decode enumeration: %w", err)
+	}
+	if len(list) > maxSummaries {
+		return nil, fmt.Errorf("vm: enumeration lists %d systems, more than %d", len(list), maxSummaries)
+	}
+	return list, nil
+}
+
+// parseState extracts State from an HcsGetComputeSystemProperties result.
+func parseState(doc string) (string, error) {
+	if len(doc) > maxPropertiesLen {
+		return "", errors.New("vm: properties document is too large")
+	}
+	var p struct{ State string }
+	if err := json.Unmarshal([]byte(doc), &p); err != nil {
+		return "", fmt.Errorf("vm: decode properties: %w", err)
+	}
+	if p.State == "" {
+		return "", errors.New("vm: properties have no State")
+	}
+	return p.State, nil
+}

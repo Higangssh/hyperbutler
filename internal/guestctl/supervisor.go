@@ -2,6 +2,7 @@ package guestctl
 
 import (
 	"context"
+	"fmt"
 	"net"
 	"sync"
 	"time"
@@ -152,6 +153,21 @@ func (s *Supervisor) SetPaused(paused bool) {
 	s.client.Suspend(paused)
 	if !paused && s.budget != nil {
 		s.client.SetBudget(*s.budget)
+	}
+}
+
+// Shutdown asks the guest to power off in order over the current connection, waiting
+// up to ctx for one if the guest is still connecting.
+func (s *Supervisor) Shutdown(ctx context.Context) error {
+	for {
+		if c := s.Client(); c != nil {
+			return c.Shutdown(ctx)
+		}
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("guestctl: no control connection: %w", ctx.Err())
+		case <-time.After(50 * time.Millisecond):
+		}
 	}
 }
 

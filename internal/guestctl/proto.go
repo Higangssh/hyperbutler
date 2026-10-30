@@ -3,7 +3,7 @@
 //
 // The host dials; the guest daemon (guest/cmd/winboxd) listens and accepts the host CID
 // only. The host sends the free-space guard budget (internal/spaceguard), trim and
-// cache-trim requests and pings. The guest answers requests and pushes a periodic
+// cache-trim requests, pings, and the request for an orderly guest shutdown. The guest answers requests and pushes a periodic
 // status report.
 //
 // # Trust
@@ -66,6 +66,7 @@ const (
 	TTrim      Type = 0x03 // run FITRIM on the data file system now
 	TCacheTrim Type = 0x04 // run the page-cache policy's reclaim now
 	TPing      Type = 0x05 // liveness
+	TShutdown  Type = 0x06 // power the guest off in order (stop dockerd, unmount)
 )
 
 // Guest to host.
@@ -76,6 +77,9 @@ const (
 	RCache  Type = 0x84 // reply to TCacheTrim
 	RPong   Type = 0x85 // reply to TPing
 	RError  Type = 0x86 // a request could not be served
+	// RShutdown accepts a TShutdown: the guest has started powering off. The VM stops
+	// when it is done; the host watches for that, not for another message.
+	RShutdown Type = 0x87
 )
 
 func (t Type) String() string {
@@ -90,6 +94,8 @@ func (t Type) String() string {
 		return "cache-trim"
 	case TPing:
 		return "ping"
+	case TShutdown:
+		return "shutdown"
 	case RHello:
 		return "hello-reply"
 	case RStatus:
@@ -102,6 +108,8 @@ func (t Type) String() string {
 		return "pong"
 	case RError:
 		return "error"
+	case RShutdown:
+		return "shutdown-accepted"
 	}
 	return fmt.Sprintf("type(0x%02x)", uint8(t))
 }
@@ -137,6 +145,12 @@ type CacheTrimRequest struct{}
 // Ping asks for a Pong with the same nonce.
 type Ping struct{ Nonce uint64 }
 
+// ShutdownRequest asks the guest to power off in order.
+type ShutdownRequest struct{}
+
+// ShutdownAccepted answers a ShutdownRequest.
+type ShutdownAccepted struct{}
+
 // HelloReply is the guest's answer to Hello.
 type HelloReply struct {
 	Version  uint16
@@ -152,7 +166,8 @@ const (
 	FeatureGuard      Features = 1 << 0 // the free-space guard reservation
 	FeatureTrim       Features = 1 << 1 // periodic and delete-triggered fstrim
 	FeatureCacheTrim  Features = 1 << 2 // the page-cache policy
-	knownFeatures              = FeatureGuard | FeatureTrim | FeatureCacheTrim
+	FeatureShutdown   Features = 1 << 3 // orderly shutdown on request
+	knownFeatures              = FeatureGuard | FeatureTrim | FeatureCacheTrim | FeatureShutdown
 	statusPayloadSize          = 8 + 17*8
 )
 
@@ -239,6 +254,8 @@ func (Budget) Type() Type           { return TBudget }
 func (TrimRequest) Type() Type      { return TTrim }
 func (CacheTrimRequest) Type() Type { return TCacheTrim }
 func (Ping) Type() Type             { return TPing }
+func (ShutdownRequest) Type() Type  { return TShutdown }
+func (ShutdownAccepted) Type() Type { return RShutdown }
 func (HelloReply) Type() Type       { return RHello }
 func (Status) Type() Type           { return RStatus }
 func (TrimResult) Type() Type       { return RTrim }
@@ -251,6 +268,8 @@ func (Budget) size() int           { return 24 }
 func (TrimRequest) size() int      { return 0 }
 func (CacheTrimRequest) size() int { return 0 }
 func (Ping) size() int             { return 8 }
+func (ShutdownRequest) size() int  { return 0 }
+func (ShutdownAccepted) size() int { return 0 }
 func (HelloReply) size() int       { return 16 }
 func (Status) size() int           { return statusPayloadSize }
 func (TrimResult) size() int       { return 24 }
@@ -271,6 +290,8 @@ func (m Budget) put(b []byte) {
 }
 
 func (TrimRequest) put([]byte)      {}
+func (ShutdownRequest) put([]byte)  {}
+func (ShutdownAccepted) put([]byte) {}
 func (CacheTrimRequest) put([]byte) {}
 func (m Ping) put(b []byte)         { be.PutUint64(b, m.Nonce) }
 func (m Pong) put(b []byte)         { be.PutUint64(b, m.Nonce) }
@@ -371,14 +392,14 @@ func validate(m Msg) error {
 		if v.Code == 0 || v.Code > maxErrorCode || !requestType(v.Request) {
 			return fmt.Errorf("%w: error reply", ErrMalformed)
 		}
-	case TrimRequest, CacheTrimRequest, Ping, Pong:
+	case TrimRequest, CacheTrimRequest, Ping, Pong, ShutdownRequest, ShutdownAccepted:
 	default:
 		return fmt.Errorf("%w: unknown message %T", ErrMalformed, m)
 	}
 	return nil
 }
 
-func requestType(t Type) bool { return t >= TBudget && t <= TPing }
+func requestType(t Type) bool { return t >= TBudget && t <= TShutdown }
 
 // Append appends the frame for m with sequence number seq to dst.
 func Append(dst []byte, seq uint32, m Msg) ([]byte, error) {
@@ -461,6 +482,8 @@ func decodePayload(t Type, p []byte, dir Direction) (Msg, error) {
 		m = CacheTrimRequest{}
 	case dir == FromHost && t == TPing:
 		m = Ping{}
+	case dir == FromHost && t == TShutdown:
+		m = ShutdownRequest{}
 	case dir == FromGuest && t == RHello:
 		m = HelloReply{}
 	case dir == FromGuest && t == RStatus:
@@ -473,6 +496,8 @@ func decodePayload(t Type, p []byte, dir Direction) (Msg, error) {
 		m = Pong{}
 	case dir == FromGuest && t == RError:
 		m = ErrorReply{}
+	case dir == FromGuest && t == RShutdown:
+		m = ShutdownAccepted{}
 	default:
 		return nil, fmt.Errorf("%w: type %v not valid in this direction", ErrMalformed, t)
 	}
@@ -539,5 +564,5 @@ func decodePayload(t Type, p []byte, dir Direction) (Msg, error) {
 		}
 		return ErrorReply{Code: ErrorCode(be.Uint32(p)), Request: Type(p[4])}, nil
 	}
-	return m, nil // TrimRequest, CacheTrimRequest: no payload
+	return m, nil // TrimRequest, CacheTrimRequest, ShutdownRequest, ShutdownAccepted: no payload
 }

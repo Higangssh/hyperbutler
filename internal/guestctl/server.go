@@ -29,6 +29,13 @@ type Handler interface {
 	Status() Status
 }
 
+// Shutdowner is implemented by a Handler that can power the guest off. Server calls
+// Shutdown from its reader goroutine; it must start the shutdown and return at once.
+// The guest daemon advertises FeatureShutdown only with such a Handler.
+type Shutdowner interface {
+	Shutdown() error
+}
+
 // Server serves one host connection at a time (the guest daemon closes the previous one
 // when a new one arrives).
 type Server struct {
@@ -223,6 +230,18 @@ func (s *Server) ServeConn(ctx context.Context, conn net.Conn) error {
 			if !send(seq, Pong(v)) {
 				return ctx.Err()
 			}
+		case ShutdownRequest:
+			sd, ok := s.Handler.(Shutdowner)
+			if s.Features&FeatureShutdown == 0 || !ok {
+				send(seq, ErrorReply{Code: ErrUnsupported, Request: TShutdown})
+				continue
+			}
+			if err := sd.Shutdown(); err != nil {
+				s.logf("guestctl: shutdown: %v", err)
+				send(seq, ErrorReply{Code: ErrUnsupported, Request: TShutdown})
+				continue
+			}
+			send(seq, ShutdownAccepted{})
 		default: // a second Hello
 			return fmt.Errorf("%w: unexpected %v", ErrMalformed, m.Type())
 		}

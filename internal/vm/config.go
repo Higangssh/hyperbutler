@@ -5,9 +5,9 @@
 // platform so the document can be tested anywhere. System (Windows only) is a handle to a
 // running compute system.
 //
-// Only what the hvsock milestone needs is here: LinuxKernelDirect boot, memory and CPUs,
-// an optional serial console pipe, and the HvSocket service table that lets the host
-// connect to guest AF_VSOCK ports. Disks and networking come later.
+// It covers LinuxKernelDirect boot, memory (with the ADR 0002 memory hints) and CPUs,
+// SCSI virtual disks, an optional serial console pipe, and the HvSocket service table
+// that lets the host connect to guest AF_VSOCK ports.
 package vm
 
 import (
@@ -15,6 +15,8 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"strconv"
+	"strings"
 
 	"github.com/Microsoft/go-winio/pkg/guid"
 )
@@ -38,12 +40,34 @@ type Config struct {
 	ProcessorCount int
 	// ConsolePipe, if set, is the named pipe HCS serves COM1 on.
 	ConsolePipe string
+	// MemoryHints turns on the ADR 0002 memory settings: EnableDeferredCommit,
+	// EnableHotHint and EnableColdDiscardHint. HCS rejects the cold discard hint without
+	// deferred commit, so they are one switch.
+	MemoryHints bool
+	// Disks are attached to SCSI controller 0 in order: Disks[0] is LUN 0 (/dev/sda in a
+	// guest with one controller).
+	Disks []Disk
 	// Services are the hvsock services (typically AF_VSOCK ports, see
 	// transport.VsockServiceID) that host processes may connect to in the guest, or bind
 	// on the host to accept connections from the guest. Every other service is closed in
 	// both directions.
 	Services []Service
 }
+
+// Disk is a virtual disk file on the host.
+type Disk struct {
+	// Path is the absolute path of a VHDX file. The VM worker process must have been
+	// granted access to it (GrantVMAccess).
+	Path string
+	// ReadOnly attaches the disk read-only.
+	ReadOnly bool
+	// Sparse must be set when the file is an NTFS sparse file: vhdmp refuses to open one
+	// otherwise. It sets AlwaysAllowSparseFiles (ADR 0002).
+	Sparse bool
+}
+
+// maxDisks bounds the SCSI attachments: one controller has 64 LUNs.
+const maxDisks = 64
 
 // Service grants access to one hvsock service. An empty descriptor denies everyone.
 type Service struct {
@@ -72,6 +96,20 @@ func (c *Config) Validate() error {
 	}
 	if c.ProcessorCount < 1 || c.ProcessorCount > maxCPUs {
 		return fmt.Errorf("vm: processor count %d is outside 1..%d", c.ProcessorCount, maxCPUs)
+	}
+	if len(c.Disks) > maxDisks {
+		return fmt.Errorf("vm: %d disks, at most %d", len(c.Disks), maxDisks)
+	}
+	paths := make(map[string]bool, len(c.Disks))
+	for _, d := range c.Disks {
+		if !filepath.IsAbs(d.Path) {
+			return fmt.Errorf("vm: disk path %q is not absolute", d.Path)
+		}
+		k := strings.ToLower(filepath.Clean(d.Path))
+		if paths[k] {
+			return fmt.Errorf("vm: disk %q is attached twice", d.Path)
+		}
+		paths[k] = true
 	}
 	seen := make(map[guid.GUID]bool, len(c.Services))
 	for _, s := range c.Services {
@@ -117,7 +155,10 @@ func (c *Config) Document() ([]byte, error) {
 				KernelCmdLine:  c.KernelCmdLine,
 			}},
 			ComputeTopology: computeTopology{
-				Memory:    memory{SizeInMB: c.MemoryMB, AllowOvercommit: true},
+				Memory: memory{
+					SizeInMB: c.MemoryMB, AllowOvercommit: true,
+					EnableDeferredCommit: c.MemoryHints, EnableHotHint: c.MemoryHints, EnableColdDiscardHint: c.MemoryHints,
+				},
 				Processor: processor{Count: c.ProcessorCount},
 			},
 			Devices: devices{
@@ -128,6 +169,13 @@ func (c *Config) Document() ([]byte, error) {
 				}},
 			},
 		},
+	}
+	if len(c.Disks) > 0 {
+		att := make(map[string]attachment, len(c.Disks))
+		for i, d := range c.Disks {
+			att[strconv.Itoa(i)] = attachment{Type: "VirtualDisk", Path: d.Path, ReadOnly: d.ReadOnly, AlwaysAllowSparseFiles: d.Sparse}
+		}
+		doc.VirtualMachine.Devices.Scsi = map[string]scsi{"0": {Attachments: att}}
 	}
 	if c.ConsolePipe != "" {
 		doc.VirtualMachine.Devices.ComPorts = map[string]comPort{"0": {NamedPipe: c.ConsolePipe}}
@@ -198,18 +246,33 @@ type computeTopology struct {
 }
 
 type memory struct {
-	SizeInMB        int
-	AllowOvercommit bool
+	SizeInMB              int
+	AllowOvercommit       bool
+	EnableDeferredCommit  bool `json:",omitempty"`
+	EnableHotHint         bool `json:",omitempty"`
+	EnableColdDiscardHint bool `json:",omitempty"`
 }
 
 type processor struct{ Count int }
 
 type devices struct {
+	Scsi     map[string]scsi    `json:",omitempty"`
 	ComPorts map[string]comPort `json:",omitempty"`
 	HvSocket *hvSocket          `json:",omitempty"`
 }
 
 type comPort struct{ NamedPipe string }
+
+type scsi struct {
+	Attachments map[string]attachment
+}
+
+type attachment struct {
+	Type                   string
+	Path                   string
+	ReadOnly               bool `json:",omitempty"`
+	AlwaysAllowSparseFiles bool `json:",omitempty"`
+}
 
 type hvSocket struct {
 	HvSocketConfig hvSocketSystemConfig

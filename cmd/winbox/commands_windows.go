@@ -1,0 +1,867 @@
+//go:build windows
+
+package main
+
+import (
+	"bufio"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"log/slog"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"runtime"
+	"strings"
+	"syscall"
+	"time"
+
+	"golang.org/x/sys/windows"
+
+	"github.com/Higangssh/winbox/internal/engine"
+	"github.com/Higangssh/winbox/internal/engine/dockerctx"
+	"github.com/Higangssh/winbox/internal/transport"
+	"github.com/Higangssh/winbox/internal/vm"
+)
+
+const (
+	contextName = "winbox"
+	kernelName  = "vmlinuz-virt"
+	initrdName  = "initramfs-winbox.gz"
+
+	defaultDiskSize = 64 << 30
+	defaultMemoryMB = 4096
+
+	// engineLogMax is when engine.log is rotated, at the next start.
+	engineLogMax = 4 << 20
+)
+
+// install is one winbox installation: its layout and settings (nil before the first
+// start).
+type install struct {
+	l        engine.Layout
+	settings *engine.Settings
+}
+
+func openInstall() (*install, error) {
+	home, err := engine.DefaultHome()
+	if err != nil {
+		return nil, err
+	}
+	in := &install{l: engine.Layout{Home: home, Data: home}}
+	s, err := engine.LoadSettings(in.l)
+	switch {
+	case err == nil:
+		in.settings = s
+		in.l.Data = s.DataDir
+	case !errors.Is(err, os.ErrNotExist):
+		return nil, fmt.Errorf("%w (fix or delete %s)", err, in.l.SettingsPath())
+	}
+	return in, nil
+}
+
+// opsLock serializes start, stop and delete.
+func (in *install) opsLock() (*engine.FileLock, error) {
+	if err := engine.MkdirPrivate(in.l.Home); err != nil {
+		return nil, err
+	}
+	l, err := engine.Lock(in.l.OpsLockPath(), 60*time.Second)
+	if errors.Is(err, engine.ErrLocked) {
+		return nil, errors.New("another winbox start, stop or delete is still running")
+	}
+	return l, err
+}
+
+func (in *install) running() (bool, error) { return engine.Held(in.l.LockPath()) }
+
+// engineState waits briefly for state.json to describe the process holding the lock:
+// between taking the lock and writing its state, an engine leaves the previous one.
+func (in *install) liveState() (*engine.State, *engine.Process, error) {
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		st, err := engine.LoadState(in.l)
+		if err == nil && st.Phase.Live() {
+			p, perr := engine.OpenProcess(st.PID, st.PIDCreated)
+			if perr == nil {
+				return st, p, nil
+			}
+			err = perr
+		} else if err == nil {
+			err = fmt.Errorf("state.json says %s", st.Phase)
+		}
+		if time.Now().After(deadline) {
+			return nil, nil, fmt.Errorf("winbox is running but its engine process cannot be identified: %w", err)
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+}
+
+// --- start ----------------------------------------------------------------------------
+
+func cmdStart(args []string, stdout, stderr io.Writer) error {
+	fs := newFlagSet("start", stderr)
+	dataDir := fs.String("data", "", "where the data disk lives; chosen on the first start (default: the state directory)")
+	imageDir := fs.String("image-dir", "", "directory with "+kernelName+" and "+initrdName+" (default: next to winbox.exe)")
+	memory := fs.String("memory", "", "guest memory, such as 4GiB or 4096 (MiB); kept for later starts")
+	cpus := fs.Int("cpus", 0, "virtual CPUs; kept for later starts")
+	var diskSize sizeFlag
+	fs.Var(&diskSize, "disk-size", "data disk size, such as 64GiB; first start only (the disk is sparse)")
+	timeout := fs.Duration("timeout", 2*time.Minute, "how long to wait for the Docker API")
+	noContext := fs.Bool("no-context", false, `do not create or select the "winbox" docker context`)
+	pipe := fs.String("pipe", "", `Docker API pipe (default \\.\pipe\docker_engine_winbox); kept for later starts`)
+	if err := parseArgs(fs, args); err != nil {
+		return err
+	}
+	if *cpus < 0 || *cpus > engine.MaxCPUs {
+		return fmt.Errorf("--cpus %d is outside 1..%d", *cpus, engine.MaxCPUs)
+	}
+	t0 := time.Now()
+	in, err := openInstall()
+	if err != nil {
+		return err
+	}
+	ops, err := in.opsLock()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = ops.Unlock() }()
+
+	if err := in.applySettings(*dataDir, *memory, *cpus, diskSize, *pipe); err != nil {
+		return err
+	}
+	kernel, initrd, err := guestArtifacts(*imageDir)
+	if err != nil {
+		return err
+	}
+
+	if up, err := in.running(); err != nil {
+		return err
+	} else if up {
+		st, p, err := in.liveState()
+		if err != nil {
+			return err
+		}
+		p.Close()
+		fmt.Fprintf(stdout, "winbox is already running (engine pid %d, %s).\n", st.PID, st.Phase)
+		if !*noContext {
+			selectContext(st.Pipe, stdout, stderr)
+		}
+		return nil
+	}
+	in.noteCrash(stderr)
+
+	cmd, err := spawnEngine(in, kernel, initrd)
+	if err != nil {
+		return err
+	}
+	exited := make(chan error, 1)
+	go func() { exited <- cmd.Wait() }()
+	st, err := in.waitReady(cmd.Process.Pid, exited, *timeout)
+	if err != nil {
+		return in.explainFailure(err, st, stderr)
+	}
+	fmt.Fprintf(stdout, "winbox is running: the Docker API answered after %.1f s (engine pid %d).\n", time.Since(t0).Seconds(), st.PID)
+	if !*noContext {
+		selectContext(st.Pipe, stdout, stderr)
+	}
+	return nil
+}
+
+// applySettings creates settings.json on the first start and applies changes to later
+// ones. The data location is fixed once chosen (moving it is REQ-DISK-007's `winbox
+// move`, not implemented yet).
+func (in *install) applySettings(dataDir, memory string, cpus int, diskSize sizeFlag, pipe string) error {
+	s := in.settings
+	first := s == nil
+	if first {
+		s = &engine.Settings{Version: engine.SettingsVersion, DataDir: in.l.Home, DiskSize: defaultDiskSize, MemoryMB: defaultMemoryMB, CPUs: defaultCPUs()}
+	}
+	if dataDir != "" {
+		abs, err := filepath.Abs(dataDir)
+		if err != nil {
+			return err
+		}
+		if strings.HasPrefix(abs, `\\`) {
+			return fmt.Errorf("--data %s: the data disk must be on a local volume", dataDir)
+		}
+		switch {
+		case first:
+			s.DataDir = abs
+		case !engine.SamePath(abs, s.DataDir):
+			return fmt.Errorf("the data location is already %s; moving it (winbox move) is not supported yet. `winbox delete` and a new start choose again", s.DataDir)
+		}
+	}
+	if diskSize.set {
+		if !first {
+			if _, err := engine.LoadDiskMeta(engine.Layout{Home: in.l.Home, Data: s.DataDir}); err == nil && diskSize.n != s.DiskSize {
+				return fmt.Errorf("--disk-size: the data disk already exists with %s; its size is fixed", engine.FormatSize(s.DiskSize))
+			}
+		}
+		s.DiskSize = diskSize.n
+	}
+	if memory != "" {
+		mb, err := parseMemoryMB(memory)
+		if err != nil {
+			return fmt.Errorf("--memory: %w", err)
+		}
+		s.MemoryMB = mb
+	}
+	if cpus > 0 {
+		s.CPUs = cpus
+	}
+	if pipe != "" {
+		if err := transport.ValidatePipeName(pipe); err != nil {
+			return fmt.Errorf("--pipe: %w", err)
+		}
+		s.Pipe = pipe
+		if pipe == transport.DefaultPipeName {
+			s.Pipe = ""
+		}
+	}
+	if err := s.Validate(); err != nil {
+		return err
+	}
+	if !first && *s == *in.settings {
+		return nil
+	}
+	if err := engine.SaveSettings(in.l, s); err != nil {
+		return err
+	}
+	in.settings, in.l.Data = s, s.DataDir
+	return nil
+}
+
+func defaultCPUs() int { return min(max(runtime.NumCPU()/2, 2), 8) }
+
+func guestArtifacts(dir string) (kernel, initrd string, err error) {
+	if dir == "" {
+		exe, err := os.Executable()
+		if err != nil {
+			return "", "", err
+		}
+		dir = filepath.Dir(exe)
+	}
+	dir, err = filepath.Abs(dir)
+	if err != nil {
+		return "", "", err
+	}
+	kernel, initrd = filepath.Join(dir, kernelName), filepath.Join(dir, initrdName)
+	for _, p := range []string{kernel, initrd} {
+		if fi, err := os.Stat(p); err != nil || !fi.Mode().IsRegular() {
+			return "", "", fmt.Errorf("guest image file %s not found; pass --image-dir with %s and %s (built by guest/prototype/build.ps1)", p, kernelName, initrdName)
+		}
+	}
+	return kernel, initrd, nil
+}
+
+// noteCrash reports and clears a state left by an engine that died without cleaning
+// up, and terminates any VM it left (normally none: the VM dies with its engine).
+func (in *install) noteCrash(stderr io.Writer) {
+	st, err := engine.LoadState(in.l)
+	if err != nil || !st.Phase.Live() {
+		return
+	}
+	fmt.Fprintf(stderr, "winbox: the previous engine (pid %d) exited without shutting down; see `winbox logs`.\n", st.PID)
+	if lk, err := engine.TryLock(in.l.LockPath()); err == nil {
+		engine.CleanupOrphans(engine.HCSBackend{}, in.l.VMPrefix(), slog.New(slog.NewTextHandler(stderr, &slog.HandlerOptions{Level: slog.LevelWarn})))
+		st.Phase, st.Error, st.ErrorCode = engine.PhaseFailed, "the engine exited without shutting down", ""
+		_ = engine.SaveState(in.l, st)
+		_ = lk.Unlock()
+	}
+}
+
+// spawnEngine starts `winbox engine` as a detached background process whose output
+// goes to engine.log. It breaks away from the caller's job object where allowed, so
+// closing the terminal (or a CI step) does not take the engine with it.
+func spawnEngine(in *install, kernel, initrd string) (*exec.Cmd, error) {
+	exe, err := os.Executable()
+	if err != nil {
+		return nil, err
+	}
+	if err := os.MkdirAll(in.l.LogDir(), 0o700); err != nil {
+		return nil, err
+	}
+	logPath := in.l.EngineLogPath()
+	if fi, err := os.Stat(logPath); err == nil && fi.Size() > engineLogMax {
+		_ = os.Rename(logPath, logPath+".1")
+	}
+	logf, err := os.OpenFile(logPath, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0o600)
+	if err != nil {
+		return nil, err
+	}
+	defer logf.Close()
+	const (
+		detachedProcess        = 0x00000008
+		createNewProcessGroup  = 0x00000200
+		createBreakawayFromJob = 0x01000000
+	)
+	for _, breakaway := range []bool{true, false} {
+		cmd := exec.Command(exe, "engine", "--home", in.l.Home, "--kernel", kernel, "--initrd", initrd)
+		cmd.Dir = in.l.Home
+		cmd.Stdout, cmd.Stderr = logf, logf
+		flags := uint32(detachedProcess | createNewProcessGroup)
+		if breakaway {
+			flags |= createBreakawayFromJob
+		}
+		cmd.SysProcAttr = &syscall.SysProcAttr{CreationFlags: flags, HideWindow: true}
+		err = cmd.Start()
+		if err == nil {
+			return cmd, nil
+		}
+		// A job that does not allow breakaway refuses the flag with access denied.
+		if !breakaway || !errors.Is(err, windows.ERROR_ACCESS_DENIED) {
+			break
+		}
+	}
+	return nil, fmt.Errorf("start the engine: %w", err)
+}
+
+// waitReady follows state.json until the engine with this pid is running or failed,
+// or the process exits. On timeout it stops the engine, so nothing is left half up.
+func (in *install) waitReady(pid int, exited <-chan error, timeout time.Duration) (*engine.State, error) {
+	deadline := time.Now().Add(timeout)
+	var last *engine.State
+	for {
+		st, err := engine.LoadState(in.l)
+		if err == nil && st.PID == pid {
+			last = st
+			switch st.Phase {
+			case engine.PhaseRunning:
+				return st, nil
+			case engine.PhaseFailed, engine.PhaseStopped:
+				return st, engineError(st)
+			}
+		}
+		select {
+		case err := <-exited:
+			if st, serr := engine.LoadState(in.l); serr == nil && st.PID == pid {
+				if st.Phase == engine.PhaseFailed {
+					return st, engineError(st)
+				}
+				last = st
+			}
+			return last, fmt.Errorf("the engine exited before it was ready (%v); see `winbox logs`", err)
+		case <-time.After(100 * time.Millisecond):
+		}
+		if time.Now().After(deadline) {
+			if last != nil {
+				if p, err := engine.OpenProcess(last.PID, last.PIDCreated); err == nil {
+					_ = engine.RequestStop(last.PID, last.PIDCreated)
+					if ok, _ := p.Wait(30 * time.Second); !ok {
+						_ = p.Kill()
+					}
+					p.Close()
+				}
+			}
+			return last, fmt.Errorf("the Docker API did not answer within %v; the engine was stopped. See `winbox logs` and `winbox logs --console`", timeout)
+		}
+	}
+}
+
+type engineErr struct {
+	code string
+	msg  string
+}
+
+func (e *engineErr) Error() string { return e.msg }
+
+func engineError(st *engine.State) error {
+	if st.Phase == engine.PhaseStopped {
+		return errors.New("the engine stopped before it was ready")
+	}
+	return &engineErr{code: st.ErrorCode, msg: st.Error}
+}
+
+// explainFailure prints err and, for known causes, what to do about it.
+func (in *install) explainFailure(err error, st *engine.State, stderr io.Writer) error {
+	fmt.Fprintln(stderr, "winbox: start failed:", err)
+	var ee *engineErr
+	if errors.As(err, &ee) {
+		if d := engine.Describe(ee.code); d != "" {
+			fmt.Fprintln(stderr)
+			fmt.Fprintln(stderr, d)
+		}
+		if ee.code == engine.CodeHCSAccessDenied {
+			fmt.Fprintln(stderr)
+			if member, merr := inHyperVAdmins(); merr == nil && member {
+				fmt.Fprintln(stderr, "Your sign-in token IS a member of Hyper-V Administrators, so the denial has another cause; see `winbox logs`.")
+			} else if merr == nil {
+				fmt.Fprintln(stderr, "Your current sign-in token is NOT a member of Hyper-V Administrators.")
+			}
+		}
+	}
+	fmt.Fprintf(stderr, "Logs: %s\n", in.l.EngineLogPath())
+	return &shownError{err: err}
+}
+
+// inHyperVAdmins reports whether this process's token has BUILTIN\Hyper-V
+// Administrators (S-1-5-32-578) enabled.
+func inHyperVAdmins() (bool, error) {
+	sid, err := windows.StringToSid("S-1-5-32-578")
+	if err != nil {
+		return false, err
+	}
+	return windows.Token(0).IsMember(sid)
+}
+
+// selectContext creates (or refreshes) and selects the "winbox" docker context. A
+// context of that name that winbox did not create is left alone.
+func selectContext(pipe string, stdout, stderr io.Writer) {
+	store, err := dockerctx.DefaultStore()
+	if err != nil {
+		fmt.Fprintln(stderr, "winbox: docker context:", err)
+		return
+	}
+	host := npipeHost(pipe)
+	if err := store.Ensure(contextName, host, "winbox (managed by winbox.exe)"); err != nil {
+		if errors.Is(err, dockerctx.ErrNotOurs) {
+			fmt.Fprintf(stderr, "winbox: a docker context named %q already exists and was not created by winbox; it was left alone.\n"+
+				"        Use DOCKER_HOST=%s, or remove that context (docker context rm %s) and run winbox start again.\n", contextName, host, contextName)
+			return
+		}
+		fmt.Fprintln(stderr, "winbox: docker context:", err)
+		return
+	}
+	prev, err := store.Current()
+	if err != nil {
+		fmt.Fprintf(stderr, "winbox: docker context %q is registered but not selected: %v\n", contextName, err)
+		return
+	}
+	if prev != contextName {
+		if err := store.Use(contextName); err != nil {
+			fmt.Fprintf(stderr, "winbox: docker context %q is registered but not selected: %v\n", contextName, err)
+			return
+		}
+		was := prev
+		if was == "" {
+			was = "default"
+		}
+		fmt.Fprintf(stdout, "Docker context %q selected (was %q).\n", contextName, was)
+	} else {
+		fmt.Fprintf(stdout, "Docker context %q is selected.\n", contextName)
+	}
+	if h := os.Getenv("DOCKER_HOST"); h != "" {
+		fmt.Fprintf(stderr, "winbox: note: DOCKER_HOST=%s overrides the docker context in this shell.\n", h)
+	} else if c := os.Getenv("DOCKER_CONTEXT"); c != "" && c != contextName {
+		fmt.Fprintf(stderr, "winbox: note: DOCKER_CONTEXT=%s overrides the selected context in this shell.\n", c)
+	}
+}
+
+// --- stop -----------------------------------------------------------------------------
+
+func cmdStop(args []string, stdout, stderr io.Writer) error {
+	fs := newFlagSet("stop", stderr)
+	timeout := fs.Duration("timeout", 45*time.Second, "how long to wait for the orderly shutdown before killing the engine")
+	if err := parseArgs(fs, args); err != nil {
+		return err
+	}
+	in, err := openInstall()
+	if err != nil {
+		return err
+	}
+	ops, err := in.opsLock()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = ops.Unlock() }()
+	forced, took, err := in.stop(*timeout, stderr)
+	if errors.Is(err, errNotRunning) {
+		fmt.Fprintln(stdout, "winbox is not running.")
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	how := "shut down"
+	if forced {
+		how = "killed after the orderly shutdown timed out"
+	}
+	fmt.Fprintf(stdout, "winbox stopped: %s in %.1f s.\n", how, took.Seconds())
+	return nil
+}
+
+var errNotRunning = errors.New("not running")
+
+// stop asks the engine to shut down, waits up to timeout, then kills it. Either way the
+// VM is gone afterwards: the engine's death closes the VM's last handle. Leftover
+// compute systems of this installation are terminated too.
+func (in *install) stop(timeout time.Duration, stderr io.Writer) (forced bool, took time.Duration, err error) {
+	t0 := time.Now()
+	up, err := in.running()
+	if err != nil {
+		return false, 0, err
+	}
+	if !up {
+		in.noteCrash(stderr)
+		return false, 0, errNotRunning
+	}
+	st, p, err := in.liveState()
+	if err != nil {
+		return false, 0, err
+	}
+	defer p.Close()
+	if err := engine.RequestStop(st.PID, st.PIDCreated); err != nil {
+		fmt.Fprintln(stderr, "winbox: could not ask the engine to stop; killing it:", err)
+		forced = true
+	} else if ok, _ := p.Wait(timeout); !ok {
+		forced = true
+	}
+	if forced {
+		if err := p.Kill(); err != nil {
+			return true, 0, fmt.Errorf("kill engine pid %d: %w", st.PID, err)
+		}
+		if ok, _ := p.Wait(15 * time.Second); !ok {
+			return true, 0, fmt.Errorf("engine pid %d did not exit after being killed", st.PID)
+		}
+	}
+	// The lock goes with the process; take it to clean up under it.
+	lk, err := engine.Lock(in.l.LockPath(), 10*time.Second)
+	if err != nil {
+		return forced, time.Since(t0), fmt.Errorf("the engine exited but its lock is still held: %w", err)
+	}
+	defer func() { _ = lk.Unlock() }()
+	if n := engine.CleanupOrphans(engine.HCSBackend{}, in.l.VMPrefix(), slog.New(slog.NewTextHandler(stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))); n > 0 {
+		fmt.Fprintf(stderr, "winbox: terminated %d VM(s) the engine left behind.\n", n)
+	}
+	if forced {
+		if st, err := engine.LoadState(in.l); err == nil && st.Phase.Live() {
+			st.Phase, st.Error = engine.PhaseFailed, "killed by winbox stop after the orderly shutdown timed out"
+			_ = engine.SaveState(in.l, st)
+		}
+	}
+	return forced, time.Since(t0), nil
+}
+
+// --- status ---------------------------------------------------------------------------
+
+type statusReport struct {
+	Running    bool          `json:"running"`
+	State      *engine.State `json:"state,omitempty"`
+	Home       string        `json:"home"`
+	DataDir    string        `json:"dataDir,omitempty"`
+	Disk       string        `json:"disk,omitempty"`
+	DiskUsed   uint64        `json:"diskHostBytes,omitempty"`
+	DiskMax    uint64        `json:"diskSizeBytes,omitempty"`
+	HostFree   uint64        `json:"hostFreeBytes,omitempty"`
+	MemoryMB   int           `json:"memoryMB,omitempty"`
+	CPUs       int           `json:"cpus,omitempty"`
+	Context    string        `json:"dockerContext,omitempty"`
+	ContextSel bool          `json:"dockerContextSelected"`
+}
+
+func cmdStatus(args []string, stdout, stderr io.Writer) (int, error) {
+	fs := newFlagSet("status", stderr)
+	asJSON := fs.Bool("json", false, "print JSON")
+	if err := parseArgs(fs, args); err != nil {
+		return 2, err
+	}
+	in, err := openInstall()
+	if err != nil {
+		return 1, err
+	}
+	r := statusReport{Home: in.l.Home}
+	if r.Running, err = in.running(); err != nil {
+		return 1, err
+	}
+	if st, err := engine.LoadState(in.l); err == nil {
+		r.State = st
+	}
+	if in.settings != nil {
+		r.DataDir, r.MemoryMB, r.CPUs, r.DiskMax = in.settings.DataDir, in.settings.MemoryMB, in.settings.CPUs, in.settings.DiskSize
+		if u, err := vm.Usage(in.l.DiskPath()); err == nil {
+			r.Disk, r.DiskUsed = in.l.DiskPath(), u.Allocated
+		}
+		if f, err := vm.FreeBytes(in.settings.DataDir); err == nil {
+			r.HostFree = f
+		}
+	}
+	if store, err := dockerctx.DefaultStore(); err == nil {
+		if c, err := store.Get(contextName); err == nil && c.Managed {
+			r.Context = contextName
+			cur, _ := store.Current()
+			r.ContextSel = cur == contextName
+		}
+	}
+	code := 0
+	if !r.Running {
+		code = exitNotRunning
+	}
+	if *asJSON {
+		b, err := json.MarshalIndent(r, "", "  ")
+		if err != nil {
+			return 1, err
+		}
+		fmt.Fprintf(stdout, "%s\n", b)
+		return code, nil
+	}
+	st := r.State
+	switch {
+	case r.Running && st != nil && st.Phase.Live():
+		fmt.Fprintf(stdout, "winbox: %s (engine pid %d, up %s", st.Phase, st.PID, time.Since(st.Started).Round(time.Second))
+		if st.ReadyMillis > 0 {
+			fmt.Fprintf(stdout, ", Docker API ready after %.1f s", float64(st.ReadyMillis)/1000)
+		}
+		fmt.Fprintln(stdout, ")")
+		fmt.Fprintf(stdout, "  docker:  %s\n", npipeHost(st.Pipe))
+		fmt.Fprintf(stdout, "  vm:      %s\n", st.VMID)
+	case r.Running:
+		fmt.Fprintln(stdout, "winbox: starting")
+	case st != nil && st.Phase.Live():
+		fmt.Fprintf(stdout, "winbox: stopped (the engine, pid %d, exited without shutting down; see `winbox logs`)\n", st.PID)
+	case st != nil && st.Phase == engine.PhaseFailed:
+		fmt.Fprintf(stdout, "winbox: stopped (last run failed: %s)\n", string(printable([]byte(st.Error))))
+	case in.settings == nil:
+		fmt.Fprintln(stdout, "winbox: not set up yet (run winbox start)")
+		return code, nil
+	default:
+		fmt.Fprintln(stdout, "winbox: stopped")
+	}
+	if in.settings != nil {
+		fmt.Fprintf(stdout, "  guest:   %d MiB, %d CPUs\n", r.MemoryMB, r.CPUs)
+		if r.Disk != "" {
+			fmt.Fprintf(stdout, "  data:    %s (%s on the host, %s maximum; %s free on the volume)\n", r.Disk, engine.HumanSize(r.DiskUsed), engine.FormatSize(r.DiskMax), engine.HumanSize(r.HostFree))
+		} else {
+			fmt.Fprintf(stdout, "  data:    %s (no data disk yet)\n", r.DataDir)
+		}
+	}
+	if r.Context != "" {
+		sel := "not selected"
+		if r.ContextSel {
+			sel = "selected"
+		}
+		fmt.Fprintf(stdout, "  context: %s (%s)\n", r.Context, sel)
+	}
+	fmt.Fprintf(stdout, "  state:   %s\n", in.l.Home)
+	return code, nil
+}
+
+// --- logs -----------------------------------------------------------------------------
+
+func cmdLogs(args []string, stdout, stderr io.Writer) error {
+	fs := newFlagSet("logs", stderr)
+	console := fs.Bool("console", false, "print the guest serial console instead of the engine log")
+	n := fs.Int("n", 100, "print the last N lines (0: all)")
+	follow := fs.Bool("f", false, "keep printing new lines")
+	if err := parseArgs(fs, args); err != nil {
+		return err
+	}
+	in, err := openInstall()
+	if err != nil {
+		return err
+	}
+	path := in.l.EngineLogPath()
+	if *console {
+		path = in.l.ConsoleLogPath()
+	}
+	f, err := os.Open(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("no log yet at %s", path)
+	}
+	if err != nil {
+		return err
+	}
+	defer func() { _ = f.Close() }()
+	// The tail: read at most the last 4 MiB.
+	const window = 4 << 20
+	fi, err := f.Stat()
+	if err != nil {
+		return err
+	}
+	off := max(fi.Size()-window, 0)
+	if _, err := f.Seek(off, io.SeekStart); err != nil {
+		return err
+	}
+	b, err := io.ReadAll(io.LimitReader(f, window))
+	if err != nil {
+		return err
+	}
+	if _, err := stdout.Write(printable(lastLines(b, *n))); err != nil {
+		return err
+	}
+	if !*follow {
+		return nil
+	}
+	pos := off + int64(len(b))
+	buf := make([]byte, 64<<10)
+	for {
+		time.Sleep(500 * time.Millisecond)
+		fi, err := os.Stat(path)
+		if err != nil {
+			continue
+		}
+		if fi.Size() < pos { // rotated or truncated: start over
+			_ = f.Close()
+			if f, err = os.Open(path); err != nil {
+				continue
+			}
+			pos = 0
+		}
+		for {
+			k, err := f.ReadAt(buf, pos)
+			if k > 0 {
+				if _, werr := stdout.Write(printable(buf[:k])); werr != nil {
+					return werr
+				}
+				pos += int64(k)
+			}
+			if err != nil || k == 0 {
+				break
+			}
+		}
+	}
+}
+
+// --- delete ---------------------------------------------------------------------------
+
+func cmdDelete(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
+	fs := newFlagSet("delete", stderr)
+	yes := fs.Bool("yes", false, "do not ask for confirmation")
+	if err := parseArgs(fs, args); err != nil {
+		return err
+	}
+	in, err := openInstall()
+	if err != nil {
+		return err
+	}
+	ops, err := in.opsLock()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = ops.Unlock() }()
+
+	up, err := in.running()
+	if err != nil {
+		return err
+	}
+	disk := in.l.DiskPath()
+	if !*yes {
+		size := "no data disk"
+		if u, err := vm.Usage(disk); err == nil {
+			size = engine.HumanSize(u.Allocated) + " on the host"
+		}
+		fmt.Fprintf(stdout, "This deletes winbox's VM state and its data disk:\n  %s (%s)\n"+
+			"All images, containers and volumes in it are lost.", disk, size)
+		if up {
+			fmt.Fprint(stdout, " winbox is running and will be stopped first.")
+		}
+		fmt.Fprint(stdout, "\nType \"yes\" to continue: ")
+		if !isConsole(stdin) {
+			fmt.Fprintln(stdout)
+			return errors.New("delete: input is not a terminal; pass --yes to confirm")
+		}
+		line, _ := bufio.NewReader(stdin).ReadString('\n')
+		if a := strings.ToLower(strings.TrimSpace(line)); a != "yes" && a != "y" {
+			fmt.Fprintln(stdout, "Nothing was deleted.")
+			return nil
+		}
+	}
+	if up {
+		if _, _, err := in.stop(45*time.Second, stderr); err != nil && !errors.Is(err, errNotRunning) {
+			return fmt.Errorf("stop before delete: %w", err)
+		}
+	}
+	// Under the engine lock, so no engine starts while the files go.
+	lk, err := engine.Lock(in.l.LockPath(), 10*time.Second)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = lk.Unlock() }()
+
+	// Only files winbox created, by name: never a recursive delete of a directory the
+	// user chose.
+	var failed []string
+	remove := func(p string) {
+		if err := removeRetry(p); err != nil && !errors.Is(err, os.ErrNotExist) {
+			failed = append(failed, fmt.Sprintf("%s: %v", p, err))
+		}
+	}
+	remove(disk)
+	remove(disk + ".new")
+	remove(in.l.DiskMetaPath())
+	remove(in.l.StatePath())
+	remove(in.l.SettingsPath())
+	for _, p := range []string{in.l.EngineLogPath(), in.l.ConsoleLogPath()} {
+		remove(p)
+		remove(p + ".1")
+	}
+	_ = os.Remove(in.l.LogDir()) // only if empty
+	if !engine.SamePath(in.l.Data, in.l.Home) {
+		_ = os.Remove(in.l.Data) // only if empty
+	}
+	if store, err := dockerctx.DefaultStore(); err == nil {
+		if cur, err := store.Current(); err == nil && cur == contextName {
+			if err := store.Use(""); err != nil {
+				failed = append(failed, "docker context selection: "+err.Error())
+			}
+		}
+		if err := store.Remove(contextName); err != nil && !errors.Is(err, dockerctx.ErrNotOurs) {
+			failed = append(failed, "docker context: "+err.Error())
+		}
+	}
+	if len(failed) > 0 {
+		return fmt.Errorf("delete: could not remove:\n  %s", strings.Join(failed, "\n  "))
+	}
+	fmt.Fprintln(stdout, "winbox deleted. `winbox start` sets it up again.")
+	return nil
+}
+
+// removeRetry removes a file, retrying for a few seconds while the VM worker that just
+// exited still has it open.
+func removeRetry(p string) error {
+	var err error
+	for i := 0; i < 50; i++ {
+		if err = os.Remove(p); err == nil || errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	return err
+}
+
+func isConsole(r io.Reader) bool {
+	f, ok := r.(*os.File)
+	if !ok {
+		return false
+	}
+	var mode uint32
+	return windows.GetConsoleMode(windows.Handle(f.Fd()), &mode) == nil
+}
+
+// --- engine (internal) ----------------------------------------------------------------
+
+func cmdEngine(args []string, stderr io.Writer) (int, error) {
+	fs := newFlagSet("engine", stderr)
+	home := fs.String("home", "", "state directory")
+	kernel := fs.String("kernel", "", "guest kernel")
+	initrd := fs.String("initrd", "", "guest initramfs")
+	debugLog := fs.Bool("debug", false, "debug logging")
+	if err := parseArgs(fs, args); err != nil {
+		return 2, err
+	}
+	if *home == "" || *kernel == "" || *initrd == "" {
+		return 2, errors.New("engine: --home, --kernel and --initrd are required (it is started by winbox start)")
+	}
+	level := slog.LevelInfo
+	if *debugLog {
+		level = slog.LevelDebug
+	}
+	log := slog.New(slog.NewTextHandler(stderr, &slog.HandlerOptions{Level: level}))
+	l := engine.Layout{Home: *home, Data: *home}
+	s, err := engine.LoadSettings(l)
+	if err != nil {
+		return 1, err
+	}
+	log.Info("engine starting", "pid", os.Getpid(), "home", *home, "data", s.DataDir, "memoryMB", s.MemoryMB, "cpus", s.CPUs)
+	err = engine.Serve(engine.ServeOptions{
+		Home: *home, Settings: s, KernelPath: *kernel, InitrdPath: *initrd,
+		Pipe: s.PipeName(), Net: engine.NetConfig{AutoPublish: true}, Logger: log,
+	})
+	if engine.ErrorCode(err) == engine.CodeAlreadyRunning {
+		return 3, err
+	}
+	if err != nil {
+		return 1, err
+	}
+	return 0, nil
+}

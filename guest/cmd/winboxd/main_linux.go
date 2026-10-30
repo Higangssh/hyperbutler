@@ -41,6 +41,7 @@ import (
 
 type options struct {
 	port                   uint
+	shutdownPID            int
 	mount, dev, file       string
 	interval, stale        time.Duration
 	lostGrace              time.Duration
@@ -89,6 +90,7 @@ func main() {
 	flag.DurationVar(&o.statusEvery, "status-every", time.Second, "status report period on the control channel")
 	flag.StringVar(&o.cgroupRoot, "cgroup", "/sys/fs/cgroup", "cgroup v2 root")
 	flag.StringVar(&o.dropCaches, "drop-caches", "/proc/sys/vm/drop_caches", "drop_caches path")
+	flag.IntVar(&o.shutdownPID, "shutdown-pid", 1, "on a host shutdown request, send SIGTERM to this process (the init, which stops dockerd and powers off); 0 disables the feature")
 	flag.Parse()
 	if flag.NArg() != 0 || o.port > math.MaxUint32-1 || (o.file != "") != (o.dev != "") ||
 		((o.file != "" || !o.trimOff) && o.mount == "") || o.interval <= 0 ||
@@ -125,6 +127,9 @@ type daemon struct {
 
 func newDaemon(o options) (*daemon, error) {
 	d := &daemon{o: o, box: newMailbox(), trimPol: o.trim, cachePol: o.cache}
+	if o.shutdownPID > 0 {
+		d.features |= guestctl.FeatureShutdown
+	}
 	if o.mount != "" {
 		f, err := os.Open(o.mount)
 		if err != nil {
@@ -437,6 +442,13 @@ type connHandler struct {
 func (h *connHandler) SetBudget(b spaceguard.Budget) { h.d.box.postBudget(h.gen, b) }
 func (h *connHandler) ConnLost()                     { h.d.box.postLost(h.gen) }
 func (h *connHandler) Status() guestctl.Status       { return h.d.status() }
+
+// Shutdown starts an orderly power-off: the init traps SIGTERM, stops dockerd (which
+// stops the containers), unmounts the data disk and powers the VM off.
+func (h *connHandler) Shutdown() error {
+	log.Printf("host requested shutdown; signalling pid %d", h.d.o.shutdownPID)
+	return unix.Kill(h.d.o.shutdownPID, unix.SIGTERM)
+}
 
 func (h *connHandler) Trim(context.Context) guestctl.TrimResult {
 	n, dur, err := h.d.trimmer.Trim()
