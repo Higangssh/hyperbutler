@@ -83,7 +83,6 @@ func TestRegistryRecreatedDirectoryGetsNewShare(t *testing.T) {
 	}
 }
 
-
 // Integration step 5: shares no container uses are removed, and a source deleted and
 // made again does not leave one share per incarnation behind.
 func TestRegistryPrune(t *testing.T) {
