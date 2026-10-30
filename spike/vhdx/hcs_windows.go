@@ -79,7 +79,7 @@ func u16(s string) *uint16 {
 	return p
 }
 
-func hcsConfig(kernel, initrd, cmdline, pipe, vhdx string, sparse bool, schemaMinor int) ([]byte, error) {
+func hcsConfig(kernel, initrd, cmdline, pipe, vhdx string, sparse bool, schemaMinor int, memory map[string]any) ([]byte, error) {
 	attachment := map[string]any{"Type": "VirtualDisk", "Path": vhdx}
 	if sparse {
 		// Without this, vhdmp refuses to open a sparse VHDX (the same "must not be sparse"
@@ -100,7 +100,7 @@ func hcsConfig(kernel, initrd, cmdline, pipe, vhdx string, sparse bool, schemaMi
 				},
 			},
 			"ComputeTopology": map[string]any{
-				"Memory":    map[string]any{"SizeInMB": 1024, "AllowOvercommit": true},
+				"Memory":    memory,
 				"Processor": map[string]any{"Count": 2},
 			},
 			"Devices": map[string]any{
@@ -125,7 +125,11 @@ func runHCS(args []string) error {
 	settle := fs.Duration("settle", 5*time.Second, "measure again this long after each marker")
 	printCfg := fs.Bool("print-config", false, "print the HCS document and exit")
 	schemaMinor := fs.Int("schema-minor", 1, "HCS schema 2.x minor version; raise it if HCS rejects AlwaysAllowSparseFiles")
-	mode := fs.String("mode", "", `guest test: "" (FAT32 write/delete/fstrim/blkdiscard), "trimonly" (same, no blkdiscard), or "align" (raw device, unaligned vs 32 MiB-aligned discards)`)
+	memMB := fs.Int("mem", 1024, "guest memory in MiB")
+	memHints := fs.String("mem-hints", "", "comma-separated HCS VirtualMachineMemory booleans to set, e.g. EnableHotHint,EnableColdDiscardHint")
+	extraDir := fs.String("extra", "", "dir whose files are packed flat under /wbextra (mke2fs and its libraries for -mode ext4)")
+	fsync := fs.Bool("fsync", false, "guest writes with dd conv=fsync, so data is flushed to the device before delete and fstrim")
+	mode := fs.String("mode", "", `guest test: "" (FAT32 write/delete/fstrim/blkdiscard), "trimonly" (same, no blkdiscard), "align" (raw device, unaligned vs 32 MiB-aligned discards), or "ext4" (many small files on ext4; needs -extra and the ext4 modules)`)
 	fs.Parse(args)
 
 	var mods, names []string
@@ -135,7 +139,7 @@ func runHCS(args []string) error {
 			names = append(names, m)
 		}
 	}
-	initrd, err := buildInitrd(filepath.Join(*guestDir, "initramfs-virt"), mods)
+	initrd, err := buildInitrdExtra(filepath.Join(*guestDir, "initramfs-virt"), mods, *extraDir)
 	if err != nil {
 		return err
 	}
@@ -162,7 +166,16 @@ func runHCS(args []string) error {
 	id := fmt.Sprintf("winbox-vhdx-spike-%d", time.Now().UnixNano())
 	pipe := `\\.\pipe\` + id + "-com1"
 	cmdline := fmt.Sprintf("console=ttyS0 rdinit=/wbinit loglevel=3 WB_DEV=sda WB_MB=%d WB_MODS=%s WB_MODE=%s", *writeMB, strings.Join(names, ","), *mode)
-	cfg, err := hcsConfig(filepath.Join(*guestDir, "vmlinuz-virt"), initrd, cmdline, pipe, vhdx, *sparse, *schemaMinor)
+	if *fsync {
+		cmdline += " WB_FSYNC=1"
+	}
+	memory := map[string]any{"SizeInMB": *memMB, "AllowOvercommit": true}
+	for _, h := range strings.Split(*memHints, ",") {
+		if h != "" {
+			memory[h] = true // e.g. EnableHotHint, EnableColdHint, EnableColdDiscardHint, EnableDeferredCommit
+		}
+	}
+	cfg, err := hcsConfig(filepath.Join(*guestDir, "vmlinuz-virt"), initrd, cmdline, pipe, vhdx, *sparse, *schemaMinor, memory)
 	if err != nil {
 		return err
 	}
@@ -225,7 +238,11 @@ func runHCS(args []string) error {
 	}
 	defer console.Close()
 
-	done, err := driveGuest(console, vhdx, start, *settle, nil)
+	var before func()
+	if *mode == "mem" {
+		before = printVmmem
+	}
+	done, err := driveGuest(console, vhdx, start, *settle, before)
 	if err != nil {
 		return err
 	}

@@ -63,6 +63,48 @@ if [ "$WB_MODE" = align ]; then
 	echo "@@DONE"
 	poweroff -f
 fi
+# WB_MODE=mem: no disk I/O. Fill WB_MB MiB of tmpfs with random data, free it, then wait and
+# drop caches; the host prints vmmem before each measurement.
+if [ "$WB_MODE" = mem ]; then
+	mi() { echo "@@I meminfo: $(grep -E '^(MemTotal|MemFree):' /proc/meminfo | tr -s ' ' | tr '\n' ' ')"; }
+	mi; m booted
+	mkdir -p /m; mount -t tmpfs -o size=$((WB_MB + 64))M tmpfs /m
+	dd if=/dev/urandom of=/m/x bs=1M count=$WB_MB 2>/dev/null
+	mi; m allocated
+	rm /m/x; umount /m
+	mi; m freed
+	sleep 15; mi; m freed-15s
+	sleep 15; mi; m freed-30s
+	echo 3 >/proc/sys/vm/drop_caches; sleep 15; mi; m dropped-15s
+	echo "@@DONE"
+	poweroff -f
+fi
+# WB_MODE=ext4: ext4 (mke2fs from /wbextra), WB_MB*4 files of 256 KiB, delete, fstrim twice,
+# then a second write/delete churn and one more fstrim. Closer to image layers than FAT32.
+if [ "$WB_MODE" = ext4 ]; then
+	export LD_LIBRARY_PATH=/wbextra
+	/wbextra/mke2fs -q -F -t ext4 -E nodiscard,lazy_itable_init=0,lazy_journal_init=0 $D 2>&1 | sed 's/^/@@E mke2fs: /'
+	mount -t ext4 $D /mnt || echo "@@E mount"
+	sync
+	m formatted
+	fill() { mkdir /mnt/d; i=0; while [ $i -lt $((WB_MB * 4)) ]; do head -c 262144 /dev/urandom >/mnt/d/f$i; i=$((i + 1)); done; sync; }
+	fill
+	echo "@@I df: $(df -k /mnt | tail -n 1)"
+	m written
+	rm -rf /mnt/d; sync
+	m deleted
+	echo "@@I fstrim: $(fstrim -v /mnt 2>&1)"
+	m fstrimmed
+	echo "@@I fstrim2: $(fstrim -v /mnt 2>&1)"
+	m fstrimmed-again
+	fill; rm -rf /mnt/d; sync
+	m churned
+	echo "@@I fstrim3: $(fstrim -v /mnt 2>&1)"
+	m churn-fstrimmed
+	umount /mnt
+	echo "@@DONE"
+	poweroff -f
+fi
 mkfs.vfat -F 32 $D >/dev/null || echo "@@E mkfs"
 mount -t vfat -o iocharset=ascii $D /mnt || echo "@@E mount"
 m formatted
@@ -285,6 +327,12 @@ func newSparseFile(path string, size int64) error {
 // buildInitrd writes Alpine's initramfs followed by a second gzip'd newc cpio that adds
 // /wbinit. The kernel unpacks concatenated archives in order.
 func buildInitrd(alpine string, modules []string) (string, error) {
+	return buildInitrdExtra(alpine, modules, "")
+}
+
+// buildInitrdExtra also packs every file in extraDir (flat) under /wbextra, for guest
+// tools that initramfs-virt lacks, such as mke2fs and its shared libraries.
+func buildInitrdExtra(alpine string, modules []string, extraDir string) (string, error) {
 	base, err := os.ReadFile(alpine)
 	if err != nil {
 		return "", err
@@ -302,6 +350,20 @@ func buildInitrd(alpine string, modules []string) (string, error) {
 			return "", err
 		}
 		cw.file("wbmods/"+filepath.Base(m), 0o100644, data)
+	}
+	if extraDir != "" {
+		files, err := os.ReadDir(extraDir)
+		if err != nil {
+			return "", err
+		}
+		cw.entry("wbextra", 0o040755, nil)
+		for _, f := range files {
+			data, err := os.ReadFile(filepath.Join(extraDir, f.Name()))
+			if err != nil {
+				return "", err
+			}
+			cw.file("wbextra/"+f.Name(), 0o100755, data)
+		}
 	}
 	cw.trailer()
 	if cw.err != nil {

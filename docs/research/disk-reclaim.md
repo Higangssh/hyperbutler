@@ -231,9 +231,30 @@ What this shows:
 - **Sparse VHDX with `AlwaysAllowSparseFiles` gives space back online.** It is the candidate
   for REQ-DISK-001 on HCS. WSL marks this path as experimental, so it is not yet trusted.
 
+#### Flush hypothesis and ext4 (non-elevated, 2026-10-30)
+
+- **The flush hypothesis is wrong.** With `-fsync`, the guest writes with `dd conv=fsync`. The
+  first FAT32 `fstrim` still freed nothing, on both VHDX types, and the second still worked.
+  So the first-`fstrim` miss is FAT32-specific, and its cause is still unknown.
+- **ext4 works on the first `fstrim`.** `-mode ext4` uses `mke2fs` 1.47.4 from Alpine v3.24
+  packages, with signatures checked against `alpine-devel@lists.alpinelinux.org-6165ee59`. It
+  formats a 4 GiB VHDX with `-E nodiscard,lazy_itable_init=0`, writes 4096 files of 256 KiB,
+  deletes them, and runs `fstrim` twice. Then it writes and deletes the files again and runs
+  `fstrim` once more.
+
+| Host allocation (MiB) | formatted | written | deleted | `fstrim` | 2nd `fstrim` (0 B) | churn | churn `fstrim` | after exit |
+|---|---|---|---|---|---|---|---|---|
+| Sparse VHDX | 7.8 | 1034 | 1035 | **11.4** | 11.4 | 1038 | **13.8** | 13.8 |
+| Plain VHDX | 356 | 1412 | 1412 | 1412 | 1412 | 1412 | 1412 | 1284 |
+
+- **Sparse VHDX + ext4 + `fstrim` returns freed space to the host online, without
+  elevation**, and it keeps doing so through a write/delete churn. This is the HCS candidate
+  for REQ-DISK-001. It needs a periodic or event-driven `fstrim` in the guest.
+- The plain VHDX did not shrink at all with ext4. On exit it only dropped to 1284 MiB, the
+  highest block used. So the 4 MiB and 36 MiB "after exit" results above were truncations of
+  unused space at the end of the file, not real reclaim.
+
 - **Still open:**
-  - Confirm the flush hypothesis: `fsync`, or unmount, before the first `fstrim`.
-  - Repeat with ext4 and many small files.
   - Repeat the WSL corruption scenario: host disk full while a sparse VHDX grows (WSL issue
     #41837).
 

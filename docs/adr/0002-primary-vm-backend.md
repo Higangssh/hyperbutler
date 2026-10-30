@@ -79,9 +79,28 @@ Elevated run with the ADR 0005 prototype guest (initramfs with dockerd 29.9.2), 
   error`, and dockerd later could not create its bridge.
 
 Disk reclaim on HCS SCSI is recorded in `docs/research/disk-reclaim.md`:
-- **Sparse VHDX** with `AlwaysAllowSparseFiles`: guest discards, including `fstrim`, return
-  space to the host while the VM runs. This seems to need the data flushed first.
-- **Plain VHDX:** space comes back only when the VM exits.
+- **Sparse VHDX** with `AlwaysAllowSparseFiles` and ext4 in the guest: `fstrim` returns the
+  space of 1 GiB of deleted files to the host while the VM runs (1035 MiB → 11 MiB).
+- **Plain VHDX:** space is not returned.
+
+Memory reclaim on HCS (non-elevated, `spike/vhdx -mode mem`):
+- **Setup:** a 1024 MB guest with `hv_balloon` loaded fills 600 MiB of tmpfs, then frees it.
+- **Measured:** `vmmem` working set and private bytes, read through `Get-Process`.
+
+| `VirtualMachineMemory` flags | booted (WS / private) | 600 MiB used | freed +15 s | freed +30 s |
+|---|---|---|---|---|
+| `AllowOvercommit` only | 210 / 1026 MiB | 812 / 1026 | 812 / 1026 | 812 / 1026 |
+| + `EnableHotHint` | 206 / 1026 | 804 / 1026 | 804 / 1026 | 804 / 1026 |
+| + `EnableDeferredCommit`, `EnableHotHint`, `EnableColdDiscardHint` | **204 / 204** | 790 / 791 | **240** / 791 | **240 / 240** |
+
+- **With all three flags, HCS commits memory only as the guest touches it, and gives it back
+  within 15–30 s after the guest frees it.** It needs no balloon target and no elevation. This
+  meets the reclaim part of REQ-MEM-001. QEMU-WHPX cannot do this: ADR 0005 found that
+  free-page reporting fails there.
+- `EnableColdDiscardHint` without `EnableDeferredCommit` is rejected:
+  `HcsCreateComputeSystem` fails with `0x80070057`, "failed to create partition".
+- `BalancingEnabled` stays false. Reclaim here comes from guest free page reporting
+  (`CONFIG_PAGE_REPORTING=y`, `hv_balloon`), not from dynamic memory balancing.
 
 This answers open question (b): **yes.** After the account joined Hyper-V Administrators and
 signed in again, a non-elevated process booted the same Alpine VM through HCS. `Alpine Init`
