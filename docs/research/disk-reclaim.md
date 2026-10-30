@@ -121,7 +121,7 @@ From the documentation and source, not measured here:
   (`internal/hcs/schema2/attachment.go`). A code search finds no guest `discard` or `fstrim`
   plumbing.
 
-### Elevated test the maintainer can run (not run here)
+### Elevated test (run on 2026-10-30; results below)
 
 `vhdx-spike hcs` boots the same guest script on HCS, with the VHDX on Hyper-V SCSI (`/dev/sda`).
 It measures the host file at each step, and again 5 s later. `hv_storvsc` and `sd_mod` are not
@@ -162,6 +162,43 @@ The results to record:
 - For the plain VHDX, does the file stay the same size after `fstrimmed`, and stay roughly flat
   after `rewritten` (space reused inside the file)?
 - Do `reread_ok` and `blkdiscard` succeed on the sparse VHDX?
+
+#### Results (elevated, 2026-10-30)
+
+These are the same machine and guest kernel as above. The guest is a 1024 MiB VM with a 2 GiB
+VHDX on HCS SCSI, formatted FAT32. It writes 1 GiB, deletes it, and runs `fstrim`. Then it
+rewrites 1 GiB, re-reads it, and runs `blkdiscard` on the whole device. Host allocation is
+measured at each step and again 5 s later; the +5 s values never differed.
+
+The first elevated run found that `kmod insmod` is not a kmod subcommand, so no module loaded
+and no disk appeared. The guest script now calls kmod through an `insmod` symlink.
+
+The guest sees discard support: `provisioning_mode=unmap`, `discard_granularity=33554432`
+(32 MiB, the VHDX block size), `discard_max_bytes=4294966784`, and
+`write_zeroes_max_bytes=0`. Both runs passed `reread_ok`.
+
+| Host allocation (MiB) | written | deleted | fstrimmed (2 GiB reported) | rewritten | blkdiscarded | after VM exit |
+|---|---|---|---|---|---|---|
+| Plain VHDX | 1060 | 1060 | 1060 | 1060 | 1060 | **4** |
+| Sparse VHDX + `AlwaysAllowSparseFiles` | 1032 | 1032 | 1032 | 1060 | **36** | **4** |
+
+- **Plain VHDX:**
+  - Nothing shrinks while the VM runs. A rewrite after `fstrim` did not grow the file, so
+    trimmed blocks are reused inside it.
+  - The file was back to 4 MiB after the VM exited. But that was after a whole-device
+    `blkdiscard`, so the run does not show whether `fstrim` alone would shrink it on close.
+- **Sparse VHDX:**
+  - A whole-device `blkdiscard` punched NTFS holes **while the VM was running**: 1060 MiB
+    became 36 MiB at once. So vhdmp can return space online, without admin rights beyond the
+    HCS access itself.
+  - FAT32 `fstrim` reported 2 GiB trimmed but freed nothing on the host. The likely cause is
+    alignment: vhdmp unmaps only whole 32 MiB blocks, and FAT32's data area does not start on
+    a 32 MiB boundary. This is not proven. ext4, aligned to 32 MiB and mounted with
+    `discard`, or run through periodic `fstrim`, is the next test.
+- **Still open:**
+  - Run `fstrim` alone, without `blkdiscard`, and then exit, to tell "shrinks on close" apart
+    from "shrinks after a full discard".
+  - Repeat with ext4 and with the WSL corruption scenario (host disk full, WSL issue #41837).
 
 ## Q3: Can a non-admin call `CompactVirtualDisk`?
 

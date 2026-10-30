@@ -65,6 +65,23 @@ Spike step 2, elevated run. This answers (a): **yes, it boots.** Same Alpine ker
   Dynamic memory and balloon settings remain to be explored.
 - In this test, HCS boots **2.4× faster than QEMU-WHPX** (0.78 s vs 1.89 s).
 
+Elevated run with the ADR 0005 prototype guest (initramfs with dockerd 29.9.2), 1024 MB,
+2 vCPUs, no network device:
+
+- The dockerd Unix socket was ready **912 ms** after process start. The guest reached
+  `init-start` at 0.62 s of uptime and the socket at 0.67 s. QEMU-WHPX took 2.2 s for the same
+  image (ADR 0005).
+- dockerd stayed up for the 45 s hold.
+- `vmmem` peaked at a 408 MB working set. About 174 MB of that is the unpacked initramfs in
+  guest RAM (`Shmem`), which ADR 0005's separate system disk is meant to remove.
+  `BalancingEnabled` was again false, so memory reclaim is still untested.
+- With 512 MB the same image failed. The kernel reported `Initramfs unpacking failed: write
+  error`, and dockerd later could not create its bridge.
+
+Disk reclaim on HCS SCSI is recorded in `docs/research/disk-reclaim.md`. A sparse VHDX with
+`AlwaysAllowSparseFiles` returned space online after a whole-device discard. FAT32 `fstrim`
+did not.
+
 QEMU-WHPX baseline, same day. Run non-elevated, so no group membership was needed:
 
 - **Setup:** QEMU 11.1.0, `-accel whpx -m 512 -smp 2`, Alpine `latest-stable` netboot

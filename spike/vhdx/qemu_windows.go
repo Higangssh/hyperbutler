@@ -32,7 +32,7 @@ import (
 // the filesystem, so ext4 would issue the same kind of discards; see the doc for that caveat.
 const guestScript = `#!/bin/sh
 export PATH=/usr/bin:/usr/sbin:/bin:/sbin
-/usr/bin/busybox mkdir -p /proc /sys /dev /mnt /bin /sbin
+/usr/bin/busybox mkdir -p /proc /sys /dev /mnt /bin /sbin /tmp
 /usr/bin/busybox mount -t proc proc /proc
 /usr/bin/busybox mount -t sysfs sys /sys
 /usr/bin/busybox mount -t devtmpfs dev /dev
@@ -40,7 +40,9 @@ export PATH=/usr/bin:/usr/sbin:/bin:/sbin
 m() { echo "@@M $1"; read -r _ack; }
 D=/dev/${WB_DEV:-vda}
 Q=/sys/block/${WB_DEV:-vda}/queue
-for k in $(echo "$WB_MODS" | tr ',' ' '); do kmod insmod /wbmods/$k 2>&1 | sed 's/^/@@E insmod: /'; done
+# kmod has no "insmod" subcommand; it acts as insmod only when argv[0] is insmod.
+[ -n "$WB_MODS" ] && /usr/bin/busybox ln -sf "$(command -v kmod)" /tmp/insmod
+for k in $(echo "$WB_MODS" | tr ',' ' '); do /tmp/insmod /wbmods/$k 2>&1 | sed 's/^/@@E insmod: /'; done
 modprobe virtio_blk 2>&1
 modprobe vfat 2>&1
 modprobe nls_cp437 2>&1
