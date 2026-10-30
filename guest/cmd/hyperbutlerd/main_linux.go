@@ -13,6 +13,10 @@
 //     so free page reporting can give the memory back to the host
 //     (guest/internal/policy.Cache).
 //
+// With -share-port it also keeps the host's bind-mount file system (ADR 0007) mounted
+// at -share-mount: a FUSE relay over AF_VSOCK to the host's share server, redialled with
+// a bounded backoff while the host is not listening. SIGTERM unmounts it and exits.
+//
 // See docs/research/guest-services.md. Cross-compile with GOOS=linux CGO_ENABLED=0.
 //
 //	hyperbutlerd -mount /mnt -dev /dev/sda -file /mnt/.hyperbutler-reserve
@@ -27,6 +31,7 @@ import (
 	"log"
 	"math"
 	"os"
+	"os/signal"
 	"strconv"
 	"sync"
 	"time"
@@ -57,6 +62,9 @@ type options struct {
 	ready                  string
 	statusEvery            time.Duration
 	cgroupRoot, dropCaches string
+	sharePort              uint
+	shareMount             string
+	shareQueues            int
 }
 
 func main() {
@@ -90,11 +98,15 @@ func main() {
 	flag.DurationVar(&o.statusEvery, "status-every", time.Second, "status report period on the control channel")
 	flag.StringVar(&o.cgroupRoot, "cgroup", "/sys/fs/cgroup", "cgroup v2 root")
 	flag.StringVar(&o.dropCaches, "drop-caches", "/proc/sys/vm/drop_caches", "drop_caches path")
+	flag.UintVar(&o.sharePort, "share-port", 0, "AF_VSOCK port of the host's bind-mount share server (0 = no shares)")
+	flag.StringVar(&o.shareMount, "share-mount", "/mnt/hyperbutler", "where the host's shares are mounted")
+	flag.IntVar(&o.shareQueues, "share-queues", 4, "connections to the share server (1 to 8)")
 	flag.IntVar(&o.shutdownPID, "shutdown-pid", 1, "on a host shutdown request, send SIGTERM to this process (the init, which stops dockerd and powers off); 0 disables the feature")
 	flag.Parse()
 	if flag.NArg() != 0 || o.port > math.MaxUint32-1 || (o.file != "") != (o.dev != "") ||
 		((o.file != "" || !o.trimOff) && o.mount == "") || o.interval <= 0 ||
-		(o.cacheMethod != "reclaim" && o.cacheMethod != "drop") {
+		(o.cacheMethod != "reclaim" && o.cacheMethod != "drop") ||
+		o.sharePort > math.MaxUint32-1 || o.shareQueues < 1 || o.shareQueues > 8 || o.shareMount == "" || o.shareMount[0] != '/' {
 		flag.Usage()
 		os.Exit(2)
 	}
@@ -104,6 +116,24 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	var shares *shareRelay
+	if o.sharePort != 0 {
+		// hv_sock and fuse are loaded by the init before hyperbutlerd starts.
+		shares = newShareRelay(uint32(o.sharePort), o.shareMount, o.shareQueues)
+		go shares.run()
+	}
+	// SIGTERM (the init's shutdown, after dockerd has stopped the containers): unmount
+	// the shares cleanly, then exit.
+	sig := make(chan os.Signal, 1)
+	signal.Notify(sig, unix.SIGTERM, unix.SIGINT)
+	go func() {
+		s := <-sig
+		log.Printf("%v: stopping", s)
+		if shares != nil {
+			shares.shutdown()
+		}
+		os.Exit(0)
+	}()
 	log.Fatal(d.run())
 }
 
