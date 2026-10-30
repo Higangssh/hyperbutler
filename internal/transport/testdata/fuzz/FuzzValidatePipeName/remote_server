@@ -1,0 +1,2 @@
+go test fuzz v1
+string("\\\\server\\pipe\\docker_engine")

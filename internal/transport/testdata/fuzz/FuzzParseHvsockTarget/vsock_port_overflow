@@ -1,0 +1,2 @@
+go test fuzz v1
+string("6d3a1f4e-8c2b-4f7a-9e01-2b3c4d5e6f70:vsock:4294967296")

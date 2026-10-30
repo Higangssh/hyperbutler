@@ -7,3 +7,17 @@ Third-party code included in or adapted for this project is listed below with it
 and license.
 
 (none yet)
+
+Third-party Go modules linked into winbox binaries:
+
+- github.com/Microsoft/go-winio v0.6.4
+  https://github.com/microsoft/go-winio
+  MIT License, Copyright (c) 2015 Microsoft.
+  Used by internal/transport for the named-pipe listener and AF_HYPERV (hvsock)
+  dialer. The vsock service GUID template in internal/transport/hvsockaddr.go is the
+  value documented by Microsoft and used by go-winio's VsockServiceID.
+
+- golang.org/x/sys v0.49.0
+  https://cs.opensource.google/go/x/sys
+  BSD 3-Clause License, Copyright 2009 The Go Authors.
+  Used by internal/transport for Windows API calls (security descriptors, pipe I/O).
