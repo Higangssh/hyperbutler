@@ -4,9 +4,11 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
 	"unsafe"
@@ -28,6 +30,9 @@ var (
 	procHcsCloseSystem       = modComputecore.NewProc("HcsCloseComputeSystem")
 	procHcsGrantVmAccess     = modComputecore.NewProc("HcsGrantVmAccess")
 	procHcsRevokeVmAccess    = modComputecore.NewProc("HcsRevokeVmAccess")
+	procHcsResumeSystem      = modComputecore.NewProc("HcsResumeComputeSystem")
+	procHcsGetProperties     = modComputecore.NewProc("HcsGetComputeSystemProperties")
+	procGetDiskFreeSpaceEx   = modKernel32.NewProc("GetDiskFreeSpaceExW")
 	procLocalFree            = modKernel32.NewProc("LocalFree")
 	errAccessDenied          = uint32(0x80070005) // E_ACCESSDENIED
 	errHcsAccessDenied       = uint32(0x8037011B) // HCS_E_ACCESS_DENIED, seen on this machine
@@ -69,6 +74,79 @@ func hcsCall(name string, timeout time.Duration, fn func(op uintptr) uintptr) (s
 		return result, fmt.Errorf("%s: HRESULT 0x%08X: %s", name, uint32(hr), result)
 	}
 	return result, nil
+}
+
+// activityConn records when the guest last printed anything, for watchStall.
+type activityConn struct {
+	f    *os.File
+	last atomic.Int64
+}
+
+func (a *activityConn) touch()                      { a.last.Store(time.Now().UnixNano()) }
+func (a *activityConn) Write(p []byte) (int, error) { return a.f.Write(p) }
+func (a *activityConn) Read(p []byte) (int, error) {
+	n, err := a.f.Read(p)
+	if n > 0 {
+		a.touch()
+	}
+	return n, err
+}
+
+// watchStall handles the host-disk-full test. When the guest stays silent for `stall`, it
+// prints the VM state and the host free space, deletes `reserve` to free host space, and
+// tries HcsResumeComputeSystem in case HCS paused the VM. It does this once.
+func watchStall(a *activityConn, system uintptr, stall time.Duration, reserve, vhdx string, start time.Time) {
+	for {
+		time.Sleep(2 * time.Second)
+		if time.Since(time.Unix(0, a.last.Load())) < stall {
+			continue
+		}
+		fmt.Printf("  [%6.1fs] guest silent for %v\n", time.Since(start).Seconds(), stall)
+		printState(system)
+		report("at stall", vhdx)
+		fmt.Println("  host free bytes:", freeBytes(filepath.Dir(vhdx)))
+		if err := os.Remove(reserve); err != nil {
+			fmt.Println("  remove reserve:", err)
+		} else {
+			fmt.Println("  removed reserve file; host free bytes now:", freeBytes(filepath.Dir(vhdx)))
+		}
+		_, err := hcsCall("HcsResumeComputeSystem", 30*time.Second, func(op uintptr) uintptr {
+			hr, _, _ := procHcsResumeSystem.Call(system, op, 0)
+			return hr
+		})
+		fmt.Println("  HcsResumeComputeSystem:", errString(err))
+		printState(system)
+		a.touch()
+		return
+	}
+}
+
+func printState(system uintptr) {
+	props, err := hcsCall("HcsGetComputeSystemProperties", 10*time.Second, func(op uintptr) uintptr {
+		hr, _, _ := procHcsGetProperties.Call(system, op, uintptr(unsafe.Pointer(u16(`{"PropertyTypes":[]}`))))
+		return hr
+	})
+	if err != nil {
+		fmt.Println("  state:", err)
+		return
+	}
+	var p struct{ State, Stopped any }
+	_ = json.Unmarshal([]byte(props), &p)
+	fmt.Printf("  state: %v\n", p.State)
+}
+
+func freeBytes(dir string) uint64 {
+	var free uint64
+	p, _ := syscall.UTF16PtrFromString(dir)
+	procGetDiskFreeSpaceEx.Call(uintptr(unsafe.Pointer(p)), uintptr(unsafe.Pointer(&free)), 0, 0)
+	return free
+}
+
+func errString(err error) string {
+	if err == nil {
+		return "ok"
+	}
+	return err.Error()
 }
 
 func u16(s string) *uint16 {
@@ -132,6 +210,9 @@ func runHCS(args []string) error {
 	extraDir := fs.String("extra", "", "dir whose files are packed flat under /wbextra (mke2fs and its libraries for -mode ext4)")
 	fsync := fs.Bool("fsync", false, "guest writes with dd conv=fsync, so data is flushed to the device before delete and fstrim")
 	mode := fs.String("mode", "", `guest test: "" (FAT32 write/delete/fstrim/blkdiscard), "trimonly" (same, no blkdiscard), "align" (raw device, unaligned vs 32 MiB-aligned discards), or "ext4" (many small files on ext4; needs -extra and the ext4 modules)`)
+	keep := fs.Bool("keep", false, "reuse the existing VHDX in -dir instead of creating a fresh one (for -mode check)")
+	reserve := fs.String("reserve", "", "host-full test: file to delete if the guest stalls, freeing host space")
+	stall := fs.Duration("stall", 30*time.Second, "host-full test: guest silence that counts as a stall")
 	fs.Parse(args)
 
 	var mods, names []string
@@ -149,12 +230,17 @@ func runHCS(args []string) error {
 	if *sparse {
 		name = "hcs-sparse.vhdx"
 	}
-	vhdx := fresh(name)
-	vhdxBlockSize = uint32(*block)
-	if err := createVHDX(vhdx, uint64(*diskSize), createFlagNone); err != nil {
-		return err
+	var vhdx string
+	if *keep {
+		vhdx = filepath.Join(*dir, name)
+	} else {
+		vhdx = fresh(name)
+		vhdxBlockSize = uint32(*block)
+		if err := createVHDX(vhdx, uint64(*diskSize), createFlagNone); err != nil {
+			return err
+		}
 	}
-	if *sparse {
+	if *sparse && !*keep {
 		f, err := os.OpenFile(vhdx, os.O_RDWR, 0)
 		if err != nil {
 			return err
@@ -248,7 +334,14 @@ func runHCS(args []string) error {
 	if *mode == "mem" {
 		before = printVmmem
 	}
-	done, err := driveGuest(console, vhdx, start, *settle, before)
+	var conn io.ReadWriter = console
+	if *reserve != "" {
+		w := &activityConn{f: console}
+		w.touch()
+		conn = w
+		go watchStall(w, system, *stall, *reserve, vhdx, start)
+	}
+	done, err := driveGuest(conn, vhdx, start, *settle, before)
 	if err != nil {
 		return err
 	}

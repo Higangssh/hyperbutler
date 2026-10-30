@@ -86,6 +86,50 @@ if [ "$WB_MODE" = mem ]; then
 	echo "@@DONE"
 	poweroff -f
 fi
+# WB_MODE=full: host-disk-full test. ext4, then write 256 KiB files until a write fails or
+# WB_MB*4 files exist. The host frees space and resumes the VM if it stalls. Then delete half,
+# fstrim, and unmount. WB_MODE=check (same disk, no mkfs) runs e2fsck -fn and re-reads every
+# file, to find corruption after the fill.
+if [ "$WB_MODE" = full ] || [ "$WB_MODE" = check ]; then
+	export LD_LIBRARY_PATH=/wbextra
+	if [ "$WB_MODE" = full ]; then
+		/wbextra/mke2fs -q -F -t ext4 -E nodiscard,lazy_itable_init=0,lazy_journal_init=0 $D 2>&1 | sed 's/^/@@E mke2fs: /'
+		mount -t ext4 $D /mnt || echo "@@E mount"
+		mkdir /mnt/d; sync
+		m formatted
+		i=0; fail=0
+		while [ $i -lt $((WB_MB * 4)) ]; do
+			if ! head -c 262144 /dev/urandom >/mnt/d/f$i 2>/dev/null; then fail=1; break; fi
+			[ $((i % 400)) -eq 0 ] && echo "@@I progress: $i files"
+			i=$((i + 1))
+		done
+		echo "@@I wrote $i files, write_failed=$fail"
+		sync; echo "@@I sync exit=$?"
+		dmesg | grep -iE 'error|I/O|EXT4-fs|sd ' | tail -n 8 | sed 's/^/@@I dmesg: /'
+		echo "@@I df: $(df -k /mnt | tail -n 1)"
+		m filled
+		j=0; while [ $j -lt $i ]; do [ $(((j / 8) % 2)) -eq 0 ] && rm -f /mnt/d/f$j; j=$((j + 1)); done
+		sync
+		echo "@@I fstrim: $(fstrim -v /mnt 2>&1)"
+		m half-deleted-trimmed
+		umount /mnt; echo "@@I umount exit=$?"
+	else
+		echo "@@I e2fsck: $(/wbextra/e2fsck -fn $D >/tmp/fsck.log 2>&1; echo exit=$?)"
+		tail -n 6 /tmp/fsck.log | sed 's/^/@@I fsck: /'
+		mount -t ext4 -o ro $D /mnt || echo "@@E mount"
+		n=0; bad=0
+		for f in /mnt/d/*; do n=$((n + 1)); cat "$f" >/dev/null 2>&1 || bad=$((bad + 1)); done
+		echo "@@I reread files=$n read_errors=$bad"
+		dmesg | grep -iE 'error|EXT4-fs' | tail -n 5 | sed 's/^/@@I dmesg: /'
+		umount /mnt
+		# The first e2fsck -n runs before journal replay; mounting replays it. Check again.
+		echo "@@I e2fsck after replay: $(/wbextra/e2fsck -fn $D >/tmp/fsck2.log 2>&1; echo exit=$?)"
+		grep -vE '^$' /tmp/fsck2.log | tail -n 8 | sed 's/^/@@I fsck2: /'
+		m checked
+	fi
+	echo "@@DONE"
+	poweroff -f
+fi
 # WB_MODE=ext4: ext4 (mke2fs from /wbextra), WB_MB*4 files of 256 KiB, delete, fstrim twice,
 # then a second write/delete churn and one more fstrim. Closer to image layers than FAT32.
 if [ "$WB_MODE" = ext4 ]; then

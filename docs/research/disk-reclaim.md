@@ -281,7 +281,46 @@ build, and the block size was confirmed in the VHDX metadata and in the guest's
 - So winbox creates its data VHDX with `BlockSizeInBytes = 1 MiB`. Holes under 1 MiB are
   still not returned. The cost is bounded by about 1 MiB per fragment.
 
+#### Host disk full (non-elevated, 2026-10-30)
+
+**Setup:**
+- A 3 GiB NTFS test volume `T:`. It is a VHDX created with `diskpart` in one approved
+  elevated step and stored at `C:\winbox-test\fulltest.vhdx`.
+- The guest disk is a 4 GiB sparse VHDX on `T:` with 1 MiB blocks.
+- A 400 MiB reserve file left about 2.6 GiB free.
+- `-mode full` formats ext4 and writes 256 KiB files until a write fails.
+- `-mode check` boots the same VHDX, runs `e2fsck -fn`, mounts read-only, re-reads every file,
+  and runs `e2fsck -fn` again after journal replay.
+
+**What happened:**
+- **HCS did not pause the VM.** When the host volume filled at 2643 MiB allocated, after
+  11,217 files, the guest got **I/O errors (`EIO`), not `ENOSPC`**.
+- ext4 logged `failed to convert unwritten extents ... potential data loss`, `This should not
+  happen!! Data will be lost` and `Detected aborted journal`, then went read-only. `fstrim`
+  failed with an I/O error.
+- **Rebooted with the host still full:** mounting failed, because journal replay needs to
+  write.
+- **Rebooted after freeing 400 MiB on the host:** journal recovery completed. `e2fsck -fn`
+  then reported **clean** (exit 0). **10,516 files read back with 0 errors.** About 700 files
+  that were being written when space ran out were lost.
+
+**Verdict for REQ-DISK-004:**
+- The VHDX container and the file system survived and recovered without reformatting.
+  That is unlike WSL issue #41837.
+- But the guest saw `EIO` instead of `ENOSPC`, and in-flight data was lost. So REQ-DISK-004
+  is **not met by the backend alone**. The same would happen with any backend whose image
+  grows on demand, including the NBD design.
+
+**Needed:** a free-space guard in winbox.
+- The host watches the free space of the volume that holds the VHDX.
+- The guest agent keeps an `fallocate`d reservation file on ext4, so that guest free space
+  stays at or below host free space minus a margin. `fallocate` reserves guest blocks
+  without writing, so the sparse VHDX does not grow.
+- The guest then hits `ENOSPC` before the host fills up.
+- As a last resort, winbox pauses the VM before the host fills (`HcsPauseComputeSystem`).
+
 - **Still open:**
+  - Build and test the free-space guard against `bench/disk-full`.
   - Repeat the WSL corruption scenario: host disk full while a sparse VHDX grows (WSL issue
     #41837).
 

@@ -1,7 +1,8 @@
 # 0002. Primary VM backend
 
-- Status: proposed. The decision was drafted and reviewed on 2026-10-30. It becomes accepted
-  once the host-disk-full test in finding 3 passes.
+- Status: accepted (2026-10-30). The adversarial review findings are resolved below. The
+  host-disk-full test showed that winbox needs a free-space guard, which the backend choice
+  does not change.
 - Date: 2026-10-29
 - Requirements: REQ-START-001, REQ-MEM-001, REQ-MEM-002, REQ-DISK-001, REQ-DISK-002,
   REQ-DISK-004, REQ-API-001, REQ-PLAT-001, REQ-PLAT-003
@@ -192,13 +193,14 @@ The adversarial review of the drafted decision on 2026-10-30 raised nine finding
    - The REQ-MEM-001 vs REQ-MEM-002 mix-up is fixed: reclaim is REQ-MEM-002.
    - The page-cache gap is recorded.
    - Still open: a multi-GB guest and the REQ-MEM-002 bench.
-3. **High. The sparse-VHDX fallback is unverified.** **Accepted as a gate.**
+3. **High. The sparse-VHDX fallback is unverified.** **Tested.**
    - The plain-VHDX fallback in the first draft was wrong: plain VHDX returned nothing with
-     ext4.
-   - Before 0.1, a host-disk-full test on sparse VHDX (REQ-DISK-004) must pass. Until then
-     this ADR stays proposed.
-   - If the test fails, the fallback is a winbox-served block device, the NBD design proven
-     under QEMU, re-evaluated for HCS.
+     ext4, so it was dropped.
+   - The host-disk-full test was run. The sparse VHDX and ext4 recovered cleanly once space
+     was freed.
+   - The guest saw `EIO` instead of `ENOSPC`, and in-flight data was lost. That is a
+     requirement for a free-space guard, which any growable-image backend needs. It is not a
+     reason to change backend.
 4. **Medium. Wrong memory counter.** **Fixed:** the private working set is reported from now
    on. The idle bench is still to be run.
 5. **Medium. Requirement and ADR conflicts.** **Fixed.** REQ-DISK-002 and REQ-PLAT-003 are
@@ -216,11 +218,16 @@ The adversarial review of the drafted decision on 2026-10-30 raised nine finding
 
 - **Elevation:** winbox needs the ADR 0004 broker, or the user's own Hyper-V Administrators
   membership, before it can start a VM. There is no zero-setup, no-admin path in 1.0.
-- **Sparse VHDX risk:** WSL marks sparse VHDX as experimental and has an open corruption report
-  when the host disk fills up (WSL issue #41837). Before 0.1, winbox must pass a host-full
-  test on sparse VHDX (REQ-DISK-004). If it fails, the fallback is a winbox-served block
-  device: the NBD design that worked under QEMU, re-evaluated for HCS. A plain VHDX is not a
-  fallback, because it returned nothing with ext4.
+- **Host disk full:** this was tested on a 3 GiB test volume (`docs/research/disk-reclaim.md`).
+  - HCS does not pause the VM. The guest gets `EIO`, and ext4 aborts its journal and loses
+    in-flight writes (about 700 of 11,217 files).
+  - After host space was freed, journal replay succeeded, `e2fsck` was clean, and all
+    10,516 remaining files read back. So the sparse VHDX did not corrupt, unlike WSL issue
+    #41837.
+  - REQ-DISK-004 asks for `ENOSPC` and no lost data, so winbox needs a **free-space guard**:
+    a guest-side `fallocate` reservation that tracks host free space, plus pausing the VM
+    as a last resort.
+  - This is required for any growable image, so it does not change the backend choice.
 - **Undocumented settings:** HCS schema fields such as `AlwaysAllowSparseFiles` and the memory
   hint flags are not documented by Microsoft for third-party use. They were found in hcsshim's
   generated schema. A Windows update could change them, so CI on real Windows hardware must
