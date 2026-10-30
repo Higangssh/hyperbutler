@@ -130,6 +130,90 @@ if [ "$WB_MODE" = full ] || [ "$WB_MODE" = check ]; then
 	echo "@@DONE"
 	poweroff -f
 fi
+# WB_MODE=guard: free-space guard test (guard_windows.go). ext4; with WB_GUARD, start
+# spaceguard on /dev/ttyS1 and wait until it has applied the host's first budget. Then write
+# 256 KiB files until writes keep failing, classify each failure (ENOSPC, EIO, other), and
+# count ext4 errors in dmesg. Failed partial files are removed: their writer was told. Then
+# delete half, fstrim, and print a manifest (file count + SHA-1 over all files, read after
+# drop_caches). WB_MODE=guardcheck boots the same disk and recomputes it after e2fsck.
+if [ "$WB_MODE" = guard ] || [ "$WB_MODE" = guardcheck ]; then
+	export LD_LIBRARY_PATH=/wbextra
+	errs='EXT4-fs error|EXT4-fs warning|I/O error|aborted journal|Data will be lost|potential data loss|filesystem read-only|Buffer I/O'
+	manifest() { sync; echo 3 >/proc/sys/vm/drop_caches; echo "@@I manifest: files=$(ls /mnt/d | wc -l) sha1=$(cat /mnt/d/* 2>/dev/null | sha1sum | cut -c1-40)"; }
+	if [ "$WB_MODE" = guard ]; then
+		/wbextra/mke2fs -q -F -t ext4 -E nodiscard,lazy_itable_init=0,lazy_journal_init=0 $D 2>&1 | sed 's/^/@@E mke2fs: /'
+		mount -t ext4 $D /mnt || echo "@@E mount"
+		mkdir /mnt/d; sync
+		m formatted
+		if [ -n "$WB_GUARD" ]; then
+			echo "@@I ttys: $(ls /dev/ttyS* | tr '\n' ' ')"
+			(/wbextra/spaceguard -dev $D -file /mnt/.winbox-reserve -ctl /dev/ttyS1 -ready /tmp/sg.ready -hysteresis "$WB_HYST" 2>&1 | sed 's/^/@@I guard: /') &
+			i=0; while [ ! -e /tmp/sg.ready ] && [ $i -lt 150 ]; do sleep 0.1; i=$((i + 1)); done
+			[ -e /tmp/sg.ready ] && echo "@@I guard ready" || echo "@@E guard not ready"
+			sleep 1
+		fi
+		# WB_ZERO=N: a file of N MiB written as zeros. ext4 counts it as used, but vhdmp does
+		# not allocate zero-written blocks, so overwriting it later grows the VHDX without
+		# touching guest free space.
+		if [ -n "$WB_ZERO" ]; then
+			echo "@@I zero file: $(dd if=/dev/zero of=/mnt/d/zero bs=1M count=$WB_ZERO conv=fsync 2>&1 | tail -n 1)"
+		fi
+		echo "@@I df: $(df -k /mnt | tail -n 1)"
+		m start-fill
+		i=0; fails=0; enospc=0; eio=0; other=0; first=""
+		while [ $i -lt $((WB_MB * 4)) ]; do
+			# dd, not head: busybox head prints "I/O error" for every write error, whatever
+			# the errno; dd prints strerror(errno).
+			if dd if=/dev/urandom of=/mnt/d/f$i bs=65536 count=4 2>/tmp/err && [ "$(wc -c </mnt/d/f$i)" -eq 262144 ]; then
+				i=$((i + 1)); fails=0
+				[ $((i % 200)) -eq 0 ] && echo "@@I progress: $i files"
+				continue
+			fi
+			e=$(grep -v records /tmp/err); [ -z "$e" ] && e="short file"; rm -f /mnt/d/f$i
+			[ -z "$first" ] && first="f$i: $e"
+			case "$e" in *"No space"*) enospc=$((enospc + 1)) ;; *"I/O error"*) eio=$((eio + 1)) ;; *) other=$((other + 1)); echo "@@E write: $e" ;; esac
+			fails=$((fails + 1)); [ $fails -ge 10 ] && break
+			sleep 0.5
+		done
+		echo "@@I wrote $i files; failed writes: enospc=$enospc eio=$eio other=$other; first failure: $first"
+		sync; echo "@@I sync exit=$?"
+		if [ -n "$WB_ZERO" ]; then
+			m before-overwrite
+			echo "@@I overwrite zero file: $(dd if=/dev/urandom of=/mnt/d/zero bs=1M count=$WB_ZERO conv=notrunc,fsync 2>&1 | grep -v records)"
+			sync
+			m overwritten
+		fi
+		echo "@@I probe:$( (echo probe >/mnt/d/probe && sync /mnt/d/probe) 2>&1 || true)"; rm -f /mnt/d/probe
+		echo "@@I df: $(df -k /mnt | tail -n 1)"
+		echo "@@I reserve:$(ls -ls /mnt/.winbox-reserve 2>/dev/null | tr -s ' ')"
+		echo "@@I dmesg_errors=$(dmesg | grep -ciE "$errs")"
+		dmesg | grep -iE "$errs" | tail -n 6 | sed 's/^/@@I dmesg: /'
+		m filled
+		j=0; while [ $j -lt $i ]; do [ $(((j / 8) % 2)) -eq 0 ] && rm -f /mnt/d/f$j; j=$((j + 1)); done
+		sync
+		echo "@@I fstrim: $(fstrim -v /mnt 2>&1)"
+		sleep 2
+		m half-deleted-trimmed
+		manifest
+		echo "@@I dmesg_errors=$(dmesg | grep -ciE "$errs")"
+		killall spaceguard 2>/dev/null; sleep 1
+		echo "@@I umount: $(umount /mnt 2>&1; echo exit=$?)"
+	else
+		echo "@@I e2fsck: $(/wbextra/e2fsck -fn $D >/tmp/fsck.log 2>&1; echo exit=$?)"
+		grep -vE '^$' /tmp/fsck.log | tail -n 4 | sed 's/^/@@I fsck: /'
+		mount -t ext4 -o ro $D /mnt || echo "@@E mount"
+		n=0; bad=0; short=0
+		for f in /mnt/d/*; do n=$((n + 1)); cat "$f" >/dev/null 2>&1 || bad=$((bad + 1)); [ "$(wc -c <"$f")" -eq 262144 ] || short=$((short + 1)); done
+		echo "@@I reread files=$n read_errors=$bad wrong_size=$short"
+		manifest
+		echo "@@I dmesg_errors=$(dmesg | grep -ciE "$errs")"
+		umount /mnt
+		echo "@@I e2fsck after mount: $(/wbextra/e2fsck -fn $D >/tmp/fsck2.log 2>&1; echo exit=$?)"
+		m checked
+	fi
+	echo "@@DONE"
+	poweroff -f
+fi
 # WB_MODE=ext4: ext4 (mke2fs from /wbextra), WB_MB*4 files of 256 KiB, delete, fstrim twice,
 # then a second write/delete churn and one more fstrim. Closer to image layers than FAT32.
 if [ "$WB_MODE" = ext4 ]; then
@@ -427,6 +511,13 @@ func buildInitrdExtra(alpine string, modules []string, extraDir string) (string,
 				return "", err
 			}
 			cw.file("wbextra/"+f.Name(), 0o100755, data)
+		}
+		for _, p := range initrdExtraFiles {
+			data, err := os.ReadFile(p)
+			if err != nil {
+				return "", err
+			}
+			cw.file("wbextra/"+filepath.Base(p), 0o100755, data)
 		}
 	}
 	cw.trailer()
