@@ -326,8 +326,15 @@ func TestReadOnlyShare(t *testing.T) {
 	if en.attr.Mode&0o222 != 0 {
 		t.Fatalf("read-only share shows write bits: %o", en.attr.Mode)
 	}
-	if e, _ := c.open(en.node, oWRONLY); e != int(EROFS) {
+	// Without OPEN the refusal comes with the first write (openfile.go).
+	if e, fh := c.open(en.node, oWRONLY); e != 0 || c.write(en.node, fh, 0, []byte("y")) != int(EROFS) {
 		t.Fatalf("open for write: %d", e)
+	}
+	if e, _ := c.open(en.node, oWRONLY|oTRUNC); e != int(EROFS) {
+		t.Fatalf("open with O_TRUNC: %d", e)
+	}
+	if b, _ := os.ReadFile(filepath.Join(dir, "f")); string(b) != "x" {
+		t.Fatalf("read-only share changed: %q", b)
 	}
 	if e, _, _ := c.create(root, "n", oWRONLY|oCREAT, 0o644); e != int(EROFS) {
 		t.Fatalf("create: %d", e)
@@ -337,7 +344,7 @@ func TestReadOnlyShare(t *testing.T) {
 func TestHandleLimit(t *testing.T) {
 	dir := testDir(t)
 	os.WriteFile(filepath.Join(dir, "f"), []byte("x"), 0o644)
-	_, c, root := newTestServer(t, dir, Options{MaxHandles: 4}, nil)
+	_, c, root := newTestServer(t, dir, Options{MaxHandles: 4, RealOpen: true}, nil)
 	en := c.mustLookup(root, "f")
 	for i := 0; i < 4; i++ {
 		if e, _ := c.open(en.node, oRDONLY); e != 0 {

@@ -37,6 +37,15 @@ type Options struct {
 	Trace func(opcode uint32, d time.Duration)
 	// NoWatch turns off host change notifications (for measuring without them).
 	NoWatch bool
+	// RealOpen answers OPEN with a host handle per guest open, as before
+	// FUSE_NO_OPEN_SUPPORT was used (openfile.go): a round trip per open(2). NoCache and
+	// Writeback imply it.
+	RealOpen bool
+	// FileIdle is how long a host file opened for a guest READ or WRITE without a
+	// handle stays open after its last use [1 s]; MaxFiles bounds how many are kept
+	// [256] (openfile.go).
+	FileIdle time.Duration
+	MaxFiles int
 	// Logger receives protocol errors [discarded].
 	Logger *slog.Logger
 }
@@ -63,6 +72,12 @@ func (o *Options) defaults() {
 	}
 	if o.MaxNodes <= 0 {
 		o.MaxNodes = 1 << 20
+	}
+	if o.FileIdle <= 0 {
+		o.FileIdle = time.Second
+	}
+	if o.MaxFiles <= 0 {
+		o.MaxFiles = 256
 	}
 	if o.Logger == nil {
 		o.Logger = slog.New(slog.DiscardHandler)
@@ -99,14 +114,16 @@ type node struct {
 	dir     bool
 	orphan  bool      // unlinked or replaced; its path is gone
 	touched time.Time // last change made by the guest itself (inject.go)
+	born    time.Time // made by a reply the guest kernel may not have applied yet (inject.go)
 	// inner is the last change the guest made inside this directory: the host then
 	// reports the directory itself as modified (its times changed), which is an echo
 	// too (inject.go).
 	inner time.Time
 	// list is a directory's listing from its last READDIR at offset 0, for the
 	// READDIRs that continue it (nodeListing). Counted in Server.dirEntries.
-	list   []DirEntry
-	listed bool
+	list    []DirEntry
+	listed  bool
+	listSeq uint64 // host change sequence before list was read (racedLocked)
 }
 
 type handle struct {
@@ -179,6 +196,19 @@ type Server struct {
 	recent   map[nodeKey]time.Time // names the guest itself changed (echo suppression)
 	watchers map[string]Closer
 
+	// Host files for guest opens without handles (openfile.go), by node.
+	files    map[uint64]*nodeFile
+	pins     int // entries of files that are pinned
+	sweep    *time.Timer
+	sweepGen uint64
+	noOpen   atomic.Bool // this session's kernel sends no OPEN for files
+
+	// Host changes by name, so a LOOKUP or listing that read the host before a change
+	// was reported does not hand the guest attributes to cache (see raced).
+	hostSeq      uint64
+	changed      map[nodeKey]change
+	changedFloor uint64 // changes up to this sequence were forgotten
+
 	// The live connection, for notifications.
 	cmu        sync.Mutex
 	conn       *conn
@@ -200,12 +230,15 @@ func NewServer(opt Options) *Server {
 		recent:   map[nodeKey]time.Time{},
 		pending:  map[nodeKey]*injection{},
 		watchers: map[string]Closer{},
+		files:    map[uint64]*nodeFile{},
+		changed:  map[nodeKey]change{},
 	}
 	s.resetNodes()
 	return s
 }
 
 func (s *Server) resetNodes() {
+	s.dropAllFilesLocked(nil, true)
 	s.nodes = map[uint64]*node{rootNode: {id: rootNode, dir: true, nlookup: 1, ino: rootNode}}
 	s.index = map[nodeKey]uint64{}
 	for _, h := range s.handles {
@@ -264,6 +297,7 @@ func (s *Server) RemoveShare(name string) error {
 	sh, ok := s.shares[name]
 	if ok {
 		delete(s.shares, name)
+		s.dropAllFilesLocked(sh, true)
 		for _, n := range s.nodes {
 			if n.share == sh {
 				n.orphan = true
@@ -707,7 +741,7 @@ func (s *Server) dispatch(r *request) []byte {
 			// FuzzDispatch).
 			return fail(EINVAL)
 		}
-		f, done, err := s.file(in.Fh)
+		f, done, err := s.fileFor(h.NodeID, in.Fh, false)
 		if err != nil {
 			return fail(err)
 		}
@@ -729,7 +763,7 @@ func (s *Server) dispatch(r *request) []byte {
 		if int64(in.Offset) < 0 {
 			return fail(EFBIG)
 		}
-		f, done, err := s.writableFile(in.Fh)
+		f, done, err := s.fileFor(h.NodeID, in.Fh, true)
 		if err != nil {
 			return fail(err)
 		}
@@ -769,14 +803,31 @@ func (s *Server) dispatch(r *request) []byte {
 		s.release(fh)
 		return newReply(u, 0).finish()
 	case opFlush:
+		if s.noOpen.Load() {
+			// Without OPEN, files have no FOPEN_NOFLUSH, so every close(2) would wait
+			// for a FLUSH; ENOSYS turns them off for the connection.
+			return errReply(u, int(ENOSYS))
+		}
 		return newReply(u, 0).finish()
 	case opFsync:
 		fh, err := parseFh(r.body)
 		if err != nil {
 			return fail(EINVAL)
 		}
-		f, done, err := s.file(fh)
+		var f File
+		var done func()
+		if fh == 0 && s.noOpen.Load() {
+			f, done, err = s.nodeFileGet(h.NodeID, true)
+		} else {
+			f, done, err = s.file(fh)
+		}
 		if err != nil {
+			if fh == 0 && s.noOpen.Load() {
+				// No host handle can write the file (read-only, removed, held
+				// exclusively): nothing written through this server can be waiting
+				// in one. fsync of a read-only descriptor succeeds on Linux too.
+				return newReply(u, 0).finish()
+			}
 			return fail(err)
 		}
 		defer done()
@@ -840,6 +891,13 @@ func (s *Server) doInit(r *request) []byte {
 	if s.opt.NoCache {
 		want &^= initCacheSymlinks
 	}
+	// No OPEN round trips (openfile.go). O_TRUNC then has to come as SETATTR: with
+	// FUSE_ATOMIC_O_TRUNC the kernel would leave truncating to an OPEN it never sends.
+	noOpen := !s.opt.RealOpen && !s.opt.NoCache && !s.opt.Writeback && in.Flags&initNoOpenSupport != 0
+	if noOpen {
+		want &^= initAtomicOTrunc
+	}
+	s.noOpen.Store(noOpen)
 	w := newReply(r.h.Unique, 0)
 	w.u32(kernelMajor)
 	w.u32(min(in.Minor, kernelMinor))
@@ -907,11 +965,14 @@ func (s *Server) childLocked(parent uint64, name string, sh *Share, a *Attr) (*n
 		// Replaced on the host by a different file: the old node becomes an orphan.
 		n.orphan = true
 		delete(s.index, k)
+		if e := s.files[id]; e != nil && !e.pinned {
+			s.dropFileLocked(e)
+		}
 	}
 	if len(s.nodes) >= s.opt.MaxNodes {
 		return nil, ENFILE
 	}
-	n := &node{id: s.nextNode, parent: parent, name: name, share: sh, nlookup: 1, ino: a.Ino, dir: a.isDir()}
+	n := &node{id: s.nextNode, parent: parent, name: name, share: sh, nlookup: 1, ino: a.Ino, dir: a.isDir(), born: time.Now()}
 	s.nextNode++
 	s.nodes[n.id] = n
 	s.index[k] = n.id
@@ -928,6 +989,7 @@ func (s *Server) forget(id, n uint64) {
 	}
 	if n >= nd.nlookup {
 		s.dropListLocked(nd)
+		s.dropNodeFileLocked(id) // also ends a pin: no process has the file open
 		delete(s.nodes, id)
 		if !nd.orphan && s.index[nodeKey{nd.parent, nd.name}] == id {
 			delete(s.index, nodeKey{nd.parent, nd.name})
@@ -1047,6 +1109,7 @@ func (s *Server) lookupBody(h *inHeader, name string) []byte {
 		err = ENOTDIR
 	}
 	isShareRoot := err == nil && len(parent) == 0
+	since := s.hostSeq
 	s.mu.Unlock()
 	if err != nil {
 		return errReply(u, toErrno(err))
@@ -1054,17 +1117,23 @@ func (s *Server) lookupBody(h *inHeader, name string) []byte {
 	if !allowed(sh, isShareRoot, name) {
 		return errReply(u, int(ENOENT))
 	}
+	k := nodeKey{h.NodeID, name}
 	path := append(parent, name)
 	a, err := sh.FS.Lstat(path)
 	if err != nil {
 		if errors.Is(err, ENOENT) && s.opt.NegTTL > 0 {
 			s.mu.Lock()
-			if len(s.negative) < s.opt.MaxNodes {
-				s.negative[nodeKey{h.NodeID, name}] = time.Now()
+			raced := s.racedLocked(k, since)
+			if len(s.negative) < s.opt.MaxNodes && !raced {
+				s.negative[k] = time.Now()
 			}
 			s.mu.Unlock()
+			ttl := s.ttl(s.opt.NegTTL)
+			if raced {
+				ttl = 0 // created on the host meanwhile
+			}
 			w := newReply(u, 0)
-			w.entryOut(0, 0, s.ttl(s.opt.NegTTL), 0, &Attr{})
+			w.entryOut(0, 0, ttl, 0, &Attr{})
 			return w.finish()
 		}
 		return errReply(u, toErrno(err))
@@ -1075,9 +1144,16 @@ func (s *Server) lookupBody(h *inHeader, name string) []byte {
 	s.fixAttr(&a)
 	s.mu.Lock()
 	n, err := s.childLocked(h.NodeID, name, sh, &a)
+	raced := s.racedLocked(k, since)
 	s.mu.Unlock()
 	if err != nil {
 		return errReply(u, toErrno(err))
+	}
+	if raced {
+		// Changed on the host while it was read: let the guest ask again.
+		w := newReply(u, 0)
+		w.entryOut(n.id, 0, 0, 0, &a)
+		return w.finish()
 	}
 	return s.entryReply(u, n, &a)
 }
@@ -1147,8 +1223,23 @@ func (s *Server) doRemove(h *inHeader, name string, dir bool) []byte {
 		return errReply(u, toErrno(err))
 	}
 	s.markRecent(h.NodeID, name)
+	k := nodeKey{h.NodeID, name}
+	var pin File
+	var pinWrite bool
 	if dir {
 		err = sh.FS.Rmdir(path)
+	} else if may, cached := s.mayBeOpen(k); may && !cached {
+		// Processes may still have it open, and the kernel no longer tells (no
+		// RELEASE): keep a handle so they can go on reading and writing it.
+		if ku, ok := sh.FS.(keepUnlinker); ok {
+			pin, pinWrite, err = ku.UnlinkKeep(path)
+		} else {
+			pin, pinWrite = openPin(sh, path)
+			if err = sh.FS.Unlink(path); err != nil && pin != nil {
+				pin.Close()
+				pin = nil
+			}
+		}
 	} else {
 		err = sh.FS.Unlink(path)
 	}
@@ -1156,10 +1247,16 @@ func (s *Server) doRemove(h *inHeader, name string, dir bool) []byte {
 		return errReply(u, toErrno(err))
 	}
 	s.mu.Lock()
-	k := nodeKey{h.NodeID, name}
 	if id, ok := s.index[k]; ok {
 		s.nodes[id].orphan = true
 		delete(s.index, k)
+		if !dir {
+			s.pinLocked(id, pin, pinWrite)
+			pin = nil
+		}
+	}
+	if pin != nil {
+		pin.Close()
 	}
 	s.markRecentLocked(h.NodeID, name)
 	s.mu.Unlock()
@@ -1187,10 +1284,29 @@ func (s *Server) doRename(h *inHeader, in renameIn) []byte {
 	}
 	s.markRecent(h.NodeID, in.OldName)
 	s.markRecent(in.NewDir, in.NewName)
+	nk := nodeKey{in.NewDir, in.NewName}
+	var pin File
+	var pinWrite bool
+	if may, cached := s.mayBeOpen(nk); may && !cached && in.Flags&renameNoreplace == 0 && nk != (nodeKey{h.NodeID, in.OldName}) {
+		// The file this replaces may still be open (see doRemove).
+		pin, pinWrite = openPin(sh, newPath)
+	}
 	if err := sh.FS.Rename(oldPath, newPath, in.Flags&renameNoreplace != 0); err != nil {
+		if pin != nil {
+			pin.Close()
+		}
 		return errReply(u, toErrno(err))
 	}
 	s.mu.Lock()
+	if id, ok := s.index[nk]; ok && pin != nil {
+		s.pinLocked(id, pin, pinWrite)
+		pin = nil
+	} else if ok && nk != (nodeKey{h.NodeID, in.OldName}) && s.noOpen.Load() && !s.nodes[id].dir {
+		s.pinLocked(id, nil, false) // a cached handle, if any, becomes the pin
+	}
+	if pin != nil {
+		pin.Close()
+	}
 	s.moveLocked(h.NodeID, in.OldName, in.NewDir, in.NewName)
 	s.markRecentLocked(h.NodeID, in.OldName)
 	s.markRecentLocked(in.NewDir, in.NewName)
@@ -1302,6 +1418,10 @@ func (s *Server) openReply(u, fh uint64, dir bool) []byte {
 
 func (s *Server) doOpen(h *inHeader, flags uint32, dir bool) []byte {
 	u := h.Unique
+	if !dir && s.noOpen.Load() {
+		// The kernel stops sending OPEN and RELEASE for files (openfile.go).
+		return errReply(u, int(ENOSYS))
+	}
 	if !dir && s.isInjector(h) {
 		fh, err := s.addHandle(&handle{node: h.NodeID, inject: true})
 		if err != nil {
@@ -1390,7 +1510,18 @@ func (s *Server) doCreate(h *inHeader, in createIn) []byte {
 		return errReply(u, toErrno(err))
 	}
 	s.markRecent(h.NodeID, in.Name)
-	f, a, err := sh.FS.Create(path, in.Flags|oCREAT, in.Mode&^in.Umask, owner(h))
+	noOpen := s.noOpen.Load()
+	flags := in.Flags | oCREAT
+	if noOpen {
+		// The handle is cached for every later open of the file (openfile.go), so it
+		// should read too.
+		flags = flags&^oACCMODE | oRDWR
+	}
+	f, a, err := sh.FS.Create(path, flags, in.Mode&^in.Umask, owner(h))
+	if noOpen && errors.Is(err, EACCES) {
+		flags = in.Flags | oCREAT
+		f, a, err = sh.FS.Create(path, flags, in.Mode&^in.Umask, owner(h))
+	}
 	if err != nil {
 		return errReply(u, toErrno(err))
 	}
@@ -1406,8 +1537,10 @@ func (s *Server) doCreate(h *inHeader, in createIn) []byte {
 		f.Close()
 		return errReply(u, toErrno(err))
 	}
-	fh, err := s.addHandle(&handle{node: n.id, f: f})
-	if err != nil {
+	var fh uint64
+	if noOpen {
+		s.keepCreated(n.id, f, flags&oACCMODE != oWRONLY, flags&oACCMODE != oRDONLY)
+	} else if fh, err = s.addHandle(&handle{node: n.id, f: f}); err != nil {
 		f.Close()
 		s.forget(n.id, 1)
 		return errReply(u, toErrno(err))
@@ -1422,6 +1555,18 @@ func (s *Server) doCreate(h *inHeader, in createIn) []byte {
 	w.u32(fl)
 	w.u32(0)
 	return w.finish()
+}
+
+// fileFor returns the host file for a READ or WRITE, with a reference held: by handle,
+// or by node when the kernel sends none (fh 0 after OPEN answered ENOSYS, openfile.go).
+func (s *Server) fileFor(id, fh uint64, write bool) (File, func(), error) {
+	if fh == 0 && s.noOpen.Load() {
+		return s.nodeFileGet(id, write)
+	}
+	if write {
+		return s.writableFile(fh)
+	}
+	return s.file(fh)
 }
 
 // file returns fh's file with a reference held (see acquire).
@@ -1504,9 +1649,11 @@ func (s *Server) rootListing() []DirEntry {
 // kept on the node for the READDIRs that continue it, as a directory handle would keep
 // it. (Whether the guest needs to ask at all is the guest's readdir cache's business:
 // it is kept coherent by host invalidations, like every other cache.)
-func (s *Server) nodeListing(id, off uint64) ([]DirEntry, *Share, error) {
+//
+// since is the host change sequence before the listing was read (racedLocked).
+func (s *Server) nodeListing(id, off uint64) (es []DirEntry, sh *Share, since uint64, err error) {
 	if id == rootNode {
-		return s.rootListing(), nil, nil
+		return s.rootListing(), nil, 0, nil
 	}
 	s.mu.Lock()
 	path, sh, err := s.pathLocked(id)
@@ -1516,22 +1663,23 @@ func (s *Server) nodeListing(id, off uint64) ([]DirEntry, *Share, error) {
 	}
 	if err != nil {
 		s.mu.Unlock()
-		return nil, nil, err
+		return nil, nil, 0, err
 	}
 	if off != 0 && n.listed {
-		es := n.list
+		es, since = n.list, n.listSeq
 		s.mu.Unlock()
-		return es, sh, nil
+		return es, sh, since, nil
 	}
+	since = s.hostSeq
 	s.mu.Unlock()
 	list, err := loadDir(sh, path)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, 0, err
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.nodes[id] != n {
-		return list, sh, nil // forgotten meanwhile: answer, keep nothing
+		return list, sh, since, nil // forgotten meanwhile: answer, keep nothing
 	}
 	s.dropListLocked(n)
 	if s.dirEntries+len(list) > maxDirBudget {
@@ -1542,11 +1690,11 @@ func (s *Server) nodeListing(id, off uint64) ([]DirEntry, *Share, error) {
 		}
 	}
 	if s.dirEntries+len(list) > maxDirBudget {
-		return nil, nil, ENOMEM
+		return nil, nil, 0, ENOMEM
 	}
-	n.list, n.listed = list, true
+	n.list, n.listed, n.listSeq = list, true, since
 	s.dirEntries += len(list)
-	return list, sh, nil
+	return list, sh, since, nil
 }
 
 // dropListLocked forgets the listing snapshot of n (which may be nil).
@@ -1594,10 +1742,11 @@ func (s *Server) doReaddir(h *inHeader, in readIn, plus bool) []byte {
 	u := h.Unique
 	var es []DirEntry
 	var sh *Share
+	since := ^uint64(0) // handle listings (NoCache) give the guest nothing to cache
 	if in.Fh == 0 {
 		// No directory handle (OPENDIR answers ENOSYS, see doOpen).
 		var err error
-		es, sh, err = s.nodeListing(h.NodeID, in.Offset)
+		es, sh, since, err = s.nodeListing(h.NodeID, in.Offset)
 		if err != nil {
 			return errReply(u, toErrno(err))
 		}
@@ -1653,11 +1802,16 @@ func (s *Server) doReaddir(h *inHeader, in readIn, plus bool) []byte {
 				a.Mode &^= 0o222
 			}
 			s.mu.Lock()
-			n, err := s.childLocked(h.NodeID, name, sh, &a)
-			s.mu.Unlock()
-			if err == nil {
-				id = n.id
+			// A name that changed on the host after the listing was read gets no
+			// attributes (node 0): the kernel looks it up when it needs them. The
+			// kernel only guards an inode's attributes against replies older than its
+			// last invalidation, and a continued listing can be older than that.
+			if !s.racedLocked(nodeKey{h.NodeID, name}, since) {
+				if n, err := s.childLocked(h.NodeID, name, sh, &a); err == nil {
+					id = n.id
+				}
 			}
+			s.mu.Unlock()
 		}
 		if id != 0 {
 			w.entryOut(id, 0, s.ttl(s.opt.EntryTTL), s.ttl(s.opt.AttrTTL), &a)

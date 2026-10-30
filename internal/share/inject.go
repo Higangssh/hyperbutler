@@ -49,6 +49,7 @@ type injection struct {
 	newParent uint64
 	newName   string
 	at        time.Time
+	seq       uint64 // host change sequence before attr was read (racedLocked)
 }
 
 // EventKind is what happened to a host path.
@@ -170,6 +171,50 @@ func (s *Server) fabricated(n *node) Attr {
 	return a
 }
 
+// change is the last host change reported for a name.
+type change struct {
+	seq uint64
+	at  time.Time
+}
+
+// Changes are remembered for changedKeep, and at most maxChanged of them; a LOOKUP or
+// listing that read the host before what was forgotten counts as raced.
+const (
+	changedKeep = 10 * time.Second
+	maxChanged  = 1 << 14
+)
+
+// noteChangeLocked records a host change of name k.
+//
+// A LOOKUP (or READDIRPLUS, or replayed create) reads the host, then makes the node.
+// A change reported in between finds no node to invalidate, and the guest would
+// cache what was read before it for an hour: a file created and then written on
+// Windows could stay at size 0, a name created during a negative LOOKUP missing.
+// Such replies are sent with nothing to cache instead (raced).
+func (s *Server) noteChangeLocked(k nodeKey) {
+	if len(s.changed) >= maxChanged {
+		cut := time.Now().Add(-changedKeep)
+		for k2, c := range s.changed {
+			if c.at.Before(cut) {
+				s.changedFloor = max(s.changedFloor, c.seq)
+				delete(s.changed, k2)
+			}
+		}
+		if len(s.changed) >= maxChanged {
+			clear(s.changed)
+			s.changedFloor = s.hostSeq
+		}
+	}
+	s.hostSeq++
+	s.changed[k] = change{seq: s.hostSeq, at: time.Now()}
+}
+
+// racedLocked reports whether name k changed on the host after sequence since (taken
+// before the host was read).
+func (s *Server) racedLocked(k nodeKey, since uint64) bool {
+	return since < s.changedFloor || s.changed[k].seq > since
+}
+
 func (s *Server) gcPendingLocked() {
 	cut := time.Now().Add(-pendingTTL)
 	for k, p := range s.pending {
@@ -205,8 +250,12 @@ func (s *Server) HostChanged(ev HostEvent) {
 		return
 	}
 	k := nodeKey{parent, name}
+	s.noteChangeLocked(k)
 	childID, known := s.index[k]
 	inj := s.injectorKnown()
+	// The node was made by a reply the guest kernel may not have applied yet; an
+	// invalidation that reaches it first finds nothing to drop. Sent again later.
+	fresh := known && s.nodes[childID].born.After(time.Now().Add(-bornWindow))
 	switch ev.Kind {
 	case Modified:
 		if n := s.nodes[childID]; known && n.dir && n.inner.After(time.Now().Add(-echoWindow)) {
@@ -240,12 +289,13 @@ func (s *Server) HostChanged(ev HostEvent) {
 		msgs = append(msgs, notifyInvalEntryMsg(parent, name), notifyInvalInodeMsg(parent, 0, 0))
 		delete(s.negative, k)
 		if inj {
+			since := s.hostSeq
 			s.mu.Unlock()
 			a, err := sh.FS.Lstat(ev.Path)
 			s.mu.Lock()
 			if err == nil {
 				s.fixAttr(&a)
-				s.pending[k] = &injection{kind: injCreate, attr: a, at: time.Now()}
+				s.pending[k] = &injection{kind: injCreate, attr: a, at: time.Now(), seq: since}
 				msgs = append(msgs, injectMsg(injCreate, a.Mode&sIFMT, joinPath(ev.Share, ev.Path), ""))
 			}
 		}
@@ -266,6 +316,9 @@ func (s *Server) HostChanged(ev HostEvent) {
 		if known {
 			s.nodes[childID].orphan = true
 			delete(s.index, k)
+			// A cached handle would keep a classic (non-POSIX) delete pending, and the
+			// name taken, until it closed.
+			s.dropNodeFileLocked(childID)
 		}
 	case Renamed:
 		newParent, ok2 := s.resolveLocked(ev.Share, ev.NewPath)
@@ -283,6 +336,11 @@ func (s *Server) HostChanged(ev HostEvent) {
 			return
 		}
 		nk := nodeKey{newParent, newName}
+		s.noteChangeLocked(nk)
+		if id, ok := s.index[nk]; ok && id != childID {
+			s.dropNodeFileLocked(id) // replaced on the host
+			fresh = fresh || s.nodes[id].born.After(time.Now().Add(-bornWindow))
+		}
 		msgs = append(msgs, notifyInvalEntryMsg(parent, name), notifyInvalEntryMsg(newParent, newName),
 			notifyInvalInodeMsg(parent, 0, 0))
 		if newParent != parent {
@@ -301,6 +359,38 @@ func (s *Server) HostChanged(ev HostEvent) {
 	for _, m := range msgs {
 		s.notify(m)
 	}
+	if fresh {
+		s.invalidateLater(msgs)
+	}
+}
+
+// bornWindow is how long after a node was made an invalidation of it is sent twice.
+const bornWindow = 2 * time.Second
+
+// reinvalAfter are the delays of the repeated invalidations.
+var reinvalAfter = []time.Duration{50 * time.Millisecond, time.Second}
+
+// invalidateLater sends the invalidations among msgs again, for a node the guest
+// kernel may have been making when they first arrived (it applies a LOOKUP reply after
+// waking the process that asked, so an invalidation can overtake it). Invalidating
+// twice only costs the guest a lookup.
+func (s *Server) invalidateLater(msgs [][]byte) {
+	var inval [][]byte
+	for _, m := range msgs {
+		if !IsInject(m) {
+			inval = append(inval, m)
+		}
+	}
+	if len(inval) == 0 {
+		return
+	}
+	for _, d := range reinvalAfter {
+		time.AfterFunc(d, func() {
+			for _, m := range inval {
+				s.notify(m)
+			}
+		})
+	}
 }
 
 // HostOverflow handles a lost change notification for a share: everything the guest
@@ -309,6 +399,9 @@ func (s *Server) HostOverflow(share string) {
 	var msgs [][]byte
 	s.mu.Lock()
 	sh := s.shares[share]
+	if sh != nil {
+		s.dropAllFilesLocked(sh, false) // a lost change may have replaced any of them
+	}
 	for k, id := range s.index {
 		n := s.nodes[id]
 		if n == nil || n.share != sh || sh == nil {
@@ -388,9 +481,17 @@ func (s *Server) injectCreate(h *inHeader, name string) []byte {
 	}
 	a := p.attr
 	n, err := s.childLocked(h.NodeID, name, parent.share, &a)
+	raced := s.racedLocked(k, p.seq)
 	s.mu.Unlock()
 	if err != nil {
 		return errReply(h.Unique, toErrno(err))
+	}
+	if raced {
+		// Written (or replaced) on the host since attr was read, before this node
+		// existed to be invalidated: nothing to cache.
+		w := newReply(h.Unique, 0)
+		w.entryOut(n.id, 0, 0, 0, &a)
+		return w.finish()
 	}
 	return s.entryReply(h.Unique, n, &a)
 }

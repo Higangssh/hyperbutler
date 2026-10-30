@@ -144,6 +144,7 @@ const (
 	ELOOP        Errno = 40
 	ENODATA      Errno = 61
 	EOPNOTSUPP   Errno = 95
+	ESTALE       Errno = 116
 )
 
 // toErrno maps an error to the errno the guest gets. Anything unexpected is EIO.

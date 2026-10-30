@@ -953,6 +953,46 @@ func (f *NTFS) Unlink(path []string) error {
 	return deleteHandle(h)
 }
 
+// UnlinkKeep is Unlink that keeps a handle to the regular file it removes, for guest
+// processes that still have it open (openfile.go). It falls back to read-only access,
+// and then to a plain Unlink, when the file (or a Windows program holding it) refuses
+// more.
+//
+// The delete is set on a second handle, reopened from the first without a path walk,
+// and that one is closed at once: NTFS removes a POSIX-deleted name when the handle
+// that deleted it closes, not the others, so the kept handle must not be that one (the
+// name, and a directory above it, would stay until it closed).
+func (f *NTFS) UnlinkKeep(path []string) (File, bool, error) {
+	base := uint32(windows.FILE_READ_ATTRIBUTES | windows.FILE_READ_EA)
+	for i, acc := range []uint32{base | windows.FILE_GENERIC_READ | windows.FILE_GENERIC_WRITE, base | windows.FILE_GENERIC_READ} {
+		h, err := f.openAt(path, acc, windows.FILE_OPEN, windows.FILE_NON_DIRECTORY_FILE, nil)
+		if errors.Is(err, EACCES) || errors.Is(err, EBUSY) {
+			continue
+		}
+		if err != nil {
+			break // a directory, gone, ...: Unlink says what
+		}
+		attrs, tag, err := reparseTag(h)
+		if err != nil || typeOf(attrs, tag) != sIFREG {
+			windows.CloseHandle(h)
+			break
+		}
+		d, err := ntCreate(h, "", windows.DELETE|windows.FILE_READ_ATTRIBUTES, windows.FILE_OPEN, windows.FILE_NON_DIRECTORY_FILE, 0, nil)
+		if err != nil {
+			err = f.Unlink(path)
+		} else {
+			err = deleteHandle(d)
+			windows.CloseHandle(d)
+		}
+		if err != nil {
+			windows.CloseHandle(h)
+			return nil, false, err
+		}
+		return &ntFile{h: h, access: acc}, i == 0, nil
+	}
+	return nil, false, f.Unlink(path)
+}
+
 // Rmdir removes an empty directory.
 func (f *NTFS) Rmdir(path []string) error {
 	h, err := f.openAt(path, windows.DELETE|windows.FILE_READ_ATTRIBUTES|windows.FILE_LIST_DIRECTORY, windows.FILE_OPEN, windows.FILE_DIRECTORY_FILE, nil)
