@@ -1,0 +1,2 @@
+go test fuzz v1
+string("{\"Error\":\"\\u001b[31mred\\u0085\"}")

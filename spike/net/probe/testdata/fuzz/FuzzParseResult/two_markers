@@ -1,0 +1,2 @@
+go test fuzz v1
+string("WBNET step=a v=WBNET step=b")
