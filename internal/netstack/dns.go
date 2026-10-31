@@ -39,6 +39,52 @@ const (
 type dnsHandler struct {
 	res     Resolver
 	timeout time.Duration
+	// subnet is the guest network. Addresses in it are never taken from the host
+	// resolver (see resolve), and its reverse names are answered here.
+	subnet netip.Prefix
+	// hostGateway, if set, returns the host gateway's address (invalid without one)
+	// and whether it is on; HostGatewayNames are then answered here, never by the host
+	// resolver.
+	hostGateway func() (netip.Addr, bool)
+}
+
+// local answers the names this forwarder owns: HostGatewayNames and the reverse names
+// of the guest subnet. It reports false for every other name.
+func (h *dnsHandler) local(m *dns.Msg, q dns.Question) bool {
+	var addr netip.Addr
+	on := false
+	if h.hostGateway != nil {
+		addr, on = h.hostGateway()
+	}
+	if isHostGatewayName(q.Name) && addr.IsValid() {
+		switch {
+		case !on:
+			// Not forwarded either: a LAN DNS server or a hosts file entry (Docker
+			// Desktop writes one with the host's LAN address) must not answer for it.
+			m.Rcode = dns.RcodeNameError
+		case q.Qtype == dns.TypeA:
+			a := addr.As4()
+			m.Answer = append(m.Answer, &dns.A{Hdr: dns.RR_Header{Name: q.Name, Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: answerTTL}, A: net.IP(a[:])})
+		default:
+			// AAAA and every other type: the name exists and has no such records.
+		}
+		return true
+	}
+	if q.Qtype == dns.TypePTR {
+		ip, ok := parseReverse(q.Name)
+		if !ok || !h.subnet.IsValid() || !h.subnet.Contains(ip) {
+			return false
+		}
+		// The guest subnet exists only between the guest and this process; the host
+		// resolver (or the LAN, through LLMNR) has nothing to say about it.
+		if on && ip == addr {
+			m.Answer = append(m.Answer, &dns.PTR{Hdr: dns.RR_Header{Name: q.Name, Rrtype: dns.TypePTR, Class: dns.ClassINET, Ttl: answerTTL}, Ptr: dns.Fqdn(HostGatewayNames[0])})
+		} else {
+			m.Rcode = dns.RcodeNameError
+		}
+		return true
+	}
+	return false
 }
 
 // answer builds the reply to one wire-format query, or returns nil when the query must
@@ -133,6 +179,9 @@ func (h *dnsHandler) resolve(ctx context.Context, m *dns.Msg, q dns.Question) {
 		m.Rcode = dns.RcodeRefused
 		return
 	}
+	if h.local(m, q) {
+		return
+	}
 	host := strings.TrimSuffix(name, ".")
 	hdr := func(t uint16) dns.RR_Header {
 		return dns.RR_Header{Name: name, Rrtype: t, Class: dns.ClassINET, Ttl: answerTTL}
@@ -148,7 +197,11 @@ func (h *dnsHandler) resolve(ctx context.Context, m *dns.Msg, q dns.Question) {
 		var ips []netip.Addr
 		ips, err = h.res.LookupNetIP(ctx, "ip4", host)
 		for _, ip := range ips {
-			if ip = ip.Unmap(); ip.Is4() {
+			// DNS rebinding: a name from outside that points into the guest subnet
+			// would let a page or a file a container fetches steer it at the host
+			// gateway (this host's loopback) or a HostForward. Nothing outside has
+			// a reason to name those addresses, so they are dropped.
+			if ip = ip.Unmap(); ip.Is4() && !h.subnet.Contains(ip) {
 				a := ip.As4()
 				add(&dns.A{Hdr: hdr(dns.TypeA), A: net.IP(a[:])})
 			}
@@ -160,7 +213,8 @@ func (h *dnsHandler) resolve(ctx context.Context, m *dns.Msg, q dns.Question) {
 	case dns.TypeCNAME:
 		var c string
 		c, err = h.res.LookupCNAME(ctx, host)
-		if err == nil && validName(c) && !strings.EqualFold(dns.Fqdn(c), name) {
+		// An outside name that is an alias of host.docker.internal is rebinding too.
+		if err == nil && validName(c) && !strings.EqualFold(dns.Fqdn(c), name) && !isHostGatewayName(c) {
 			add(&dns.CNAME{Hdr: hdr(dns.TypeCNAME), Target: dns.Fqdn(c)})
 		}
 	case dns.TypeMX:

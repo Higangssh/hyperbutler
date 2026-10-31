@@ -6,6 +6,7 @@ import (
 	"net"
 	"net/netip"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -21,6 +22,10 @@ var (
 type Policy struct {
 	subnet   netip.Prefix
 	forwards map[netip.AddrPort]netip.AddrPort
+	// hgAddr is the host gateway's address (invalid without one) and hg its live
+	// setting (nil without one).
+	hgAddr netip.Addr
+	hg     atomic.Pointer[HostGateway]
 
 	hostAddrs func() ([]netip.Addr, error)
 	mu        sync.Mutex
@@ -44,26 +49,61 @@ func newPolicy(c *Config) *Policy {
 	for _, h := range c.HostForwards {
 		p.forwards[h.Virtual] = h.Host
 	}
+	if c.HostGateway != nil {
+		p.hgAddr = c.HostGatewayAddr()
+		h := *c.HostGateway
+		h.Ports = append(PortList(nil), h.Ports...)
+		p.hg.Store(&h)
+	}
 	if p.hostAddrs == nil {
 		p.hostAddrs = interfaceAddrs
 	}
 	return p
 }
 
-// Route returns where a guest connection to dst should be dialed on the host. explicit
-// is true for a configured HostForward, whose target is exempt from Check.
-func (p *Policy) Route(dst netip.AddrPort) (target netip.AddrPort, explicit bool, err error) {
+// TargetKind says how a guest connection is dialed.
+type TargetKind int
+
+const (
+	// TargetOut is any other destination (the internet, the LAN, a VPN): dialed as
+	// is, and Check runs again on the address connected to.
+	TargetOut TargetKind = iota
+	// TargetForward is a configured HostForward, whose target is exempt from Check.
+	TargetForward
+	// TargetHostGateway is the host gateway: this host's loopback on the same port
+	// (see dialHostGateway), exempt from Check.
+	TargetHostGateway
+)
+
+// Target is where the host dials a guest connection.
+type Target struct {
+	Addr netip.AddrPort
+	Kind TargetKind
+}
+
+// Route returns where a guest connection to dst should be dialed on the host.
+func (p *Policy) Route(dst netip.AddrPort) (Target, error) {
 	dst = netip.AddrPortFrom(dst.Addr().Unmap(), dst.Port())
 	if t, ok := p.forwards[dst]; ok {
-		return t, true, nil
+		return Target{Addr: t, Kind: TargetForward}, nil
+	}
+	if p.hgAddr.IsValid() && dst.Addr() == p.hgAddr {
+		hg := p.hg.Load()
+		switch {
+		case !hg.Enabled:
+			return Target{}, ErrHostGatewayOff
+		case !hg.Allows(dst.Port()):
+			return Target{}, fmt.Errorf("%w: port %d (forwarded: %s)", ErrHostGatewayPort, dst.Port(), hg.Ports)
+		}
+		return Target{Addr: hostGatewayTarget(dst.Port()), Kind: TargetHostGateway}, nil
 	}
 	if err := p.Check(dst.Addr()); err != nil {
-		return netip.AddrPort{}, false, err
+		return Target{}, err
 	}
 	if dst.Port() == 0 {
-		return netip.AddrPort{}, false, fmt.Errorf("%w: port 0", ErrBlockedAddress)
+		return Target{}, fmt.Errorf("%w: port 0", ErrBlockedAddress)
 	}
-	return dst, false, nil
+	return Target{Addr: dst, Kind: TargetOut}, nil
 }
 
 // Check reports whether the host may dial addr on the guest's behalf. It refuses:

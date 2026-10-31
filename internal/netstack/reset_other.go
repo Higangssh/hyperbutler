@@ -11,3 +11,7 @@ import (
 func hostReset(err error) bool {
 	return errors.Is(err, syscall.ECONNRESET) || errors.Is(err, syscall.ECONNABORTED)
 }
+
+// connRefused reports whether err, from a connect, is a refusal (nothing listens on
+// the port).
+func connRefused(err error) bool { return errors.Is(err, syscall.ECONNREFUSED) }

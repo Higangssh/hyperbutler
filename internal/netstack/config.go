@@ -47,14 +47,22 @@ type Config struct {
 	// Virtual (an address in Subnet other than the gateway and guest) is relayed to Host.
 	// Everything else that belongs to the host is refused (see Policy).
 	HostForwards []HostForward
+	// HostGateway, if set, is the initial setting of the host gateway
+	// (host.docker.internal, REQ-NET-004) at HostGatewayAddr; Stack.SetHostGateway
+	// changes it later. nil means the stack has none: the address is an ordinary
+	// refused subnet address and the names go to the host resolver. A HostForward on
+	// the same address and port takes precedence.
+	HostGateway *HostGateway
 
-	MaxTCPConns    int
-	MaxTCPInFlight int
-	MaxUDPFlows    int
-	MaxDNSInFlight int
-	DialTimeout    time.Duration
-	UDPIdleTimeout time.Duration
-	DNSTimeout     time.Duration
+	MaxTCPConns int
+	// MaxHostGatewayConns bounds host gateway TCP connections, within MaxTCPConns.
+	MaxHostGatewayConns int
+	MaxTCPInFlight      int
+	MaxUDPFlows         int
+	MaxDNSInFlight      int
+	DialTimeout         time.Duration
+	UDPIdleTimeout      time.Duration
+	DNSTimeout          time.Duration
 
 	// Resolver answers the guest's DNS queries. nil means the host resolver
 	// (net.DefaultResolver, which on Windows uses GetAddrInfoW and DnsQuery, so NRPT,
@@ -100,6 +108,7 @@ func (c Config) withDefaults() Config {
 	def(&c.MaxTCPInFlight, DefaultMaxTCPInFlight)
 	def(&c.MaxUDPFlows, DefaultMaxUDPFlows)
 	def(&c.MaxDNSInFlight, DefaultMaxDNSInFlight)
+	def(&c.MaxHostGatewayConns, DefaultMaxHostGatewayConns)
 	defd := func(v *time.Duration, d time.Duration) {
 		if *v == 0 {
 			*v = d
@@ -126,7 +135,7 @@ func (c Config) Validate() error {
 	if !frame.ValidMTU(c.MTU) {
 		return fmt.Errorf("netstack: MTU %d is outside %d..%d", c.MTU, frame.MinMTU, frame.MaxMTU)
 	}
-	for _, v := range []int{c.MaxTCPConns, c.MaxTCPInFlight, c.MaxUDPFlows, c.MaxDNSInFlight} {
+	for _, v := range []int{c.MaxTCPConns, c.MaxTCPInFlight, c.MaxUDPFlows, c.MaxDNSInFlight, c.MaxHostGatewayConns} {
 		if v < 1 || v > 1<<20 {
 			return errors.New("netstack: connection limits must be 1..1048576")
 		}
@@ -134,6 +143,11 @@ func (c Config) Validate() error {
 	for _, d := range []time.Duration{c.DialTimeout, c.UDPIdleTimeout, c.DNSTimeout} {
 		if d < 0 {
 			return errors.New("netstack: timeouts must not be negative")
+		}
+	}
+	if c.HostGateway != nil {
+		if err := c.HostGateway.Ports.validate(); err != nil {
+			return fmt.Errorf("netstack: host gateway: %w", err)
 		}
 	}
 	if len(c.HostForwards) > maxHostForwards {
