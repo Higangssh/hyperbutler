@@ -55,15 +55,6 @@ func (c *tclient) do(op uint32, node uint64, body []byte) (int, []byte) {
 	return -int(int32(binary.LittleEndian.Uint32(rep[4:]))), rep[outHeaderLen:]
 }
 
-// capture records every frame the server writes.
-type capture struct{ out *[][]byte }
-
-func (c *capture) Read([]byte) (int, error) { select {} }
-func (c *capture) Write(p []byte) (int, error) {
-	*c.out = append(*c.out, append([]byte(nil), p...))
-	return len(p), nil
-}
-
 type wbuf struct{ b []byte }
 
 func (w *wbuf) u32(v uint32) *wbuf { w.b = binary.LittleEndian.AppendUint32(w.b, v); return w }

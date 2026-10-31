@@ -363,14 +363,14 @@ func TestInjectedModifyDoesNotTouchHost(t *testing.T) {
 	en := c.mustLookup(root, "f")
 	// The relay names its injector thread.
 	c.do(opHello, 0, (&wbuf{}).u32(4242).b)
-	var sent [][]byte
+	sent := &syncCapture{}
 	s.cmu.Lock()
-	s.conn = &conn{rw: &capture{out: &sent}}
+	s.conn = &conn{rw: sent}
 	s.cmu.Unlock()
 	os.WriteFile(filepath.Join(dir, "f"), []byte("changed on windows"), 0o644)
 	s.HostChanged(HostEvent{Share: "src", Path: []string{"f"}, Kind: Modified})
 	var inject *InjectFrame
-	for _, m := range sent {
+	for _, m := range sent.frames() {
 		if IsInject(m) {
 			f, ok := ParseInject(m[outHeaderLen:])
 			if !ok {
@@ -411,9 +411,9 @@ func TestInjectedCreateAndDelete(t *testing.T) {
 	dir := testDir(t)
 	s, c, root := newTestServer(t, dir, Options{NoWatch: true}, nil)
 	c.do(opHello, 0, (&wbuf{}).u32(4242).b)
-	var sent [][]byte
+	sent := &syncCapture{}
 	s.cmu.Lock()
-	s.conn = &conn{rw: &capture{out: &sent}}
+	s.conn = &conn{rw: sent}
 	s.cmu.Unlock()
 	os.WriteFile(filepath.Join(dir, "new.txt"), []byte("x"), 0o644)
 	s.HostChanged(HostEvent{Share: "src", Path: []string{"new.txt"}, Kind: Created})

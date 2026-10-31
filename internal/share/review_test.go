@@ -22,13 +22,13 @@ func TestOnlyShareIgnoresSiblingEvents(t *testing.T) {
 	c := newClient(t, s)
 	root := c.mustLookup(rootNode, "src")
 	c.do(opHello, 0, (&wbuf{}).u32(4242).b)
-	var sent [][]byte
+	sent := &syncCapture{}
 	s.cmu.Lock()
-	s.conn = &conn{rw: &capture{out: &sent}}
+	s.conn = &conn{rw: sent}
 	s.cmu.Unlock()
 	fs.files["secret.txt"] = []byte("private")
 	s.HostChanged(HostEvent{Share: "src", Path: []string{"secret.txt"}, Kind: Created})
-	for _, m := range sent {
+	for _, m := range sent.frames() {
 		if bytes.Contains(m, []byte("secret")) {
 			t.Fatalf("sibling name sent to the guest: %q", m)
 		}
@@ -182,37 +182,37 @@ func TestDirectoryModifiedEchoSuppressed(t *testing.T) {
 	c := newClient(t, s)
 	root := c.mustLookup(rootNode, "src")
 	d := c.mustLookup(root.node, "d")
-	var sent [][]byte
+	sent := &syncCapture{}
 	s.cmu.Lock()
-	s.conn = &conn{rw: &capture{out: &sent}}
+	s.conn = &conn{rw: sent}
 	s.cmu.Unlock()
 	if e, _, _ := c.create(d.node, "new.txt", oWRONLY|oCREAT, 0o644); e != 0 {
 		t.Fatalf("create: errno %d", e)
 	}
 	s.HostChanged(HostEvent{Share: "src", Path: []string{"d"}, Kind: Modified})
-	if len(sent) != 0 {
-		t.Fatalf("echo of the guest's own create invalidated the directory: %d frames", len(sent))
+	if len(sent.frames()) != 0 {
+		t.Fatalf("echo of the guest's own create invalidated the directory: %d frames", len(sent.frames()))
 	}
 	// A Windows-side create in d still invalidates d.
 	fs.files["d/win.txt"] = nil
 	s.HostChanged(HostEvent{Share: "src", Path: []string{"d", "win.txt"}, Kind: Created})
-	if len(sent) == 0 {
+	if len(sent.frames()) == 0 {
 		t.Fatal("a Windows create in the directory sent nothing")
 	}
 	// Once the echo window has passed, a directory modification is passed on.
-	sent = sent[:0]
+	sent.reset()
 	s.mu.Lock()
 	s.nodes[d.node].inner = time.Now().Add(-2 * echoWindow)
 	s.mu.Unlock()
 	s.HostChanged(HostEvent{Share: "src", Path: []string{"d"}, Kind: Modified})
-	if len(sent) == 0 {
+	if len(sent.frames()) == 0 {
 		t.Fatal("a later directory modification was dropped")
 	}
 	// The directory's own removal is never taken for an echo of a change inside it.
-	sent = sent[:0]
+	sent.reset()
 	c.create(d.node, "again.txt", oWRONLY|oCREAT, 0o644)
 	s.HostChanged(HostEvent{Share: "src", Path: []string{"d"}, Kind: Removed})
-	if len(sent) == 0 {
+	if len(sent.frames()) == 0 {
 		t.Fatal("removal of a directory the guest wrote in was suppressed")
 	}
 }
@@ -221,6 +221,11 @@ func TestDirectoryModifiedEchoSuppressed(t *testing.T) {
 // names entries without lookups) must still be replayed, so an inotify watch on the
 // directory gets IN_MODIFY. Directories are not replayed.
 func TestModifyOfUnlookedFileReplayed(t *testing.T) {
+	// Only the frames each event sends at once are checked; a delayed re-invalidation
+	// of an earlier event must not land among a later event's frames on a slow machine.
+	old := reinvalAfter
+	reinvalAfter = []time.Duration{time.Hour, time.Hour}
+	defer func() { reinvalAfter = old }()
 	fs := newMemFS()
 	fs.files["d/sub/"] = nil
 	s := NewServer(Options{NoWatch: true})
@@ -229,13 +234,13 @@ func TestModifyOfUnlookedFileReplayed(t *testing.T) {
 	root := c.mustLookup(rootNode, "src")
 	c.mustLookup(root.node, "d")
 	c.do(opHello, 0, (&wbuf{}).u32(4242).b)
-	var sent [][]byte
+	sent := &syncCapture{}
 	s.cmu.Lock()
-	s.conn = &conn{rw: &capture{out: &sent}}
+	s.conn = &conn{rw: sent}
 	s.cmu.Unlock()
 	s.HostChanged(HostEvent{Share: "src", Path: []string{"d", "f"}, Kind: Modified})
 	replays := 0
-	for _, m := range sent {
+	for _, m := range sent.frames() {
 		if IsInject(m) {
 			f, ok := ParseInject(m[outHeaderLen:])
 			if !ok || f.Kind != injModify || f.Path != "src/d/f" {
@@ -247,18 +252,18 @@ func TestModifyOfUnlookedFileReplayed(t *testing.T) {
 	if replays != 1 {
 		t.Fatalf("%d replays, want 1", replays)
 	}
-	sent = sent[:0]
+	sent.reset()
 	s.HostChanged(HostEvent{Share: "src", Path: []string{"d", "sub"}, Kind: Modified})
-	for _, m := range sent {
+	for _, m := range sent.frames() {
 		if IsInject(m) {
 			t.Fatal("a directory's modification was replayed")
 		}
 	}
 	// A file in a directory the guest never looked up is not replayed either: nothing
 	// in the guest can be watching it.
-	sent = sent[:0]
+	sent.reset()
 	s.HostChanged(HostEvent{Share: "src", Path: []string{"other", "f"}, Kind: Modified})
-	if len(sent) != 0 {
-		t.Fatalf("%d frames for an unknown directory", len(sent))
+	if len(sent.frames()) != 0 {
+		t.Fatalf("%d frames for an unknown directory", len(sent.frames()))
 	}
 }

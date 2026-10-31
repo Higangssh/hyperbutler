@@ -127,7 +127,8 @@ func (h *hookFS) counts() (int, int) {
 	return h.opens, h.closes
 }
 
-// syncCapture records frames written from any goroutine.
+// syncCapture records frames written from any goroutine. The server writes from
+// timers too (delayed re-invalidations), which can fire after a test has finished.
 type syncCapture struct {
 	mu  sync.Mutex
 	out [][]byte
@@ -144,6 +145,12 @@ func (c *syncCapture) frames() [][]byte {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return append([][]byte(nil), c.out...)
+}
+
+func (c *syncCapture) reset() {
+	c.mu.Lock()
+	c.out = nil
+	c.mu.Unlock()
 }
 
 func hookShare(t *testing.T, opt Options) (*Server, *tclient, *hookFS, uint64) {
