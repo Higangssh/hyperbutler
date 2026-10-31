@@ -49,7 +49,7 @@ const maxDataPages = 1 << 16
 // wsExEntry is PSAPI_WORKING_SET_EX_INFORMATION with the address as a uintptr.
 type wsExEntry struct {
 	va   uintptr
-	attr uint64
+	attr uintptr // ULONG_PTR
 }
 
 // dataSectionReader returns a function that counts the resident private bytes of this

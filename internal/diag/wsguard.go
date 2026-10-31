@@ -28,7 +28,11 @@ import (
 //     (or the guard) trimmed them looks the same, so the rule is confirmed by the
 //     executable's data section: its resident pages must be GuardBigRise above their
 //     level when the guard started. The process never touches the 32 MiB FIPS buffer,
-//     so its data section can only refault to about where it started.
+//     so its data section can only refault to about where it started. In effect this
+//     rule means "the FIPS buffer became resident"; a reader that skips .data is caught
+//     only by the full rule. The rise and flat-commit conditions only spare the data
+//     read on ordinary ticks. Known false positive: with GODEBUG=fips140=on the process
+//     fills the buffer itself, and the guard trims once (harmless, rate limited).
 //
 // On either the guard empties the working set once
 // (SetProcessWorkingSetSizeEx(-1, -1)). Pages the process uses fault back from the
