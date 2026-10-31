@@ -3,9 +3,11 @@ package netstack
 import (
 	"bufio"
 	"context"
+	"io"
 	"net"
 	"net/netip"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -31,15 +33,26 @@ type fakeGuest struct {
 	conn net.Conn
 	wg   sync.WaitGroup
 	stop context.CancelFunc
+	// bigIn and bigOut count offload-mode segments larger than the MTU, from and to
+	// the host.
+	bigIn, bigOut atomic.Int64
 }
 
 var guestMAC = tcpip.LinkAddress("\x02\x00\x00\x00\x00\x02")
 
-func newFakeGuest(t *testing.T, n *Stack) *fakeGuest {
+func newFakeGuest(t *testing.T, n *Stack) *fakeGuest { return newFakeGuestMode(t, n, false) }
+
+// newFakeGuestMode with offload plays netfwd -vnet over a TAP with TSO: the guest stack
+// sends and takes segments larger than the MTU, with a virtio_net_hdr on every frame.
+func newFakeGuestMode(t *testing.T, n *Stack, offload bool) *fakeGuest {
 	t.Helper()
 	cfg := n.Config()
 	hostEnd, guestEnd := net.Pipe()
 	ch := channel.New(512, uint32(cfg.MTU+header.EthernetMinimumSize), guestMAC)
+	if offload {
+		ch.SupportedGSOKind = stack.HostGSOSupported
+		ch.LinkEPCapabilities = stack.CapabilityRXChecksumOffload
+	}
 	s := stack.New(stack.Options{
 		NetworkProtocols:   []stack.NetworkProtocolFactory{ipv4.NewProtocol, arp.NewProtocol},
 		TransportProtocols: []stack.TransportProtocolFactory{tcp.NewProtocol, udp.NewProtocol},
@@ -59,7 +72,14 @@ func newFakeGuest(t *testing.T, n *Stack) *fakeGuest {
 	ctx, cancel := context.WithCancel(context.Background())
 	g := &fakeGuest{s: s, ch: ch, conn: guestEnd, stop: cancel}
 	g.wg.Add(3)
-	go func() { defer g.wg.Done(); _ = n.ServeConn(hostEnd) }()
+	go func() {
+		defer g.wg.Done()
+		if offload {
+			_ = n.ServeOffload(hostEnd)
+		} else {
+			_ = n.ServeConn(hostEnd)
+		}
+	}()
 	go func() { // guest -> host
 		defer g.wg.Done()
 		for {
@@ -68,6 +88,21 @@ func newFakeGuest(t *testing.T, n *Stack) *fakeGuest {
 				return
 			}
 			var b []byte
+			if offload {
+				var vh frame.VnetHdr
+				if gso := pkt.GSOOptions; gso.Type != stack.GSONone {
+					vh.Flags = frame.VnetFlagNeedsCsum
+					vh.HdrLen = uint16(pkt.HeaderSize())
+					vh.CsumStart = header.EthernetMinimumSize + gso.L3HdrLen
+					vh.CsumOffset = gso.CsumOffset
+					if pkt.Data().Size() > int(gso.MSS) {
+						vh.GSOType, vh.GSOSize = frame.VnetGSOTCPv4, gso.MSS
+						g.bigOut.Add(1)
+					}
+				}
+				b = make([]byte, frame.VnetHdrLen)
+				vh.Put(b)
+			}
 			for _, v := range pkt.AsSlices() {
 				b = append(b, v...)
 			}
@@ -79,11 +114,30 @@ func newFakeGuest(t *testing.T, n *Stack) *fakeGuest {
 	}()
 	go func() { // host -> guest
 		defer g.wg.Done()
-		fr, _ := frame.NewReader(bufio.NewReader(guestEnd), cfg.MTU)
+		br := bufio.NewReader(guestEnd)
+		fr, _ := frame.NewReader(br, cfg.MTU)
+		if offload {
+			var hello [frame.HeaderLen]byte
+			if _, err := io.ReadFull(br, hello[:]); err != nil || hello != frame.Hello {
+				return
+			}
+			fr = frame.NewVnetReader(br)
+		}
 		for {
 			b, err := fr.Next()
 			if err != nil {
 				return
+			}
+			if offload {
+				h, eth, err := frame.ParseVnet(b, cfg.MTU)
+				if err != nil {
+					t.Errorf("host sent a bad offload frame: %v", err)
+					return
+				}
+				if h.IsGSO() {
+					g.bigIn.Add(1)
+				}
+				b = eth
 			}
 			pkt := stack.NewPacketBuffer(stack.PacketBufferOptions{Payload: buffer.MakeWithData(append([]byte(nil), b...))})
 			ch.InjectInbound(header.Ethernet(b).Type(), pkt)

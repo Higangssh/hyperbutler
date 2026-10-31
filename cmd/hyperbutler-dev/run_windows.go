@@ -21,8 +21,9 @@ import (
 // runCmd is a thin wrapper over engine.Run: flags in, one VM run in the foreground.
 func runCmd(args []string) error {
 	fs := flag.NewFlagSet("run", flag.ContinueOnError)
-	kernel := fs.String("kernel", "", "guest kernel (vmlinuz-virt), required")
-	initrd := fs.String("initrd", "", "guest initramfs with the hyperbutler agent, required")
+	kernel := fs.String("kernel", "", "guest kernel (vmlinuz-virt); with -initrd, instead of -image")
+	initrd := fs.String("initrd", "", "guest initramfs with the hyperbutler agent; with -kernel, instead of -image")
+	manifest := fs.String("image", "", "guest image manifest (image.json, ADR 0005), instead of -kernel and -initrd")
 	cmdline := fs.String("cmdline", engine.DefaultCmdLine, "kernel command line")
 	memMB := fs.Int("mem", 1024, "guest memory in MB (512 is too small for dockerd)")
 	cpus := fs.Int("cpus", 2, "vCPUs")
@@ -40,9 +41,10 @@ func runCmd(args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	if *kernel == "" || *initrd == "" || fs.NArg() != 0 {
+	legacy := *kernel != "" || *initrd != ""
+	if (*manifest != "") == legacy || legacy && (*kernel == "" || *initrd == "") || fs.NArg() != 0 {
 		fs.Usage()
-		return errors.New("run: -kernel and -initrd are required")
+		return errors.New("run: either -image, or -kernel and -initrd, is required")
 	}
 	dbg, err := diag.Start(dcfg)
 	if err != nil {
@@ -58,7 +60,7 @@ func runCmd(args []string) error {
 		return err
 	}
 	cfg := engine.Config{
-		KernelPath: *kernel, InitrdPath: *initrd, CmdLine: *cmdline,
+		KernelPath: *kernel, InitrdPath: *initrd, Image: *manifest, CmdLine: *cmdline,
 		MemoryMB: *memMB, CPUs: *cpus, Pipe: *pipe, Net: nc,
 		ReadyTimeout: *readyTimeout, ExtraServices: extraSvcs, ExtraCmdLine: extraArgs,
 		Logger: slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo})),
@@ -91,6 +93,9 @@ func runCmd(args []string) error {
 		}
 		if *exitWhenReady {
 			return engine.ErrDone
+		}
+		if nf.statsEvery > 0 && r.Stack != nil {
+			go logNetStats(ctx, r.Stack, nf.statsEvery, cfg.Logger)
 		}
 		return nil
 	}

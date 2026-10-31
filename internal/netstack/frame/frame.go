@@ -40,6 +40,7 @@ func ValidMTU(mtu int) bool { return mtu >= MinMTU && mtu <= MaxMTU }
 // Reader reads length-prefixed frames. It is not safe for concurrent use.
 type Reader struct {
 	r   io.Reader
+	min int
 	max int
 	hdr [HeaderLen]byte
 	buf []byte
@@ -51,7 +52,7 @@ func NewReader(r io.Reader, mtu int) (*Reader, error) {
 		return nil, fmt.Errorf("frame: MTU %d is outside %d..%d", mtu, MinMTU, MaxMTU)
 	}
 	max := MaxFrameLen(mtu)
-	return &Reader{r: r, max: max, buf: make([]byte, max)}, nil
+	return &Reader{r: r, min: EthernetHeaderLen, max: max, buf: make([]byte, max)}, nil
 }
 
 // Next returns the next frame. The slice is valid until the next call. A length prefix
@@ -62,8 +63,8 @@ func (fr *Reader) Next() ([]byte, error) {
 		return nil, err
 	}
 	n := binary.BigEndian.Uint32(fr.hdr[:])
-	if n < EthernetHeaderLen || n > uint32(fr.max) {
-		return nil, fmt.Errorf("%w: %d (allowed %d..%d)", ErrFrameSize, n, EthernetHeaderLen, fr.max)
+	if n < uint32(fr.min) || n > uint32(fr.max) {
+		return nil, fmt.Errorf("%w: %d (allowed %d..%d)", ErrFrameSize, n, fr.min, fr.max)
 	}
 	b := fr.buf[:n]
 	if _, err := io.ReadFull(fr.r, b); err != nil {

@@ -40,7 +40,7 @@ func TestTapToHostFrames(t *testing.T) {
 			}
 		}
 	}
-	err := tapToHost(read, &out, 1500)
+	err := tapToHost(read, &out, linkFormat{mtu: 1500})
 	if err == nil {
 		t.Fatal("want EOF error")
 	}
@@ -55,10 +55,33 @@ func TestHostToTapFrames(t *testing.T) {
 	in := frame.Append(frame.Append(nil, f1), make([]byte, 14))
 	in = append(in, 0xFF, 0, 0, 0) // bad length ends the relay
 	var out bytes.Buffer
-	if err := hostToTap(bytes.NewReader(in), &out, 1500); err == nil {
+	if err := hostToTap(bytes.NewReader(in), &out, linkFormat{mtu: 1500}, func() {}); err == nil {
 		t.Fatal("bad length accepted")
 	}
 	if out.Len() != 60+14 {
 		t.Fatalf("wrote %d bytes to tap", out.Len())
+	}
+}
+
+func TestHostToTapVnet(t *testing.T) {
+	big := make([]byte, frame.VnetHdrLen+frame.EthernetHeaderLen+60000) // a GSO segment
+	in := frame.Append(frame.Append(nil, big), make([]byte, frame.MinVnetFrameLen))
+	in = append(in, 0, 0, 0, 5) // shorter than a vnet header and an Ethernet header
+	var out bytes.Buffer
+	if err := hostToTap(bytes.NewReader(in), &out, linkFormat{mtu: 1500, vnet: true}, func() {}); err == nil {
+		t.Fatal("runt accepted")
+	}
+	if out.Len() != len(big)+frame.MinVnetFrameLen {
+		t.Fatalf("wrote %d bytes to tap", out.Len())
+	}
+}
+
+func TestLinkFormat(t *testing.T) {
+	plain, vnet := linkFormat{mtu: 9000}, linkFormat{mtu: 9000, vnet: true}
+	if plain.maxFrame() != 9014 || plain.minFrame() != 14 {
+		t.Fatalf("plain: %d %d", plain.maxFrame(), plain.minFrame())
+	}
+	if vnet.maxFrame() != frame.MaxVnetFrameLen || vnet.minFrame() != frame.MinVnetFrameLen {
+		t.Fatalf("vnet: %d %d", vnet.maxFrame(), vnet.minFrame())
 	}
 }
