@@ -360,7 +360,9 @@ Some limits on that:
    `containerd`, `runc`). `community` has a shorter support promise, and both must be
    mirrored. The Docker static tarball has no published
    checksum or signature (TOFU over HTTPS). Its `dockerd` and `runc` are static glibc builds
-   (the ELF files carry glibc's GNU/Linux ABI note). It stays in the prototype only.
+   (the ELF files carry glibc's GNU/Linux ABI note). **Done 2026-10-31:** the image no
+   longer uses it; see "Docker Engine from Alpine" for the options weighed and the
+   measurements.
 4. **Build and publish:** the canonical build runs on **GitHub Actions Linux runners**,
    inside an `alpine:3.24` container pinned by digest, with every `.apk` pinned by SHA-256
    and its signature chain verified by `apk`.
@@ -518,6 +520,233 @@ rejection.
 the engine boots it as before, with `hyperbutler.data=sda`. The QEMU harness (`run-qemu.ps1`)
 now attaches `system.vhd` as `vda`. This was not run: QEMU was not part of this work.
 
+## Docker Engine from Alpine (2026-10-31)
+
+Until now `dockerd`, `containerd`, the shim, `runc`, `docker-proxy` and `docker-init` came
+from Docker's static tarball (`download.docker.com/linux/static/stable/x86_64/docker-29.9.2.tgz`).
+Docker publishes no checksum, signature or provenance for those tarballs (the directory
+listing has only `.tgz` files), so the pin was trust on first use over HTTPS, and strict
+release mode refused it: no release was possible by design. Everything else already came
+from signed Alpine packages.
+
+### Options
+
+**(a) Alpine's packages, from the v3.24 release the image already pins.** `docker-engine`
+(dockerd, docker-proxy, and `docker-init` as a symlink to tini-static), `containerd`
+(containerd and the runc shim), `runc`, `tini-static`, and `libseccomp` (main) for runc.
+
+- *Verification:* the same chain as every other input. Each `.apk` is signed with the
+  Alpine key that the digest-pinned `alpine:3.24.3` image carries in `/etc/apk/keys`, and
+  its signed control segment hashes the data segment. `fetch-verify.sh` checks it and
+  that the signed `.PKGINFO` names the pinned file.
+- *Source:* the signed `.PKGINFO` names the aports commit, so `fetch-sources.sh` bundles
+  the APKBUILD and the upstream tarballs (moby and cli for `docker`, containerd, runc,
+  tini, libseccomp) checked against the APKBUILD's sha512sums, with no new code. The
+  LICENSE and NOTICE files of Moby, containerd and runc come out of those tarballs into
+  `THIRD-PARTY/guest/`, which the static tarball could never provide.
+- *Versions* (checked with `go version -m` on the binaries):
+
+  | Component | Static tarball (before) | Alpine v3.24 (after) |
+  |---|---|---|
+  | dockerd, docker-proxy | 29.9.2 (moby `0367cbe`), Go 1.26.10 | 29.9.2-r0, the same moby commit `0367cbeb49b9`, Go 1.26.9 |
+  | containerd, shim | v2.4.2 | 2.3.7-r0 |
+  | runc | v1.5.2 | 1.4.3-r2 |
+  | tini (docker-init) | 0.19.0, static glibc | 0.19.0-r3, static musl |
+
+  The engine is the same release from the same commit. containerd and runc are one minor
+  behind: Alpine keeps a stable branch on a supported upstream series and backports
+  security releases (the APKBUILDs' `secfixes` lists them); Docker's tarball bundles the
+  newest. containerd 2.3.7 is the newest 2.3 patch release and runc 1.4.3 the newest 1.4
+  one (checked against the upstream release lists on 2026-10-31), and Alpine's
+  `secfixes` list the CVEs fixed in them (runc 1.4.3: CVE-2026-41579). What the newer
+  minors add and these lack: runc 1.5.2's workaround for a kernel bug that crashes runc
+  at random under cgroup v2 (a bug fix, no CVE). Docker supports containerd 2.x under
+  29.x, and the e2e run below exercises the pair. A stable branch also never jumps a
+  minor under us, which is what a pinned image wants.
+- *Linkage:* musl, dynamic, PIE (`-buildmode=pie`, `CGO_ENABLED=1`). The `so:` dependencies
+  in the signed metadata are `libc.musl-x86_64.so.1` for all of them and
+  `libseccomp.so.2` for runc. musl's loader is already in the image for e2fsprogs. So the
+  engine's only new library is libseccomp (157 KiB, LGPL-2.1, dynamically linked, so it
+  stays replaceable, as the licensing table asks). Of the packages' other dependencies,
+  `ca-certificates` and `/bin/sh` are already in the lock (the CA bundle, BusyBox) and
+  `iptables` is added (below). The image takes the files it names in `system.spec`,
+  never a dependency closure.
+- *Size:* the six binaries are 167.0 MB unpacked against 168.1 MB (dockerd 99.7 vs
+  102.9 MB, containerd 43.3 vs 39.5, shim 9.6 vs 8.1, runc 11.4 vs 14.1, docker-proxy 2.8
+  vs 2.7, tini 0.06 vs 0.74), plus libseccomp and the iptables files (about 0.5 MB).
+  The system disk after lz4hc: see below.
+- *Costs:* the PIE binaries relocate their read-only data at load, which dirties a few
+  MiB of private pages per process; and the engine follows Alpine's update cadence, not
+  Docker's. Both are measured or bounded below.
+
+**(b) Build moby, containerd and runc from source in CI, from pinned commits.**
+Provenance would be ours end to end (commit hashes, `go.sum`, a pinned Go), and the Go
+parts can be built reproducibly with `-trimpath`. But runc needs cgo and libseccomp, and
+moby's supported build is its own Dockerfile and buildx bake; doing it in the Alpine
+container means writing and maintaining what aports already does (tags, patches,
+`secfixes`), for three projects, on every security release. It adds roughly 10 to 15
+minutes of CI per image build, and a CVE fix would wait for us instead of for Alpine.
+The GPL bundle would still need Alpine's sources for libseccomp. Kept as the fallback if
+Alpine fails the revisit rule below.
+
+**(c) Keep the static tarball and verify it some other way.** There is nothing to verify
+it against: no `.sha256`, `.asc` or attestation beside the tarballs, and the GitHub
+releases of moby carry no binaries. Docker's apt and yum repositories are signed (the
+`InRelease` file with Docker's release key, then package hashes), so `docker-ce` and
+`containerd.io` `.deb`s are verifiable. But they are glibc builds: the image would gain
+glibc and its loader (and owe glibc's LGPL source), a second signature scheme in CI
+(`gpgv` and Debian metadata), and their source is not offered per package the way aports
+is. That is more work than (a) for a weaker source story. Rejected.
+
+### Decision
+
+**(a).** It removes the only unsigned input, so strict mode now accepts the lock and runs
+on every CI build, not just on a tag. It needs no new trust root, no new verification
+code and no new source-bundle code, and it brings the Apache NOTICE files the release
+owes. Revisit, and move the engine to (b), if Alpine's `docker`, `containerd` or `runc`
+package lags an upstream security release by more than 7 days (the same rule as the
+kernel, Decision 2), or if Alpine drops a component.
+
+The price is about 15 MiB of idle memory (PIE relocations, see Measurements). That is a
+regression against the A2b numbers, accepted here for the release blocker it removes;
+building dockerd and containerd non-PIE from the same pinned Alpine sources is the way
+to take it back (Follow-up 10).
+
+### iptables, for name resolution on user networks
+
+Testing the change showed that containers on a user network could not resolve each other
+by name. This is not new (the static-tarball image had no iptables either): dockerd runs with `--iptables=false`, but its embedded DNS
+server (127.0.0.11) still needs a DNAT and an SNAT rule for port 53 in each container's
+network namespace, which it installs with `iptables`, and the image had none ("Resolver
+Start failed ... iptables not found"). That is why `docker-engine` depends on `iptables`.
+The image now has Alpine's `iptables-1.8.13-r0` (nft backend) with `libxtables`,
+`libnftnl` and `libmnl`, signed and pinned like the rest: `xtables-nft-multi`, its
+command-name links, and only the four extensions those rules load (`standard`, `tcp`,
+`udp`, `NAT` with its `DNAT`/`SNAT` aliases). The package's full extension set cannot be
+unpacked on NTFS anyway: nine pairs such as `libxt_MARK.so` and `libxt_mark.so` differ
+only in case. `init` loads `nf_tables`, `nft_compat`, `nft_chain_nat`, `nft_nat`, `xt_nat`
+and `xt_tcpudp` (added to `modules.txt`); the image has no `modules.alias` for the kernel
+to autoload them. The guest's own tables stay empty: Docker's firewalling is still off
+(Follow-up 4). iptables and libnftnl are GPL-2.0-or-later and libmnl LGPL-2.1-or-later;
+their sources go into the bundle like every other origin.
+
+### Implementation
+
+- `sources.lock` pins `docker-engine-29.9.2-r0`, `containerd-2.3.7-r0`, `runc-1.4.3-r2`,
+  `tini-static-0.19.0-r3`, `libseccomp-2.6.1-r0`, `iptables-1.8.13-r0`,
+  `libxtables-1.8.13-r0`, `libnftnl-1.3.1-r0` and `libmnl-1.0.5-r2`; the `docker-static`
+  entry is gone. `system.spec` installs the engine files under their old paths
+  (`/usr/bin/docker-init` is tini-static itself) and the libraries under their sonames.
+  `init` gains only the netfilter `modprobe` above.
+- `linux-virt` moved from 6.18.58-r0 to 6.18.59-r0: Alpine had dropped 6.18.58-r0 from
+  its mirrors, so a clean build could not fetch the old pin (the case the release's
+  input mirror exists for).
+- `build.ps1` now checks signatures too, on every build: after the SHA-256 pins it streams
+  the lock, the pinned files and `fetch-verify.sh` into the digest-pinned Alpine container
+  (`--network=none`), which runs the CI check (`apk verify`, `.PKGINFO` name) and returns
+  `guest-inputs.tsv`. `-Strict` refuses a non-`.apk` input there, as CI does. Each file is
+  hashed again just before it is unpacked.
+- `fetch-verify.sh` accepts a package only from the verifying container's Alpine branch
+  and architecture (`/alpine/v3.24/{main,community}/x86_64/`, and `.PKGINFO arch`): the
+  same key signs every branch, so a signature alone would also accept an edge package.
+- The CI build (`guest-image.yml`) builds the A2b layout now: the old
+  `build-prototype.sh` still produced the A2a initramfs and had not matched
+  `initramfs.spec` since the A2b change. `build-system.sh` is the Linux port of
+  `build.ps1`, and both run the same `mkfs-erofs.sh`; `ci-entry.sh` installs
+  `erofs-utils=1.9.1-r0`, the version `build.ps1` pins. Strict mode is the workflow's
+  default and `ci.yml` sets it.
+- `dist/package.ps1` packs the A2b files and fails on a `guest-inputs.tsv` line it cannot
+  parse (it used to skip it, which skipped the signature check for that line).
+
+### Measurements
+
+Same machine and method as "A2b implementation" (HCS, non-elevated, default `hyperbutler
+start`). Another agent was running VMs on this machine all along; the bench tools excluded
+runs that overlapped one. "Before" is the image built from `main` (static tarball,
+linux-virt 6.18.58), "after" this change (Alpine engine and iptables, linux-virt 6.18.59).
+
+| | Before | After |
+|---|---|---|
+| `system.vhd` | 92,275,200 B (88 MiB) | 91,226,624 B (87 MiB) |
+| `initramfs-stage1.gz` | 899,917 B | 900,005 B |
+| Start, `bench/start` (n = 20, 1 warm-up) | median 1.44 s, p95 1.46 s (2 overlapped runs excluded) | median **1.14 s**, p95 1.25 s |
+| Engine-reported ready | 1220–1236 ms in 17 of 20 runs | 911–1079 ms |
+| Idle total, `bench/mem-idle` (min 5–10 median) | 315 MiB (earlier valid run); six runs today all overlapped another VM: 301–325 MiB | 323.5 MiB, one valid run (three later runs overlapped: 325–349 MiB) |
+| Release zip (`package.ps1 -Snapshot`) | | 84.9 MB (89,026,173 B), 113.1 MB unpacked |
+
+The start gain is mostly the engine's ready time; the guest marks (`dockerd-exec` →
+`docker-sock`) moved by less than 0.05 s, so its cause is not isolated and should not be
+counted on.
+
+**Memory goes up by about 15 MiB, and the cause is known.** The host numbers vary by
+±12 MiB between boots, so they were checked inside the guest instead: two boots of each
+image, 90 s after start, no containers.
+
+| Guest, after 90 s idle | Before (two boots) | After (two boots) |
+|---|---|---|
+| `AnonPages` | 43.8, 43.6 MiB | 59.5, 58.3 MiB |
+| dockerd `Private_Dirty` | 17.5, 17.2 MiB | 26.8, 26.3 MiB |
+| containerd `Private_Dirty` | 11.4, 10.7 MiB | 14.7, 14.4 MiB |
+| netfilter modules | 0 | 0.8 MiB |
+| `MemFree` | 3766, 3770 MiB | 3756, 3749 MiB |
+
+Alpine builds Go programs as PIE. A PIE carries `.data.rel.ro` (Go's type data, itabs and
+pointers in read-only data) that the loader relocates at start, which turns those pages
+into private dirty anonymous memory: 11.0 MiB in dockerd and 4.7 MiB in containerd
+(`debug/elf`), against none in the static non-PIE builds. That matches the measured
++9.2 and +3.5 MiB. Each container's shim adds its own, smaller share. It is not
+reclaimable without swap.
+
+So option (a) costs about 15 MiB of idle memory (about 5% of the total; still within
+REQ-MEM-001's 400 MB for 0.1, and it widens the gap to 1.0's 250 MB). Ways to win it back,
+not done here:
+
+- Build dockerd and containerd as non-PIE from the same Alpine sources (the aports
+  commit and the distfiles the source bundle already holds), in CI. This is option (b)
+  for two binaries only, with the source and its sha512 pins taken from the signed
+  `.PKGINFO`'s commit.
+- Ask Alpine for a non-PIE Go build (unlikely: PIE is the distribution's policy).
+
+### Verification (2026-10-31)
+
+- **Reproducible:** two `build.ps1 -Strict` runs from empty caches (fresh downloads, the
+  builder image removed in between) gave byte-identical `vmlinuz-virt`,
+  `initramfs-stage1.gz`, `system.vhd`, `image.json` and `guest-inputs.tsv`. The CI path
+  (`ci-entry.sh` with `build-system.sh`, strict, in `alpine:3.24.3` on hyperbutler's own
+  engine, Go 1.27.0 linux) produced the same five files byte for byte, so the Windows and
+  the release build agree. A strict CI run with the source bundle also passed: 19
+  inputs, all signed; licence texts for every origin, including LICENSE and NOTICE of
+  moby, cli, containerd and runc; distfiles for moby, cli, containerd, runc, tini,
+  libseccomp, iptables, libnftnl and libmnl. A non-strict local build gives the same image.
+- **The checks fail closed:** fetch-verify.sh, in the pinned image, refused a
+  signature-stripped `.apk`, a package re-signed with another key, a SHA-256 mismatch, a
+  signed package under another package's file name, a non-apk input under strict, an
+  http URL, and packages from `edge` and from `testing`. `package.ps1` refused a
+  malformed `guest-inputs.tsv` line, with `-Snapshot` too.
+- **End to end** on the new image (hyperbutler start, docker CLI over the pipe): `docker
+  version` reports 29.9.2 with containerd v2.3.7, runc 1.4.3, docker-init 0.19.0;
+  hello-world; a `-v C:\...` bind mount read and written from both sides; `-p` nginx
+  answering 200; `docker logs`; `docker exec`; a two-stage `docker build`; two containers
+  on a user network resolving each other by name (after the iptables addition); seccomp
+  mode 2 in containers; `--init` runs docker-init. The data disk written by the old
+  engine was reused without trouble.
+
+### Review of this change
+
+The adversarial reviewer got the diff and the requirement, downloaded the nine new
+packages, checked every pin, signature key, file name, origin and commit, and the paths
+`system.spec` takes from them. It found no way for an unverified byte to reach the image
+or a release. Disposition:
+
+| # | Finding | Disposition |
+|---|---|---|
+| R1 medium | This section still said libseccomp was the only new library and `init` was unchanged after iptables was added. | **Fixed.** |
+| R2 medium | NOTICE and the release checklist omitted iptables, libnftnl (GPL) and libmnl (LGPL). The generated SOURCE-OFFER and THIRD-PARTY were already right. | **Fixed.** |
+| R3 low | fetch-verify.sh accepted any Alpine branch and arch, and one key signs them all. | **Fixed:** the URL must be the verifying image's `/alpine/v3.24/{main,community}/x86_64/`, and `.PKGINFO arch` that arch or `noarch`. Tested with edge and testing URLs. |
+| R4 low | No test for a foreign-signed package or a data-segment change. | **Partly fixed:** a package re-signed with another key is refused (run by hand). A data-segment change with the pin updated was not built: its gzip CRC or the signed datahash fails, and the pin makes it moot. CI does not run these yet (Follow-up 11). |
+| R5 low | No automated test of package.ps1's and build.ps1's manifest parsing. | **Accepted.** A malformed line was checked by hand (refused, with `-Snapshot` too); Pester is not set up in this repository. |
+| R6 low | build.ps1 does not check the Go version, so "same bytes as CI" holds only by luck. | **Fixed:** it prints the version and warns when it is not the go.mod one. Pinning `toolchain` stays Follow-up 5. |
+
 ## Adversarial review
 
 The adversarial reviewer got the diff and the
@@ -592,8 +821,8 @@ These are owned by the guest track unless noted.
    implementation": `Shmem` 178 → 0 MiB, first console output 0.65 → 0.08 s.
 3. ~~Run the image build inside a QEMU-WHPX Alpine VM.~~ Superseded: the build runs
    `mkfs.erofs` in a container on hyperbutler's own Docker Engine, in about 12 s.
-4. Add iptables or nft userspace and turn Docker's firewalling back on. Measure the
-   start-time delta.
+4. Turn Docker's firewalling back on (iptables-nft userspace is in the image since
+   2026-10-31, used only for the embedded DNS rules). Measure the start-time delta.
 5. Pin the Go toolchain (`toolchain` in `go.mod`) so initramfs bytes are reproducible
    across machines. Then check this by building from two different commits, and on CI.
 6. Add GPL source entries to the lock (aports commit, kernel.org and BusyBox tarballs with
@@ -605,7 +834,11 @@ These are owned by the guest track unless noted.
    erofs-utils `.apk`s (with SHA-256) in `sources.lock`. Today it is a version pin.
 9. Embed the image manifest's SHA-256 in release `hyperbutler.exe` builds, so `image.json` stops
    being self-certifying.
-
+10. Win back the ~15 MiB that Alpine's PIE dockerd and containerd cost at idle: build
+    those two non-PIE in CI from the aports commit and distfiles of the signed packages,
+    or show the cost is acceptable for 1.0's 250 MB target.
+11. Run `scripts/guest-image` negative tests (unsigned, foreign-signed, wrong branch,
+    renamed, pin mismatch) in CI; today they were run by hand (see Verification).
 **What would make us revisit**
 
 - HCS can't attach the read-only disk from a non-elevated or broker setup.

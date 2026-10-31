@@ -48,6 +48,9 @@ else
 	modprobe -a virtio_rng virtio_net virtio_blk virtio_balloon vmw_vsock_virtio_transport
 fi
 modprobe -a overlay bridge br_netfilter veth
+# For dockerd's embedded DNS rules (iptables-nft). The kernel would autoload them by alias,
+# but the image ships no modules.alias.
+modprobe -a nf_tables nft_compat nft_chain_nat nft_nat xt_nat xt_tcpudp
 t modules-done
 
 ip link set lo up

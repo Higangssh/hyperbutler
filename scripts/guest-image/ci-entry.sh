@@ -10,7 +10,7 @@
 # are not interpolated into shell code:
 #   HYPERBUTLER_LOCK          sources.lock path, relative to the repository root
 #   HYPERBUTLER_BUILD_SCRIPT  build script path, relative to the repository root (contract in
-#                        build-prototype.sh)
+#                        build-system.sh)
 #   HYPERBUTLER_OUTPUTS       space-separated file names the build script must produce
 #   HYPERBUTLER_STRICT        1: only signed Alpine packages are accepted (release)
 #   HYPERBUTLER_WITH_SOURCES  1: also produce the GPL source bundle and license texts
@@ -39,11 +39,16 @@ for f in ${HYPERBUTLER_OUTPUTS:?}; do
 done
 
 # Tools from the same pinned Alpine release. apk verifies every package it installs
-# against the image's keys. Versions are recorded in BUILDINFO.txt.
-tools="curl tar gzip xz"
+# against the image's keys. Versions are recorded in BUILDINFO.txt. erofs-utils is
+# pinned to the version guest/prototype/build.ps1 uses (-ErofsUtils), so both builds
+# make the same system disk; bump both together.
+erofs_utils=1.9.1-r0
+tools="curl tar gzip xz erofs-utils"
 [ "${HYPERBUTLER_WITH_SOURCES:-0}" = 1 ] && tools="$tools git abuild"
 # shellcheck disable=SC2086
-apk add --no-cache --quiet $tools
+apk add --no-cache --quiet $tools "erofs-utils=$erofs_utils"
+# apk-tools 3: `apk list -I` prints "<name>-<version> <arch> {origin} (license) [installed]".
+apk list -I erofs-utils 2>/dev/null | grep -q "^erofs-utils-$erofs_utils " || fail "erofs-utils is not $erofs_utils"
 
 export PATH="/usr/local/go/bin:$PATH"
 export GOTOOLCHAIN=local GOFLAGS=-mod=readonly GOCACHE=/tmp/go-build GOMODCACHE=/tmp/go-mod GOPATH=/tmp/go
@@ -89,7 +94,7 @@ fi
     echo "strict: ${HYPERBUTLER_STRICT:-0}"
     echo "tools:"
     # shellcheck disable=SC2086
-    apk info -v $tools apk-tools busybox 2>/dev/null | sort | sed 's/^/  /'
+    apk list -I $tools apk-tools busybox 2>/dev/null | cut -d' ' -f1 | sort | sed 's/^/  /'
 } >/out/BUILDINFO.txt
 
 # SHA256SUMS over every regular file except itself, sorted, paths relative to /out.

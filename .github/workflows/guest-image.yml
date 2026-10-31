@@ -7,15 +7,16 @@ name: Guest image
 #
 # Reusable: ci.yml calls it on every push and PR, release.yml calls it on a tag with
 # strict mode and the source bundle on. The build script, lock file and output names are
-# inputs, so the guest track can move to the erofs layout without editing this file.
+# inputs; the defaults build the ADR 0005 A2b layout (kernel, stage 1, erofs system disk,
+# manifest), the same as guest/prototype/build.ps1.
 
 on:
   workflow_call:
     inputs:
       build-script:
-        description: Build script, relative to the repository root (contract in scripts/guest-image/build-prototype.sh)
+        description: Build script, relative to the repository root (contract in scripts/guest-image/build-system.sh)
         type: string
-        default: scripts/guest-image/build-prototype.sh
+        default: scripts/guest-image/build-system.sh
       lock:
         description: Pinned input list, relative to the repository root
         type: string
@@ -23,11 +24,11 @@ on:
       outputs:
         description: Space-separated file names the build script must produce
         type: string
-        default: vmlinuz-virt initramfs-hyperbutler.gz
+        default: vmlinuz-virt initramfs-stage1.gz system.vhd image.json
       strict:
         description: Accept only signed Alpine packages (inputs whose source can be bundled)
         type: boolean
-        default: false
+        default: true
       with-sources:
         description: Also build the GPL corresponding-source bundle and license texts
         type: boolean

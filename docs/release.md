@@ -24,7 +24,7 @@ The zip has one top-level folder:
 | File | Notes |
 |---|---|
 | `hyperbutler.exe` | `CGO_ENABLED=0 go build -trimpath -buildvcs=true -ldflags "-s -w -buildid="`. The version is the tag, taken from Git by the Go toolchain; `package.ps1` fails if `go version -m hyperbutler.exe` reports anything else |
-| `vmlinuz-virt`, `initramfs-hyperbutler.gz` | The guest image, from the guest-image job. `hyperbutler start` finds them next to `hyperbutler.exe`. The names are a parameter (`-ImageFiles`) for the erofs layout |
+| `vmlinuz-virt`, `initramfs-stage1.gz`, `system.vhd`, `image.json` | The guest image (ADR 0005 A2b), from the guest-image job. `hyperbutler start` finds them next to `hyperbutler.exe` and checks them against `image.json`. `package.ps1 -ImageFiles` names them |
 | `LICENSE`, `NOTICE` | hyperbutler's own |
 | `THIRD-PARTY/` | License texts of every Go module linked into `hyperbutler.exe` or the guest binaries, of the Go standard library, and of every guest package (from the upstream sources), with an index in `README.txt` |
 | `SOURCE-OFFER.txt` | Names the source bundle by file name, SHA-256 and URL |
@@ -39,6 +39,7 @@ release here.
 | Release | Zip size | Notes |
 |---|---|---|
 | (dry run) | 79.7 MB | prototype A2a image, snapshot |
+| (dry run, 2026-10-31) | 84.9 MB | A2b image with the Alpine engine, snapshot (89,026,173 bytes; 113.1 MB unpacked) |
 
 There is no installer and nothing needs admin rights to install: unzip, add the folder to
 the user PATH, run `hyperbutler start` (REQ-PLAT-003). The one-time prerequisites (the Virtual
@@ -56,11 +57,16 @@ ships) do need an administrator; the README says so.
      SHA-256 pin, and runs `apk verify` on every `.apk`. That checks the RSA signature
      against the Alpine keys and the hash chain over the package contents. It also checks
      that the signed `.PKGINFO` names the pinned file.
-   - **Strict mode** (release only) rejects any input that is not a signed Alpine
-     package, because neither its signature nor its source can be verified.
-   - The build script (input `build-script`, default `scripts/guest-image/build-prototype.sh`)
-     builds the image. Its contract is in that file. The lock path and the output names
-     are inputs too, so the erofs layout only changes the inputs.
+   - **Strict mode** rejects any input that is not a signed Alpine package, because
+     neither its signature nor its source can be verified. It is the workflow's default,
+     and both `ci.yml` (every PR and push) and `release.yml` set it: since the engine
+     comes from Alpine's packages (ADR 0005, "Docker Engine from Alpine"), the lock has
+     no other kind of input, and a PR that adds one fails.
+   - The build script (input `build-script`, default `scripts/guest-image/build-system.sh`)
+     builds the A2b image: `vmlinuz-virt`, `initramfs-stage1.gz`, `system.vhd` and
+     `image.json`. Its contract is in that file. It is the Linux port of
+     `guest/prototype/build.ps1` and runs the same `mkfs-erofs.sh`, with `erofs-utils`
+     at the version both pin.
    - `fetch-sources.sh` takes each package's origin and aports commit from its signed
      `.PKGINFO`, fetches that aports directory (the commit hash pins its content), and
      runs `abuild fetch verify`, which downloads the upstream archives and checks the
@@ -100,7 +106,10 @@ Known limits of the image build:
 - The build tools in the container (`curl`, GNU `tar`, `gzip`, `xz`, `git`, `abuild`)
   come from the pinned Alpine release's current index, signed but not version-pinned.
   Their versions are recorded in `BUILDINFO.txt`. The image inputs themselves are
-  pinned; the tools are not, so the build is not hermetic across days.
+  pinned; the tools are not, so the build is not hermetic across days. `erofs-utils`,
+  whose output is the system disk, is version-pinned (`1.9.1-r0`, signed, not
+  hash-pinned; ADR 0005 Follow-up 8): when Alpine drops that revision the build fails
+  instead of changing.
 - Go comes from `actions/setup-go` on the runner (glibc host) and is mounted into the
   musl container. The official toolchain binaries are statically linked and the guest
   binaries are built with `CGO_ENABLED=0`; the first CI run confirms it.
@@ -139,12 +148,15 @@ met blocks the release. Changing a gate needs an ADR change, not a waiver here.
 
 **ADR 0005 (guest image)**
 - [ ] The image comes from the release run's guest-image job in strict mode, so every
-  input is a signed Alpine package. **Today this fails:** `sources.lock` still pins the
-  Docker static tarball (no signature, no source, static glibc). It must be replaced by
-  Alpine's `docker-engine`, `containerd` and `runc` (Decision 3) before the first release.
+  input is a signed Alpine package. Since 2026-10-31 the engine is Alpine's
+  `docker-engine`, `containerd`, `runc` and `tini-static` (ADR 0005, "Docker Engine from
+  Alpine"), and CI runs strict on every PR, so this holds unless that job was skipped.
 - [ ] Moby, containerd and runc LICENSE and NOTICE files are in `THIRD-PARTY/guest/`
-  (Apache-2.0 §4(a) and (d)). `fetch-sources.sh` takes them from the upstream sources
-  once those packages come from Alpine.
+  (Apache-2.0 §4(a) and (d)): `guest/docker/moby-<ver>/`, `guest/containerd/...`,
+  `guest/runc/...`. `fetch-sources.sh` takes them from the upstream tarballs.
+- [ ] The Alpine `docker`, `containerd` and `runc` packages in the lock are not behind an
+  upstream security release by more than 7 days (ADR 0005, revisit rule). Bump the lock
+  if they are; move to building from source if Alpine has not caught up.
 - [ ] `hyperbutler.exe` checks the guest image files against hashes embedded at build time
   (Decision 4). Not implemented yet.
 - [ ] REQ-MEM-001: idle memory ≤ 400 MB (`bench/mem-idle`). Today 580 MiB; the A2b erofs
@@ -175,8 +187,8 @@ met blocks the release. Changing a gate needs an ADR change, not a waiver here.
 
 ### 2. GPL and license obligations
 
-The guest image contains GPL-2.0 code (Linux, BusyBox, e2fsprogs) and LGPL code
-(libblkid, parts of e2fsprogs). hyperbutler distributes it, so hyperbutler owes the source.
+The guest image contains GPL-2.0 code (Linux, BusyBox, e2fsprogs, iptables, libnftnl) and LGPL
+code (libblkid, parts of e2fsprogs, libseccomp, libmnl). hyperbutler distributes it, so hyperbutler owes the source.
 
 - [ ] `hyperbutler-<tag>-guest-sources.tar` is attached to the same release as the zip. GPLv2
   §3 lets us meet the source duty by "equivalent access to copy the source code from the
@@ -185,7 +197,7 @@ The guest image contains GPL-2.0 code (Linux, BusyBox, e2fsprogs) and LGPL code
 - [ ] The bundle holds, for every package in `MANIFEST.tsv`, the aports directory at the
   commit in the package's signed `.PKGINFO` (APKBUILD, patches, the kernel config) and
   every upstream archive it names. Spot-check: the kernel tarball for the `linux-virt`
-  version, the BusyBox tarball, e2fsprogs and util-linux.
+  version, the BusyBox tarball, e2fsprogs, util-linux, iptables and libseccomp.
 - [ ] `SOURCE-OFFER.txt` names the bundle with the right SHA-256 and URL.
 - [ ] `THIRD-PARTY/README.txt` lists every Go module and guest package, and each one has
   its license text. `package.ps1` fails on a Go module without one; `fetch-sources.sh`
@@ -234,7 +246,7 @@ findings:
 | 2 | High | `fetch-sources.sh` took the file name of a `name::url` source from the URL, but abuild saves it under `name`, so e2fsprogs and libeconf had no license texts (and Moby's would be missed later). | **Fixed:** the local name is used. |
 | 3 | High | The ca-certificates upstream archive has no license file, and `dist/licenses/` did not exist, so every release run would fail. | **Fixed:** `dist/licenses/ca-certificates/` holds the MPL-2.0 text (from mozilla.org) and a note on which part is MIT. |
 | 4 | High | `Exec` might emit `$null` for no output, so a clean tree would count as dirty. | **Fixed defensively** (`Exec` drops nulls). A non-snapshot run on a clean tree had already passed locally, so it was not reproducible. |
-| 5 | Med | The strict and with-sources paths ran only on a tag. | **Fixed:** `ci.yml` builds the source bundle on every push to main. Strict mode stays release-only: it fails today by design (the Docker static tarball). |
+| 5 | Med | The strict and with-sources paths ran only on a tag. | **Fixed:** `ci.yml` builds the source bundle on every push to main. Strict mode stayed release-only while the Docker static tarball was in the lock; since 2026-10-31 CI runs it on every PR too. |
 | 6 | Med | Partial clone with anonymous URL remotes was fragile. | **Fixed:** named remotes, a plain shallow fetch of one commit. |
 | 7 | Med | The README claimed one guest configuration for all rows. | **Fixed:** the spike rows say which harness and guest size. |
 | 8 | Med | This file listed two of the six ADR 0006 gate rows. | **Fixed:** all six. |

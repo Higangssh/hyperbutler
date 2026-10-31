@@ -24,7 +24,8 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory)] [string]$ImageDir,
-    [string[]]$ImageFiles = @('vmlinuz-virt', 'initramfs-hyperbutler.gz'),
+    # The ADR 0005 A2b image: hyperbutler.exe boots it from the folder it is in.
+    [string[]]$ImageFiles = @('vmlinuz-virt', 'initramfs-stage1.gz', 'system.vhd', 'image.json'),
     [string]$SourceBundle = '',
     [string]$ReleaseUrl = '',
     [string]$Version = '',
@@ -165,23 +166,28 @@ try {
     }
 
     $index.Add('')
-    $index.Add('== In the guest image (vmlinuz-virt and the initramfs)')
+    $index.Add('== In the guest image (vmlinuz-virt, initramfs-stage1.gz and system.vhd)')
     $index.Add('')
     $inputs = Join-Path $ImageDir 'guest-inputs.tsv'
     $gpl = @()
     if (Test-Path $inputs) {
         $index.Add('name  package  license  (signature checked by apk verify, or sha256 pin only)')
+        $n = 0
         foreach ($l in Get-Content $inputs) {
             $c = $l -split "`t"
-            if ($c.Count -lt 10) { continue }
+            # A line that does not parse must not skip the signature check below.
+            if ($c.Count -ne 10) { Fail "bad line in ${inputs}: $l" }
+            $n++
             $pkg = if ($c[3] -eq 'apk') { "$($c[4])-$($c[5])" } else { $c[2] }
             $how = if ($c[3] -eq 'apk') { 'signed' } else { 'pin only' }
             # A release ships only signed Alpine packages, whose source and license texts
-            # the image job can collect (the Docker static tarball has neither).
+            # the image job can collect. kind is 'apk' only after apk verify passed
+            # (fetch-verify.sh); anything else is a pin-only input.
             if ($c[3] -ne 'apk') { Warn "guest input $($c[0]) ($($c[2])) is not a signed Alpine package" }
             $index.Add("$($c[0])  $pkg  $($c[9])  ($how)")
             if ($c[9] -match 'GPL') { $gpl += "  $pkg ($($c[9]))" }
         }
+        if ($n -eq 0) { Warn "$inputs lists no guest inputs" }
     } else { Warn "$inputs is missing; the guest components cannot be listed" }
     $index.Add('Guest binaries built from this repository (guest/cmd/*): Apache-2.0, plus the Go modules listed above.')
     $guestLic = Join-Path $ImageDir 'licenses'

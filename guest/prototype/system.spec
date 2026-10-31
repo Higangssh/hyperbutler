@@ -4,8 +4,10 @@
 # guest/cmd/mksysdisk. The BusyBox applet links are added in that container
 # (busybox --install -s), so they match the pinned BusyBox exactly.
 #
-# ${BUSYBOX}, ${DOCKER}, ${MODULES}, ${GUESTBIN}, ${CACERTS}, ${E2FS}, ${MUSL} and
-# ${PROTO} are passed with -D.
+# ${BUSYBOX}, ${DOCKERENGINE}, ${CONTAINERD}, ${RUNC}, ${TINI}, ${SECCOMP}, ${IPTABLES},
+# ${LIBXTABLES}, ${LIBNFTNL}, ${LIBMNL}, ${MODULES},
+# ${GUESTBIN}, ${CACERTS}, ${E2FS}, ${MUSL} and ${PROTO} are passed with -D: each is the
+# unpacked package of that name in sources.lock (or a staging directory).
 
 dir  bin 0755
 dir  sbin 0755
@@ -44,13 +46,41 @@ file etc/group ${PROTO}/rootfs/etc/group 0644
 file etc/hosts ${PROTO}/rootfs/etc/hosts 0644
 file etc/ssl/certs/ca-certificates.crt ${CACERTS}/etc/ssl/certs/ca-certificates.crt 0644
 
-# Docker static binaries. The docker CLI and ctr are left out: the host talks to the API.
-file usr/bin/dockerd ${DOCKER}/dockerd 0755
-file usr/bin/containerd ${DOCKER}/containerd 0755
-file usr/bin/containerd-shim-runc-v2 ${DOCKER}/containerd-shim-runc-v2 0755
-file usr/bin/runc ${DOCKER}/runc 0755
-file usr/bin/docker-init ${DOCKER}/docker-init 0755
-file usr/bin/docker-proxy ${DOCKER}/docker-proxy 0755
+# Docker Engine (Moby), containerd, runc and tini from the signed Alpine packages (musl,
+# dynamically linked: they use the loader below). The docker CLI and ctr are left out:
+# the host talks to the API. docker-engine ships docker-init as a symlink to
+# /sbin/tini-static; the file itself is installed here. runc links libseccomp, which is
+# installed under its soname like the e2fsprogs libraries.
+file usr/bin/dockerd ${DOCKERENGINE}/usr/bin/dockerd 0755
+file usr/bin/docker-proxy ${DOCKERENGINE}/usr/bin/docker-proxy 0755
+file usr/bin/containerd ${CONTAINERD}/usr/bin/containerd 0755
+file usr/bin/containerd-shim-runc-v2 ${CONTAINERD}/usr/bin/containerd-shim-runc-v2 0755
+file usr/bin/runc ${RUNC}/usr/bin/runc 0755
+file usr/bin/docker-init ${TINI}/sbin/tini-static 0755
+file usr/lib/libseccomp.so.2 ${SECCOMP}/usr/lib/libseccomp.so.2.6.1 0755
+
+# iptables, nft backend (xtables-nft-multi), for the rules dockerd's embedded DNS server
+# needs in each container's network namespace: DNAT and SNAT on udp and tcp port 53, in
+# chains of their own. The command names are links, as in the package. Only the
+# extensions those rules load are installed (the package's set also cannot be unpacked
+# on Windows: libxt_MARK.so and libxt_mark.so, and eight more pairs, differ only in case).
+file usr/sbin/xtables-nft-multi ${IPTABLES}/usr/sbin/xtables-nft-multi 0755
+slink usr/sbin/iptables xtables-nft-multi
+slink usr/sbin/iptables-save xtables-nft-multi
+slink usr/sbin/iptables-restore xtables-nft-multi
+slink usr/sbin/ip6tables xtables-nft-multi
+slink usr/sbin/ip6tables-save xtables-nft-multi
+slink usr/sbin/ip6tables-restore xtables-nft-multi
+dir  usr/lib/xtables 0755
+file usr/lib/xtables/libxt_standard.so ${IPTABLES}/usr/lib/xtables/libxt_standard.so 0644
+file usr/lib/xtables/libxt_tcp.so ${IPTABLES}/usr/lib/xtables/libxt_tcp.so 0644
+file usr/lib/xtables/libxt_udp.so ${IPTABLES}/usr/lib/xtables/libxt_udp.so 0644
+file usr/lib/xtables/libxt_NAT.so ${IPTABLES}/usr/lib/xtables/libxt_NAT.so 0644
+slink usr/lib/xtables/libxt_DNAT.so libxt_NAT.so
+slink usr/lib/xtables/libxt_SNAT.so libxt_NAT.so
+file usr/lib/libxtables.so.12 ${LIBXTABLES}/usr/lib/libxtables.so.12.7.0 0755
+file usr/lib/libnftnl.so.11 ${LIBNFTNL}/usr/lib/libnftnl.so.11.7.0 0755
+file usr/lib/libmnl.so.0 ${LIBMNL}/usr/lib/libmnl.so.0.2.0 0755
 
 # Guest binaries cross-compiled from this repo (GOOS=linux).
 file usr/bin/agent ${GUESTBIN}/agent 0755
@@ -59,7 +89,8 @@ file usr/bin/netfwd ${GUESTBIN}/netfwd 0755
 file usr/bin/hyperbutlerd ${GUESTBIN}/hyperbutlerd 0755
 
 # Data disk tools: mke2fs formats a blank data disk, e2fsck checks it before the mount.
-# They are musl builds; the libraries are installed under their sonames.
+# They are musl builds (like the engine binaries); the libraries are installed under
+# their sonames.
 file lib/ld-musl-x86_64.so.1 ${MUSL}/lib/ld-musl-x86_64.so.1 0755
 slink lib/libc.musl-x86_64.so.1 ld-musl-x86_64.so.1
 file sbin/mke2fs ${E2FS}/sbin/mke2fs 0755
