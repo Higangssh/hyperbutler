@@ -53,7 +53,7 @@ const watchFilter = windows.FILE_NOTIFY_CHANGE_FILE_NAME | windows.FILE_NOTIFY_C
 
 func (w *watcher) loop(fn func(EventKind, []string, []string), overflow func()) {
 	defer close(w.done)
-	buf := make([]byte, 256<<10)
+	buf := alignedBuf(256 << 10)
 	for {
 		ov := windows.Overlapped{HEvent: w.ev}
 		_ = windows.ResetEvent(w.ev)

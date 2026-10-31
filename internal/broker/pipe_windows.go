@@ -4,6 +4,7 @@ package broker
 
 import (
 	"context"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
@@ -546,16 +547,43 @@ func checkClientToken(tok windows.Token) (string, error) {
 	if restricted {
 		return "", errors.New("broker: restricted client token")
 	}
-	var buf [128]byte
-	if err := windows.GetTokenInformation(tok, windows.TokenIntegrityLevel, &buf[0], uint32(len(buf)), &n); err != nil {
+	// TOKEN_MANDATORY_LABEL holds a pointer, so the buffer must be pointer-aligned.
+	const labelBufLen = 128
+	buf := alignedBuf(labelBufLen)
+	if err := windows.GetTokenInformation(tok, windows.TokenIntegrityLevel, &buf[0], labelBufLen, &n); err != nil {
 		return "", fmt.Errorf("broker: client integrity level: %w", err)
 	}
 	label := (*windows.Tokenmandatorylabel)(unsafe.Pointer(&buf[0]))
-	il := label.Label.Sid
-	if c := il.SubAuthorityCount(); c == 0 || il.SubAuthority(uint32(c)-1) < mandatoryMediumRID {
+	if rid, ok := lastSubAuthority(buf, label.Label.Sid); !ok || rid < mandatoryMediumRID {
 		return "", errors.New("broker: client integrity below medium")
 	}
 	return tu.User.Sid.String(), nil
+}
+
+// lastSubAuthority reads the last subauthority (the RID) of sid, which must lie inside
+// buf. It parses the SID bytes itself: x/sys's SubAuthority helpers turn a pointer
+// returned by the system into an unsafe.Pointer, which checkptr (enabled by -race)
+// rejects when the SID is in Go memory.
+func lastSubAuthority(buf []byte, sid *windows.SID) (uint32, bool) {
+	if len(buf) == 0 || sid == nil {
+		return 0, false
+	}
+	base := uintptr(unsafe.Pointer(&buf[0]))
+	p := uintptr(unsafe.Pointer(sid))
+	if p < base || p-base >= uintptr(len(buf)) {
+		return 0, false
+	}
+	b := buf[p-base:]
+	// SID: revision (1), subauthority count (1), identifier authority (6), then count
+	// little-endian uint32 subauthorities.
+	if len(b) < 8 {
+		return 0, false
+	}
+	count := int(b[1])
+	if count == 0 || len(b) < 8+4*count {
+		return 0, false
+	}
+	return binary.LittleEndian.Uint32(b[8+4*(count-1):]), true
 }
 
 // DuplicateHandle copies handle value v out of the pipe's client process. The client

@@ -153,7 +153,7 @@ const (
 func objectTypeName(h windows.Handle) (string, error) {
 	// PUBLIC_OBJECT_TYPE_INFORMATION is a UNICODE_STRING followed by reserved fields,
 	// with the name stored after it in the same buffer.
-	buf := make([]byte, 1024)
+	buf := alignedBuf(1024)
 	var n uint32
 	r, _, _ := procNtQueryObject.Call(uintptr(h), objectTypeInformation,
 		uintptr(unsafe.Pointer(&buf[0])), uintptr(len(buf)), uintptr(unsafe.Pointer(&n)))
@@ -271,4 +271,14 @@ func checkDACL(sd *windows.SECURITY_DESCRIPTOR, caller *windows.SID) error {
 // register's upper half carries nothing.
 func ntStatus(r uintptr) windows.NTStatus {
 	return windows.NTStatus(r) //nolint:gosec // G115: NTSTATUS is a 32-bit value returned in a register
+}
+
+// alignedBuf returns an n-byte buffer aligned to 8 bytes. Kernel output structures
+// (LARGE_INTEGER fields, pointers) must be naturally aligned, and a call given a
+// misaligned buffer fails with ERROR_NOACCESS. A []byte only guarantees 1-byte
+// alignment: a fixed-size one that does not escape may live on the stack at any
+// offset, and race-detector builds lay out frames differently.
+func alignedBuf(n int) []byte {
+	w := make([]uint64, (n+7)/8)
+	return unsafe.Slice((*byte)(unsafe.Pointer(&w[0])), n)
 }

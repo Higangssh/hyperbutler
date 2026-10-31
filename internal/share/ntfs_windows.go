@@ -124,6 +124,16 @@ func (f *NTFS) RootID() string { return f.rootID }
 // RootPath is the final path of the share root.
 func (f *NTFS) RootPath() string { return f.rootPath }
 
+// alignedBuf returns an n-byte buffer aligned to 8 bytes. Kernel output structures
+// (LARGE_INTEGER fields, pointers) must be naturally aligned, and a call given a
+// misaligned buffer fails with ERROR_NOACCESS. A []byte only guarantees 1-byte
+// alignment: a fixed-size one that does not escape may live on the stack at any
+// offset, and race-detector builds lay out frames differently.
+func alignedBuf(n int) []byte {
+	w := make([]uint64, (n+7)/8)
+	return unsafe.Slice((*byte)(unsafe.Pointer(&w[0])), n)
+}
+
 func ntJoin(path []string) (string, error) {
 	var b strings.Builder
 	for i, c := range path {
@@ -418,11 +428,11 @@ func (f *NTFS) Lstat(path []string) (Attr, error) {
 		}
 		oa := windows.OBJECT_ATTRIBUTES{RootDirectory: f.root, ObjectName: us, Attributes: windows.OBJ_CASE_INSENSITIVE | windows.OBJ_DONT_REPARSE}
 		oa.Length = uint32(unsafe.Sizeof(oa))
-		var b [statLxLen]byte
+		b := alignedBuf(statLxLen)
 		var iosb windows.IO_STATUS_BLOCK
 		r, _, _ := procNtQueryInformationByName.Call(uintptr(unsafe.Pointer(&oa)), uintptr(unsafe.Pointer(&iosb)), uintptr(unsafe.Pointer(&b[0])), statLxLen, fileStatLxInformation)
 		if r == 0 {
-			return statLx(b[:]), nil
+			return statLx(b), nil
 		}
 		st := ntstatus(r)
 		if st != windows.STATUS_REPARSE_POINT_ENCOUNTERED && st != windows.STATUS_INVALID_INFO_CLASS && st != windows.STATUS_NOT_IMPLEMENTED && st != windows.STATUS_INVALID_PARAMETER {
@@ -448,7 +458,7 @@ func (f *NTFS) ReadDir(path []string) ([]DirEntry, error) {
 	if _, tag, err := reparseTag(h); err == nil && tag&tagSurrogate != 0 {
 		return nil, ENOTDIR
 	}
-	buf := make([]byte, 64<<10)
+	buf := alignedBuf(64 << 10)
 	class := uint32(windows.FileIdBothDirectoryRestartInfo)
 	var out []DirEntry
 	le := binary.LittleEndian
@@ -742,7 +752,7 @@ func (f *NTFS) Readlink(path []string) (string, error) {
 		return "", err
 	}
 	defer closeHandle(h)
-	buf := make([]byte, 16<<10)
+	buf := alignedBuf(16 << 10)
 	var n uint32
 	if err := windows.DeviceIoControl(h, fsctlGetReparsePoint, nil, 0, &buf[0], len32(len(buf)), &n, nil); err != nil {
 		return "", ntErr(err)
