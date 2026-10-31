@@ -192,6 +192,16 @@ For 0.1 that trade favours Go. Two things would re-open it:
     32 MiB is Go's to fix (or avoidable only by dropping every `crypto/tls` importer).
     Twice, at about minute 10 after start, an idle engine's working set also jumped by
     14 MiB with no workload; this looks like the same outside reader but was not traced.
+  - **Update, 2026-10-31 evening** ([research/mem-reclaim.md](../research/mem-reclaim.md),
+    section 3): the outside read was provoked by the benches' hidden PowerShell per
+    sample (12 of 13 runs, always 300 s after the engine started; 0 of 11 with in-process
+    sampling). Two changes decided there: release builds link Go's frozen FIPS 140-3
+    module `v1.0.0-c2097c7c` with FIPS mode off, which has no entropy buffer (commit 66 →
+    35 MiB), at the cost of crypto code that receives no fixes (acceptable while the host
+    process uses crypto only for SHA-256 digests and makes no TLS connection; revisit when
+    either changes or Go makes the buffer lazy); and the engine runs
+    `diag.WorkingSetGuard`, which empties its working set when an outside read makes it
+    equal to the commit. The 32 MiB "Go's to fix" above is therefore avoided, not fixed.
 - REQ-MEM-001 was re-measured with `bench/mem-idle` as specified (every 10 s from minute 5
   to minute 10, 31 samples, `runtime.MemStats` from the diag endpoint per sample), on
   2026-10-31 with no other VM running: total **315 MiB (331 MB)**, under the 0.1 target of

@@ -59,24 +59,35 @@ Status on the reference machine (2026-10-31, `hyperbutler start`, 4 GiB / 8 vCPU
   after one warm-up, no other VM running; `hyperbutler stop` median 1.25 s. The first start
   after a reboot is still not measured (the host had been up 20 h).
 - REQ-MEM-001: **met for 0.1, not for 1.0** (`bench/mem-idle`): median 315 MiB (331 MB) =
-  engine 17.7 + vmmem 292 + vmwp 5.5 MiB, no other VM running. The engine's commit is
-  65 MiB; a process that reads its whole memory (likely Defender) can make all of it
-  resident, which would add up to about 47 MiB.
-- REQ-MEM-002: **met for 0.1 in 1 of 4 runs, not reliably** (`bench/mem-reclaim`,
-  2026-10-31, 12 GiB guest; details in [research/mem-reclaim.md](research/mem-reclaim.md)).
-  The VM side meets it: since the guest reports free memory in single pages
-  (`page_reporting_order=0`), `vmmem` + `vmwp` are back within 20 MiB of their idle level
-  by +45 s after the 4 + 4 GiB workload (before, 84 MiB stayed and grew with every
-  workload). With the committed code: 443.9 MiB (465 MB) at +60 s, under the 476.8 MiB
-  (500 MB) limit from +44 s. But in three of the four runs the engine's working set rose
-  once by 46 MiB to its full commit (ADR 0003's untouched FIPS buffer becoming resident;
-  the reader and what triggers it are not identified), and those runs fail at about
-  493 MiB. Idle at 12 GiB is about 430 to 450 MiB, mostly `mem_map` (192 MiB), so the 1.0
-  limit (350 MB) is out of reach at this size. The bench reads "returns to" as "and stays
-  there until +180 s".
+  engine 17.7 + vmmem 292 + vmwp 5.5 MiB, no other VM running. A process that reads the
+  engine's whole memory (seen only while a bench sampled through PowerShell) makes its
+  whole commit resident; the release build's commit is about 35 MiB (66 MiB before
+  2026-10-31 evening), and the engine empties its working set when that happens
+  ([research/mem-reclaim.md](research/mem-reclaim.md), section 3).
+- REQ-MEM-002: **met for 0.1** (`bench/mem-reclaim`, 2026-10-31, 12 GiB guest, release
+  configuration: 9 of 9 valid runs, 4 + 4 GiB workload; details in
+  [research/mem-reclaim.md](research/mem-reclaim.md)). Total at +60 s 431.5 to 456.5 MiB,
+  highest sample from +60 s to +180 s 465.5 MiB, against 476.8 MiB (500 MB). The VM side:
+  since the guest reports free memory in single pages (`page_reporting_order=0`),
+  `vmmem` + `vmwp` are back within about 20 MiB of their idle level by +45 s. The engine
+  side: its working set used to jump once by 46 MiB to its full commit, which failed every
+  run where it happened. The trigger was the bench itself: sampling through a hidden
+  PowerShell per sample made an outside process (not identified; likely the antivirus)
+  read the engine's whole address space 300 s after its start (600 s with mem-idle's 10 s
+  sampling), in 12 of 13 runs; with
+  in-process sampling, in 0 of 11. The release build now links Go's frozen crypto module
+  (no 32 MiB FIPS buffer; commit 35 instead of 66 MiB) and the engine empties its working
+  set when such a read makes it resident, so the 4 runs with the old sampler passed too
+  (the engine stood at 33 to 34 MiB for 5 to 6 s, then 13 to 14 MiB). Open: a scan after
+  +60 s on a run whose VM sits high could still put a sample over the limit. Idle at
+  12 GiB is about 430 to 450 MiB, mostly `mem_map` (192 MiB), so the 1.0 limit (350 MB) is
+  out of reach at this size. The bench reads "returns to" as "and stays there until
+  +180 s".
 - REQ-MEM-001 re-run with the REQ-MEM-002 kernel command line (4 GiB, `bench/mem-idle`):
   309.6 MiB (325 MB), still met for 0.1. A run before it read 359.5 MiB because of the same
-  engine rise (312.7 MiB before it).
+  engine rise (312.7 MiB before it). With the release configuration: 306.9 MiB (322 MB)
+  with in-process sampling (engine 18.6 MiB, commit 33.7 MiB), 311.3 MiB with the old
+  PowerShell sampling.
 ## File sharing
 
 | ID | Requirement | Acceptance criterion (how measured) | Pri | Pain |
