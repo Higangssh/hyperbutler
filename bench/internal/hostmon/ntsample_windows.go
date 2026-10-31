@@ -58,7 +58,7 @@ func SampleNT(_ context.Context, pids []uint32) (map[uint32]ProcSample, error) {
 		if want[pid] {
 			res[pid] = ProcSample{
 				PID:            pid,
-				WorkingSetPriv: uint64(max(pi.WorkingSetPrivateSize, 0)), //nolint:gosec // G115: clamped to >= 0
+				WorkingSetPriv: uint64(max(pi.WorkingSetPrivateSize, 0)),
 				HandleCount:    uint64(pi.HandleCount),
 				ThreadCount:    uint64(pi.NumberOfThreads),
 				PrivateBytes:   uint64(pi.PagefileUsage),

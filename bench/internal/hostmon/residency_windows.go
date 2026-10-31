@@ -189,7 +189,10 @@ func ResidencyOf(pid uint32, exe string) (Residency, error) {
 	const page = 4096
 	var regions []windows.MemoryBasicInformation
 	reserved := map[uintptr]uintptr{} // private allocation base -> size of all its regions
-	for addr := uintptr(0); ; {
+	for addr, walked := uintptr(0), 0; ; walked++ {
+		if walked > maxRegions {
+			return r, fmt.Errorf("hostmon: PID %d has more than %d memory regions", pid, maxRegions)
+		}
 		var mbi windows.MemoryBasicInformation
 		if err := windows.VirtualQueryEx(h, addr, &mbi, unsafe.Sizeof(mbi)); err != nil {
 			if errors.Is(err, windows.ERROR_INVALID_PARAMETER) {

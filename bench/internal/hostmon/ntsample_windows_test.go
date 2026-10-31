@@ -69,7 +69,10 @@ func TestResidencySelf(t *testing.T) {
 	if sym := symbolBytes(r, ".big"); syms && (sym.Committed < 8<<20 || sym.Resident > 1<<20) {
 		t.Fatalf("untouched symbol: %+v in %s", sym, r)
 	}
-	before := r.Kinds["exe .data"].Resident
+	// Writable data is .data, plus .bss when the binary is linked externally (cgo,
+	// -race), where big then lives.
+	data := func(r Residency) uint64 { return r.Kinds["exe .data"].Resident + r.Kinds["exe .bss"].Resident }
+	before := data(r)
 	for i := 0; i < len(big); i += 4096 {
 		big[i] = 1
 	}
@@ -80,8 +83,8 @@ func TestResidencySelf(t *testing.T) {
 	if sym := symbolBytes(r, ".big"); syms && sym.Resident < 8<<20-8192 {
 		t.Fatalf("touched symbol: %+v in %s", sym, r)
 	}
-	if got := r.Kinds["exe .data"].Resident - before; got < 8<<20-8192 {
-		t.Fatalf(".data grew by %d bytes after touching 8 MiB: %s", got, r)
+	if got := data(r) - before; got < 8<<20-8192 {
+		t.Fatalf(".data and .bss grew by %d bytes after touching 8 MiB: %s", got, r)
 	}
 	if r.Kinds["go heap"].Resident == 0 {
 		t.Fatalf("no Go heap: %s", r)

@@ -52,28 +52,46 @@ type wsExEntry struct {
 }
 
 // dataSectionReader returns a function that counts the resident private bytes of this
-// executable's .data section (initialized data and BSS), or nil if the section cannot
-// be found. The section table is read from the loaded image's own headers (no file
-// I/O, no symbol table). QueryWorkingSetEx reads the page tables and touches no page.
+// executable's writable data: the .data section (initialized data, and BSS when Go
+// links internally) and a separate .bss section if there is one (external linking, as
+// in cgo and -race builds). It returns nil if .data cannot be found. The section
+// table is read from the loaded image's own headers (no file I/O, no symbol table).
+// QueryWorkingSetEx reads the page tables and touches no page.
 func dataSectionReader() func() (uint64, bool) {
 	base, _, _ := procGetModuleHandleW.Call(0)
 	if base == 0 {
 		return nil
 	}
-	rva, size, ok := dataSection(base)
-	if !ok {
+	var h [4096]byte
+	var n uintptr
+	if windows.ReadProcessMemory(windows.CurrentProcess(), base, &h[0], uintptr(len(h)), &n) != nil || n != uintptr(len(h)) {
 		return nil
 	}
 	const page = 4096
-	start := (base + uintptr(rva)) &^ (page - 1)
-	pages := (base + uintptr(rva) + uintptr(size) - start + page - 1) / page
-	if pages > maxDataPages {
+	var vas []uintptr
+	addSection := func(name string) bool {
+		rva, size, ok := parseSection(h[:], name)
+		if !ok {
+			return false
+		}
+		start := (base + uintptr(rva)) &^ (page - 1)
+		pages := (base + uintptr(rva) + uintptr(size) - start + page - 1) / page
+		if uintptr(len(vas))+pages > maxDataPages {
+			return false
+		}
+		for i := uintptr(0); i < pages; i++ {
+			vas = append(vas, start+i*page)
+		}
+		return true
+	}
+	if !addSection(".data") || len(vas) == 0 {
 		return nil
 	}
-	buf := make([]wsExEntry, pages)
+	addSection(".bss")
+	buf := make([]wsExEntry, len(vas))
 	return func() (uint64, bool) {
 		for i := range buf {
-			buf[i] = wsExEntry{va: start + uintptr(i)*page}
+			buf[i] = wsExEntry{va: vas[i]}
 		}
 		r, _, _ := procQueryWorkingSetEx.Call(uintptr(windows.CurrentProcess()), uintptr(unsafe.Pointer(&buf[0])), uintptr(len(buf))*unsafe.Sizeof(buf[0]))
 		if r == 0 {
@@ -90,18 +108,14 @@ func dataSectionReader() func() (uint64, bool) {
 	}
 }
 
-// dataSection finds .data in the PE headers of the image loaded at base.
-func dataSection(base uintptr) (rva, size uint32, ok bool) {
-	var h [4096]byte
-	var n uintptr
-	if windows.ReadProcessMemory(windows.CurrentProcess(), base, &h[0], uintptr(len(h)), &n) != nil || n != uintptr(len(h)) {
-		return 0, 0, false
-	}
-	return parseDataSection(h[:])
-}
-
 // parseDataSection reads the .data section's RVA and size from PE headers.
 func parseDataSection(h []byte) (rva, size uint32, ok bool) {
+	return parseSection(h, ".data")
+}
+
+// parseSection reads the RVA and size of the section called name (at most 8 bytes)
+// from PE headers.
+func parseSection(h []byte, name string) (rva, size uint32, ok bool) {
 	le := binary.LittleEndian
 	if len(h) < 0x40 || h[0] != 'M' || h[1] != 'Z' {
 		return 0, 0, false
@@ -117,7 +131,7 @@ func parseDataSection(h []byte) (rva, size uint32, ok bool) {
 		if o < 0 || o > len(h)-40 {
 			return 0, 0, false
 		}
-		if string(h[o:o+8]) == ".data\x00\x00\x00" {
+		if string(h[o:o+8]) == (name + "\x00\x00\x00\x00\x00\x00\x00\x00")[:8] {
 			vs, raw := le.Uint32(h[o+8:]), le.Uint32(h[o+16:])
 			rva, size := le.Uint32(h[o+12:]), max(vs, raw)
 			if uint64(rva)+uint64(size) > 1<<32 {
