@@ -286,7 +286,8 @@ costs an OPEN round trip even when its pages are cached. The next step is
 `FUSE_NO_OPEN_SUPPORT`, with a host-side handle cache that closes idle handles. Its risks
 are Windows sharing modes held past the guest's close, and O_TRUNC, which must then come
 as SETATTR. 4 KiB writes and creates stay bound by round trips (about 0.1 ms each) and
-NTFS: named volumes stay the advice for `node_modules`.
+NTFS: named volumes stay the advice for `node_modules`. (Done in the next section:
+`git status` is 1.7× ext4.)
 
 Reproduce (the docker CLI and endpoint are explicit; the user's context is never touched):
 
@@ -298,7 +299,123 @@ go run ./bench/fs-notify -docker C:\path\docker.exe -host ... -frameworks
 # and the command exits 2 (incomplete)
 ```
 
+## Opens without OPEN (`FUSE_NO_OPEN_SUPPORT`) and the size-0 report (2026-10-31)
+
+Same machine, guest and image as above (the image built from this branch is byte-identical
+to main's: the change is host-side only, `internal/share/openfile.go`).
+
+**Profile.** A per-opcode trace of the share server (a temporary build, not committed)
+counted, per warm `git status` of the axios checkout: 16 OPEN, 17 RELEASE, 1 CREATE, 1
+UNLINK (`index.lock`), 2 GETATTR (the directory after each change, for
+`default_permissions`), 1 LOOKUP and 1 FORGET. After the change: CREATE, UNLINK, 2 GETATTR,
+LOOKUP and FORGET. The LOOKUP and GETATTRs are the kernel's own revalidation after a
+change and cannot be answered from the server side.
+
+**Design.**
+- OPEN of a file and FLUSH answer ENOSYS. The kernel then sends no OPEN, RELEASE or
+  FLUSH for the connection, opens files with `FOPEN_KEEP_CACHE`, and sends READ, WRITE and
+  FSYNC with fh 0. `FUSE_ATOMIC_O_TRUNC` is no longer negotiated, so O_TRUNC arrives as a
+  path SETATTR inside open(2). O_APPEND is unchanged: the kernel already chose the offset.
+  `RealOpen`, `NoCache` and `Writeback` keep the old behaviour.
+- READ and WRITE with fh 0 are served by node from a host handle cache. Handles share read,
+  write and delete. A read opens read-only. Idle handles close after 100 ms
+  (`Options.FileIdle`); at most 256 are kept, least recently used first. A Windows removal,
+  a replacement or a lost-event overflow closes them at once. Closes happen after the server
+  lock is released: closing the last handle of a deleted file is when NTFS deletes it.
+- CREATE answers fh 0 as well and caches its handle. With a real fh, this guest kernel
+  (6.18.58) sent no RELEASE for CREATE handles once OPEN had answered ENOSYS:
+  `fuse_request_send` in ftrace showed none, and 4096 creates filled the handle table
+  (EMFILE). v6.18's `fuse_create_open` allocates release arguments, so the cause is not
+  understood; with fh 0 a RELEASE, if one comes, is a no-op (tested).
+- POSIX "unlinked while open". A guest unlink or rename-over pins the file's cached handle
+  until the kernel forgets the inode. The kernel forgets it once no process has the file
+  open. A read-only handle is reopened read-write first, for O_RDWR users and mmap
+  writeback. A file without a cached handle is not opened for this: the first open with
+  read access of a file just written costs about 0.5 ms here (real-time scanning), and doing
+  it on every delete made 10k deletes 2.6× slower. Such a file serves its cached pages,
+  and gets ESTALE for anything else.
+
+**What Windows programs can still do** (`openfile_windows_test.go`):
+- edit, rename and delete a file whose handle is cached, at once;
+- POSIX deletes (`DeleteFileW` on this Windows 11) free the name at once, and a classic
+  delete completes within FileIdle;
+- an exclusive open, or an atomic save (temp file, then `MoveFileEx` over the file), fails
+  while a handle is open, whatever its share flags. With OPEN this window was "while a guest
+  process has the file open". Now it also lasts for FileIdle after the guest's last READ or
+  WRITE that reached the host: about 100 ms in the test.
+
+FileIdle is short because a cache hit saves little. Page-cache hits never reach the server,
+and the READs or WRITEs of a stream arrive back to back.
+
+**The size-0 report.** It did not reproduce on main. 530 checks found no file of size 0 or
+missing:
+- Windows creates and writes new files (at once, and with 2 ms or 20 ms between create and
+  write);
+- guest side: `docker run ... ls -l; cat` in fresh containers, a container already
+  listing or stat-ing the directory in a loop, and `docker exec`.
+
+Two windows were found in the code, though. Both are fixed, with regression tests:
+- a LOOKUP (or READDIRPLUS, or replayed create) reads the host and then makes the node. A
+  change reported in between finds no node to invalidate, and the guest cached the old
+  attributes (or a negative entry) for an hour. Each host event now bumps a per-name
+  sequence. A reply whose host read is older than a change of that name carries no
+  attribute or entry timeout, and READDIRPLUS gives that name no node;
+- the kernel applies a LOOKUP reply after waking the caller. An invalidation of a node made
+  in the last 2 s can overtake it, so it is sent again after 50 ms and 1 s (batched, at most
+  4096 waiting).
+
+| `docker run -v`, median of 3 runs (interleaved) | Before | After | Guest ext4 |
+|---|---|---|---|
+| `git status`, median of 5 per run | 5.60 ms (3.92×) | **2.39 ms (1.68×)** | 1.42–1.48 ms |
+| lstat of every path, total | 1.81 ms (1.67×) | 1.81 ms (2.20×) | 0.82–1.09 ms |
+| lstat of a missing name, total | 1.14 ms (1.10×) | 1.04 ms (1.22×) | 0.85–1.03 ms |
+| warm walk, median | 1.14 ms | 1.09 ms | 0.52–0.53 ms |
+| 10k creates / stats / deletes | 11.1 / 1.37 / 5.5 s | 11.5 / 1.49 / 5.2 s | 0.11 / 0.007 / 0.037 s |
+| 256 MiB write + fsync (9 rounds) | 271 MiB/s | 278 MiB/s | 2188 MiB/s |
+| read, guest cache dropped / warm | 427 / 10200 MiB/s | 457 / 10100 MiB/s | 4540 / 11400 MiB/s |
+| Windows write → IN_MODIFY (100 edits) | p50 2.9, p95 3.8 ms, 0 missed | p50 2.4, p95 3.4 ms, 0 missed | – |
+| `dd bs=4k` / `bs=64k` write, 32 / 64 MiB, median of 3 | 32.9 / 201 MB/s | 33.0 / 217 MB/s | – |
+
+The lstat ratios moved because the ext4 side varied (0.82 ms against 1.09 ms); the bind-mount
+times are the same. Creates did not get faster. Each create is still a LOOKUP, a GETATTR of
+the directory, a CREATE and a WRITE, and the deletes an UNLINK and a GETATTR, all round
+trips the kernel waits for. Batching them would need the kernel to stop revalidating the
+directory after each change; with `default_permissions` it must. Named volumes stay the
+advice for write-heavy trees.
+
 ## Adversarial review
+
+### Opens without OPEN (2026-10-31)
+
+The adversarial review of the change raised these findings.
+
+| # | Sev | Finding | Resolution |
+|---|---|---|---|
+| N1 | High | A cached handle, read or write, makes a Windows atomic save fail with "access denied": a rename over the file, as editors, git and npm do. At 1 s idle this lasted a second after any guest I/O. | **Fixed:** FileIdle 100 ms; `TestNoOpenWindowsAtomicSave` (the save succeeds after about 100 ms). **Accepted:** the window itself remains, as it did while a guest process had the file open. |
+| N2 | Med | A pinned read-only handle could not serve a write after the unlink, nor mmap writeback (ESTALE, silently lost dirty pages). | **Fixed:** the handle is reopened read-write before the unlink or replace. Test: `TestNoOpenWriteAfterUnlinkOfReadFile`. **Accepted:** with no cached handle at all there is still no pin (cost, above). |
+| N3 | Med | The claim that the kernel sends no RELEASE for CREATE handles contradicts the v6.18 source. | **Recorded as observed, cause unknown** (ftrace, EMFILE after 4096 creates). fh 0 makes either behaviour safe; `TestNoOpenReleaseOfFh0`. |
+| N4 | Low-Med | Repeated invalidations of fresh nodes made two timers per event; a Windows checkout under a freshly walked tree could make thousands and flood the notification queue. | **Fixed:** one batch and one timer per delay, at most 4096 waiting. Test: `TestFreshNodeReinvalidationBounded`. |
+| N5 | Low | FSYNC with fh 0 hid every error and replaced a cached read handle with a write handle. | **Fixed:** it flushes a cached write handle, or opens one only for the flush (write-only opens are cheap); EIO is returned. Test: `TestNoOpenFsyncKeepsReadHandle`. |
+| N6 | Low | The replaying thread's READ, WRITE and FSYNC with fh 0 reached host files, and its records lingered (no RELEASE). | **Fixed:** they touch no host file, and its truncate ends the record. Test: `TestNoOpenInjectorTouchesNoHostFile`. |
+| N7 | Low | Windows writers that share reads only fail while a write handle is cached. | **Accepted**, bounded by FileIdle like N1. |
+
+Found sound:
+- the lock and close discipline: every unlock goes through `unlock()`, which closes
+  dropped files after releasing the lock;
+- reference counting: no use after close and no double close;
+- the sweep timer: generation-guarded, stops when empty;
+- the bounds against a hostile guest;
+- the kernel behaviour relied on, checked against v6.18: `FOPEN_KEEP_CACHE` for no-open
+  files, `write_inode_now` before `no_flush`, O_TRUNC as SETATTR without atomic_o_trunc;
+- no write can land in a replaced file;
+- the race-sequence logic;
+- read-only shares.
+
+Fuzzing: `FuzzNoOpen`, new, drives guest requests and host events against the handle
+cache. It checks for use after close, double close, the cache bounds and leaks. It found
+that turning a cached handle into a pin ignored the pin bound; the corpus entry is
+committed. `FuzzDispatch` got seeds with fh 0 and a no-leak check after Close. Both ran
+2 min 10 s after the last change, clean. The race detector still needs CI (no cgo here).
 
 ### Performance pass and share lifetime (2026-10-31)
 

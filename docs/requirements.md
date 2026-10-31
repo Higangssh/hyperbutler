@@ -79,20 +79,25 @@ Status of the bind-mount requirements, measured with `bench/fs-*` through `hyper
 on the reference machine (2026-10-31, [ADR 0007](adr/0007-bind-mounts.md#performance-pass-and-benchfs--2026-10-31)):
 - REQ-FS-001: cached reads met (1.12× ext4). Writes not measured against 9P (no WSL on
   the machine); 259 MiB/s against the spike's 191 MB/s for HCS Plan9 would not meet 3×.
-- REQ-FS-002: lstat and missing-name lookups met (2.1×, 0.9×). `git status` not met
-  (3.1–6.1×).
-- REQ-FS-003: met (IN_MODIFY p95 4.8 ms, none missed; pinned Vite and webpack rebuild).
+- REQ-FS-002: met. lstat 2.2×, missing names 1.2×, and `git status` 1.7× ext4
+  (2.39 ms against 1.48 ms, median of 3 runs; it was 3.9× before opens stopped costing a
+  round trip, [ADR 0007](adr/0007-bind-mounts.md#opens-without-open-fuse_no_open_support-and-the-size-0-report-2026-10-31)).
+- REQ-FS-003: met (IN_MODIFY p95 3.4 ms, none missed; pinned Vite and webpack rebuild,
+  measured before the change, not re-run).
 - REQ-FS-005: not measured against 9P. Against the spike's HCS Plan9 numbers, 10k
-  creates, stats and deletes are 4.4×, 14× and 5.7× faster; `npm ci` has no baseline.
+  creates, stats and deletes are 4.4×, 15× and 5.8× faster; `npm ci` has no baseline.
 
 Backlog for bind mounts (work items, not requirements; ADR 0007):
-- `FUSE_NO_OPEN_SUPPORT` with a host handle cache: each open costs a round trip even when
-  the file's pages are cached, which is most of what keeps `git status` above 3×;
-- a 9P baseline run (`-wsl`) on a machine with WSL 2, for REQ-FS-001 writes and REQ-FS-005.
+- creates and 4 KiB writes are round-trip bound (LOOKUP, GETATTR of the directory, CREATE,
+  WRITE per create); nothing on the server side removes those;
+- a 9P baseline run (`-wsl`) on a machine with WSL 2, for REQ-FS-001 writes and REQ-FS-005;
+- `go test -race ./internal/share/...` in CI (no cgo toolchain on the dev machine).
 
 Done (2026-10-31): the guest readdir cache is reused (warm walks 1.2–1.7× ext4, from 54×);
 shares no container uses are removed (integration step 5); sequential writes 56 → 260–300
-MB/s (the guest relay waited for the Go runtime's 10 ms background poll).
+MB/s (the guest relay waited for the Go runtime's 10 ms background poll); opens without
+a round trip (`FUSE_NO_OPEN_SUPPORT` with a host handle cache that closes idle handles after
+100 ms), so `git status` 3.9× → 1.7× ext4.
 
 ## Networking
 
