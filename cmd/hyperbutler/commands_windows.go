@@ -924,6 +924,11 @@ func cmdEngine(args []string, stderr io.Writer) (int, error) {
 	if dcfg.DebugPipe != "" {
 		log.Info("debug endpoint", "pipe", dcfg.DebugPipe)
 	}
+	// REQ-MEM-002: undo an outside scan that makes the untouched commit resident.
+	guard := diag.StartWorkingSetGuard(func(private, commit uint64) {
+		log.Info("working set emptied: it rose to its commit (likely an outside memory scan)", "privateWorkingSet", private, "privateBytes", commit)
+	})
+	defer guard.Stop()
 	log.Info("go memory limit", "bytes", debug.SetMemoryLimit(-1), "configured", dcfg.MemoryLimit, "env", os.Getenv("GOMEMLIMIT"))
 	log.Info("engine starting", "pid", os.Getpid(), "home", *home, "data", s.DataDir, "memoryMB", s.Memory(), "cpus", s.CPUCount(runtime.NumCPU()))
 	hg := s.HostGateway() // REQ-NET-004; changed later through the settings event

@@ -149,6 +149,8 @@ type Stats struct {
 	// (MemStats.Sys - HeapReleased) is DLL heaps, thread stacks and other native
 	// allocations.
 	OS *OSMemory `json:"os,omitempty"`
+	// WorkingSetTrims is how often the WorkingSetGuard emptied the working set.
+	WorkingSetTrims int64 `json:"working_set_trims"`
 }
 
 // OSMemory is the operating system's accounting of the process's memory.
@@ -185,10 +187,11 @@ func Snapshot() Stats {
 	var m runtime.MemStats
 	runtime.ReadMemStats(&m)
 	return Stats{
-		Goroutines:  runtime.NumGoroutine(),
-		Handles:     handleCount(),
-		MemoryLimit: debug.SetMemoryLimit(-1),
-		OS:          osMemory(),
+		Goroutines:      runtime.NumGoroutine(),
+		Handles:         handleCount(),
+		MemoryLimit:     debug.SetMemoryLimit(-1),
+		OS:              osMemory(),
+		WorkingSetTrims: workingSetTrims.Load(),
 		MemStats: MemStats{
 			HeapAlloc:    m.HeapAlloc,
 			HeapInuse:    m.HeapInuse,

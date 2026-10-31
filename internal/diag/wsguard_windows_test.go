@@ -1,0 +1,71 @@
+//go:build windows
+
+package diag
+
+import (
+	"testing"
+	"time"
+
+	"golang.org/x/sys/windows"
+)
+
+// untouched is demand-zero data, like the engine's untouched data-section variables.
+var untouched [16 << 20]byte
+
+// TestEmptyWorkingSet: reading 16 MiB of untouched data, as an outside scan does, raises
+// the private working set by that much without raising the commit; emptying the working
+// set takes it back out.
+func TestEmptyWorkingSet(t *testing.T) {
+	before, c0, ok := processMemory()
+	if !ok || before == 0 || c0 < before {
+		t.Fatalf("processMemory = %d, %d, %v", before, c0, ok)
+	}
+	var sum byte
+	for i := 0; i < len(untouched); i += 4096 {
+		sum += untouched[i]
+	}
+	touched, c1, _ := processMemory()
+	if touched < before+15<<20 || c1 > c0+2<<20 {
+		t.Fatalf("reading 16 MiB: working set %d -> %d, commit %d -> %d (sum %d)", before, touched, c0, c1, sum)
+	}
+	if !emptyWorkingSet() {
+		t.Fatal("emptyWorkingSet failed")
+	}
+	after, _, _ := processMemory()
+	if after > touched-15<<20 {
+		t.Fatalf("after the trim: %d bytes, %d before it", after, touched)
+	}
+	t.Logf("private working set %d -> %d -> %d KiB, commit %d KiB", before>>10, touched>>10, after>>10, c1>>10)
+}
+
+var (
+	modkernel32t  = windows.NewLazySystemDLL("kernel32.dll")
+	procHeapAlloc = modkernel32t.NewProc("HeapAlloc")
+	procHeapFree  = modkernel32t.NewProc("HeapFree")
+	procGetHeap   = modkernel32t.NewProc("GetProcessHeap")
+	procFill      = modkernel32t.NewProc("RtlFillMemory")
+)
+
+// TestGuardNativeGrowth: 32 MiB a DLL would allocate and write (invisible to the Go
+// runtime) raises the commit with the working set, so the guard's rule does not fire.
+func TestGuardNativeGrowth(t *testing.T) {
+	p0, c0, _ := processMemory()
+	heap, _, _ := procGetHeap.Call()
+	const n = 32 << 20
+	m, _, _ := procHeapAlloc.Call(heap, 0, n)
+	if m == 0 {
+		t.Fatal("HeapAlloc failed")
+	}
+	defer procHeapFree.Call(heap, 0, m)
+	procFill.Call(m, n, 1) // writes every page, as the DLL would
+	p1, c1, _ := processMemory()
+	if p1 < p0+30<<20 {
+		t.Fatalf("working set %d -> %d after writing 32 MiB", p0, p1)
+	}
+	g := &guardState{window: GuardWindow, minGap: GuardMinGap, rise: GuardRise, slack: GuardSlack}
+	t0 := time.Now()
+	g.observe(guardSample{at: t0, private: p0, commit: c0})
+	if g.observe(guardSample{at: t0.Add(GuardInterval), private: p1, commit: c1}) {
+		t.Fatalf("native growth looks like a scan: working set %d -> %d, commit %d -> %d", p0, p1, c0, c1)
+	}
+}
