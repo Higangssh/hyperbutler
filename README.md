@@ -1,3 +1,10 @@
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/brand/logo-dark.png">
+    <img alt="hyperbutler" src="assets/brand/logo-light.png" width="560">
+  </picture>
+</p>
+
 # hyperbutler
 
 > A lightweight, Docker-compatible container runtime for Windows that doesn't need WSL.
