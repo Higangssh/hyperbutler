@@ -384,12 +384,44 @@ func (s *Server) invalidateLater(msgs [][]byte) {
 	if len(inval) == 0 {
 		return
 	}
-	for _, d := range reinvalAfter {
-		time.AfterFunc(d, func() {
-			for _, m := range inval {
-				s.notify(m)
-			}
-		})
+	// One batch and one timer per delay, bounded: a Windows checkout touching
+	// thousands of names the guest just looked up must not make thousands of timers
+	// or flood the notification queue (past the bound the repeat is skipped; the first
+	// invalidation was sent).
+	s.lmu.Lock()
+	defer s.lmu.Unlock()
+	for i, d := range reinvalAfter {
+		if i >= len(s.later) {
+			break
+		}
+		b := &s.later[i]
+		if len(b.msgs)+len(inval) > maxReinval {
+			continue
+		}
+		b.msgs = append(b.msgs, inval...)
+		if b.timer == nil {
+			i := i
+			b.timer = time.AfterFunc(d, func() { s.flushLater(i) })
+		}
+	}
+}
+
+// maxReinval bounds the invalidations waiting to be sent again, per delay.
+const maxReinval = 4096
+
+// laterBatch is the invalidations waiting for one of reinvalAfter.
+type laterBatch struct {
+	msgs  [][]byte
+	timer *time.Timer
+}
+
+func (s *Server) flushLater(i int) {
+	s.lmu.Lock()
+	msgs := s.later[i].msgs
+	s.later[i] = laterBatch{}
+	s.lmu.Unlock()
+	for _, m := range msgs {
+		s.notify(m)
 	}
 }
 
@@ -540,6 +572,9 @@ func (s *Server) injectRename(h *inHeader, in renameIn) []byte {
 }
 
 func (s *Server) injectSetattr(h *inHeader) []byte {
+	// The modify replay's truncate: its record is done (without OPEN there is no
+	// RELEASE to say so).
+	s.injectDone(h.NodeID)
 	a, err := s.getattr(h.NodeID)
 	if err != nil {
 		return errReply(h.Unique, toErrno(err))

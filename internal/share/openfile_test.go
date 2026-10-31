@@ -406,14 +406,14 @@ func TestNoOpenUnlinkPins(t *testing.T) {
 	if n, p := s.CachedFiles(); n != 0 || p != 0 {
 		t.Fatalf("after FORGET: cached %d pinned %d", n, p)
 	}
-	if o, cl := fs.counts(); o != 1 || cl != 1 {
+	if o, cl := fs.counts(); o != 2 || cl != 2 { // the read handle, made writable before the unlink
 		t.Fatalf("opens %d closes %d", o, cl)
 	}
 	g := c.mustLookup(root, "g")
 	if e, _ := c.do(opUnlink, root, (&wbuf{}).str("g").b); e != 0 {
 		t.Fatal(e)
 	}
-	if o, _ := fs.counts(); o != 1 {
+	if o, _ := fs.counts(); o != 2 {
 		t.Fatalf("%d host opens, want none for an unlink", o)
 	}
 	if e, _ := c.read(g.node, 0, 0, 10); e != int(ESTALE) {
@@ -548,6 +548,109 @@ func TestNoOpenCreatesNeedNoRelease(t *testing.T) {
 	s.mu.Unlock()
 	if nh != 0 {
 		t.Fatalf("%d handles", nh)
+	}
+}
+
+// Review: a process with the file open O_RDWR that only read it before the unlink
+// must still be able to write it (the pin is made writable before the unlink), and
+// so must a shared writable mapping's writeback.
+func TestNoOpenWriteAfterUnlinkOfReadFile(t *testing.T) {
+	s, c, fs, root := hookShare(t, Options{FileIdle: time.Hour})
+	f := c.mustLookup(root, "f")
+	if e, _ := c.read(f.node, 0, 0, 10); e != 0 {
+		t.Fatal(e)
+	}
+	if e, _ := c.do(opUnlink, root, (&wbuf{}).str("f").b); e != 0 {
+		t.Fatal(e)
+	}
+	if e := c.write(f.node, 0, 0, []byte("x")); e != 0 {
+		t.Fatalf("write to an unlinked file that was read: %d", e)
+	}
+	if _, p := s.CachedFiles(); p != 1 {
+		t.Fatalf("%d pins", p)
+	}
+	c.do(opForget, f.node, (&wbuf{}).u64(1).b)
+	if o, cl := fs.counts(); o != cl || o != 2 {
+		t.Fatalf("opens %d closes %d, want 2 and 2", o, cl)
+	}
+}
+
+// Review: a RELEASE of fh 0 (the kernel may send one for a CREATE) changes nothing.
+func TestNoOpenReleaseOfFh0(t *testing.T) {
+	s, c, _, root := hookShare(t, Options{FileIdle: time.Hour})
+	e, en, fh := c.create(root, "n", oWRONLY|oCREAT|oEXCL, 0o644)
+	if e != 0 || fh != 0 {
+		t.Fatal(e, fh)
+	}
+	c.do(opRelease, en.node, (&wbuf{}).u64(0).u32(0).u32(0).u64(0).b)
+	if n, _ := s.CachedFiles(); n != 1 {
+		t.Fatalf("%d cached after RELEASE fh 0", n)
+	}
+	if e := c.write(en.node, 0, 0, []byte("ok")); e != 0 {
+		t.Fatal(e)
+	}
+}
+
+// Review: FSYNC without a handle flushes a cached write handle, and otherwise does not
+// replace a cached read handle with a write handle (which would block Windows writers
+// that share reads only).
+func TestNoOpenFsyncKeepsReadHandle(t *testing.T) {
+	s, c, fs, root := hookShare(t, Options{FileIdle: time.Hour})
+	f := c.mustLookup(root, "f")
+	c.read(f.node, 0, 0, 10)
+	if e := c.fsync(f.node, 0); e != 0 {
+		t.Fatal(e)
+	}
+	s.mu.Lock()
+	e := s.files[f.node]
+	s.mu.Unlock()
+	if e == nil || e.write {
+		t.Fatalf("cached handle after fsync: %+v", e)
+	}
+	if o, cl := fs.counts(); o != 2 || cl != 1 {
+		t.Fatalf("opens %d closes %d: fsync should open for the flush and close", o, cl)
+	}
+}
+
+// Review: the replaying thread's READ, WRITE and FSYNC without a handle touch no host
+// file.
+func TestNoOpenInjectorTouchesNoHostFile(t *testing.T) {
+	_, c, fs, root := hookShare(t, Options{})
+	f := c.mustLookup(root, "f")
+	c.do(opHello, 0, (&wbuf{}).u32(4242).b)
+	c.pid = 4242
+	c.read(f.node, 0, 0, 10)
+	if e := c.write(f.node, 0, 0, []byte("x")); e != int(EBADF) {
+		t.Fatalf("injector write: %d", e)
+	}
+	c.fsync(f.node, 0)
+	if o, _ := fs.counts(); o != 0 {
+		t.Fatalf("%d host opens for the injector", o)
+	}
+}
+
+// Review: thousands of host events on nodes made moments ago (a Windows checkout under
+// a tree the guest just walked) make at most one timer per delay and a bounded
+// backlog.
+func TestFreshNodeReinvalidationBounded(t *testing.T) {
+	old := reinvalAfter
+	reinvalAfter = []time.Duration{time.Hour, time.Hour}
+	defer func() { reinvalAfter = old }()
+	s, c, fs, root := hookShare(t, Options{})
+	for i := 0; i < 3000; i++ {
+		n := "x" + itoa(i)
+		fs.files[n] = nil
+		c.mustLookup(root, n)
+		s.HostChanged(HostEvent{Share: "src", Path: []string{n}, Kind: Modified})
+	}
+	s.lmu.Lock()
+	defer s.lmu.Unlock()
+	for i := range s.later {
+		b := &s.later[i]
+		if len(b.msgs) > maxReinval || b.timer == nil {
+			t.Fatalf("batch %d: %d messages, timer %v", i, len(b.msgs), b.timer != nil)
+		}
+		b.timer.Stop()
 	}
 }
 

@@ -42,7 +42,7 @@ type Options struct {
 	// Writeback imply it.
 	RealOpen bool
 	// FileIdle is how long a host file opened for a guest READ or WRITE without a
-	// handle stays open after its last use [1 s]; MaxFiles bounds how many are kept
+	// handle stays open after its last use [100 ms]; MaxFiles bounds how many are kept
 	// [256] (openfile.go).
 	FileIdle time.Duration
 	MaxFiles int
@@ -74,7 +74,7 @@ func (o *Options) defaults() {
 		o.MaxNodes = 1 << 20
 	}
 	if o.FileIdle <= 0 {
-		o.FileIdle = time.Second
+		o.FileIdle = 100 * time.Millisecond
 	}
 	if o.MaxFiles <= 0 {
 		o.MaxFiles = 256
@@ -197,10 +197,14 @@ type Server struct {
 	watchers map[string]Closer
 
 	// Host files for guest opens without handles (openfile.go), by node.
-	files    map[uint64]*nodeFile
-	pins     int // entries of files that are pinned
-	sweep    *time.Timer
-	closeq   []File // closed by unlock, after s.mu is released
+	files  map[uint64]*nodeFile
+	pins   int // entries of files that are pinned
+	sweep  *time.Timer
+	closeq []File // closed by unlock, after s.mu is released
+
+	// Invalidations sent again later (invalidateLater), one batch per delay.
+	lmu      sync.Mutex
+	later    [2]laterBatch
 	sweepGen uint64
 	noOpen   atomic.Bool // this session's kernel sends no OPEN for files
 
@@ -742,7 +746,7 @@ func (s *Server) dispatch(r *request) []byte {
 			// FuzzDispatch).
 			return fail(EINVAL)
 		}
-		f, done, err := s.fileFor(h.NodeID, in.Fh, false)
+		f, done, err := s.fileFor(h, in.Fh, false)
 		if err != nil {
 			return fail(err)
 		}
@@ -764,7 +768,7 @@ func (s *Server) dispatch(r *request) []byte {
 		if int64(in.Offset) < 0 {
 			return fail(EFBIG)
 		}
-		f, done, err := s.fileFor(h.NodeID, in.Fh, true)
+		f, done, err := s.fileFor(h, in.Fh, true)
 		if err != nil {
 			return fail(err)
 		}
@@ -815,20 +819,17 @@ func (s *Server) dispatch(r *request) []byte {
 		if err != nil {
 			return fail(EINVAL)
 		}
-		var f File
-		var done func()
 		if fh == 0 && s.noOpen.Load() {
-			f, done, err = s.nodeFileGet(h.NodeID, true)
-		} else {
-			f, done, err = s.file(fh)
-		}
-		if err != nil {
-			if fh == 0 && s.noOpen.Load() {
-				// No host handle can write the file (read-only, removed, held
-				// exclusively): nothing written through this server can be waiting
-				// in one. fsync of a read-only descriptor succeeds on Linux too.
+			if s.isInjector(h) {
 				return newReply(u, 0).finish()
 			}
+			if err := s.nodeFileSync(h.NodeID); err != nil {
+				return fail(err)
+			}
+			return newReply(u, 0).finish()
+		}
+		f, done, err := s.file(fh)
+		if err != nil {
 			return fail(err)
 		}
 		defer done()
@@ -1228,6 +1229,7 @@ func (s *Server) doRemove(h *inHeader, name string, dir bool) []byte {
 	if dir {
 		err = sh.FS.Rmdir(path)
 	} else {
+		s.writableForPin(k, sh, path)
 		err = sh.FS.Unlink(path)
 	}
 	if err != nil {
@@ -1269,6 +1271,9 @@ func (s *Server) doRename(h *inHeader, in renameIn) []byte {
 	}
 	s.markRecent(h.NodeID, in.OldName)
 	s.markRecent(in.NewDir, in.NewName)
+	if nk := (nodeKey{in.NewDir, in.NewName}); in.Flags&renameNoreplace == 0 && nk != (nodeKey{h.NodeID, in.OldName}) {
+		s.writableForPin(nk, sh, newPath)
+	}
 	if err := sh.FS.Rename(oldPath, newPath, in.Flags&renameNoreplace != 0); err != nil {
 		return errReply(u, toErrno(err))
 	}
@@ -1528,9 +1533,16 @@ func (s *Server) doCreate(h *inHeader, in createIn) []byte {
 
 // fileFor returns the host file for a READ or WRITE, with a reference held: by handle,
 // or by node when the kernel sends none (fh 0 after OPEN answered ENOSYS, openfile.go).
-func (s *Server) fileFor(id, fh uint64, write bool) (File, func(), error) {
+func (s *Server) fileFor(h *inHeader, fh uint64, write bool) (File, func(), error) {
 	if fh == 0 && s.noOpen.Load() {
-		return s.nodeFileGet(id, write)
+		if s.isInjector(h) {
+			// The replaying thread never touches host data (inject.go).
+			if write {
+				return nil, nil, EBADF
+			}
+			return nopFile{}, func() {}, nil
+		}
+		return s.nodeFileGet(h.NodeID, write)
 	}
 	if write {
 		return s.writableFile(fh)

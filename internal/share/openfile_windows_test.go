@@ -110,6 +110,34 @@ func TestNoOpenWindowsKeepsAccess(t *testing.T) {
 	}
 }
 
+// Review: an atomic save (write a temp file, rename it over the target) fails while a
+// handle to the target is open, whatever its share flags. It must succeed soon after
+// the guest's last read or write (FileIdle and a sweep), with the default FileIdle.
+func TestNoOpenWindowsAtomicSave(t *testing.T) {
+	dir := testDir(t)
+	p := filepath.Join(dir, "f.txt")
+	os.WriteFile(p, []byte("v0"), 0o644)
+	s, c, root := newTestServer(t, dir, Options{NoWatch: true}, nil)
+	en := c.mustLookup(root, "f.txt")
+	for i, guest := range []func(){
+		func() { c.read(en.node, 0, 0, 10) },
+		func() { c.write(en.node, 0, 0, []byte("g")) },
+	} {
+		guest()
+		if n, _ := s.CachedFiles(); n != 1 {
+			t.Fatalf("%d cached", n)
+		}
+		tmp := filepath.Join(dir, "f.txt.tmp")
+		os.WriteFile(tmp, []byte("saved"), 0o644)
+		t0 := time.Now()
+		eventually(t, time.Second, "rename over the file", func() bool { return os.Rename(tmp, p) == nil })
+		t.Logf("case %d: rename over succeeded after %v", i, time.Since(t0))
+		if b, _ := os.ReadFile(p); string(b) != "saved" {
+			t.Fatalf("after the save: %q", b)
+		}
+	}
+}
+
 // A classic delete stays pending while any handle is open: the cached handle must
 // close soon, with no help from the watcher.
 func TestNoOpenClassicDeleteCompletes(t *testing.T) {

@@ -13,9 +13,15 @@ package share
 // because the guest no longer says when it closes a file:
 //   - every handle shares read, write and delete (shareAll), so Windows programs can
 //     edit, rename and delete the file while it is cached;
-//   - an idle handle is closed after Options.FileIdle, and at most Options.MaxFiles are
-//     kept (least recently used first), so a handle can hold up a Windows program that
-//     wants the file exclusively, or a classic (non-POSIX) delete, for that long at most;
+//   - an idle handle is closed after Options.FileIdle (100 ms), and at most
+//     Options.MaxFiles are kept (least recently used first). An open handle, even with
+//     every share flag, still makes some Windows operations fail: MoveFileEx over the
+//     file (an atomic save: temp file, then rename over it) gets "access denied", and
+//     an exclusive open a sharing violation. That window was "while a guest process has
+//     the file open" with OPEN; now it also covers FileIdle after the guest's last READ
+//     or WRITE that reached the host. It is kept short because those are the only
+//     requests a cache hit saves: page-cache hits never reach the server, and reads or
+//     writes in a stream arrive back to back;
 //   - a host removal or replacement of the file closes its handle at once (inject.go);
 //   - a read never opens the file for writing: a cached read handle does not conflict
 //     with Windows programs that share reads only.
@@ -32,8 +38,7 @@ package share
 //     it does as soon as no process has it open. A file with no cached handle (not
 //     read or written for FileIdle) is not reopened for this: its pages in the guest
 //     cache still read, anything else gets ESTALE (pinLocked says why);
-//   - CREATE answers fh 0 and caches the file it opened: the kernel sends no RELEASE
-//     for a CREATE handle either once OPEN answered ENOSYS (seen on 6.18).
+//   - CREATE answers fh 0 and caches the file it opened (keepCreated says why).
 //
 // Options.RealOpen, NoCache and Writeback keep the old behaviour (an OPEN and a host
 // handle per guest open).
@@ -141,6 +146,44 @@ func (s *Server) nodeFileGet(id uint64, write bool) (File, func(), error) {
 	return f, func() { s.putFile(e) }, nil
 }
 
+// nodeFileSync is FSYNC without a handle. A cached handle that can write is flushed.
+// Otherwise the file is opened for writing just for the flush (FlushFileBuffers needs
+// write access; it flushes the file, not the handle, so writes through a handle closed
+// since are covered) and closed again, so a cached read handle is not replaced by one
+// that blocks Windows writers. If no write handle can be had (read-only file or share,
+// removed, held exclusively), nothing the guest wrote can be waiting: fsync of a
+// read-only descriptor succeeds on Linux too.
+func (s *Server) nodeFileSync(id uint64) error {
+	s.mu.Lock()
+	e := s.files[id]
+	if e != nil && e.write {
+		e.refs++
+		s.unlock()
+		defer s.putFile(e)
+		return e.f.Sync()
+	}
+	n := s.nodes[id]
+	var path []string
+	var sh *Share
+	var err error
+	if n != nil && !n.dir && id != rootNode {
+		path, sh, err = s.pathLocked(id)
+	}
+	s.unlock()
+	if n == nil || n.dir || id == rootNode || err != nil || sh.ReadOnly {
+		return nil
+	}
+	f, err := sh.FS.Open(path, oWRONLY)
+	if err != nil {
+		if errors.Is(err, EIO) {
+			return err
+		}
+		return nil
+	}
+	defer f.Close()
+	return f.Sync()
+}
+
 // cacheFileLocked caches f as the file of node id, which has none, with refs requests
 // using it already (so the trim below cannot close it).
 func (s *Server) cacheFileLocked(id uint64, f File, rd, wr bool, refs int) *nodeFile {
@@ -152,9 +195,11 @@ func (s *Server) cacheFileLocked(id uint64, f File, rd, wr bool, refs int) *node
 }
 
 // keepCreated caches the file a CREATE opened, answered with fh 0: the kernel sends
-// READ, WRITE and FSYNC for it with fh 0 like for any other file, and, once OPEN
-// answered ENOSYS, no RELEASE (seen on 6.18: every CREATE handle stayed open until the
-// handle table was full).
+// READ, WRITE and FSYNC for it with fh 0 like for any other file. With a real fh, the
+// guest (Alpine 6.18.58) sent no RELEASE for CREATE handles once OPEN had answered
+// ENOSYS (ftrace of fuse_request_send showed none, and 4096 creates filled the handle
+// table), although v6.18's fuse_create_open allocates release arguments; the cause was
+// not found. With fh 0 it does not matter: a RELEASE of fh 0, if one comes, is a no-op.
 func (s *Server) keepCreated(id uint64, f File, rd, wr bool) {
 	s.mu.Lock()
 	defer s.unlock()
@@ -235,6 +280,36 @@ func (s *Server) dropAllFilesLocked(sh *Share, pins bool) {
 			s.dropFileLocked(e)
 		}
 	}
+}
+
+// writableForPin is called before the guest removes or replaces name k (at path):
+// if the file has a cached handle that cannot write, it is reopened read-write, so the
+// pin serves a process that has it open O_RDWR (or mapped shared and writable: its
+// dirty pages are written back with fh 0 at close). Only files read within FileIdle
+// pay this host open, and their first-open antivirus scan is already done.
+func (s *Server) writableForPin(k nodeKey, sh *Share, path []string) {
+	if !s.noOpen.Load() {
+		return
+	}
+	s.mu.Lock()
+	id := s.index[k]
+	e := s.files[id]
+	s.unlock()
+	if e == nil || e.write {
+		return
+	}
+	f, err := sh.FS.Open(path, oRDWR)
+	if err != nil {
+		return // the pin stays read-only
+	}
+	s.mu.Lock()
+	defer s.unlock()
+	if s.files[id] != e || e.pinned {
+		s.closeLater(f)
+		return
+	}
+	s.dropFileLocked(e)
+	s.cacheFileLocked(id, f, true, true, 0)
 }
 
 // pinLocked keeps the cached handle of node id, which the guest just removed or
