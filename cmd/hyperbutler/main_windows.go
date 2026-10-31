@@ -14,6 +14,9 @@
 // See docs/research/cli-engine.md.
 package main
 
+// The icon and version resource; dist/package.ps1 regenerates it with the release version.
+//go:generate go run github.com/tc-hib/go-winres@v0.3.3 make --in winres/winres.json --out rsrc --arch amd64,arm64
+
 import (
 	"errors"
 	"fmt"

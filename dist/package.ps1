@@ -84,6 +84,11 @@ try {
 
     # --- hyperbutler.exe -------------------------------------------------------------------------
     $exe = Join-Path $stage 'hyperbutler.exe'
+    # The icon and version resource (cmd/hyperbutler/winres), stamped with this version. The
+    # .syso files are git-ignored, so generating them leaves the tree clean for -buildvcs.
+    $resVersion = $Version.TrimStart('v')
+    Exec go run github.com/tc-hib/go-winres@v0.3.3 make --in cmd/hyperbutler/winres/winres.json `
+        --out cmd/hyperbutler/rsrc --arch 'amd64,arm64' --product-version $resVersion --file-version $resVersion | Out-Null
     $saved = $env:GOOS, $env:GOARCH, $env:CGO_ENABLED, $env:GOTOOLCHAIN, $env:GOFLAGS
     try {
         $env:GOOS = 'windows'; $env:GOARCH = 'amd64'; $env:CGO_ENABLED = '0'

@@ -15,6 +15,10 @@ go build ./...
 go test ./...
 ```
 
+`go generate ./cmd/hyperbutler` adds the icon and version resource to `hyperbutler.exe`
+(it runs the pinned `go-winres`; the generated `.syso` files are git-ignored). Builds work
+without it, just with no icon. Release builds stamp the tag's version in `dist/package.ps1`.
+
 Please state your Windows edition and build (`winver`) in bug reports and in PRs that touch
 VM backends. Behavior differs between Home and Pro.
 
