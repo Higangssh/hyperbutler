@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net"
 	"sync"
+	"time"
 
 	"github.com/containers/gvisor-tap-vsock/pkg/tap"
 	"gvisor.dev/gvisor/pkg/buffer"
@@ -117,7 +118,8 @@ func (l *guestLink) writeLoop() {
 		_, err := l.conn.Write(buf)
 
 		l.mu.Lock()
-		if cap(buf) <= 4*maxPending {
+		// Keep one spare buffer of about the queue bound, not a larger one a burst grew.
+		if cap(buf) <= maxPending+frame.MaxVnetFrameLen+frame.HeaderLen {
 			l.spare = buf[:0]
 		}
 		l.mu.Unlock()
@@ -167,9 +169,12 @@ func (n *Stack) serve(conn net.Conn, mode int32) error {
 		return ErrLinkMode
 	}
 	if mode == linkVnet {
-		// Before the link replaces the previous one: a guest that does not answer
-		// leaves the old link in place.
-		if _, err := conn.Write(frame.Hello[:]); err != nil {
+		// Before the link replaces the previous one: a guest that does not read
+		// leaves the old link in place, and the write is bounded.
+		_ = conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
+		_, err := conn.Write(frame.Hello[:])
+		_ = conn.SetWriteDeadline(time.Time{})
+		if err != nil {
 			_ = conn.Close()
 			return err
 		}
@@ -218,7 +223,7 @@ func (n *Stack) serve(conn net.Conn, mode int32) error {
 
 // The guest link is read in chunks of up to linkChunk bytes, linkChunks ahead.
 const (
-	linkChunk  = 1 << 20
+	linkChunk  = 256 << 10
 	linkChunks = 4
 )
 

@@ -42,11 +42,17 @@ func (c *ChunkReader) ReadChunk(buf []byte) ([]byte, error) {
 		return nil, fmt.Errorf("frame: chunk buffer of %d bytes is smaller than %d", len(buf), c.MinChunk())
 	}
 	n := copy(buf, c.tail)
+	empty := 0 // reads that returned nothing and no error
 	for {
 		end, err := c.scan(buf[:n])
 		if end == 0 && err == nil {
 			k, rerr := c.r.Read(buf[n:])
 			n += k
+			if k == 0 && rerr == nil {
+				if empty++; empty >= 100 {
+					rerr = io.ErrNoProgress
+				}
+			}
 			if rerr == nil {
 				continue
 			}

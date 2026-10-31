@@ -280,6 +280,9 @@ func TestOffloadLink(t *testing.T) {
 	if !bytes.Equal(got, msg) {
 		t.Fatalf("echo returned %d bytes, want %d (or different bytes)", len(got), len(msg))
 	}
+	if g.csumOK.Load() == 0 {
+		t.Fatal("no partial checksum from the host was checked")
+	}
 	if g.bigIn.Load() == 0 || g.bigOut.Load() == 0 {
 		t.Fatalf("segments over the MTU: %d from the host, %d to it; want both", g.bigIn.Load(), g.bigOut.Load())
 	}

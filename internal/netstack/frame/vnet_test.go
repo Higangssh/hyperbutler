@@ -269,6 +269,18 @@ func FuzzChunkReader(f *testing.F) {
 	})
 }
 
+type zeroReader struct{}
+
+func (zeroReader) Read([]byte) (int, error) { return 0, nil }
+
+// A reader that returns nothing and no error must not make ReadChunk spin forever.
+func TestChunkReaderNoProgress(t *testing.T) {
+	cr := NewChunkReader(zeroReader{}, EthernetHeaderLen, MaxFrameLen(1500))
+	if _, err := cr.ReadChunk(make([]byte, cr.MinChunk())); !errors.Is(err, io.ErrNoProgress) {
+		t.Fatalf("got %v, want io.ErrNoProgress", err)
+	}
+}
+
 type steppedReader struct {
 	b    []byte
 	step int

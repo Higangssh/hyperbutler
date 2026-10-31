@@ -67,9 +67,13 @@ func main() {
 	lk := linkFormat{mtu: *mtu, vnet: *vnet}
 	next := dialLoop(uint32(*port))
 	if lk.vnet {
+		// Retry rather than exit: exiting would only restart netfwd, which would
+		// reopen the TAP. While another process holds the port the link is down.
 		ln, err := listenHost(uint32(*port))
-		if err != nil {
-			log.Fatal(err)
+		for wait := 50 * time.Millisecond; err != nil; ln, err = listenHost(uint32(*port)) {
+			log.Printf("%v; retrying", err)
+			time.Sleep(wait)
+			wait = min(2*wait, 2*time.Second)
 		}
 		next = acceptLoop(ln)
 	}

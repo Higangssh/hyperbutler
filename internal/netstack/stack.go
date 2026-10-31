@@ -410,11 +410,13 @@ func proxy(guest *gonet.TCPConn, gep tcpip.Endpoint, host net.Conn) {
 			if cw, ok := dst.(closeWriter); ok {
 				err = cw.CloseWrite()
 			}
-		case src == net.Conn(guest) && guestReset(err):
+		// The error may come from reading src or writing dst; the two sides' errors
+		// are told apart by their kind.
+		case guestReset(err):
 			if tc, ok := host.(*net.TCPConn); ok {
 				_ = tc.SetLinger(0)
 			}
-		case src == host && hostReset(err):
+		case hostReset(err):
 			gep.SocketOptions().SetLinger(tcpip.LingerOption{Enabled: true})
 		}
 		done <- err
@@ -772,11 +774,18 @@ func (n *Stack) sizeBuffers(ep tcpip.Endpoint) (release func()) {
 // paths. The memory is the kernel's and is used only as data queues.
 const localSocketBuffer = 1 << 20
 
+// setLocalBuffers sets the buffers of c if its peer is on loopback; a `-publish-lan`
+// client or a host forward to another machine keeps autotuning.
 func setLocalBuffers(c net.Conn) {
-	if tc, ok := c.(*net.TCPConn); ok {
-		_ = tc.SetReadBuffer(localSocketBuffer)
-		_ = tc.SetWriteBuffer(localSocketBuffer)
+	tc, ok := c.(*net.TCPConn)
+	if !ok {
+		return
 	}
+	if a, ok := addrOf(c.RemoteAddr()); !ok || !a.IsLoopback() {
+		return
+	}
+	_ = tc.SetReadBuffer(localSocketBuffer)
+	_ = tc.SetWriteBuffer(localSocketBuffer)
 }
 
 func tcpipAddr(a netip.Addr) tcpip.Address {

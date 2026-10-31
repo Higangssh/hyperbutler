@@ -155,6 +155,13 @@ func (g *guestNet) start(ctx context.Context, vmid guid.GUID, step func(string, 
 			if err != nil {
 				return
 			}
+			if offload, known := g.st.Offloading(); known && offload {
+				// The link is in offload mode for good; a guest program that dials
+				// the host is refused quietly, however often it tries.
+				_ = c.Close()
+				g.log.Debug("refused a plain guest link: the link is in offload mode")
+				continue
+			}
 			linkUp("plain")
 			go func() {
 				if err := g.st.ServeConn(c); err != nil && ctx.Err() == nil {

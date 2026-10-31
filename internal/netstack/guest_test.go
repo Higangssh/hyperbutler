@@ -13,6 +13,7 @@ import (
 
 	"gvisor.dev/gvisor/pkg/buffer"
 	"gvisor.dev/gvisor/pkg/tcpip"
+	"gvisor.dev/gvisor/pkg/tcpip/checksum"
 	"gvisor.dev/gvisor/pkg/tcpip/header"
 	"gvisor.dev/gvisor/pkg/tcpip/link/channel"
 	"gvisor.dev/gvisor/pkg/tcpip/link/ethernet"
@@ -36,6 +37,8 @@ type fakeGuest struct {
 	// bigIn and bigOut count offload-mode segments larger than the MTU, from and to
 	// the host.
 	bigIn, bigOut atomic.Int64
+	// csumOK counts frames from the host whose partial checksum completed correctly.
+	csumOK atomic.Int64
 }
 
 var guestMAC = tcpip.LinkAddress("\x02\x00\x00\x00\x00\x02")
@@ -136,6 +139,22 @@ func newFakeGuestMode(t *testing.T, n *Stack, offload bool) *fakeGuest {
 				}
 				if h.IsGSO() {
 					g.bigIn.Add(1)
+				}
+				if h.Flags&frame.VnetFlagNeedsCsum != 0 {
+					// Finish the checksum as the guest kernel would
+					// (skb_checksum_help), then check the TCP checksum it gives.
+					eth = append([]byte(nil), eth...)
+					seg := eth[h.CsumStart:]
+					at := int(h.CsumOffset)
+					sum := checksum.Checksum(seg, 0)
+					seg[at], seg[at+1] = byte(^sum>>8), byte(^sum)
+					ip := header.IPv4(eth[header.EthernetMinimumSize:])
+					pseudo := header.PseudoHeaderChecksum(tcp.ProtocolNumber, ip.SourceAddress(), ip.DestinationAddress(), uint16(len(seg)))
+					if checksum.Checksum(seg, pseudo) != 0xFFFF {
+						t.Errorf("host sent a partial checksum that does not complete to a valid one")
+						return
+					}
+					g.csumOK.Add(1)
 				}
 				b = eth
 			}
