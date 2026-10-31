@@ -173,6 +173,21 @@ Status on the reference machine (2026-10-31, `hyperbutler-dev` with the user-mod
 | REQ-UX-011 | On-demand GUI. | A GUI shows status, containers (grouped by Compose project) with start/stop, logs, images, volumes, real disk and memory use, settings and `daemon.json`, and troubleshooting. It is not Electron, does not poll while hidden, and leaves no process behind within 2 s of its window closing (`bench/footprint`). A tray icon, if offered, is off by default. | P1 | A5 A17 |
 | REQ-UX-012 | MCP server for AI tools. | `hyperbutler mcp` serves the Model Context Protocol over stdio and exits with its client, so it adds no resident process. Read-only tools by default (status, containers, logs, images, disk and memory use, settings, diagnose); tools that change state need `--allow-write`, and deletions need their own flag. Secrets are redacted from what it returns (`bench/mcp` and a review). | P1 | A17 |
 
+Status of the settings requirements (2026-10-31, `hyperbutler start`; details in
+[settings.md](research/settings.md)):
+
+- REQ-UX-006: met. `config list/get/set/unset/path` over settings.json, with apply time and
+  source per key; `set` validates, writes atomically under the ops lock and restarts only
+  with `--apply`; an invalid file is never written (unit and fuzz tests). `config edit` and
+  `reset` are 0.2.
+- REQ-UX-007: met on one machine. daemon.json reaches dockerd byte for byte over the guest
+  control channel; owned keys and invalid files are refused and the previous file stays in
+  effect; `config daemon apply` restarts dockerd only (same VM, same guest boot, 1.9 s).
+  `bench/daemon-json` ran against an HTTP registry at a non-loopback guest address; a
+  registry on a second LAN machine is not tested yet.
+- REQ-UX-008: met for `status`, `config list/get/path` and `version` (`"schema": 1`, field
+  names pinned by tests). `diagnose` does not exist yet.
+
 ## Non-goals
 
 - Windows containers (process-isolated or Hyper-V-isolated Windows images).

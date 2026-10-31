@@ -71,8 +71,10 @@ Option 3.
 
 ## Adversarial review
 
-Not yet run for this ADR. It runs on the 0.1 settings implementation and again on the GUI
-spike and the MCP server, against the requirements above.
+Run on the 0.1 settings implementation (REQ-UX-006 to 008) on 2026-10-31: nine findings,
+two high (the guest's dockerd-restart watch), all fixed or documented in
+[settings.md](../research/settings.md#adversarial-review). It runs again on the GUI spike
+and the MCP server.
 
 ## Consequences
 
