@@ -2,6 +2,7 @@ package guestctl
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"net"
@@ -85,6 +86,8 @@ type Client struct {
 	dl        sync.Mutex
 	suspended bool
 
+	daemonMu chan struct{} // one daemon.json transfer at a time
+
 	wake   chan struct{} // the writer has work
 	reqs   chan []byte
 	closed chan struct{}
@@ -106,6 +109,7 @@ func NewClient(ctx context.Context, conn net.Conn, cfg ClientConfig) (*Client, e
 		conn: conn, cfg: cfg, pending: make(map[uint32]*call),
 		wake: make(chan struct{}, 1), reqs: make(chan []byte, cfg.MaxInflight),
 		closed: make(chan struct{}), done: make(chan struct{}),
+		daemonMu: make(chan struct{}, 1),
 	}
 	stop := context.AfterFunc(ctx, func() { _ = conn.SetDeadline(time.Now()) })
 	defer stop()
@@ -241,6 +245,65 @@ func (c *Client) CacheTrim(ctx context.Context) (CacheResult, error) {
 func (c *Client) Shutdown(ctx context.Context) error {
 	_, err := c.request(ctx, ShutdownRequest{}, RShutdown, 0)
 	return err
+}
+
+// DaemonConfig sends data as the guest's daemon.json (empty: remove it) and waits for
+// the guest's verdict. With restart the guest restarts dockerd, which can take as long
+// as dockerd needs to stop its containers and start again; ctx bounds the wait. Calls
+// are serialized: one transfer is on the wire at a time.
+func (c *Client) DaemonConfig(ctx context.Context, data []byte, restart bool) (DaemonResult, error) {
+	if len(data) > MaxDaemonConfig {
+		return DaemonResult{}, fmt.Errorf("guestctl: daemon.json of %d bytes is over the %d byte limit", len(data), MaxDaemonConfig)
+	}
+	if c.hello.Features&FeatureDaemonConfig == 0 {
+		return DaemonResult{}, &RefusedError{Code: ErrUnsupported}
+	}
+	select {
+	case c.daemonMu <- struct{}{}:
+	case <-ctx.Done():
+		return DaemonResult{}, ctx.Err()
+	}
+	defer func() { <-c.daemonMu }()
+	for off := 0; off < len(data); off += DaemonChunkData {
+		end := min(off+DaemonChunkData, len(data))
+		if err := c.post(ctx, DaemonChunk{Offset: uint32(off), Data: data[off:end]}); err != nil {
+			return DaemonResult{}, err
+		}
+	}
+	commit := DaemonCommit{Size: uint32(len(data)), SHA256: sha256.Sum256(data)}
+	if restart {
+		commit.Flags |= DaemonRestart
+	}
+	m, err := c.request(ctx, commit, RDaemon, 0)
+	if err != nil {
+		return DaemonResult{}, err
+	}
+	return m.(DaemonResult), nil
+}
+
+// post queues a message that gets no reply, in order with requests.
+func (c *Client) post(ctx context.Context, m Msg) error {
+	c.mu.Lock()
+	if c.pending == nil {
+		err := c.err
+		c.mu.Unlock()
+		return err
+	}
+	c.seq++
+	seq := c.seq
+	c.mu.Unlock()
+	f, err := Encode(seq, m)
+	if err != nil {
+		return err
+	}
+	select {
+	case c.reqs <- f:
+		return nil
+	case <-c.closed:
+		return c.Err()
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 // Ping measures the round trip to the guest daemon.
@@ -462,6 +525,8 @@ func requestFor(reply Type) Type {
 		return TPing
 	case RShutdown:
 		return TShutdown
+	case RDaemon:
+		return TDaemonCommit
 	}
 	return 0
 }

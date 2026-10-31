@@ -3,10 +3,12 @@ package guestctl
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"errors"
 	"io"
 	"math"
 	"net"
+	"reflect"
 	"sync"
 	"testing"
 	"testing/iotest"
@@ -30,6 +32,13 @@ func fuzzSeedFrames() [][]byte {
 		ErrorReply{Code: ErrBusy, Request: TBudget},
 		HelloReply{Version: 1},
 		Ping{Nonce: math.MaxUint64},
+		DaemonChunk{Offset: 0, Data: []byte(`{"debug":true}`)},
+		DaemonChunk{Offset: MaxDaemonConfig - DaemonChunkData, Data: bytes.Repeat([]byte{'x'}, DaemonChunkData)},
+		DaemonCommit{Size: 14, Flags: DaemonRestart, SHA256: sha256.Sum256([]byte(`{"debug":true}`))},
+		DaemonCommit{},
+		DaemonResult{Code: DaemonRejected, Flags: DaemonChanged, Duration: time.Second, Message: "unknown key"},
+		DaemonResult{Code: DaemonOK, Flags: DaemonChanged | DaemonRestarted, Message: string(bytes.Repeat([]byte{'m'}, MaxDaemonMessage))},
+		ErrorReply{Code: ErrBusy, Request: TDaemonCommit},
 	)
 	var out [][]byte
 	for i, m := range msgs {
@@ -92,7 +101,7 @@ func FuzzDecode(f *testing.F) {
 				t.Fatalf("not canonical:\n got %x\nwant %x\nmsg %#v", enc, want, m)
 			}
 			seq2, m2, err := Decode(enc[4:], dir)
-			if err != nil || seq2 != seq || m2 != m {
+			if err != nil || seq2 != seq || !reflect.DeepEqual(m2, m) {
 				t.Fatalf("round trip: %d %#v %v, want %d %#v", seq2, m2, err, seq, m)
 			}
 		}
@@ -253,9 +262,20 @@ func (fuzzAddr) String() string  { return "fuzz" }
 type recHandler struct {
 	mu                          sync.Mutex
 	budgets, lost, trims, cache int
+	daemons                     int
+	daemonData                  [][]byte
 	status                      Status
 	trim                        TrimResult
 	cacheRes                    CacheResult
+	daemonRes                   DaemonResult
+}
+
+func (h *recHandler) ApplyDaemonConfig(_ context.Context, data []byte, _ bool) DaemonResult {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.daemons++
+	h.daemonData = append(h.daemonData, data)
+	return h.daemonRes
 }
 
 func (h *recHandler) SetBudget(spaceguard.Budget) { h.mu.Lock(); h.budgets++; h.mu.Unlock() }
@@ -290,6 +310,18 @@ func FuzzServeConn(f *testing.F) {
 	ping, _ := Encode(11, Ping{Nonce: 5})
 	budget, _ := Encode(12, Budget{spaceguard.Budget{Bytes: 1}})
 	badHello, _ := Encode(1, Hello{Min: 2, Max: 3})
+	cfg := []byte(`{"insecure-registries":["192.168.127.2:5000"]}`)
+	chunk, _ := Encode(13, DaemonChunk{Data: cfg})
+	commit, _ := Encode(14, DaemonCommit{Size: uint32(len(cfg)), Flags: DaemonRestart, SHA256: sha256.Sum256(cfg)})
+	badCommit, _ := Encode(15, DaemonCommit{Size: uint32(len(cfg))})
+	gap, _ := Encode(16, DaemonChunk{Offset: 9, Data: cfg})
+	remove, _ := Encode(17, DaemonCommit{SHA256: sha256.Sum256(nil)})
+	transfer := append(append(bytes.Clone(hello), chunk...), commit...)
+	f.Add(transfer, byte(FeatureDaemonConfig), byte(0))
+	f.Add(append(bytes.Clone(transfer), commit...), byte(FeatureDaemonConfig), byte(0))
+	f.Add(append(append(append(bytes.Clone(hello), chunk...), badCommit...), remove...), byte(FeatureDaemonConfig), byte(0))
+	f.Add(append(append(bytes.Clone(hello), chunk...), gap...), byte(FeatureDaemonConfig), byte(0))
+	f.Add(append(append(bytes.Clone(hello), chunk...), remove...), byte(0), byte(0))
 	f.Add(hostOnly, byte(0), byte(0))
 	f.Add(hostOnly, byte(7), byte(1))
 	f.Add(append(append(bytes.Clone(hello), trim...), trim...), byte(7), byte(0))
@@ -302,9 +334,10 @@ func FuzzServeConn(f *testing.F) {
 	f.Fuzz(func(t *testing.T, in []byte, features, knobs byte) {
 		hang := knobs&1 != 0
 		h := &recHandler{
-			status:   Status{Guard: GuardState(knobs >> 1 & 7), GuardErrno: uint32(knobs>>4) * 300},
-			trim:     TrimResult{Errno: uint32(knobs) * 20, Duration: time.Millisecond},
-			cacheRes: CacheResult{Method: CacheMethod(knobs >> 6), Duration: time.Millisecond},
+			status:    Status{Guard: GuardState(knobs >> 1 & 7), GuardErrno: uint32(knobs>>4) * 300},
+			trim:      TrimResult{Errno: uint32(knobs) * 20, Duration: time.Millisecond},
+			cacheRes:  CacheResult{Method: CacheMethod(knobs >> 6), Duration: time.Millisecond},
+			daemonRes: DaemonResult{Code: DaemonCode(knobs >> 5), Flags: DaemonResultFlags(knobs & 3)},
 		}
 		srv := &Server{
 			Handler:      h,
@@ -328,7 +361,8 @@ func FuzzServeConn(f *testing.F) {
 		elapsed := time.Since(start)
 
 		h.mu.Lock()
-		lost, budgets, trims, caches := h.lost, h.budgets, h.trims, h.cache
+		lost, budgets, trims, caches, daemons := h.lost, h.budgets, h.trims, h.cache, h.daemons
+		daemonData := h.daemonData
 		h.mu.Unlock()
 		if lost != 1 {
 			t.Fatalf("ConnLost called %d times", lost)
@@ -338,6 +372,9 @@ func FuzzServeConn(f *testing.F) {
 		var buf [MaxBody]byte
 		r := bytes.NewReader(in)
 		reqSeqs := map[uint32]map[Type]bool{}
+		// commits are the hashes of the daemon.json commits; every file the handler got
+		// must match one of them.
+		commits := map[[32]byte]bool{}
 		helloOK := false
 		var helloSeq uint32
 		nReq := 0
@@ -362,6 +399,9 @@ func FuzzServeConn(f *testing.F) {
 				break
 			}
 			nReq++
+			if c, ok := m.(DaemonCommit); ok {
+				commits[c.SHA256] = true
+			}
 			if m.Type() != TBudget {
 				if reqSeqs[seq] == nil {
 					reqSeqs[seq] = map[Type]bool{}
@@ -372,8 +412,16 @@ func FuzzServeConn(f *testing.F) {
 		if !helloOK && (budgets != 0 || trims != 0 || caches != 0) {
 			t.Fatalf("handler called without a valid hello: budgets %d trims %d caches %d", budgets, trims, caches)
 		}
-		if budgets+trims+caches > nReq {
-			t.Fatalf("%d handler calls for %d requests", budgets+trims+caches, nReq)
+		if budgets+trims+caches+daemons > nReq {
+			t.Fatalf("%d handler calls for %d requests", budgets+trims+caches+daemons, nReq)
+		}
+		if daemons > 0 && features&byte(FeatureDaemonConfig) == 0 {
+			t.Fatal("daemon.json applied without FeatureDaemonConfig")
+		}
+		for _, d := range daemonData {
+			if len(d) > MaxDaemonConfig || !commits[sha256.Sum256(d)] {
+				t.Fatalf("handler got %d bytes that match no commit", len(d))
+			}
 		}
 
 		out := conn.output()
@@ -412,7 +460,7 @@ func FuzzServeConn(f *testing.F) {
 				if !ok {
 					t.Fatalf("%v with seq %d answers no request", m.Type(), seq)
 				}
-				req := map[Type]Type{RTrim: TTrim, RCache: TCacheTrim, RPong: TPing}[m.Type()]
+				req := map[Type]Type{RTrim: TTrim, RCache: TCacheTrim, RPong: TPing, RDaemon: TDaemonCommit, RShutdown: TShutdown}[m.Type()]
 				if e, isErr := m.(ErrorReply); isErr {
 					req = e.Request
 				}
@@ -461,7 +509,7 @@ func (g *fakeGuest) drain() {
 	}
 }
 
-var replyTypes = [...]Type{RTrim, RCache, RPong, RError, RStatus, RHello}
+var replyTypes = [...]Type{RTrim, RCache, RPong, RError, RStatus, RHello, RDaemon}
 
 func (g *fakeGuest) run(script []byte) (closed bool) {
 	next := func() (byte, bool) {
@@ -501,11 +549,11 @@ func (g *fakeGuest) run(script []byte) (closed bool) {
 			typ := replyTypes[int(k&0x7)%len(replyTypes)]
 			if k&0x08 == 0 && len(host) >= HeaderLen {
 				// Answer with the type the host frame asks for.
-				if want, ok := map[Type]Type{TTrim: RTrim, TCacheTrim: RCache, TPing: RPong}[Type(host[1])]; ok {
+				if want, ok := map[Type]Type{TTrim: RTrim, TCacheTrim: RCache, TPing: RPong, TDaemonCommit: RDaemon}[Type(host[1])]; ok {
 					typ = want
 				}
 			}
-			size := map[Type]int{RTrim: 24, RCache: 32, RPong: 8, RError: 8, RStatus: statusPayloadSize, RHello: 16}[typ]
+			size := map[Type]int{RTrim: 24, RCache: 32, RPong: 8, RError: 8, RStatus: statusPayloadSize, RHello: 16, RDaemon: 16 + MaxDaemonMessage}[typ]
 			body := make([]byte, HeaderLen+size)
 			body[0] = Version
 			body[1] = byte(typ)
@@ -543,6 +591,13 @@ func (g *fakeGuest) run(script []byte) (closed bool) {
 				case RStatus:
 					p[0] %= 4
 					clear(p[1:6])
+				case RDaemon:
+					clear(p[0:3])
+					p[3] %= 5
+					p[4] %= 4
+					p[5], p[6], p[7] = 0, 0, p[7]%8
+					p[8] = 0
+					clear(p[16+int(p[7]):])
 				}
 			}
 			if _, err := g.conn.Write(append(lenPrefix(len(body)), body...)); err != nil {
@@ -645,10 +700,20 @@ func FuzzClient(f *testing.F) {
 		}
 
 		var wg sync.WaitGroup
-		var reqErrs [3]error
+		var reqErrs [4]error
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Millisecond)
 		defer cancel()
-		wg.Add(3)
+		wg.Add(4)
+		go func() {
+			defer wg.Done()
+			var r DaemonResult
+			r, reqErrs[3] = c.DaemonConfig(ctx, bytes.Repeat([]byte{'{'}, int(knobs)), knobs&4 != 0)
+			if reqErrs[3] == nil {
+				if _, err := Encode(1, r); err != nil {
+					t.Errorf("DaemonConfig returned invalid %#v", r)
+				}
+			}
+		}()
 		go func() { defer wg.Done(); _, reqErrs[0] = c.Trim(ctx) }()
 		go func() { defer wg.Done(); _, reqErrs[1] = c.CacheTrim(ctx) }()
 		go func() { defer wg.Done(); _, reqErrs[2] = c.Ping(ctx) }()

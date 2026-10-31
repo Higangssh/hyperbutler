@@ -28,7 +28,11 @@ type Supervisor struct {
 	MinBackoff, MaxBackoff time.Duration
 	// Logf, if set, receives connection events.
 	Logf func(format string, args ...any)
+	// OnConnect, if set, runs in its own goroutine after every handshake, with a context
+	// that ends when that connection does. Run waits for it before returning.
+	OnConnect func(ctx context.Context, c *Client)
 
+	hooks  sync.WaitGroup
 	mu     sync.Mutex
 	client *Client
 	budget *spaceguard.Budget
@@ -57,6 +61,7 @@ func (s *Supervisor) Run(ctx context.Context) error {
 	kick := s.kickChan()
 	s.mu.Unlock()
 	backoff := minB
+	defer s.hooks.Wait()
 	for {
 		c, err := s.connect(ctx)
 		if err == nil {
@@ -117,6 +122,23 @@ func (s *Supervisor) connect(ctx context.Context) (*Client, error) {
 	s.mu.Unlock()
 	h := c.Hello()
 	s.logf("guestctl: connected (guest instance %016x, features 0x%x)", h.Instance, uint32(h.Features))
+	if s.OnConnect != nil {
+		hctx, cancel := context.WithCancel(context.Background())
+		s.hooks.Add(2)
+		go func() {
+			defer s.hooks.Done()
+			defer cancel()
+			select {
+			case <-c.Done():
+			case <-hctx.Done():
+			}
+		}()
+		go func() {
+			defer s.hooks.Done()
+			defer cancel()
+			s.OnConnect(hctx, c)
+		}()
+	}
 	return c, nil
 }
 
