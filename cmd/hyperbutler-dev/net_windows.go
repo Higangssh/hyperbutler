@@ -35,6 +35,8 @@ type netFlags struct {
 	publishLAN  bool
 	autoPublish bool
 	hostFwd     multiFlag
+	hostGW      bool
+	hostGWPorts string
 	benchBytes  int64
 	debug       bool
 	statsEvery  time.Duration
@@ -60,6 +62,8 @@ func (nf *netFlags) register(fs *flag.FlagSet) {
 	fs.BoolVar(&nf.publishLAN, "publish-lan", false, "allow -publish and auto-publish on non-loopback host addresses")
 	fs.BoolVar(&nf.autoPublish, "auto-publish", true, "mirror `docker run -p` ports on the host's loopback")
 	fs.Var(&nf.hostFwd, "host-forward", "let the guest reach a host service: VIRTUAL_IP:PORT=HOST_IP:PORT (repeatable)")
+	fs.BoolVar(&nf.hostGW, "host-gateway", true, "host.docker.internal: containers reach this host's loopback on any port (REQ-NET-004)")
+	fs.StringVar(&nf.hostGWPorts, "host-gateway-ports", "all", `ports host.docker.internal forwards, such as "5432,8000-8100"`)
 	fs.Int64Var(&nf.benchBytes, "bench-bytes", 0, "after boot, compare raw hvsock with the stack by reading this many bytes each way, then exit")
 	fs.BoolVar(&nf.debug, "net-debug", false, "log denied guest connections")
 	fs.DurationVar(&nf.statsEvery, "net-stats", 0, "log the stack's counters that changed at this interval (0: never)")
@@ -93,6 +97,11 @@ func (nf *netFlags) config(sddl string) (engine.NetConfig, []vm.Service, string,
 		}
 		nc.HostForwards = append(nc.HostForwards, h)
 	}
+	ports, err := netstack.ParsePortList(nf.hostGWPorts)
+	if err != nil {
+		return nc, nil, "", fmt.Errorf("-host-gateway-ports: %w", err)
+	}
+	nc.HostGateway = &netstack.HostGateway{Enabled: nf.hostGW, Ports: ports}
 	for _, s := range nf.publish {
 		p, err := netstack.ParsePublish(s, nf.publishLAN)
 		if err != nil {

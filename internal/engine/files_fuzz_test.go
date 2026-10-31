@@ -2,6 +2,7 @@ package engine
 
 import (
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -15,6 +16,8 @@ func FuzzParseState(f *testing.F) {
 	f.Add([]byte(`{"version":1,"phase":"failed","pid":0,"pidCreated":0,"pipe":"","dataDir":"","started":"0001-01-01T00:00:00Z","updated":"0001-01-01T00:00:00Z","error":"boom","errorCode":"hcs-access-denied"}`))
 	f.Add([]byte(`{"version":1,"phase":"running","pid":4,"pidCreated":1,"pipe":"","dataDir":"C:\\x","imageDir":"C:\\img","started":"2026-10-30T08:00:00Z","updated":"2026-10-30T08:00:01Z","daemonConfig":{"generation":2,"applies":1,"source":"file","sha256":"44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a","bytes":2,"restarted":true,"error":"","updated":"2026-10-30T08:00:01Z"}}`))
 	f.Add([]byte(`{"version":1,"phase":"running","pid":4,"daemonConfig":{"generation":1,"applies":0,"source":"none","bytes":0,"error":"x","updated":"2026-10-30T08:00:01Z"}}`))
+	f.Add([]byte(`{"version":1,"phase":"running","pid":4,"hostGateway":{"address":"192.168.127.254","enabled":true,"ports":"80,8000-8100","reloads":3,"error":"x"}}`))
+	f.Add([]byte(`{"version":1,"phase":"running","pid":4,"hostGateway":{"address":"::1","enabled":false,"ports":"0","reloads":0}}`))
 	f.Add([]byte(`{"version":1,"phase":"running","pid":0}`))
 	f.Add([]byte(`{"version":1,"phase":"stopped","pid":1e3}`))
 	f.Fuzz(func(t *testing.T, b []byte) {
@@ -50,6 +53,8 @@ func FuzzParseSettings(f *testing.F) {
 	f.Add([]byte(`{"version":1,"dataDir":"C:\\x","diskSizeBytes":68719476736,"memoryMB":4096,"cpus":4,"memoryLimit":"1KiB"}`))
 	f.Add([]byte(`{"version":1,"dataDir":"C:\\x","diskSizeBytes":68719476736,"manageContext":false}`))
 	f.Add([]byte(`{"version":1,"dataDir":"C:\\x","diskSizeBytes":68719476736,"manageContext":null,"cpus":0}`))
+	f.Add([]byte(`{"version":1,"dataDir":"C:\\x","diskSizeBytes":68719476736,"hostGatewayEnabled":false,"hostGatewayPorts":"5432,8000-8100"}`))
+	f.Add([]byte(`{"version":1,"dataDir":"C:\\x","diskSizeBytes":68719476736,"hostGatewayPorts":"9-8"}`))
 	f.Fuzz(func(t *testing.T, b []byte) {
 		s, err := ParseSettings(b)
 		if err != nil {
@@ -60,6 +65,12 @@ func FuzzParseSettings(f *testing.F) {
 		}
 		if s.DiskSize%(1<<20) != 0 || s.Memory() < MinMemoryMB || s.CPUCount(1) < 1 || s.CPUCount(1) > MaxCPUs {
 			t.Fatalf("out of range: %+v", s)
+		}
+		if hg := s.HostGateway(); s.HostGatewayPorts != "" && len(hg.Ports) == 0 && s.HostGatewayPorts != "all" && s.HostGatewayPorts != "1-65535" {
+			// Only spellings of "every port" may parse to an empty list.
+			if _, err := strconv.Atoi(s.HostGatewayPorts); err == nil {
+				t.Fatalf("ports %q read as every port", s.HostGatewayPorts)
+			}
 		}
 		if ValidateMemoryLimit(s.EngineMemoryLimit()) != nil {
 			t.Fatalf("accepted memory limit %q", s.MemoryLimit)

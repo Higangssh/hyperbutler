@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"strings"
@@ -15,6 +16,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/Higangssh/hyperbutler/internal/diag"
+	"github.com/Higangssh/hyperbutler/internal/netstack"
 	"github.com/Higangssh/hyperbutler/internal/transport"
 )
 
@@ -79,6 +81,36 @@ type State struct {
 	// ImageDir is the directory of the guest image the engine runs, so `hyperbutler
 	// restart` can start the same one.
 	ImageDir string `json:"imageDir,omitempty"`
+	// HostGateway is the host gateway setting in effect (REQ-NET-004), once the guest
+	// network is up.
+	HostGateway *HostGatewayState `json:"hostGateway,omitempty"`
+}
+
+// HostGatewayState is the host gateway setting the running engine applies.
+type HostGatewayState struct {
+	// Address is the guest-side address host.docker.internal resolves to.
+	Address string `json:"address"`
+	Enabled bool   `json:"enabled"`
+	// Ports is the forwarded port list in canonical form ("all", "80,8000-8100").
+	Ports string `json:"ports"`
+	// Reloads counts the settings reloads the engine applied (`hyperbutler config set
+	// hostGateway.*` waits for it to grow); Error is the last reload's failure.
+	Reloads uint64 `json:"reloads"`
+	Error   string `json:"error,omitempty"`
+}
+
+// Validate reports the first field out of range.
+func (h *HostGatewayState) Validate() error {
+	if a, err := netip.ParseAddr(h.Address); err != nil || !a.Is4() {
+		return fmt.Errorf("host gateway: bad address %q", h.Address)
+	}
+	if _, err := netstack.ParsePortList(h.Ports); err != nil {
+		return fmt.Errorf("host gateway: %w", err)
+	}
+	if len(h.Error) > maxErrorLen || !utf8.ValidString(h.Error) {
+		return errors.New("host gateway: error text too long or not UTF-8")
+	}
+	return nil
 }
 
 const stateVersion = 1
@@ -125,6 +157,11 @@ func (s *State) Validate() error {
 	}
 	if s.Daemon != nil {
 		if err := s.Daemon.Validate(); err != nil {
+			return fmt.Errorf("state: %w", err)
+		}
+	}
+	if s.HostGateway != nil {
+		if err := s.HostGateway.Validate(); err != nil {
 			return fmt.Errorf("state: %w", err)
 		}
 	}
@@ -187,6 +224,18 @@ type Settings struct {
 	// ManageContext says whether `hyperbutler start` creates and selects the
 	// "hyperbutler" docker context; nil means yes.
 	ManageContext *bool `json:"manageContext,omitempty"`
+	// HostGatewayEnabled says whether containers reach this host's loopback as
+	// host.docker.internal (REQ-NET-004); nil means yes, as in Docker Desktop.
+	HostGatewayEnabled *bool `json:"hostGatewayEnabled,omitempty"`
+	// HostGatewayPorts limits the host gateway to these ports (netstack.ParsePortList
+	// syntax, "5432,8000-8100"); empty means every port.
+	HostGatewayPorts string `json:"hostGatewayPorts,omitempty"`
+}
+
+// HostGateway is the host gateway setting of s. The ports were checked by Validate.
+func (s *Settings) HostGateway() netstack.HostGateway {
+	ports, _ := netstack.ParsePortList(s.HostGatewayPorts)
+	return netstack.HostGateway{Enabled: s.HostGatewayEnabled == nil || *s.HostGatewayEnabled, Ports: ports}
 }
 
 // Defaults of Settings values.
@@ -285,6 +334,9 @@ func (s *Settings) Validate() error {
 		if err := ValidateMemoryLimit(s.MemoryLimit); err != nil {
 			return fmt.Errorf("settings: %w", err)
 		}
+	}
+	if _, err := netstack.ParsePortList(s.HostGatewayPorts); err != nil {
+		return fmt.Errorf("settings: host gateway ports: %w", err)
 	}
 	return nil
 }

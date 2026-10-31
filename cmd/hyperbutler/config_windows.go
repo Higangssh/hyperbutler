@@ -240,6 +240,9 @@ func configSet(verb string, args []string, stdout, stderr io.Writer) error {
 	}
 	switch k.Apply {
 	case config.ApplyLive:
+		if k.Engine && up {
+			return reloadLive(in, stdout)
+		}
 		fmt.Fprintln(stdout, "Applies at once; nothing restarts.")
 		return nil
 	case config.ApplyFirstStart:
@@ -260,6 +263,48 @@ func configSet(verb string, args []string, stdout, stderr io.Writer) error {
 	unlock()
 	fmt.Fprintln(stdout, "Restarting the VM (--apply).")
 	return restart(*imageDir, 2*time.Minute, stdout, stderr)
+}
+
+// reloadLive asks the running engine to apply the live settings it uses (hostGateway.*)
+// and waits until its state.json shows the result.
+func reloadLive(in *install, stdout io.Writer) error {
+	st, p, err := in.liveState()
+	if err != nil {
+		return err
+	}
+	p.Close()
+	if st.Phase != engine.PhaseRunning || st.HostGateway == nil {
+		// The engine applies settings.json as it is once its guest network is up.
+		fmt.Fprintf(stdout, "hyperbutler is %s; it applies this once the guest is up. Nothing restarts.\n", st.Phase)
+		return nil
+	}
+	prev := st.HostGateway.Reloads
+	if err := engine.RequestSettingsReload(st.PID, st.PIDCreated); err != nil {
+		return err
+	}
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		cur, err := engine.LoadState(in.l)
+		if err == nil && (cur.PID != st.PID || cur.PIDCreated != st.PIDCreated || !cur.Phase.Live()) {
+			return errors.New("the engine stopped while applying the setting; see `hyperbutler logs`")
+		}
+		if err == nil && cur.HostGateway != nil && cur.HostGateway.Reloads > prev {
+			h := cur.HostGateway
+			if h.Error != "" {
+				return fmt.Errorf("the running engine did not apply it: %s", printable([]byte(h.Error)))
+			}
+			state := "off"
+			if h.Enabled {
+				state = "on, ports " + h.Ports
+			}
+			fmt.Fprintf(stdout, "Applied to the running engine; nothing restarted. host.docker.internal (%s): %s.\n", h.Address, state)
+			return nil
+		}
+		if time.Now().After(deadline) {
+			return errors.New("the running engine did not confirm the change within 10 s; see `hyperbutler logs`")
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
 }
 
 // --- daemon.json ------------------------------------------------------------------------

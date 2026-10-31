@@ -926,9 +926,10 @@ func cmdEngine(args []string, stderr io.Writer) (int, error) {
 	}
 	log.Info("go memory limit", "bytes", debug.SetMemoryLimit(-1), "configured", dcfg.MemoryLimit, "env", os.Getenv("GOMEMLIMIT"))
 	log.Info("engine starting", "pid", os.Getpid(), "home", *home, "data", s.DataDir, "memoryMB", s.Memory(), "cpus", s.CPUCount(runtime.NumCPU()))
+	hg := s.HostGateway() // REQ-NET-004; changed later through the settings event
 	err = engine.Serve(engine.ServeOptions{
 		Home: *home, Settings: s, KernelPath: *kernel, InitrdPath: *initrd, Image: *manifest,
-		Pipe: s.PipeName(), Net: engine.NetConfig{AutoPublish: true}, Logger: log,
+		Pipe: s.PipeName(), Net: engine.NetConfig{AutoPublish: true, HostGateway: &hg}, Logger: log,
 	})
 	if engine.ErrorCode(err) == engine.CodeAlreadyRunning {
 		return 3, err

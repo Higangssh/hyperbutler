@@ -46,13 +46,15 @@ func TestListDefaults(t *testing.T) {
 		value string
 		apply ApplyTime
 	}{
-		"memory":             {"4GiB", ApplyVM},
-		"cpus":               {"6", ApplyVM},
-		"disk.size":          {"64GiB", ApplyFirstStart},
-		"data.dir":           {e.Home, ApplyFirstStart},
-		"pipe":               {`\\.\pipe\docker_engine_hyperbutler`, ApplyVM},
-		"context.manage":     {"true", ApplyLive},
-		"engine.memoryLimit": {"256MiB", ApplyVM},
+		"memory":              {"4GiB", ApplyVM},
+		"cpus":                {"6", ApplyVM},
+		"disk.size":           {"64GiB", ApplyFirstStart},
+		"data.dir":            {e.Home, ApplyFirstStart},
+		"pipe":                {`\\.\pipe\docker_engine_hyperbutler`, ApplyVM},
+		"context.manage":      {"true", ApplyLive},
+		"engine.memoryLimit":  {"256MiB", ApplyVM},
+		"hostGateway.enabled": {"true", ApplyLive},
+		"hostGateway.ports":   {"all", ApplyLive},
 	}
 	for k, w := range want {
 		it := item(t, items, k)
@@ -84,6 +86,11 @@ func TestSetUnset(t *testing.T) {
 	set("engine.memoryLimit", "off")
 	set("disk.size", "128g")
 	set("data.dir", filepath.Join(e.Home, "data"))
+	set("hostGateway.enabled", "no")
+	set("hostGateway.ports", " 8001, 5432,8000 ")
+	if hg := s.HostGateway(); hg.Enabled || s.HostGatewayPorts != "5432,8000-8001" || hg.Ports.String() != "5432,8000-8001" {
+		t.Fatalf("host gateway %+v %q", hg, s.HostGatewayPorts)
+	}
 	if s.MemoryMB != 8192 || s.CPUs != 3 || s.ContextManaged() || s.Pipe != `\\.\pipe\docker_engine_hb_test` ||
 		s.MemoryLimit != "off" || s.DiskSize != 128<<30 || !engine.SamePath(s.DataDir, filepath.Join(e.Home, "data")) {
 		t.Fatalf("settings %+v", s)
@@ -92,7 +99,7 @@ func TestSetUnset(t *testing.T) {
 		t.Fatal(err)
 	}
 	items := List(s, e)
-	for _, k := range []string{"memory", "cpus", "context.manage", "pipe", "engine.memoryLimit", "disk.size", "data.dir"} {
+	for _, k := range []string{"memory", "cpus", "context.manage", "pipe", "engine.memoryLimit", "disk.size", "data.dir", "hostGateway.enabled", "hostGateway.ports"} {
 		if it := item(t, items, k); it.Source != SourceFile {
 			t.Errorf("%s source %s", k, it.Source)
 		}
@@ -100,7 +107,8 @@ func TestSetUnset(t *testing.T) {
 	// The default pipe and memory limit are stored as "unset".
 	set("pipe", `\\.\pipe\docker_engine_hyperbutler`)
 	set("engine.memoryLimit", "256MiB")
-	if s.Pipe != "" || s.MemoryLimit != "" {
+	set("hostGateway.ports", "1-65535")
+	if s.Pipe != "" || s.MemoryLimit != "" || s.HostGatewayPorts != "" {
 		t.Fatalf("defaults stored: %+v", s)
 	}
 	for _, k := range Keys {
@@ -110,7 +118,7 @@ func TestSetUnset(t *testing.T) {
 		}
 		s = n
 	}
-	if s.MemoryMB != 0 || s.CPUs != 0 || s.ManageContext != nil || s.DiskSize != engine.DefaultDiskSize || !engine.SamePath(s.DataDir, e.Home) {
+	if s.MemoryMB != 0 || s.CPUs != 0 || s.ManageContext != nil || s.HostGatewayEnabled != nil || s.HostGatewayPorts != "" || s.DiskSize != engine.DefaultDiskSize || !engine.SamePath(s.DataDir, e.Home) {
 		t.Fatalf("after unset: %+v", s)
 	}
 	// Once the disk exists, its location and size are fixed.
@@ -136,6 +144,7 @@ func TestSetRefuses(t *testing.T) {
 		{"data.dir", ""}, {"data.dir", `\\server\share`}, {"data.dir", "a\x00b"},
 		{"pipe", `C:\pipe`}, {"pipe", `\\.\pipe\`}, {"pipe", `\\server\pipe\x`},
 		{"context.manage", "maybe"},
+		{"hostGateway.enabled", "maybe"}, {"hostGateway.ports", "0"}, {"hostGateway.ports", "65536"}, {"hostGateway.ports", "9-8"}, {"hostGateway.ports", "80;443"},
 		{"engine.memoryLimit", "1KiB"}, {"engine.memoryLimit", "lots"},
 	} {
 		k, err := Lookup(c[0])

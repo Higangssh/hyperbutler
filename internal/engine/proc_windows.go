@@ -124,6 +124,12 @@ func daemonEventName(pid int, created int64) string {
 	return fmt.Sprintf(`Local\hyperbutler-engine-daemon-%d-%x`, pid, created)
 }
 
+// settingsEventName is the named event the CLI sets to ask the engine to apply the live
+// settings again (`hyperbutler config set hostGateway.enabled false`).
+func settingsEventName(pid int, created int64) string {
+	return fmt.Sprintf(`Local\hyperbutler-engine-settings-%d-%x`, pid, created)
+}
+
 // StopEvent is the engine's end of the stop request.
 type StopEvent struct{ h windows.Handle }
 
@@ -137,6 +143,20 @@ func CreateStopEvent() (*StopEvent, error) {
 // event's access rules. It resets when Wait returns, so each request is seen once.
 func CreateDaemonEvent() (*StopEvent, error) {
 	return createEvent(daemonEventName(windowsPID(), SelfCreated()), false)
+}
+
+// CreateSettingsEvent creates this process's settings reload event, with the stop
+// event's access rules: `hyperbutler config set` of a live key sets it, and the engine
+// reads settings.json again. It resets when Wait returns.
+func CreateSettingsEvent() (*StopEvent, error) {
+	return createEvent(settingsEventName(windowsPID(), SelfCreated()), false)
+}
+
+// RequestSettingsReload asks the engine process pid created at created to read
+// settings.json again and apply its live keys. The result shows in its state.json
+// (State.HostGateway.Reloads).
+func RequestSettingsReload(pid int, created int64) error {
+	return setEvent(settingsEventName(pid, created))
 }
 
 func createEvent(eventName string, manualReset bool) (*StopEvent, error) {

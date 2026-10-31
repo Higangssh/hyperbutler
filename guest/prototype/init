@@ -78,6 +78,7 @@ CACHE=
 SYSRA=
 SHARE=
 DAEMONCFG=
+HOSTGW=
 for arg in $(cat /proc/cmdline); do
 	case "$arg" in
 	hyperbutler.ip=*) ADDR=${arg#hyperbutler.ip=} ;;
@@ -96,6 +97,7 @@ for arg in $(cat /proc/cmdline); do
 	hyperbutler.sysra=*) SYSRA=${arg#hyperbutler.sysra=} ;;
 	hyperbutler.share=*) SHARE=${arg#hyperbutler.share=} ;;
 	hyperbutler.daemoncfg=1) DAEMONCFG=1 ;;
+	hyperbutler.hostgw=*) HOSTGW=${arg#hyperbutler.hostgw=} ;;
 	esac
 done
 # Transparent huge pages only where a program asks (madvise), not for every anonymous
@@ -329,6 +331,9 @@ start_dockerd() {
 	STARTING=1
 	set --
 	[ -f "$DAEMON_JSON" ] && set -- "--config-file=$DAEMON_JSON"
+	# host.docker.internal (REQ-NET-004): --add-host NAME:host-gateway maps to the host
+	# stack's host gateway address, which forwards to the Windows host's loopback.
+	[ -n "$HOSTGW" ] && set -- "$@" "--host-gateway-ip=$HOSTGW"
 	dockerd --host=unix:///run/docker.sock --iptables=false --ip6tables=false \
 		--shutdown-timeout=10 --log-level="$LOGLEVEL" "$@" >/dev/console 2>&1 &
 	DOCKERD=$!
