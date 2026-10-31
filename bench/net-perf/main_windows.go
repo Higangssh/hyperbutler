@@ -452,7 +452,7 @@ func (m *monitor) start(prof string, secs float64) func() monSample {
 			return
 		case <-time.After(time.Duration(secs * float64(time.Second) / 2)):
 		}
-		if s, err := hostmon.SampleCIM(ctx, []uint32{m.pid}); err == nil {
+		if s, err := hostmon.SampleNT(ctx, []uint32{m.pid}); err == nil {
 			mu.Lock()
 			maxWS = max(maxWS, s[m.pid].WorkingSetPriv)
 			mu.Unlock()
@@ -514,7 +514,7 @@ func (m *monitor) start(prof string, secs float64) func() monSample {
 			}
 		}
 		// One last working-set sample after the run, then stop.
-		if s, err := hostmon.SampleCIM(context.Background(), []uint32{m.pid}); err == nil {
+		if s, err := hostmon.SampleNT(context.Background(), []uint32{m.pid}); err == nil {
 			mu.Lock()
 			maxWS = max(maxWS, s[m.pid].WorkingSetPriv)
 			mu.Unlock()

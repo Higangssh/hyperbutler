@@ -13,13 +13,15 @@ import (
 	"github.com/Higangssh/hyperbutler/internal/diag"
 )
 
-// ProcSample is one process's counters from Win32_PerfFormattedData_PerfProc_Process.
+// ProcSample is one process's counters, from Win32_PerfFormattedData_PerfProc_Process
+// (SampleCIM) or SystemProcessInformation (SampleNT).
 type ProcSample struct {
 	PID            uint32
 	WorkingSetPriv uint64 // WorkingSetPrivate, bytes: the REQ-MEM-001 metric
 	HandleCount    uint64
 	ThreadCount    uint64
 	PrivateBytes   uint64 // PrivateBytes: committed private memory, bytes
+	PageFaults     uint64 // page faults so far, soft and hard (SampleNT only; 0 from SampleCIM; 32-bit in the kernel, so it wraps)
 }
 
 // cimFields is the number of comma-separated fields the CIM probe prints per process.

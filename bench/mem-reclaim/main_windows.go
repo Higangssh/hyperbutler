@@ -44,6 +44,8 @@ type config struct {
 	out                string
 	keep               bool
 	keepVolume         bool
+	sample             hostmon.Sampler
+	residency          bool
 }
 
 func main() {
@@ -69,7 +71,7 @@ func parseFlags() (*config, error) {
 	fs.DurationVar(&c.settle, "settle", 3*time.Minute, "wait after `hyperbutler start` before the baseline")
 	fs.DurationVar(&c.baseline, "baseline", time.Minute, "idle baseline sampled before the workload")
 	fs.DurationVar(&c.within, "within", 60*time.Second, "REQ-MEM-002: host memory must be at or below the limit this long after the container exits")
-	fs.DurationVar(&c.window, "window", 3*time.Minute, "how long to sample after the container exits (≥ -within)")
+	fs.DurationVar(&c.window, "window", 3*time.Minute, "how long to sample after the container exits (??-within)")
 	fs.DurationVar(&c.every, "interval", 2*time.Second, "sampling interval")
 	anon := fs.String("anon", "4GiB", "anonymous memory the container touches")
 	cache := fs.String("cache", "4GiB", "file the container writes and reads back on a volume (page cache)")
@@ -79,13 +81,18 @@ func parseFlags() (*config, error) {
 	fs.StringVar(&c.out, "out", "", "write every sample to this CSV (keep raw dumps out of git)")
 	fs.BoolVar(&c.keep, "keep-running", false, "leave the engine running afterwards")
 	fs.BoolVar(&c.keepVolume, "keep-volume", false, "leave the volume with the cache file afterwards")
+	sampler := fs.String("sampler", "nt", "how counters are read: nt (in process, NtQuerySystemInformation) or cim (a PowerShell CIM query per sample, the method before 2026-10-31)")
+	fs.BoolVar(&c.residency, "residency", true, "log where the engine's resident pages are (QueryWorkingSetEx) at the end of the baseline, after a sample where its working set rose by 8 MiB or more, and at the end")
 	if err := fs.Parse(os.Args[1:]); err != nil {
+		return nil, err
+	}
+	var err error
+	if c.sample, err = hostmon.SamplerByName(*sampler); err != nil {
 		return nil, err
 	}
 	if c.hb.Exe == "" || c.hb.Home == "" || c.docker == "" {
 		return nil, errors.New("-hyperbutler, -home and -docker are required")
 	}
-	var err error
 	if c.anon, err = parseBytes(*anon); err != nil {
 		return nil, fmt.Errorf("-anon: %w", err)
 	}
@@ -93,7 +100,7 @@ func parseFlags() (*config, error) {
 		return nil, fmt.Errorf("-cache: %w", err)
 	}
 	if c.every <= 0 || c.within <= 0 || c.window < c.within || c.baseline < c.every || c.settle < 0 {
-		return nil, errors.New("need -interval > 0, -window ≥ -within > 0, -baseline ≥ -interval, -settle ≥ 0")
+		return nil, errors.New("need -interval > 0, -window ??-within > 0, -baseline ??-interval, -settle ??0")
 	}
 	if !(c.targetMB > 0 && c.targetMB < 1e7) || !(c.marginMB >= 0 && c.marginMB < 1e7) {
 		return nil, errors.New("bad -target-mb or -margin-mb")
@@ -239,7 +246,7 @@ func (g *guestInfo) print(w io.Writer) {
 	show("peak", g.peak)
 	show("end", g.end)
 	if len(g.logLines) > 0 {
-		fmt.Fprintln(w, "engine log during the run (guest page-cache reclaim and guest memory):")
+		fmt.Fprintln(w, "engine log during the run (guest page-cache reclaim, guest memory, working-set guard):")
 		for _, l := range g.logLines {
 			fmt.Fprintln(w, "  "+l)
 		}
@@ -317,6 +324,21 @@ func measure(ctx context.Context, c *config, tarPath string) (ss []Sample, gi gu
 		return nil, gi, err
 	}
 	logf("engine PID %d, vmwp PID %d, vmmem PID %d", enginePID, vm.VMWP, vm.VMMem)
+	engineExe, err := hostmon.ImagePath(enginePID)
+	if err != nil {
+		return nil, gi, err
+	}
+	residency := func(why string) {
+		if !c.residency {
+			return
+		}
+		r, err := hostmon.ResidencyOf(enginePID, engineExe)
+		if err != nil {
+			logf("engine residency (%s): %v", why, err)
+			return
+		}
+		logf("engine residency (%s): %s", why, r)
+	}
 	watch.SetOurs(enginePID, vm.VMMem, vm.VMWP)
 
 	cfgDir := filepath.Join(c.work, "docker-config")
@@ -364,7 +386,7 @@ func measure(ctx context.Context, c *config, tarPath string) (ss []Sample, gi gu
 		helpers := hostmon.ChildrenOf(ps, enginePID)
 		pids := append([]uint32{enginePID, vm.VMMem, vm.VMWP}, helpers...)
 		at := time.Now()
-		sm, err := hostmon.SampleCIM(ctx, pids)
+		sm, err := c.sample(ctx, pids)
 		if err != nil {
 			return err
 		}
@@ -380,13 +402,25 @@ func measure(ctx context.Context, c *config, tarPath string) (ss []Sample, gi gu
 			*p.dst = v.WorkingSetPriv
 		}
 		s.VMMemPriv = sm[vm.VMMem].PrivateBytes
+		s.EnginePriv, s.EngineFaults = sm[enginePID].PrivateBytes, sm[enginePID].PageFaults
 		for _, h := range helpers {
 			s.HelpersWS += sm[h].WorkingSetPriv
 		}
 		s.Foreign = watch.Take()
+		var prev *Sample
+		if len(raw) > 0 {
+			prev = &raw[len(raw)-1].s
+		}
 		raw = append(raw, stamped{at, s})
-		logf("%-8s engine %s vmmem %s (private bytes %s) vmwp %s total %s%s", ph, mib(float64(s.EngineWS)), mib(float64(s.VMMemWS)),
-			mib(float64(s.VMMemPriv)), mib(float64(s.VMWPWS)), mib(float64(s.Total())), note(s.Foreign))
+		faults := ""
+		if prev != nil && s.EngineFaults > 0 {
+			faults = fmt.Sprintf(" faults +%d", s.EngineFaults-prev.EngineFaults)
+		}
+		logf("%-8s engine %s (commit %s%s) vmmem %s (private bytes %s) vmwp %s total %s%s", ph, mib(float64(s.EngineWS)), mib(float64(s.EnginePriv)), faults,
+			mib(float64(s.VMMemWS)), mib(float64(s.VMMemPriv)), mib(float64(s.VMWPWS)), mib(float64(s.Total())), note(s.Foreign))
+		if prev != nil && s.EngineWS >= prev.EngineWS+jumpBytes {
+			residency(fmt.Sprintf("engine +%s since the previous sample", mib(float64(s.EngineWS-prev.EngineWS))))
+		}
 		return nil
 	}
 	// finish converts the timestamps to seconds since the exit.
@@ -435,6 +469,7 @@ func measure(ctx context.Context, c *config, tarPath string) (ss []Sample, gi gu
 	if err := tick(time.Now().Add(c.baseline), PhaseBaseline, nil); err != nil {
 		return finish(), gi, err
 	}
+	residency("end of the baseline")
 
 	logf("running the fill container: %s anonymous + %s page cache", mib(float64(c.anon)), mib(float64(c.cache)))
 	type result struct {
@@ -470,6 +505,7 @@ func measure(ctx context.Context, c *config, tarPath string) (ss []Sample, gi gu
 	if err := tick(exit.Add(c.window), PhaseAfter, nil); err != nil {
 		return finish(), gi, err
 	}
+	residency("end of the window")
 	// The guest's own view after the window (a small container; not sampled).
 	if out, err := d.Run(ctx, "run", "--rm", "--entrypoint", "/mem-guest", benchImage, "meminfo"); err == nil {
 		gi.end, _ = parseGuest(out)
@@ -479,6 +515,10 @@ func measure(ctx context.Context, c *config, tarPath string) (ss []Sample, gi gu
 	gi.logLines = engineLog(logPath, logOff)
 	return finish(), gi, nil
 }
+
+// jumpBytes is the engine working-set rise between two samples that triggers a
+// residency walk.
+const jumpBytes = 8 << 20
 
 func note(f string) string {
 	if f == "" {
@@ -510,7 +550,7 @@ func engineLog(p string, off int64) []string {
 	}
 	var out []string
 	for _, l := range strings.Split(string(b), "\n") {
-		if strings.Contains(l, "guest page-cache reclaim") || strings.Contains(l, "guest memory") {
+		if strings.Contains(l, "guest page-cache reclaim") || strings.Contains(l, "guest memory") || strings.Contains(l, "working set emptied") {
 			out = append(out, strings.TrimSpace(l))
 		}
 	}

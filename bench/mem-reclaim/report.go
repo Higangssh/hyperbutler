@@ -22,14 +22,16 @@ const (
 
 // Sample is one reading of the installation's host memory.
 type Sample struct {
-	T         float64 // seconds since the fill container exited (negative before)
-	Phase     Phase
-	EngineWS  uint64 // engine (hyperbutler.exe) private working set, bytes
-	VMMemWS   uint64 // this VM's vmmem private working set
-	VMWPWS    uint64 // this VM's vmwp private working set
-	HelpersWS uint64 // the engine's child processes
-	VMMemPriv uint64 // this VM's vmmem private bytes (commit), for diagnosis only
-	Foreign   string // other VMs or engines seen since the previous sample ("" when none)
+	T            float64 // seconds since the fill container exited (negative before)
+	Phase        Phase
+	EngineWS     uint64 // engine (hyperbutler.exe) private working set, bytes
+	VMMemWS      uint64 // this VM's vmmem private working set
+	VMWPWS       uint64 // this VM's vmwp private working set
+	HelpersWS    uint64 // the engine's child processes
+	VMMemPriv    uint64 // this VM's vmmem private bytes (commit), for diagnosis only
+	EnginePriv   uint64 // engine private bytes (commit), for diagnosis only
+	EngineFaults uint64 // engine page fault count so far (0 with -sampler cim), for diagnosis only
+	Foreign      string // other VMs or engines seen since the previous sample ("" when none)
 }
 
 // Total is host memory as REQ-MEM-001 counts it, which REQ-MEM-002 reuses.
@@ -50,7 +52,7 @@ type Summary struct {
 
 	Baseline Stat   // total, baseline phase
 	Peak     uint64 // highest total in the workload phase and after
-	Growth   uint64 // Peak − baseline median
+	Growth   uint64 // Peak ??baseline median
 
 	// Reached is the first time after the exit from which every later sample of the
 	// window is at or below Limit (NaN: never). AtWithin is the total of the first
@@ -58,7 +60,7 @@ type Summary struct {
 	Reached          float64
 	AtWithin, End    uint64
 	AtWithinT, EndT  float64
-	EndOverBaseline  int64 // End − baseline median, bytes
+	EndOverBaseline  int64 // End ??baseline median, bytes
 	MinAfter         uint64
 	MinAfterT        float64
 	CoversWindow     bool // the samples run past Within
@@ -73,6 +75,7 @@ type Summary struct {
 	// (vmmem + vmwp). The verdict uses only the total; these say which side to look at.
 	EngineBase, VMBase float64
 	EngineEnd, VMEnd   uint64
+	EngineCommitEnd    uint64 // engine private bytes at the end: a working set far below it was trimmed or never touched
 }
 
 // Stat is a median and range.
@@ -85,7 +88,7 @@ func stat(xs []float64) Stat {
 
 // Summarize judges ss against c. A run passes only if no other VM or engine overlapped
 // it, the workload visibly grew host memory, the samples cover the window, and host
-// memory stayed at or below the limit from some time ≤ Within until the end.
+// memory stayed at or below the limit from some time ??Within until the end.
 func Summarize(ss []Sample, c Criteria) Summary {
 	sum := Summary{Criteria: c, N: len(ss), Reached: math.NaN(), MinAfter: math.MaxUint64}
 	var base, basePriv, engBase, vmBase []float64
@@ -142,6 +145,7 @@ func Summarize(ss []Sample, c Criteria) Summary {
 		last := after[len(after)-1]
 		sum.End, sum.EndT, sum.VMMemPrivAtEnd = last.Total(), last.T, last.VMMemPriv
 		sum.EngineEnd, sum.VMEnd = last.EngineWS, last.VMMemWS+last.VMWPWS
+		sum.EngineCommitEnd = last.EnginePriv
 		sum.CoversWindow = last.T >= within
 		if len(base) > 0 {
 			sum.EndOverBaseline = int64(last.Total()) - int64(sum.Baseline.Median)
@@ -181,10 +185,10 @@ func (s Summary) Print(w io.Writer) {
 	}
 	fmt.Fprintf(w, "| lowest after exit (+%.0f s) | %s | |\n", s.MinAfterT, mib(float64(s.MinAfter)))
 	fmt.Fprintf(w, "| end (exit + %.0f s) | %s (%s) | %s |\n", s.EndT, mib(float64(s.End)), mb(float64(s.End)), mib(float64(s.VMMemPrivAtEnd)))
-	fmt.Fprintf(w, "\nGrowth over baseline at peak %s for a %s workload; end − baseline %+.1f MiB\n",
+	fmt.Fprintf(w, "\nGrowth over baseline at peak %s for a %s workload; end ??baseline %+.1f MiB\n",
 		mib(float64(s.Growth)), mib(float64(s.Workload)), float64(s.EndOverBaseline)/(1<<20))
-	fmt.Fprintf(w, "Engine %s at baseline, %s at the end; VM (vmmem + vmwp) %s at baseline, %s at the end\n",
-		mib(s.EngineBase), mib(float64(s.EngineEnd)), mib(s.VMBase), mib(float64(s.VMEnd)))
+	fmt.Fprintf(w, "Engine %s at baseline, %s at the end (commit %s); VM (vmmem + vmwp) %s at baseline, %s at the end\n",
+		mib(s.EngineBase), mib(float64(s.EngineEnd)), mib(float64(s.EngineCommitEnd)), mib(s.VMBase), mib(float64(s.VMEnd)))
 	reached := "never"
 	if !math.IsNaN(s.Reached) {
 		reached = fmt.Sprintf("+%.0f s", s.Reached)
@@ -193,7 +197,7 @@ func (s Summary) Print(w io.Writer) {
 	fmt.Fprintf(w, "\nREQ-MEM-002: %s\n", s.VerdictText)
 }
 
-var csvHeader = []string{"t_seconds", "phase", "engine_ws", "vmmem_ws", "vmwp_ws", "helpers_ws", "total", "vmmem_private", "foreign"}
+var csvHeader = []string{"t_seconds", "phase", "engine_ws", "vmmem_ws", "vmwp_ws", "helpers_ws", "total", "vmmem_private", "foreign", "engine_private", "engine_faults"}
 
 // WriteCSV writes every sample.
 func WriteCSV(w io.Writer, ss []Sample) error {
@@ -202,7 +206,7 @@ func WriteCSV(w io.Writer, ss []Sample) error {
 	u := func(v uint64) string { return strconv.FormatUint(v, 10) }
 	for _, s := range ss {
 		_ = cw.Write([]string{strconv.FormatFloat(s.T, 'f', 1, 64), string(s.Phase), u(s.EngineWS), u(s.VMMemWS), u(s.VMWPWS),
-			u(s.HelpersWS), u(s.Total()), u(s.VMMemPriv), s.Foreign})
+			u(s.HelpersWS), u(s.Total()), u(s.VMMemPriv), s.Foreign, u(s.EnginePriv), u(s.EngineFaults)})
 	}
 	cw.Flush()
 	return cw.Error()

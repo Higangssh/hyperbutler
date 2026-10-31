@@ -11,7 +11,7 @@
 //   - url: an internet download (HTTPS), host against container.
 //
 // During each container run it records the engine's CPU time, its private working set
-// (one CIM sample mid-run and one after) and, with -debug-pipe, its private bytes and
+// (one sample mid-run and one after) and, with -debug-pipe, its private bytes and
 // GC count; -profile saves a CPU profile of the first round of each bulk test.
 //
 //	hyperbutler-dev run -image DIR\image.json -debug-pipe \\.\pipe\hb-netperf-debug ^

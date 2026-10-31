@@ -18,9 +18,16 @@ or the VM, grows over time.
   `-port` as well, a published port (`docker run -d -p P:8080 -v DIR\www:/www:ro ...`,
   a one-page HTTP server made of busybox `nc`, then an HTTP GET from the host that must return the page the host
   wrote, then `docker rm -f`). Every operation must succeed (`-max-errors 0` by default).
-- **Samples**, every `-interval`, from `Win32_PerfFormattedData_PerfProc_Process`: the
+- **Samples**, every `-interval`, read in process from
+  `NtQuerySystemInformation(SystemProcessInformation)` (the source of
+  `Win32_PerfFormattedData_PerfProc_Process`; before 2026-10-31 a PowerShell CIM query per
+  sample, which made an outside process scan the engine, see
+  [research/mem-reclaim.md](../../docs/research/mem-reclaim.md)): the
   engine's private working set (the REQ-MEM-001 metric), private bytes, handle and thread
-  counts, and the VM's `vmmem` and `vmwp` private working sets; from the engine's
+  counts, and the VM's `vmmem` and `vmwp` private working sets (the engine empties its
+  working set when it rises to its commit, `internal/diag.WorkingSetGuard`, and logs
+  `working set emptied`; such a trim shows as a drop in the private working set, so read
+  a trend in it next to the private bytes, which a trim does not change); from the engine's
   `internal/diag` endpoint its goroutine count and Go heap in use. The CSV also records,
   unjudged, heap alloc, idle, released, stacks, Go `Sys`, the GC count, and any other VM
   or engine running on the host at the time (`foreign`).

@@ -30,6 +30,7 @@ type config struct {
 	retries         int
 	out             string
 	keep            bool
+	sample          hostmon.Sampler
 }
 
 func main() {
@@ -56,7 +57,12 @@ func parseFlags() (*config, error) {
 	fs.IntVar(&c.retries, "retries", 2, "re-runs of an attempt that overlapped another VM or engine")
 	fs.StringVar(&c.out, "out", "", "write every sample to this CSV (keep raw dumps out of git)")
 	fs.BoolVar(&c.keep, "keep-running", false, "leave the engine running afterwards")
+	sampler := fs.String("sampler", "nt", "how counters are read: nt (in process, NtQuerySystemInformation) or cim (a PowerShell CIM query per sample, the method before 2026-10-31)")
 	if err := fs.Parse(os.Args[1:]); err != nil {
+		return nil, err
+	}
+	var err error
+	if c.sample, err = hostmon.SamplerByName(*sampler); err != nil {
 		return nil, err
 	}
 	if c.hb.Exe == "" || c.hb.Home == "" || c.docker == "" {
@@ -246,7 +252,7 @@ func measure(ctx context.Context, c *config, cfgDir string) (ss []Sample, err er
 		}
 		helpers := hostmon.ChildrenOf(ps, enginePID)
 		pids := append([]uint32{enginePID, vm.VMMem, vm.VMWP}, helpers...)
-		sm, err := hostmon.SampleCIM(ctx, pids)
+		sm, err := c.sample(ctx, pids)
 		if err != nil {
 			return ss, err
 		}

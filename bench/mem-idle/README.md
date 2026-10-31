@@ -5,9 +5,13 @@ running and no containers, sampled every 10 s from minute 5 to minute 10 after
 `hyperbutler start` (31 samples), median against 400 MB (0.1) or 250 MB (1.0, `-target-mb
 250`). MB here is 10^6 bytes.
 
-- **Host memory** is the private working set (`Win32_PerfFormattedData_PerfProc_Process`)
-  of the engine (`hyperbutler.exe`), this VM's `vmmem` and `vmwp`, and any child process of
-  the engine.
+- **Host memory** is the private working set of the engine (`hyperbutler.exe`), this VM's
+  `vmmem` and `vmwp`, and any child process of the engine. It is read in process from
+  `NtQuerySystemInformation(SystemProcessInformation)`, the source of the
+  `Win32_PerfFormattedData_PerfProc_Process` counters. `-sampler cim` reads those through
+  a hidden PowerShell per sample instead, the method before 2026-10-31; that PowerShell
+  activity is what made an outside process scan the engine's memory
+  ([research/mem-reclaim.md](../../docs/research/mem-reclaim.md), section 3).
 - **Which VM is ours.** A non-elevated user cannot open `vmmem` or `vmwp` to read their VM
   id. The tool takes a process snapshot before `hyperbutler start` and after it, and
   takes the one new `vmmem` whose parent is a new `vmwp`. Anything else (none, or two VMs

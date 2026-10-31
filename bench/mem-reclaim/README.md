@@ -10,10 +10,22 @@ return to at most the REQ-MEM-001 target + 100 MB (500 MB for 0.1, 350 MB for 1.
   this VM's `vmmem` and `vmwp`, and the engine's children. `vmmem`'s private bytes (its
   commit) are recorded too, for diagnosis. A non-elevated user cannot open `vmmem` or
   `vmwp`, so the VM is identified the way `bench/mem-idle` does it (the one new `vmmem`
-  under a new `vmwp` across `hyperbutler start`), and the counters come from
-  `Win32_PerfFormattedData_PerfProc_Process`. What the guest does with its memory is
-  read from inside: `/proc/meminfo` at the peak and after the window, and the engine
-  log's `guest memory` and `guest page-cache reclaim` lines.
+  under a new `vmwp` across `hyperbutler start`), and the counters are read in process
+  from `NtQuerySystemInformation(SystemProcessInformation)`, the source of the
+  `Win32_PerfFormattedData_PerfProc_Process` counters. `-sampler cim` reads those through
+  a hidden PowerShell per sample instead (the method before 2026-10-31); in 5 of 5 runs
+  that made an outside process scan the engine's memory five minutes after its start
+  ([research/mem-reclaim.md](../../docs/research/mem-reclaim.md), section 3), so use it
+  only as a control. What the guest does with its memory is read from inside:
+  `/proc/meminfo` at the peak and after the window, and the engine log's `guest memory`,
+  `guest page-cache reclaim` and `working set emptied` lines.
+- **Where the engine's pages are** (`-residency`, on by default): at the end of the
+  baseline, after any sample where the engine's working set rose by 8 MiB or more, and
+  at the end, the bench walks the engine's address space with `VirtualQueryEx` and
+  `QueryWorkingSetEx` (which never touch a page) and logs resident / committed MiB per
+  executable section, per large data symbol (only for an executable with a symbol
+  table, not a `-s` release build), Go heap, other private memory, DLLs and mappings.
+  The CSV also has the engine's commit and page-fault count.
 - **Workload.** `bench/mem-guest` is built for linux/amd64 and imported as the only file
   of a scratch image (`docker import`), so no registry is needed. The bench builds it
   from its own source directory; a bench binary built with `-trimpath` needs `-guest`. `mem-guest fill` maps

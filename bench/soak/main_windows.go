@@ -365,7 +365,7 @@ sampling:
 			fatal = fmt.Errorf("vmmem PID %d exited after %s: the VM stopped", tg.vmmem, time.Since(start).Round(time.Second))
 			break
 		}
-		s, err := hostmon.SampleCIM(runCtx, pids)
+		s, err := hostmon.SampleNT(runCtx, pids)
 		switch {
 		case runCtx.Err() != nil:
 		case err != nil:
