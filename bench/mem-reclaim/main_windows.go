@@ -160,6 +160,7 @@ func logf(format string, a ...any) {
 const (
 	benchImage  = "hyperbutler-memreclaim:dev"
 	benchVolume = "hyperbutler-memreclaim"
+	fillName    = "hyperbutler-memreclaim-fill"
 )
 
 // guestTar builds (or copies) mem-guest and wraps it in a tar for `docker import`.
@@ -396,6 +397,10 @@ func measure(ctx context.Context, c *config, tarPath string) (ss []Sample, gi gu
 			out[i] = r.s
 			if !exit.IsZero() {
 				out[i].T = r.at.Sub(exit).Seconds()
+				// A workload sample whose query started after the exit belongs to the window.
+				if out[i].Phase == PhaseWorkload && r.at.After(exit) {
+					out[i].Phase = PhaseAfter
+				}
 			} else {
 				out[i].T = math.NaN()
 			}
@@ -435,19 +440,23 @@ func measure(ctx context.Context, c *config, tarPath string) (ss []Sample, gi gu
 	type result struct {
 		out string
 		err error
+		at  time.Time // when docker run returned: the container had exited
 	}
+	defer func() {
+		_, _ = d.Run(context.WithoutCancel(ctx), "rm", "-f", fillName)
+	}()
 	done := make(chan struct{})
 	res := make(chan result, 1)
 	go func() {
 		defer close(done)
-		out, err := d.Run(ctx, "run", "--rm", "-v", benchVolume+":/data", "--entrypoint", "/mem-guest", benchImage, "fill",
+		out, err := d.Run(ctx, "run", "--rm", "--name", fillName, "-v", benchVolume+":/data", "--entrypoint", "/mem-guest", benchImage, "fill",
 			"-anon", fmt.Sprint(c.anon), "-cache", fmt.Sprint(c.cache), "-dir", "/data")
-		res <- result{out, err}
+		res <- result{out, err, time.Now()}
 	}()
 	terr := tick(time.Now().Add(24*time.Hour), PhaseWorkload, done)
 	<-done
-	exit = time.Now()
 	r := <-res
+	exit = r.at
 	if terr != nil {
 		return finish(), gi, terr
 	}

@@ -17,27 +17,30 @@
 
 ## Result
 
-| | Before (`main`) | After (this change) |
-|---|---|---|
-| Baseline, idle, median | 490.5 MiB (514 MB) | 449.1 / 446.7 MiB (471 / 468 MB) |
-| Peak | 8870 MiB | 8862 MiB |
-| VM (`vmmem` + `vmwp`) after the window − baseline | **+84 MiB** | **−13 / +2 MiB** |
-| VM side back at its baseline | never | +46 s / +44 s |
-| Engine private working set, baseline → end | 18.8 → 65.8 MiB | 19.5 → 65.1 / 19.3 → 65.9 MiB |
-| Total at exit + 60 s | 621.0 MiB (651 MB) | 492.5 / 492.8 MiB (516 / 517 MB) |
-| Total at the end (exit + 180 s) | 621.2 MiB (651 MB) | 481.1 / 495.2 MiB (504 / 519 MB) |
-| **REQ-MEM-002** | **FAIL** | **FAIL** (2 of 2 runs), by 4 to 18 MiB |
+| | Before (`main`) | After, run 2 / run 3 | After, run 4 (committed code) |
+|---|---|---|---|
+| Baseline, idle, median | 490.5 MiB (514 MB) | 449.1 / 446.7 MiB | 432.0 MiB (453 MB) |
+| Peak | 8870 MiB | 8862 / 8862 MiB | 8848 MiB |
+| VM (`vmmem` + `vmwp`), end − baseline | **+84 MiB** | −13 / +2 MiB | +18 MiB |
+| Total under the limit for good from | never | never | **+44 s** |
+| Engine private working set, baseline → end | 18.8 → 65.8 MiB | 19.5 → 65.1 / 19.3 → 65.9 MiB | 19.0 → 19.3 MiB |
+| Total at exit + 60 s | 621.0 MiB (651 MB) | 492.5 / 492.8 MiB (516 / 517 MB) | **443.9 MiB (465 MB)** |
+| Total at the end (exit + 180 s) | 621.2 MiB (651 MB) | 481.1 / 495.2 MiB (504 / 519 MB) | 450.4 MiB (472 MB) |
+| **REQ-MEM-002** | **FAIL** | **FAIL**, by 4 to 18 MiB | **PASS**, 33 MiB under the limit at +60 s |
 
-"After" lists run 2 / run 3 of `bench/mem-reclaim`. The guest's own view at the end of
-every run: `MemFree` within 10 MiB of its idle value, file cache 35 to 75 MiB, `AnonPages`
-about 62 MiB, `Slab` 32 MiB. The fill took 1.4 s for the anonymous memory and 2.2 s for
-the file.
+Runs 2 and 3 used a test build whose hash tables were smaller (2^18 / 2^17 buckets, 2 + 1
+MiB) than the committed ones (2^19 / 2^18, 4 + 2 MiB, section 2); run 4 is the committed
+code. The guest's own view at the end of every run: `MemFree` within 10 MiB of its idle
+value, file cache 35 to 80 MiB, `AnonPages` about 63 MiB, `Slab` 32 MiB. The fill took
+1.4 s for the anonymous memory and 2.2 to 2.5 s for the file.
 
-**The VM now gives back everything the workload took, within about 45 s.** What still
-fails the requirement is the engine process: in all three bench runs its private working
-set rose by 46 MiB, from about 19 MiB to its full commit of about 65 MiB (below). Without
-that rise the total was 446.5 MiB at +46 s in run 2, under the limit with 30 MiB to spare.
-
+**The VM now gives back what the workload took, within about 45 s.** The VM side ends
+within 20 MiB of its baseline, which is inside the boot-to-boot spread of the idle level
+(section 2). **Whether a run passes depends on the engine process:** in runs 1 to 3 its
+private working set rose once by 46 MiB, from about 19 MiB to its full commit of about
+65 MiB (section 3), and those runs fail; in run 4 it did not, and the run passes. So
+REQ-MEM-002 is met by the VM, and met overall only while the engine's untouched commit
+stays out of its working set.
 ## Where the memory went
 
 ### 1. Free memory the guest could not report, +84 MiB, fixed
@@ -89,20 +92,23 @@ run). The kernel reserves 263.8 MiB at boot (`Memory:` line):
   12 GiB of RAM.
 - The dentry and inode hash tables: 16 + 8 MiB, sized from RAM and zeroed at boot.
 
-`dhash_entries=524288 ihash_entries=262144` fix the tables at the sizes a 4 GiB guest
-gets by default (4 + 2 MiB). The default VM is unchanged, and a 12 GiB one saves 18 MiB.
-(The measured runs used 262144 / 131072, which saved 21.5 MiB of reserved memory; the
-committed values are the 4 GiB defaults, so a 4 GiB guest's lookups do not change.)
+For a guest above 4 GiB the engine now adds `dhash_entries=524288 ihash_entries=262144`,
+the sizes a 4 GiB guest gets by default (4 + 2 MiB). A 12 GiB guest saves 18 MiB; a guest
+of 4 GiB or less keeps the kernel's own sizes (`engine.HashTableArgs`). The cost is longer
+hash chains in a large guest that caches millions of dentries: at 2^19 buckets, two
+million cached dentries make chains of four on average. (The diagnosis runs and bench runs
+2 and 3 used 262144 / 131072, which saved 21.5 MiB of reserved memory.)
 
 Idle `vmmem` of the same configuration varied by up to 30 MiB from boot to boot (466 to
 498 MiB on `main`), so single idle numbers above are ±15 MiB.
 
 ### 3. The engine's commit becoming resident, +46 MiB, open
 
-In all three bench runs the engine's private working set jumped from about 19 MiB to
-about 65 MiB, its whole commit, once: at +55 s, +55 s and +2 s after the container
-exited (4 to 5 minutes after the start), and stayed there. `bench/mem-idle` at 4 GiB,
-run afterwards, saw the same jump between 5.5 and 6 minutes after the start. ADR 0003 (Consequences)
+In bench runs 1 to 3 the engine's private working set jumped from about 19 MiB to about
+65 MiB, its whole commit, once: at +55 s, +55 s and +5 s after the container exited (4 to
+5 minutes after the start), and stayed there. The `bench/mem-idle` run after them saw the
+same jump 7.3 to 7.5 minutes after the start. In run 4 and in the `bench/mem-idle` run
+after it, it did not happen (the latter rose to 32 MiB for one sample). ADR 0003 (Consequences)
 explains the 46 MiB: 32 MiB is Go 1.27's FIPS entropy scratch buffer
 (`crypto/internal/fips140/drbg.memory`) and most of the rest gopacket's tables, all in
 the executable's data section, demand-zero and never touched by the engine; another
@@ -114,33 +120,58 @@ twice, stayed at 16 to 20 MiB. ADR 0003 saw the same with the soak. Every bench 
 the engine from a Go program that also starts a hidden PowerShell for each sample (the
 CIM query in `bench/internal/hostmon`). So the outside reader
 (most likely Defender's behaviour monitoring) seems to react to the bench's process tree.
-A non-elevated user cannot see who opens the engine, so this is not proven. It is not a
+A non-elevated user cannot see who opens the engine, so neither the reader nor its
+trigger is proven, and run 4 shows a bench-launched engine without the jump. It is not a
 leak and not something the VM does, but REQ-MEM-002 counts it.
 
 ## Changes
 
-- `internal/engine.DefaultCmdLine` adds `page_reporting.page_reporting_order=0
-  dhash_entries=524288 ihash_entries=262144`.
+- `internal/engine.DefaultCmdLine` adds `page_reporting.page_reporting_order=0`; above
+  4 GiB of guest memory the engine also adds `dhash_entries=524288 ihash_entries=262144`.
 - `bench/mem-reclaim` and `bench/mem-guest` are new. `bench/mem-idle` now reads the
   Docker pipe after the start, so a `--pipe` in `-start-args` works.
 
 ## What is not measured, and what is left
 
 - **Not measured:** anything inside `vmmem` (Hyper-V's own accounting, the reported
-  ranges), which needs elevation; who reads the engine's memory; more than two runs of
-  the bench after the change; the first start after a host reboot; a 1.0 target run.
-- **The engine's 46 MiB** (section 3). REQ-MEM-002 passes only if the engine stays near
-  its idle working set, or if the 32 MiB buffer leaves the binary (Go's to fix, ADR 0003)
-  or is not committed. Until then the requirement is not met on this machine.
+  ranges), which needs elevation; who reads the engine's memory; more than one run of
+  the committed code (runs 2 and 3 used the test build); the first start after a host
+  reboot; a 1.0 target run; a container that exits with dirty page cache (the bench syncs
+  the file first); the cost of 4 KiB discard hints for a long, memory-heavy guest workload
+  (host large pages split into 4 KiB mappings; a before/after `bench/fs-seq` or
+  `bench/net-perf` run would bound it).
+- **The engine's 46 MiB** (section 3). REQ-MEM-002 passes only while the engine stays
+  near its idle working set, or once the 32 MiB buffer leaves the binary (Go's to fix,
+  ADR 0003) or is not committed. Until then the requirement is met in some runs and not
+  in others. **Next step:** sample the counters in-process (PDH) instead of through a
+  PowerShell per sample, and run the bench several times: if the jump disappears, the
+  bench was the trigger.
 - **The 1.0 target cannot be reached at 12 GiB as configured.** `mem_map` alone is
   192 MiB, and the idle total is about 447 MiB against a 1.0 limit of 333.8 MiB
   (350 MB). Booting small and hot-adding memory (idle-memory.md, section 5) would cut the
   idle cost, but hv_balloon cannot remove hot-added memory, so after a workload that used
   it the `mem_map` of the added memory would stay. That needs an ADR.
-- **REQ-MEM-001 with the new command line** (`bench/mem-idle`, 4 GiB, one run): total
-  median 359.5 MiB (377 MB), still under the 0.1 target. `vmmem` 288.6 MiB (292 before),
-  `vmwp` 5.4 MiB, and the engine 65.5 MiB because of the jump in section 3 (18.9 MiB
-  before it). Without the jump the total was 312.7 MiB.
+- **REQ-MEM-001 with the committed command line** (`bench/mem-idle`, 4 GiB, after run 4):
+  total median 309.6 MiB (325 MB), under the 0.1 target. Engine 18.8, `vmmem` 285.2,
+  `vmwp` 5.5 MiB. (The run before it, with the test build, read 359.5 MiB because the
+  engine jumped to 65.5 MiB; 312.7 MiB before the jump.)
 - **Whether the jump also happens to a user's engine** is the open question that decides
-  REQ-MEM-002. A bench that reads the counters in-process (PDH) instead of through
-  PowerShell would show whether the bench causes it.
+  REQ-MEM-002 (the next step above).
+
+## Adversarial review
+
+The `adversarial-reviewer` agent reviewed the bench, the command line change and this
+document on 2026-10-31 against REQ-MEM-002. No critical or high findings.
+
+| # | Sev | Finding | Resolution |
+|---|---|---|---|
+| 1 | Med | The "after" numbers came from a test build with smaller hash tables than the committed ones. | **Fixed:** run 4 and the second `bench/mem-idle` run use the committed code; runs 2 and 3 are labelled. |
+| 2 | Med | Fixed hash sizes made 1–2 GiB guests' tables larger than the kernel's default and capped huge guests hard. | **Fixed:** the cap applies only above 4 GiB (`engine.HashTableArgs`, with a test); the chain-length cost for large guests is stated in section 2. |
+| 3 | Med | `requirements.md` stated the engine rise's cause as fact and did not name the bench as a possible trigger. | **Fixed:** the cause is marked unproven everywhere, and the PDH sampling run is the named next step. |
+| 4 | Low | Jump timings in section 3 were wrong (mem-idle 7.3–7.5 min, run 3 +5 s). | **Fixed.** |
+| 5 | Low | The exit time was taken after the in-flight sample, so "after" times were up to one sample early. | **Fixed:** the exit is when `docker run` returns, and a workload sample taken after it counts as after. |
+| 6 | Low | One late sample above the limit fails a run. | **Kept, documented:** "returns to" is read as "and stays" (README, requirements.md), with a test. |
+| 7 | Low | Ctrl+C with `-keep-running` left the container and the volume. | **Fixed:** the container is named and removed before the volume. |
+| 8 | Low | The page cache is synced clean before the exit. | **Documented** under "not covered" (README) and "not measured" here. |
+| 9 | Low | Building mem-guest needs the source tree; a `-trimpath` bench needs `-guest`. | **Documented** in the README. |
+| 10 | Info | Host large-page splitting by 4 KiB discard hints is not measured. | **Documented** under "not measured". |

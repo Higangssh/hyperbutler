@@ -62,18 +62,21 @@ Status on the reference machine (2026-10-31, `hyperbutler start`, 4 GiB / 8 vCPU
   engine 17.7 + vmmem 292 + vmwp 5.5 MiB, no other VM running. The engine's commit is
   65 MiB; a process that reads its whole memory (likely Defender) can make all of it
   resident, which would add up to about 47 MiB.
-- REQ-MEM-002: **not met** (`bench/mem-reclaim`, 2026-10-31, 12 GiB guest; details in
-  [research/mem-reclaim.md](research/mem-reclaim.md)). The VM side now meets it: after the
-  4 + 4 GiB workload `vmmem` + `vmwp` are back at their idle level (about 428 MiB) by +45 s,
-  since the guest reports free memory in single pages (`page_reporting_order=0`; before,
-  84 MiB stayed). The total still fails, 492.5 MiB at +60 s against 476.8 MiB (500 MB),
-  because in every bench run the engine's working set rose by 46 MiB to its full commit
-  (ADR 0003's untouched FIPS buffer, made resident by an outside reader). Without that
-  rise it was 446.5 MiB. Idle at 12 GiB is about 447 MiB, mostly `mem_map` (192 MiB), so
-  the 1.0 limit (350 MB) is out of reach at this size.
-- REQ-MEM-001 re-run with the REQ-MEM-002 kernel command line (4 GiB): 359.5 MiB (377 MB),
-  of which the engine 65.5 MiB after the same rise (312.7 MiB before it); still met for 0.1.
-
+- REQ-MEM-002: **met for 0.1 in 1 of 4 runs, not reliably** (`bench/mem-reclaim`,
+  2026-10-31, 12 GiB guest; details in [research/mem-reclaim.md](research/mem-reclaim.md)).
+  The VM side meets it: since the guest reports free memory in single pages
+  (`page_reporting_order=0`), `vmmem` + `vmwp` are back within 20 MiB of their idle level
+  by +45 s after the 4 + 4 GiB workload (before, 84 MiB stayed and grew with every
+  workload). With the committed code: 443.9 MiB (465 MB) at +60 s, under the 476.8 MiB
+  (500 MB) limit from +44 s. But in three of the four runs the engine's working set rose
+  once by 46 MiB to its full commit (ADR 0003's untouched FIPS buffer becoming resident;
+  the reader and what triggers it are not identified), and those runs fail at about
+  493 MiB. Idle at 12 GiB is about 430 to 450 MiB, mostly `mem_map` (192 MiB), so the 1.0
+  limit (350 MB) is out of reach at this size. The bench reads "returns to" as "and stays
+  there until +180 s".
+- REQ-MEM-001 re-run with the REQ-MEM-002 kernel command line (4 GiB, `bench/mem-idle`):
+  309.6 MiB (325 MB), still met for 0.1. A run before it read 359.5 MiB because of the same
+  engine rise (312.7 MiB before it).
 ## File sharing
 
 | ID | Requirement | Acceptance criterion (how measured) | Pri | Pain |

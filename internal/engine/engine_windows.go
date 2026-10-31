@@ -55,11 +55,8 @@ var GuardConfig = spaceguard.Config{
 // Idle guest CPU did not change measurably. See docs/research/mem-reclaim.md
 // (REQ-MEM-002).
 //
-// dhash_entries, ihash_entries: the dentry and inode hash tables scale with guest RAM
-// (16 + 8 MiB at 12 GiB), are zeroed at boot and so stay committed. These are the sizes
-// a 4 GiB guest gets by default (4 + 2 MiB), so the default VM is unchanged and a
-// larger one no longer pays for them.
-const DefaultCmdLine = "console=ttyS0 quiet swiotlb=noforce page_reporting.page_reporting_order=0 dhash_entries=524288 ihash_entries=262144"
+// The dentry and inode hash table sizes are added per VM size (HashTableArgs).
+const DefaultCmdLine = "console=ttyS0 quiet swiotlb=noforce page_reporting.page_reporting_order=0"
 
 // DockerPort is the AF_VSOCK port of the guest agent's Docker API relay.
 const DockerPort = 2375
@@ -278,7 +275,7 @@ func Run(ctx context.Context, cfg Config) (err error) {
 	}
 
 	var disk *dataDisk
-	cmdline := cfg.CmdLine + netArgs + shareArgs + cfg.ExtraCmdLine
+	cmdline := cfg.CmdLine + HashTableArgs(cfg.MemoryMB) + netArgs + shareArgs + cfg.ExtraCmdLine
 	var disks []vm.Disk
 	if cfg.Disk.Data != "" {
 		if disk, err = prepareDisk(cfg.Disk, cfg.DiskSize); err != nil {

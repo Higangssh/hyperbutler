@@ -15,7 +15,8 @@ return to at most the REQ-MEM-001 target + 100 MB (500 MB for 0.1, 350 MB for 1.
   read from inside: `/proc/meminfo` at the peak and after the window, and the engine
   log's `guest memory` and `guest page-cache reclaim` lines.
 - **Workload.** `bench/mem-guest` is built for linux/amd64 and imported as the only file
-  of a scratch image (`docker import`), so no registry is needed. `mem-guest fill` maps
+  of a scratch image (`docker import`), so no registry is needed. The bench builds it
+  from its own source directory; a bench binary built with `-trimpath` needs `-guest`. `mem-guest fill` maps
   and touches `-anon` bytes, then writes a `-cache` byte file to a named volume, syncs and
   reads it back, prints `/proc/meminfo` and exits. The file stays on the volume, so its
   page cache outlives the container (a file in the container's own layer would be
@@ -25,7 +26,13 @@ return to at most the REQ-MEM-001 target + 100 MB (500 MB for 0.1, 350 MB for 1.
   after it exits. Every `-interval` (2 s).
 - **Verdict.** It passes if, from some sample at or before +60 s until the end of the
   window, every sample is at or below the limit. A dip under the limit that does not
-  last does not count. The run is *not valid* if another VM or engine ran during it, if
+  last does not count, and neither does a total that was under the limit at +60 s but
+  rose above it later in the window: this reads "returns to" as "and stays". The engine
+  and VM (`vmmem` + `vmwp`) split at baseline and at the end is printed next to the
+  verdict.
+- **Not covered:** the file is synced before the container exits, so the page cache is
+  clean; a container that exits with dirty pages also waits for writeback. MiB and GiB
+  are used for the workload (4 GiB, slightly more than the requirement's 4 GB). The run is *not valid* if another VM or engine ran during it, if
   host memory did not grow by at least half the workload, or if the samples end before
   +60 s.
 - It refuses to run if the installation is already running, uses its own Docker pipe

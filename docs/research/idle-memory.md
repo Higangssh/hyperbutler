@@ -213,8 +213,8 @@ Smoke checks on the shipped image all passed:
   - zswap with proactive reclaim.
 - **Spread across runs** was not measured (one run per configuration).
 - **REQ-MEM-002** was run on 2026-10-31 ([mem-reclaim.md](mem-reclaim.md)). It changed the
-  kernel command line: free pages are now reported in single pages, and the dentry and inode
-  hash tables are fixed at their 4 GiB sizes.
+  kernel command line: free pages are now reported in single pages, and above 4 GiB the
+  dentry and inode hash tables are capped at their 4 GiB sizes.
 - **The first start after a host reboot** was not measured. That start reads `system.vhd`
   and hashes 105 MB with a cold host cache, and it needs a reboot.
 - **`bench/mem-idle` and `bench/start`** do not exist yet. The scripts used here should

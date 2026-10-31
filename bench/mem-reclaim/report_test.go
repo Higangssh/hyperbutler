@@ -59,10 +59,12 @@ func TestSummarizeFails(t *testing.T) {
 		"never low": {fakeRun(300*mib1, 8500*mib1, 8000*mib1, 4000*mib1, 4000*mib1, 4000*mib1, 4000*mib1, 4000*mib1, 4000*mib1), "FAIL"},
 		// Low briefly inside the window, then up again: not "returned".
 		"dips then rises": {fakeRun(300*mib1, 8500*mib1, 400*mib1, 400*mib1, 4000*mib1, 4000*mib1, 4000*mib1, 4000*mib1, 4000*mib1), "FAIL"},
-		"too late":        {fakeRun(300*mib1, 8500*mib1, 8000*mib1, 8000*mib1, 8000*mib1, 8000*mib1, 8000*mib1, 8000*mib1, 8000*mib1, 400*mib1), "FAIL"},
-		"no growth":       {fakeRun(300*mib1, 400*mib1, 400*mib1, 400*mib1, 400*mib1, 400*mib1, 400*mib1, 400*mib1, 400*mib1), "NOT VALID: host memory grew"},
-		"short window":    {fakeRun(300*mib1, 8500*mib1, 400*mib1, 400*mib1), "NOT VALID: the samples end"},
-		"no after":        {fakeRun(300*mib1, 8500*mib1), "FAIL: no samples"},
+		// Under the limit at +60 s, above it once later: "returns to" means "and stays".
+		"rises late":   {fakeRun(300*mib1, 8500*mib1, 4000*mib1, 400*mib1, 400*mib1, 400*mib1, 400*mib1, 400*mib1, 400*mib1, 600*mib1, 400*mib1), "FAIL"},
+		"too late":     {fakeRun(300*mib1, 8500*mib1, 8000*mib1, 8000*mib1, 8000*mib1, 8000*mib1, 8000*mib1, 8000*mib1, 8000*mib1, 400*mib1), "FAIL"},
+		"no growth":    {fakeRun(300*mib1, 400*mib1, 400*mib1, 400*mib1, 400*mib1, 400*mib1, 400*mib1, 400*mib1, 400*mib1), "NOT VALID: host memory grew"},
+		"short window": {fakeRun(300*mib1, 8500*mib1, 400*mib1, 400*mib1), "NOT VALID: the samples end"},
+		"no after":     {fakeRun(300*mib1, 8500*mib1), "FAIL: no samples"},
 	} {
 		s := Summarize(tc.ss, crit)
 		if s.Pass || !strings.HasPrefix(s.VerdictText, tc.want) {
