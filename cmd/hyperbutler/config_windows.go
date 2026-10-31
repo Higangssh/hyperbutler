@@ -14,6 +14,8 @@ import (
 	"strings"
 	"time"
 
+	"golang.org/x/sys/windows"
+
 	"github.com/Higangssh/hyperbutler/internal/config"
 	"github.com/Higangssh/hyperbutler/internal/daemoncfg"
 	"github.com/Higangssh/hyperbutler/internal/engine"
@@ -280,6 +282,11 @@ func reloadLive(in *install, stdout io.Writer) error {
 	}
 	prev := st.HostGateway.Reloads
 	if err := engine.RequestSettingsReload(st.PID, st.PIDCreated); err != nil {
+		if errors.Is(err, windows.ERROR_FILE_NOT_FOUND) {
+			// An engine from a release without live settings: settings.json is saved.
+			fmt.Fprintln(stdout, "The running engine cannot apply settings live; this applies at the next hyperbutler start.")
+			return nil
+		}
 		return err
 	}
 	deadline := time.Now().Add(10 * time.Second)

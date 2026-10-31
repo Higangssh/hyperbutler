@@ -31,6 +31,7 @@ func validState(dir string) *State {
 func TestStateRoundTrip(t *testing.T) {
 	l := Layout{Home: testDir(t)}
 	s := validState(l.Home)
+	s.HostGateway = &HostGatewayState{Address: "192.168.127.254", Enabled: true, Ports: "80,8000-8100", Reloads: 2}
 	if err := SaveState(l, s); err != nil {
 		t.Fatal(err)
 	}

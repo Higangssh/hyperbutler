@@ -376,3 +376,49 @@ func TestNoHostGatewayDNS(t *testing.T) {
 		t.Fatalf("got %v", r)
 	}
 }
+
+// Nothing listens on either loopback: the guest gets a prompt reset, and a denied port
+// is a prompt reset too, never a dial timeout.
+func TestHostGatewayRefusalsArePrompt(t *testing.T) {
+	ln, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	port := uint16(ln.Addr().(*net.TCPAddr).Port)
+	ln.Close()
+	n := newHostGatewayStack(t, nil)
+	g := newFakeGuest(t, n)
+	refused := n.Stats().TCPRefused
+	start := time.Now()
+	if _, err := readFrom(t, g, netip.AddrPortFrom(hgAddr, port)); err == nil {
+		t.Fatal("connected to a closed port")
+	}
+	if d := time.Since(start); d > 3*time.Second {
+		t.Fatalf("refusal took %v", d)
+	}
+	if n.Stats().TCPRefused != refused+1 {
+		t.Fatal("not counted as refused")
+	}
+	if err := n.SetHostGateway(HostGateway{Enabled: true, Ports: PortList{{1, 1}}}); err != nil {
+		t.Fatal(err)
+	}
+	start = time.Now()
+	if _, err := readFrom(t, g, netip.AddrPortFrom(hgAddr, port)); err == nil {
+		t.Fatal("connected to an unlisted port")
+	}
+	if d := time.Since(start); d > 3*time.Second {
+		t.Fatalf("denial took %v", d)
+	}
+}
+
+// Host gateway UDP flows have their own bound inside the flow table.
+func TestHostGatewayUDPFlowLimit(t *testing.T) {
+	n := newHostGatewayStack(t, func(c *Config) { c.MaxUDPFlows = 8 })
+	if cap(n.hgUDPSem) != 8 {
+		t.Fatalf("gateway UDP bound %d with 8 flows", cap(n.hgUDPSem))
+	}
+	n2 := newHostGatewayStack(t, nil)
+	if cap(n2.hgUDPSem) != maxHostGatewayUDPFlows || cap(n2.hgUDPSem) >= cap(n2.udpSem) {
+		t.Fatalf("gateway UDP bound %d of %d", cap(n2.hgUDPSem), cap(n2.udpSem))
+	}
+}

@@ -99,6 +99,8 @@ type Stack struct {
 	tcpSem, udpSem, dnsSem, dnsTCPSem chan struct{}
 	// hgSem bounds host gateway TCP connections (MaxHostGatewayConns).
 	hgSem chan struct{}
+	// hgUDPSem bounds host gateway UDP flows (maxHostGatewayUDPFlows), within MaxUDPFlows.
+	hgUDPSem chan struct{}
 	// largeSem holds a token for each connection whose buffers may grow past tcpBufferMax.
 	largeSem chan struct{}
 
@@ -150,6 +152,7 @@ func New(cfg Config, log *slog.Logger) (*Stack, error) {
 		pol:       pol,
 		dns:       &dnsHandler{res: cfg.Resolver, timeout: cfg.DNSTimeout, subnet: cfg.Subnet, hostGateway: pol.hostGatewayDNS},
 		hgSem:     make(chan struct{}, cfg.MaxHostGatewayConns),
+		hgUDPSem:  make(chan struct{}, min(maxHostGatewayUDPFlows, cfg.MaxUDPFlows)),
 		log:       log,
 		gwMAC:     tcpip.LinkAddress(cfg.GatewayMAC),
 		ctx:       ctx,
@@ -502,6 +505,20 @@ func (n *Stack) handleUDP(r *udp.ForwarderRequest) bool {
 		n.st.udpDenied.Add(1)
 		return true // drop silently: the flow table is full
 	}
+	release := func() { <-n.udpSem }
+	if tgt.Kind == TargetHostGateway {
+		// Host gateway flows have their own, smaller share of the flow table, so a
+		// guest that sprays this host's loopback ports cannot take every flow from
+		// other UDP traffic.
+		select {
+		case n.hgUDPSem <- struct{}{}:
+			release = func() { <-n.hgUDPSem; <-n.udpSem }
+		default:
+			<-n.udpSem
+			n.st.udpDenied.Add(1)
+			return true
+		}
+	}
 	var out net.Conn
 	if tgt.Kind == TargetHostGateway {
 		out, err = n.dialHostGateway(n.ctx, "udp", tgt.Addr.Port())
@@ -509,25 +526,25 @@ func (n *Stack) handleUDP(r *udp.ForwarderRequest) bool {
 		out, err = n.dialer(false).DialContext(n.ctx, "udp", tgt.Addr.String())
 	}
 	if err != nil {
-		<-n.udpSem
+		release()
 		return false
 	}
 	if tgt.Kind == TargetOut && selfConnected(out) {
 		_ = out.Close()
-		<-n.udpSem
+		release()
 		n.st.udpDenied.Add(1)
 		return false
 	}
 	if !n.track(1) {
 		_ = out.Close()
-		<-n.udpSem
+		release()
 		return true
 	}
 	var wq waiter.Queue
 	ep, terr := r.CreateEndpoint(&wq)
 	if terr != nil {
 		_ = out.Close()
-		<-n.udpSem
+		release()
 		n.wg.Done()
 		return true
 	}
@@ -535,7 +552,7 @@ func (n *Stack) handleUDP(r *udp.ForwarderRequest) bool {
 	n.st.udpActive.Add(1)
 	go func() {
 		defer n.wg.Done()
-		defer func() { <-n.udpSem }()
+		defer release()
 		defer n.st.udpActive.Add(-1)
 		n.udpFlow(in, out)
 	}()

@@ -31,6 +31,10 @@ var HostGatewayNames = []string{"host.docker.internal", "gateway.docker.internal
 // at one time, within MaxTCPConns.
 const DefaultMaxHostGatewayConns = 256
 
+// maxHostGatewayUDPFlows bounds the UDP flows to this host's loopback, within
+// MaxUDPFlows: a quarter of the default flow table.
+const maxHostGatewayUDPFlows = 256
+
 // Errors of the host gateway.
 var (
 	ErrHostGatewayOff     = errors.New("netstack: the host gateway (host.docker.internal) is turned off")
