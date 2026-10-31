@@ -176,7 +176,7 @@ try {
         foreach ($l in Get-Content $inputs) {
             $c = $l -split "`t"
             # A line that does not parse must not skip the signature check below.
-            if ($c.Count -ne 10) { Fail "bad line in $inputs: $l" }
+            if ($c.Count -ne 10) { Fail "bad line in ${inputs}: $l" }
             $n++
             $pkg = if ($c[3] -eq 'apk') { "$($c[4])-$($c[5])" } else { $c[2] }
             $how = if ($c[3] -eq 'apk') { 'signed' } else { 'pin only' }

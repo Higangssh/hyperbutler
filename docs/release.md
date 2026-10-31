@@ -39,6 +39,7 @@ release here.
 | Release | Zip size | Notes |
 |---|---|---|
 | (dry run) | 79.7 MB | prototype A2a image, snapshot |
+| (dry run, 2026-10-31) | 84.9 MB | A2b image with the Alpine engine, snapshot (89,026,173 bytes; 113.1 MB unpacked) |
 
 There is no installer and nothing needs admin rights to install: unzip, add the folder to
 the user PATH, run `hyperbutler start` (REQ-PLAT-003). The one-time prerequisites (the Virtual
