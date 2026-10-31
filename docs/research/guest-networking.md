@@ -438,12 +438,17 @@ servers), medians of 5 runs per path and direction:
 | Before (the ADR's gate run, n=3, 2 boots) | 7.75-13.29 | 3.60-3.79 | 36-38% | 23-27 | 4.2-5.4 | 17-23% |
 | After, boot 1 | 12.26 | 9.79 | **80%** | 26.80 | 10.86 | 41% |
 | After, boot 2 | 12.43 | 9.19 | **74%** | 24.69 | 11.80 | 48% |
+| After review fixes, boot 3 | 21.70 | 10.56 | 49% | 29.15 | 13.06 | 45% |
+| boot 4 | 18.74 | 10.41 | 56% | 23.18 | 14.45 | 62% |
+| boot 5 | 7.96 | 7.33 | 92% | 28.63 | 9.98 | 35% |
+| boot 6 | 10.81 | 6.92 | 64% | 29.49 | 8.29 | 28% |
 | After, offload off (`-net-offload=false`) | 13.11 | 4.75 | 36% | 23.05 | 6.20 | 27% |
 
 The offload-off row keeps the buffer, socket and TIME_WAIT fixes. Without offload (and
 so with the guest dialing), the container paths fall back to the old numbers: dl 3.0, ul
-3.5, pub-dl 3.9, pub-ul 5.3 Gbit/s. Raw hvsock guest-to-host varies 2x between boots,
-while the stack holds 9.2-10.0 Gbit/s.
+3.5, pub-dl 3.9, pub-ul 5.3 Gbit/s. Over 6 boots the guest-to-host ratio is 49-92% (median 69%,
+5 of 6 at or above 50%). Raw hvsock guest-to-host varies from 8 to 22 Gbit/s between boots,
+while the stack holds 6.9-10.6 Gbit/s, so the ratio depends mostly on the raw run.
 
 Latency in the gate bench, after the load fix (one boot): raw idle p50/p99/p99.9
 52/77/124 µs; stack idle 158/257/504 µs; raw under load 52/96/259 µs; stack under load
@@ -482,10 +487,11 @@ hb-dev.exe run ... -net-stats 2s                                                
 
 ## Open items
 
-- The stack now meets the 50% gate (74-80% of raw hvsock guest to host; see "Throughput
-  work"). The LAN registry comparison against HNS NAT has still not been run (no second
-  machine); ADR 0006 replaces it with a local comparison.
-- Host-to-guest through the stack is 41-48% of raw hvsock (raw is 25 Gbit/s), and the
+- The stack now meets the 50% gate on 5 of 6 boots (49-92%, median 69% of raw hvsock
+  guest to host; see "Throughput work"). The LAN registry comparison against HNS NAT has
+  still not been run (no second machine); ADR 0006 defers it to the release checklist.
+  The HNS NAT local numbers above were read with 8 KiB reads and are probably low.
+- Host-to-guest through the stack is 28-62% of raw hvsock (raw is 23-29 Gbit/s), and the
   cause of a 10-13 ms stall of other connections when a bulk connection is set up was
   not found.
 - Many short connections from a guest to one host destination leave the engine's

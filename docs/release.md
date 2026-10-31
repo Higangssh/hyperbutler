@@ -152,7 +152,8 @@ met blocks the release. Changing a gate needs an ADR change, not a waiver here.
   errors.
 - [ ] **LAN registry pull** (manual, `bench/net-lan`, when a second machine on a wired
   link is available): a large image from `registry:2` on that machine, through the stack
-  and through HNS NAT, within 20% of each other (the gate ADR 0006 amended).
+  and through HNS NAT, within 20% of each other (the gate ADR 0006 deferred to here).
+  It blocks the release.
 
 **ADR 0005 (guest image)**
 - [ ] The image comes from the release run's guest-image job in strict mode, so every
