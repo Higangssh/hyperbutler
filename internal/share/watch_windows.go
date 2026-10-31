@@ -36,49 +36,67 @@ func (f *NTFS) Watch(fn func(kind EventKind, path, newPath []string), overflow f
 		_ = windows.CloseHandle(h)
 		return nil, err
 	}
-	w := &watcher{h: h, ev: ev, stop: stop, done: make(chan struct{})}
+	w := &watcher{h: h, ev: ev, stop: stop, ov: new(windows.Overlapped), buf: alignedBuf(256 << 10), done: make(chan struct{})}
+	// Arm the first read before returning: the kernel only records changes from the
+	// first ReadDirectoryChangesW on, and a caller may change files right after Watch.
+	if err := w.arm(); err != nil {
+		_ = windows.CloseHandle(stop)
+		_ = windows.CloseHandle(ev)
+		_ = windows.CloseHandle(h)
+		return nil, err
+	}
 	go w.loop(fn, overflow)
 	return w, nil
 }
 
 type watcher struct {
 	h, ev, stop windows.Handle
-	done        chan struct{}
-	once        sync.Once
+	// The kernel writes ov and buf when a read completes, after the call has returned,
+	// so they must not live on a goroutine stack, which the runtime may move (grow) in
+	// between. Keeping them in the watcher puts them on the heap.
+	ov   *windows.Overlapped
+	buf  []byte
+	done chan struct{}
+	once sync.Once
 }
 
 const watchFilter = windows.FILE_NOTIFY_CHANGE_FILE_NAME | windows.FILE_NOTIFY_CHANGE_DIR_NAME |
 	windows.FILE_NOTIFY_CHANGE_SIZE | windows.FILE_NOTIFY_CHANGE_LAST_WRITE | windows.FILE_NOTIFY_CHANGE_ATTRIBUTES |
 	windows.FILE_NOTIFY_CHANGE_CREATION
 
+// arm starts the next overlapped read of changes into w.buf.
+func (w *watcher) arm() error {
+	*w.ov = windows.Overlapped{HEvent: w.ev}
+	_ = windows.ResetEvent(w.ev)
+	var n uint32 // only written for a synchronous completion
+	return windows.ReadDirectoryChanges(w.h, &w.buf[0], len32(len(w.buf)), true, watchFilter, &n, w.ov, 0)
+}
+
+// loop waits for each armed read, reports its changes and arms the next one.
 func (w *watcher) loop(fn func(EventKind, []string, []string), overflow func()) {
 	defer close(w.done)
-	buf := alignedBuf(256 << 10)
 	for {
-		ov := windows.Overlapped{HEvent: w.ev}
-		_ = windows.ResetEvent(w.ev)
 		var n uint32
-		if err := windows.ReadDirectoryChanges(w.h, &buf[0], len32(len(buf)), true, watchFilter, &n, &ov, 0); err != nil {
-			return
-		}
 		r, err := windows.WaitForMultipleObjects([]windows.Handle{w.ev, w.stop}, false, windows.INFINITE)
 		if err != nil || r != windows.WAIT_OBJECT_0 {
-			_ = windows.CancelIoEx(w.h, &ov)
-			_ = windows.GetOverlappedResult(w.h, &ov, &n, true)
+			_ = windows.CancelIoEx(w.h, w.ov)
+			_ = windows.GetOverlappedResult(w.h, w.ov, &n, true)
 			return
 		}
-		if err := windows.GetOverlappedResult(w.h, &ov, &n, false); err != nil {
-			if errors.Is(err, windows.ERROR_NOTIFY_ENUM_DIR) {
-				overflow()
-				continue
-			}
-			return
-		}
-		if n == 0 {
+		err = windows.GetOverlappedResult(w.h, w.ov, &n, false)
+		switch {
+		case errors.Is(err, windows.ERROR_NOTIFY_ENUM_DIR):
 			overflow()
-			continue
+		case err != nil:
+			return
+		case n == 0:
+			overflow()
+		default:
+			parseNotify(w.buf[:n], fn)
 		}
-		parseNotify(buf[:n], fn)
+		if err := w.arm(); err != nil {
+			return
+		}
 	}
 }
 
