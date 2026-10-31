@@ -161,13 +161,26 @@ Status on the reference machine (2026-10-31, `hyperbutler-dev` with the user-mod
 | ID | Requirement | Acceptance criterion (how measured) | Pri | Pain |
 |---|---|---|---|---|
 | REQ-UX-001 | One command to start, no tuning. | From a fresh install, `hyperbutler start` then `docker run hello-world` works with no config file and no other steps. The `hyperbutler` docker context is registered and selected (`bench/firstrun`). | P0 | U3 |
-| REQ-UX-002 | Lightweight install. | The installer is ≤ 150 MB. There is no GUI and no tray process. At most 3 resident host processes while running: `hyperbutler.exe`, the VMM (or `vmmem`), and one optional helper (`bench/footprint`). | P1 | U2 |
+| REQ-UX-002 | Lightweight install. | The installer is ≤ 150 MB. With default settings and no GUI window open, no GUI or tray process is running. At most 3 resident host processes while running: `hyperbutler.exe`, the VMM (or `vmmem`), and one optional helper (`bench/footprint`). The budget is measured with the GUI closed; with the GUI open it is measured and reported separately ([ADR 0008](adr/0008-settings-gui-mcp.md)). | P1 | U2 A5 |
 | REQ-UX-003 | Failures are diagnosable. | `hyperbutler doctor` detects and explains, with a fix, at least: missing Windows features, virtualization disabled in firmware, a conflicting hypervisor, a full host disk, and a named-pipe conflict (`bench/doctor`). | P1 | U1 P5 |
+| REQ-UX-004 | No account. | No feature needs a Docker, hyperbutler, or any other account. Registry logins stay the docker CLI's business (review of every release). | P0 | A4 |
+| REQ-UX-005 | No telemetry. | With default settings, hyperbutler makes no network requests of its own except the update check, and that check can be turned off. Image pulls and container traffic are the user's. Verified with a packet capture (`bench/no-telemetry`, *manual*). | P0 | A12 |
+| REQ-UX-006 | Every setting has a command. | `hyperbutler config list/get/set/unset/path` reads and changes every user setting. `list` shows each key's value, default, source and when it applies. `set` validates first, writes atomically and says what restart, if any, it needs; it never restarts silently. An invalid file is never overwritten (unit and fuzz tests). | P0 | A6 |
+| REQ-UX-007 | Docker Engine settings pass through. | A user `daemon.json` reaches the guest's dockerd byte for byte. It is validated before use; keys hyperbutler owns are refused with a message; an invalid file leaves the previous one in effect. Applying it restarts dockerd only. `insecure-registries` to a LAN registry works end to end (`bench/daemon-json`). | P0 | A7 |
+| REQ-UX-008 | Machine-readable output. | `status`, `config list/get`, `version` and `diagnose` take `--json` with a documented, versioned schema, so scripts and AI tools can use them (unit tests on the schema). | P0 | A17 |
+| REQ-UX-009 | Corporate CA works. | Behind a TLS-inspecting proxy whose root CA is in the Windows certificate store, `docker pull` works with no extra steps once `ca.import` is on (default on). A manual proxy for dockerd is a setting (`bench/corp-proxy`, *manual*). | P0 | A8 N2 |
+| REQ-UX-010 | Clean uninstall. | `hyperbutler uninstall --dry-run` lists everything hyperbutler created (data, settings, docker context, logs, ACLs, tasks); `uninstall` removes it, keeping data only if asked. Afterwards a dry run lists nothing (`bench/uninstall`). | P0 | A15 |
+| REQ-UX-011 | On-demand GUI. | A GUI shows status, containers (grouped by Compose project) with start/stop, logs, images, volumes, real disk and memory use, settings and `daemon.json`, and troubleshooting. It is not Electron, does not poll while hidden, and leaves no process behind within 2 s of its window closing (`bench/footprint`). A tray icon, if offered, is off by default. | P1 | A5 A17 |
+| REQ-UX-012 | MCP server for AI tools. | `hyperbutler mcp` serves the Model Context Protocol over stdio and exits with its client, so it adds no resident process. Read-only tools by default (status, containers, logs, images, disk and memory use, settings, diagnose); tools that change state need `--allow-write`, and deletions need their own flag. Secrets are redacted from what it returns (`bench/mcp` and a review). | P1 | A17 |
 
 ## Non-goals
 
 - Windows containers (process-isolated or Hyper-V-isolated Windows images).
-- A GUI or tray app.
+- A resident GUI. A GUI exists only as an on-demand program that exits when its window
+  closes, and a tray icon, if any, is off by default ([ADR 0008](adr/0008-settings-gui-mcp.md)).
+- Account sign-in, telemetry, forced or silent updates, features gated by plan, an
+  extensions marketplace, or a built-in AI assistant. AI tools connect through the MCP
+  server (REQ-UX-012) instead.
 - Bundled Kubernetes. Users can run kind or k3d on top.
 - GPU passthrough before 1.0.
 - Being a general-purpose Linux dev environment that replaces WSL.
