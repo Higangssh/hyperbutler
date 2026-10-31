@@ -5,6 +5,7 @@ package engine
 import (
 	"log/slog"
 	"net"
+	"os"
 	"strings"
 	"testing"
 )
@@ -34,6 +35,11 @@ func TestSetupNetOffload(t *testing.T) {
 // Review finding 1: a port a host program already listens on (on the wildcard address)
 // must not be auto-published, or the 127.0.0.1 bind would take its loopback clients.
 func TestPortInUseRefusesHostListener(t *testing.T) {
+	// A wildcard bind makes Windows Firewall prompt for every freshly built engine.test.exe,
+	// so it runs only where asked for (CI sets this).
+	if os.Getenv("HYPERBUTLER_TEST_WILDCARD") != "1" {
+		t.Skip("binds the wildcard address; set HYPERBUTLER_TEST_WILDCARD=1 to run")
+	}
 	// IPv4-only, IPv6-only and dual-stack wildcard listeners, as other programs create.
 	for _, network := range []string{"tcp4", "tcp6", "tcp"} {
 		addr := "0.0.0.0:0"

@@ -7,6 +7,7 @@ import (
 	"io"
 	"net"
 	"net/netip"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -144,6 +145,11 @@ func TestSelfConnected(t *testing.T) {
 // appeared after the last read (a VPN connecting) must still be refused, by the
 // post-dial self-connection check.
 func TestStaleHostAddrsStillDenied(t *testing.T) {
+	// A wildcard bind makes Windows Firewall prompt for every freshly built netstack.test.exe,
+	// so it runs only where asked for (CI sets this).
+	if os.Getenv("HYPERBUTLER_TEST_WILDCARD") != "1" {
+		t.Skip("binds the wildcard address; set HYPERBUTLER_TEST_WILDCARD=1 to run")
+	}
 	var own netip.Addr
 	addrs, _ := interfaceAddrs()
 	for _, a := range addrs {

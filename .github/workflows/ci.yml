@@ -82,6 +82,7 @@ jobs:
       - name: go test -race
         env:
           CGO_ENABLED: "1" # the race detector needs cgo (gcc ships with windows-latest)
+          HYPERBUTLER_TEST_WILDCARD: "1" # tests that bind 0.0.0.0; skipped locally to spare firewall prompts
         run: go test -race -count=1 ./...
 
   # The guest daemons are Linux binaries whose goroutine code lives in _linux.go files,
