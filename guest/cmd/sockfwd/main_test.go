@@ -4,10 +4,17 @@ import (
 	"io"
 	"net"
 	"path/filepath"
+	"runtime"
 	"testing"
 )
 
 func TestRelayHalfClose(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		// sockfwd runs in the Linux guest; the guest test job runs this on Linux. On
+		// Windows, a half-close (shutdown SD_SEND) of an AF_UNIX connection is now and
+		// then never seen by the peer, so the echo side waits forever.
+		t.Skip("AF_UNIX half-close is not reliably delivered on Windows")
+	}
 	sock := filepath.Join(t.TempDir(), "s.sock")
 	ul, err := net.Listen("unix", sock)
 	if err != nil {
