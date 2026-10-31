@@ -186,8 +186,8 @@ met blocks the release. Changing a gate needs an ADR change, not a waiver here.
 
 ### 2. GPL and license obligations
 
-The guest image contains GPL-2.0 code (Linux, BusyBox, e2fsprogs) and LGPL code
-(libblkid, parts of e2fsprogs, libseccomp). hyperbutler distributes it, so hyperbutler owes the source.
+The guest image contains GPL-2.0 code (Linux, BusyBox, e2fsprogs, iptables, libnftnl) and LGPL
+code (libblkid, parts of e2fsprogs, libseccomp, libmnl). hyperbutler distributes it, so hyperbutler owes the source.
 
 - [ ] `hyperbutler-<tag>-guest-sources.tar` is attached to the same release as the zip. GPLv2
   §3 lets us meet the source duty by "equivalent access to copy the source code from the
@@ -196,7 +196,7 @@ The guest image contains GPL-2.0 code (Linux, BusyBox, e2fsprogs) and LGPL code
 - [ ] The bundle holds, for every package in `MANIFEST.tsv`, the aports directory at the
   commit in the package's signed `.PKGINFO` (APKBUILD, patches, the kernel config) and
   every upstream archive it names. Spot-check: the kernel tarball for the `linux-virt`
-  version, the BusyBox tarball, e2fsprogs, util-linux and libseccomp.
+  version, the BusyBox tarball, e2fsprogs, util-linux, iptables and libseccomp.
 - [ ] `SOURCE-OFFER.txt` names the bundle with the right SHA-256 and URL.
 - [ ] `THIRD-PARTY/README.txt` lists every Go module and guest package, and each one has
   its license text. `package.ps1` fails on a Go module without one; `fetch-sources.sh`

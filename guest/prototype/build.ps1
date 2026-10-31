@@ -236,6 +236,12 @@ Stage-Modules @('modules-boot.txt') $bootStage
 Stage-Modules @('modules-boot.txt', 'modules.txt') $sysStage
 
 # --- 4. build the tools and the guest binaries ----------------------------------------
+# The guest binaries (and the initramfs gzip) are byte-stable only within one Go version,
+# so the image matches the CI build only with the same toolchain. Say which one this is.
+$goVersion = (& go env GOVERSION)
+$goMod = (Select-String -Path (Join-Path $repo 'go.mod') -Pattern '^go\s+(\S+)').Matches[0].Groups[1].Value
+Write-Host "go     $goVersion (go.mod: go $goMod)"
+if ($goVersion -notlike "go$goMod*") { Write-Warning "Go $goVersion is not the go.mod version $goMod; the image will not match the CI build" }
 Push-Location $repo
 try {
     foreach ($t in 'mkinitramfs', 'mksysdisk') {

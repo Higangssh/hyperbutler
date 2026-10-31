@@ -24,6 +24,12 @@ lock=$1
 cache=$2
 manifest=$3
 strict=${HYPERBUTLER_STRICT:-0}
+# Every package must come from the Alpine release and architecture of the container that
+# verifies it (the digest-pinned image, whose keys are the trust root): the same keys
+# sign every branch, so the signature alone would also accept an edge or old-branch
+# package.
+branch=v$(cut -d. -f1,2 /etc/alpine-release)
+arch=$(apk --print-arch)
 
 fail() { echo "fetch-verify: $*" >&2; exit 1; }
 
@@ -79,9 +85,11 @@ while read -r name sha url extra; do
             # a different (older, still signed) package than its file name says.
             [ "$file" = "$pkgname-$pkgver.apk" ] || fail "$name: file $file but .PKGINFO says $pkgname-$pkgver"
             printf '%s' "$commit" | grep -q -E '^[0-9a-f]{40}$' || fail "$name: no aports commit in .PKGINFO"
-            # Alpine mirror layout: .../alpine/<branch>/<repo>/<arch>/<file>
-            repo=$(printf '%s' "$url" | sed -n 's#^https://[^/]*/alpine/[^/]*/\([a-z]*\)/[^/]*/[^/]*$#\1#p')
-            [ -n "$repo" ] || fail "$name: cannot tell the aports repository from $url"
+            # Alpine mirror layout: .../alpine/<branch>/<repo>/<arch>/<file>, and only this
+            # container's branch and arch.
+            repo=$(printf '%s' "$url" | sed -En "s#^https://[^/]+/alpine/$branch/(main|community)/$arch/[^/]+\$#\\1#p")
+            [ -n "$repo" ] || fail "$name: not an Alpine $branch main/community $arch URL: $url"
+            case "$(field arch)" in "$arch" | noarch) ;; *) fail "$name: .PKGINFO arch is '$(field arch)', not $arch or noarch" ;; esac
             echo "ok     $name $pkgname-$pkgver (signature, sha256; origin $origin@$commit)"
             ;;
         *)

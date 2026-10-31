@@ -92,6 +92,8 @@ hyperbutler (mere aggregation); its components keep their own licenses, among th
   are in THIRD-PARTY/guest/.
 - tini (tini-static, installed as docker-init): MIT
 - libseccomp (linked by runc): LGPL-2.1-or-later
+- iptables and libxtables (iptables-nft, for dockerd's embedded DNS rules) and libnftnl:
+  GPL-2.0-or-later; libmnl: LGPL-2.1-or-later
 
 Each release archive carries THIRD-PARTY/ (the license texts, generated from the
 upstream sources) and SOURCE-OFFER.txt, and each release publishes the corresponding
