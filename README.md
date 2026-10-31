@@ -171,6 +171,24 @@ HTTP:
 volumes. To uninstall, run `hyperbutler delete`, remove the folder and its PATH entry, and
 `docker context rm hyperbutler`.
 
+### Reaching the host from a container
+
+As in Docker Desktop, `host.docker.internal` (and `--add-host NAME:host-gateway`) reaches
+services on this machine's `127.0.0.1` (or `[::1]`) on any port, TCP and UDP. It reaches
+nothing else: not the host's other addresses, not the LAN.
+
+**Every container can then reach every service on your loopback**, including ones that
+trust loopback clients (database admin ports, dev servers, other tools' local APIs, a
+Docker Engine exposed on `tcp://localhost:2375`). The Windows firewall does not filter
+loopback. To turn it off or limit it, at once and without a restart:
+
+```powershell
+hyperbutler config set hostGateway.enabled false
+hyperbutler config set hostGateway.ports 5432,8000-8100   # "all" is the default
+```
+
+See [docs/compat.md](docs/compat.md#hostdockerinternal).
+
 ## Architecture
 
 ```

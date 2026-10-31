@@ -12,7 +12,7 @@ import (
 // and read back the same through Get.
 func FuzzSet(f *testing.F) {
 	for i, k := range Keys {
-		for _, v := range []string{"", "0", "1", "4GiB", "4096", "true", "off", `\\.\pipe\x`, `C:\data`, "64GiB", "\x00", "-1", "99999999999999999999"} {
+		for _, v := range []string{"", "0", "1", "4GiB", "4096", "true", "off", `\\.\pipe\x`, `C:\data`, "64GiB", "\x00", "-1", "99999999999999999999", "all", "80,443", "8000-8100, 22", "1-65535"} {
 			f.Add(uint8(i), v, uint8(0))
 		}
 		f.Add(uint8(i), k.def(Env{Home: `C:\h`, HostCPUs: 4}), uint8(1))

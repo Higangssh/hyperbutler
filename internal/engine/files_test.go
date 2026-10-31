@@ -31,6 +31,7 @@ func validState(dir string) *State {
 func TestStateRoundTrip(t *testing.T) {
 	l := Layout{Home: testDir(t)}
 	s := validState(l.Home)
+	s.HostGateway = &HostGatewayState{Address: "192.168.127.254", Enabled: true, Ports: "80,8000-8100", Reloads: 2}
 	if err := SaveState(l, s); err != nil {
 		t.Fatal(err)
 	}
@@ -63,6 +64,8 @@ func TestStateRejects(t *testing.T) {
 		"relative data": func(s *State) { s.DataDir = "rel" },
 		"long error":    func(s *State) { s.Error = strings.Repeat("x", maxErrorLen+1) },
 		"ready":         func(s *State) { s.ReadyMillis = -1 },
+		"host gw addr":  func(s *State) { s.HostGateway = &HostGatewayState{Address: "::1", Ports: "all"} },
+		"host gw ports": func(s *State) { s.HostGateway = &HostGatewayState{Address: "192.168.127.254", Ports: "0"} },
 	} {
 		s := validState(dir)
 		mut(s)
@@ -121,6 +124,14 @@ func TestSettings(t *testing.T) {
 	if err != nil || no.CPUCount(16) != 3 || no.ContextManaged() {
 		t.Fatalf("set fields: %+v %v", no, err)
 	}
+	// REQ-NET-004: the host gateway is on for every port unless settings.json says otherwise.
+	if hg := opt.HostGateway(); !hg.Enabled || len(hg.Ports) != 0 {
+		t.Fatalf("default host gateway %+v", hg)
+	}
+	hgs, err := ParseSettings([]byte(`{"version":1,"dataDir":"C:\\x","diskSizeBytes":68719476736,"hostGatewayEnabled":false,"hostGatewayPorts":"5432"}`))
+	if hg := hgs.HostGateway(); err != nil || hg.Enabled || hg.Ports.String() != "5432" {
+		t.Fatalf("host gateway %+v %v", hg, err)
+	}
 	for name, mut := range map[string]func(*Settings){
 		"relative":   func(s *Settings) { s.DataDir = "hyperbutler" },
 		"disk small": func(s *Settings) { s.DiskSize = 1 << 30 },
@@ -130,6 +141,7 @@ func TestSettings(t *testing.T) {
 		"cpus big":   func(s *Settings) { s.CPUs = MaxCPUs + 1 },
 		"pipe":       func(s *Settings) { s.Pipe = `C:\pipe` },
 		"nul":        func(s *Settings) { s.DataDir += "\x00" },
+		"hg ports":   func(s *Settings) { s.HostGatewayPorts = "80-" },
 	} {
 		c := *s
 		c.Version = SettingsVersion

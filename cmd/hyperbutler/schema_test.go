@@ -78,7 +78,8 @@ func TestSchemaFields(t *testing.T) {
 	st := &engine.State{
 		Version: 1, Phase: engine.PhaseRunning, PID: 1, PIDCreated: 2, VMID: "hyperbutler-x", RuntimeID: "r", Pipe: "p", DataDir: "d",
 		Started: now, ReadyMillis: 1, Updated: now, Error: "e", ErrorCode: "c", ImageDir: "i",
-		Daemon: &engine.DaemonState{Generation: 1, Applies: 1, Source: engine.DaemonFile, SHA256: "h", Bytes: 2, Restarted: true, Error: "e", Updated: now},
+		Daemon:      &engine.DaemonState{Generation: 1, Applies: 1, Source: engine.DaemonFile, SHA256: "h", Bytes: 2, Restarted: true, Error: "e", Updated: now},
+		HostGateway: &engine.HostGatewayState{Address: "192.168.127.254", Enabled: true, Ports: "all", Reloads: 1, Error: "e"},
 	}
 	checkKeys(t, "status", StatusJSON{
 		Schema: 1, Running: true, SetUp: true, Home: "h", State: st, DataDir: "d", Disk: "x", DiskUsed: 1, DiskMax: 2, HostFree: 3,
@@ -91,6 +92,8 @@ func TestSchemaFields(t *testing.T) {
 		"state.daemonConfig", "state.daemonConfig.generation", "state.daemonConfig.applies", "state.daemonConfig.source",
 		"state.daemonConfig.sha256", "state.daemonConfig.bytes", "state.daemonConfig.restarted", "state.daemonConfig.error",
 		"state.daemonConfig.updated",
+		"state.hostGateway", "state.hostGateway.address", "state.hostGateway.enabled", "state.hostGateway.ports",
+		"state.hostGateway.reloads", "state.hostGateway.error",
 	})
 }
 

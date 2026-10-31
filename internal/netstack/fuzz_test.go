@@ -110,9 +110,19 @@ func FuzzDNSAnswer(f *testing.F) {
 		f.Add(b, true)
 		f.Add(b, false)
 	}
+	for _, name := range []string{"host.docker.internal.", "GATEWAY.docker.internal.", "rebind.example.", "254.127.168.192.in-addr.arpa."} {
+		m := new(dns.Msg)
+		m.SetQuestion(name, dns.TypeA)
+		b, _ := m.Pack()
+		f.Add(b, true)
+	}
 	f.Add([]byte{0, 1, 0x80, 0, 0, 1, 0, 0, 0, 0, 0, 0}, true)
-	h, _ := newTestDNS()
+	h, r := newTestDNS()
 	h.timeout = 50 * time.Millisecond
+	// With a host gateway, and an outside name that tries to rebind into the subnet.
+	h.subnet = DefaultSubnet
+	h.hostGateway = func() (netip.Addr, bool) { return hgAddr, true }
+	r.a["rebind.example"] = []netip.Addr{hgAddr, netip.MustParseAddr("192.168.127.2")}
 	f.Fuzz(func(t *testing.T, wire []byte, udp bool) {
 		resp := h.answer(context.Background(), wire, udp)
 		if resp == nil {
@@ -140,6 +150,87 @@ func FuzzDNSAnswer(f *testing.F) {
 			if !strings.EqualFold(rr.Header().Name, out.Question[0].Name) {
 				t.Fatalf("answer for another name: %v", rr)
 			}
+			// Only the host gateway's own names point into the guest subnet.
+			if a, ok := rr.(*dns.A); ok {
+				ip, _ := netip.AddrFromSlice(a.A)
+				if DefaultSubnet.Contains(ip.Unmap()) && (!isHostGatewayName(rr.Header().Name) || ip.Unmap() != hgAddr) {
+					t.Fatalf("subnet address in an answer: %v", rr)
+				}
+			}
+			if c, ok := rr.(*dns.CNAME); ok && isHostGatewayName(c.Target) {
+				t.Fatalf("alias of the host gateway: %v", rr)
+			}
+		}
+	})
+}
+
+// FuzzParsePortList: an accepted list is valid, round-trips through String, and
+// Contains agrees with the ranges.
+func FuzzParsePortList(f *testing.F) {
+	for _, s := range []string{"", "all", "80", "80,443", "8000-8100, 8050-8200", "1-65535", "0", "65536", "9-8", " 7 - 9 ,10", "1,3,5-7,6"} {
+		f.Add(s, uint16(80))
+	}
+	f.Fuzz(func(t *testing.T, s string, p uint16) {
+		l, err := ParsePortList(s)
+		if err != nil {
+			return
+		}
+		if err := l.validate(); err != nil {
+			t.Fatalf("%q: invalid result %v: %v", s, l, err)
+		}
+		back, err := ParsePortList(l.String())
+		if err != nil || back.String() != l.String() || len(back) != len(l) {
+			t.Fatalf("%q: %s does not round-trip: %v %v", s, l, back, err)
+		}
+		in := false
+		for _, r := range l {
+			if r.Lo <= p && p <= r.Hi {
+				in = true
+			}
+		}
+		if l.Contains(p) != in {
+			t.Fatalf("%q: Contains(%d) = %v", s, p, !in)
+		}
+		hg := HostGateway{Enabled: true, Ports: l}
+		if hg.Allows(p) != (p != 0 && (len(l) == 0 || in)) {
+			t.Fatalf("%q: Allows(%d)", s, p)
+		}
+	})
+}
+
+// FuzzPolicyRouteHostGateway: whatever the destination, a host gateway route goes to
+// 127.0.0.1 on the asked port and only for the host gateway address, and every other
+// route passes Check.
+func FuzzPolicyRouteHostGateway(f *testing.F) {
+	for _, s := range []string{"192.168.127.254:80", "[::ffff:192.168.127.254]:0", "127.0.0.1:80", "10.99.0.5:22", "1.1.1.1:443", "192.168.127.253:80"} {
+		ap := netip.MustParseAddrPort(s)
+		b := ap.Addr().As16()
+		f.Add(b[:], ap.Port(), true)
+	}
+	host := netip.MustParseAddr("10.99.0.5")
+	c := Config{HostGateway: &HostGateway{Enabled: true}, HostAddrs: func() ([]netip.Addr, error) { return []netip.Addr{host}, nil }}.withDefaults()
+	p := newPolicy(&c)
+	f.Fuzz(func(t *testing.T, b []byte, port uint16, on bool) {
+		a, ok := netip.AddrFromSlice(b)
+		if !ok {
+			return
+		}
+		p.hg.Store(&HostGateway{Enabled: on})
+		tgt, err := p.Route(netip.AddrPortFrom(a, port))
+		if err != nil {
+			return
+		}
+		switch tgt.Kind {
+		case TargetHostGateway:
+			if !on || a.Unmap() != hgAddr || tgt.Addr != netip.AddrPortFrom(netip.MustParseAddr("127.0.0.1"), port) || port == 0 {
+				t.Fatalf("%s:%d -> %s", a, port, tgt.Addr)
+			}
+		case TargetOut:
+			if p.Check(tgt.Addr.Addr()) != nil || tgt.Addr.Port() == 0 || tgt.Addr.Addr() == hgAddr {
+				t.Fatalf("%s:%d -> %s passes no check", a, port, tgt.Addr)
+			}
+		default:
+			t.Fatalf("unexpected kind %d", tgt.Kind)
 		}
 	})
 }

@@ -34,6 +34,7 @@ type OwnedKey struct {
 //
 //	dockerd --host=unix:///run/docker.sock --iptables=false --ip6tables=false
 //	        --shutdown-timeout=10 --log-level=LEVEL [--config-file=...]
+//	        [--host-gateway-ip=192.168.127.254]
 //
 // and dockerd refuses to start when a flag is also set in the file.
 var Owned = []OwnedKey{
@@ -53,6 +54,8 @@ var Owned = []OwnedKey{
 	{"tlskey", "the API is reached through the Windows pipe, whose access is limited to you; TLS on the guest socket would break the relay"},
 	{"shutdown-timeout", "hyperbutler bounds the guest's orderly shutdown and passes --shutdown-timeout=10"},
 	{"log-level", `hyperbutler passes --log-level; use "debug": true for debug logs`},
+	{"host-gateway-ip", "hyperbutler passes --host-gateway-ip: host-gateway (--add-host NAME:host-gateway) is the host stack's host.docker.internal address, which forwards to the Windows host's loopback; turn it off or limit it with `hyperbutler config set hostGateway.enabled` and `hostGateway.ports`"},
+	{"host-gateway-ips", "hyperbutler passes --host-gateway-ip: host-gateway (--add-host NAME:host-gateway) is the host stack's host.docker.internal address, which forwards to the Windows host's loopback; turn it off or limit it with `hyperbutler config set hostGateway.enabled` and `hostGateway.ports`"},
 	{"live-restore", "the guest's orderly shutdown stops dockerd and then unmounts the data disk; containers left running would keep it busy and power the VM off with a dirty file system"},
 }
 

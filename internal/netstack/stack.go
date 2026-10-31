@@ -97,6 +97,10 @@ type Stack struct {
 	closing bool
 
 	tcpSem, udpSem, dnsSem, dnsTCPSem chan struct{}
+	// hgSem bounds host gateway TCP connections (MaxHostGatewayConns).
+	hgSem chan struct{}
+	// hgUDPSem bounds host gateway UDP flows (maxHostGatewayUDPFlows), within MaxUDPFlows.
+	hgUDPSem chan struct{}
 	// largeSem holds a token for each connection whose buffers may grow past tcpBufferMax.
 	largeSem chan struct{}
 
@@ -133,16 +137,22 @@ func New(cfg Config, log *slog.Logger) (*Stack, error) {
 	for _, h := range cfg.HostForwards {
 		virtual = append(virtual, h.Virtual.Addr().String())
 	}
+	if cfg.HostGateway != nil {
+		virtual = append(virtual, cfg.HostGatewayAddr().String())
+	}
 	ep, err := tap.NewLinkEndpoint(false, uint32(cfg.MTU), cfg.GatewayMAC.String(), gw.String(), virtual)
 	if err != nil {
 		return nil, fmt.Errorf("netstack: link endpoint: %w", err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
+	pol := newPolicy(&cfg)
 	n := &Stack{
 		cfg:       cfg,
 		ep:        ep,
-		pol:       newPolicy(&cfg),
-		dns:       &dnsHandler{res: cfg.Resolver, timeout: cfg.DNSTimeout},
+		pol:       pol,
+		dns:       &dnsHandler{res: cfg.Resolver, timeout: cfg.DNSTimeout, subnet: cfg.Subnet, hostGateway: pol.hostGatewayDNS},
+		hgSem:     make(chan struct{}, cfg.MaxHostGatewayConns),
+		hgUDPSem:  make(chan struct{}, min(maxHostGatewayUDPFlows, cfg.MaxUDPFlows)),
 		log:       log,
 		gwMAC:     tcpip.LinkAddress(cfg.GatewayMAC),
 		ctx:       ctx,
@@ -296,7 +306,7 @@ func (n *Stack) handleTCP(r *tcp.ForwarderRequest) {
 	defer n.wg.Done()
 	id := r.ID()
 	dst := netip.AddrPortFrom(netipAddr(id.LocalAddress), id.LocalPort)
-	target, explicit, err := n.pol.Route(dst)
+	tgt, err := n.pol.Route(dst)
 	if err != nil {
 		n.st.tcpDenied.Add(1)
 		n.log.Debug("guest tcp denied", "dst", dst, "err", err)
@@ -311,22 +321,39 @@ func (n *Stack) handleTCP(r *tcp.ForwarderRequest) {
 		return
 	}
 	defer func() { <-n.tcpSem }()
+	if tgt.Kind == TargetHostGateway {
+		select {
+		case n.hgSem <- struct{}{}:
+		default:
+			n.st.tcpRefused.Add(1)
+			n.log.Debug("guest tcp refused: host gateway connection limit", "dst", dst)
+			r.Complete(true)
+			return
+		}
+		defer func() { <-n.hgSem }()
+	}
 
 	ctx, cancel := context.WithTimeout(n.ctx, n.cfg.DialTimeout)
-	out, err := n.dialer(explicit).DialContext(ctx, "tcp", target.String())
+	var out net.Conn
+	if tgt.Kind == TargetHostGateway {
+		out, err = n.dialHostGateway(ctx, "tcp", tgt.Addr.Port())
+	} else {
+		out, err = n.dialer(tgt.Kind == TargetForward).DialContext(ctx, "tcp", tgt.Addr.String())
+	}
 	cancel()
 	if err != nil {
 		n.st.tcpRefused.Add(1)
-		n.log.Debug("guest tcp dial failed", "dst", target, "err", err)
+		n.log.Debug("guest tcp dial failed", "dst", tgt.Addr, "err", err)
 		r.Complete(true)
 		return
 	}
+	explicit := tgt.Kind != TargetOut
 	if !explicit && selfConnected(out) {
 		// The destination became a host address after the policy's address list was
 		// read (a VPN connecting, a new DHCP lease): Windows connected us to ourselves.
 		_ = out.Close()
 		n.st.tcpDenied.Add(1)
-		n.log.Debug("guest tcp denied after dial: host address", "dst", target)
+		n.log.Debug("guest tcp denied after dial: host address", "dst", tgt.Addr)
 		r.Complete(true)
 		return
 	}
@@ -464,7 +491,11 @@ func guestReset(err error) bool {
 func (n *Stack) handleUDP(r *udp.ForwarderRequest) bool {
 	id := r.ID()
 	dst := netip.AddrPortFrom(netipAddr(id.LocalAddress), id.LocalPort)
-	if err := n.pol.Check(dst.Addr()); err != nil || dst.Port() == 0 {
+	// HostForwards are TCP only; the host gateway forwards UDP too (to 127.0.0.1 only:
+	// a UDP "connect" cannot tell whether anything listens, so there is no [::1]
+	// fallback).
+	tgt, err := n.pol.Route(dst)
+	if err != nil || tgt.Kind == TargetForward || tgt.Addr.Port() == 0 {
 		n.st.udpDenied.Add(1)
 		return false // ICMP port unreachable
 	}
@@ -474,27 +505,46 @@ func (n *Stack) handleUDP(r *udp.ForwarderRequest) bool {
 		n.st.udpDenied.Add(1)
 		return true // drop silently: the flow table is full
 	}
-	out, err := n.dialer(false).DialContext(n.ctx, "udp", dst.String())
+	release := func() { <-n.udpSem }
+	if tgt.Kind == TargetHostGateway {
+		// Host gateway flows have their own, smaller share of the flow table, so a
+		// guest that sprays this host's loopback ports cannot take every flow from
+		// other UDP traffic.
+		select {
+		case n.hgUDPSem <- struct{}{}:
+			release = func() { <-n.hgUDPSem; <-n.udpSem }
+		default:
+			<-n.udpSem
+			n.st.udpDenied.Add(1)
+			return true
+		}
+	}
+	var out net.Conn
+	if tgt.Kind == TargetHostGateway {
+		out, err = n.dialHostGateway(n.ctx, "udp", tgt.Addr.Port())
+	} else {
+		out, err = n.dialer(false).DialContext(n.ctx, "udp", tgt.Addr.String())
+	}
 	if err != nil {
-		<-n.udpSem
+		release()
 		return false
 	}
-	if selfConnected(out) {
+	if tgt.Kind == TargetOut && selfConnected(out) {
 		_ = out.Close()
-		<-n.udpSem
+		release()
 		n.st.udpDenied.Add(1)
 		return false
 	}
 	if !n.track(1) {
 		_ = out.Close()
-		<-n.udpSem
+		release()
 		return true
 	}
 	var wq waiter.Queue
 	ep, terr := r.CreateEndpoint(&wq)
 	if terr != nil {
 		_ = out.Close()
-		<-n.udpSem
+		release()
 		n.wg.Done()
 		return true
 	}
@@ -502,7 +552,7 @@ func (n *Stack) handleUDP(r *udp.ForwarderRequest) bool {
 	n.st.udpActive.Add(1)
 	go func() {
 		defer n.wg.Done()
-		defer func() { <-n.udpSem }()
+		defer release()
 		defer n.st.udpActive.Add(-1)
 		n.udpFlow(in, out)
 	}()

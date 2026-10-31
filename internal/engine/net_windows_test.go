@@ -8,6 +8,8 @@ import (
 	"os"
 	"strings"
 	"testing"
+
+	"github.com/Higangssh/hyperbutler/internal/netstack"
 )
 
 // Offload mode (ADR 0006): the host dials netfwd -vnet, so the link's service must admit
@@ -28,6 +30,26 @@ func TestSetupNetOffload(t *testing.T) {
 		}
 		if got := strings.Contains(args, " hyperbutler.netvnet=1"); got != off {
 			t.Errorf("offload %v: kernel arguments %q", off, args)
+		}
+	}
+}
+
+// REQ-NET-004: with a host gateway, on or off, the guest is told its address (dockerd's
+// --host-gateway-ip), so turning it off or on needs no dockerd restart.
+func TestSetupNetHostGateway(t *testing.T) {
+	for _, hg := range []*netstack.HostGateway{nil, {Enabled: true}, {Enabled: false}} {
+		g, _, args, err := setupNet(NetConfig{HostGateway: hg}, "D:P(A;;FA;;;SY)", slog.New(slog.DiscardHandler))
+		if err != nil {
+			t.Fatal(err)
+		}
+		a, cur := g.st.HostGateway()
+		g.st.Close()
+		has := strings.Contains(args, " hyperbutler.hostgw=192.168.127.254")
+		if has != (hg != nil) || a.IsValid() != (hg != nil) {
+			t.Errorf("host gateway %+v: args %q, address %s", hg, args, a)
+		}
+		if hg != nil && cur.Enabled != hg.Enabled {
+			t.Errorf("host gateway %+v: in effect %+v", hg, cur)
 		}
 	}
 }

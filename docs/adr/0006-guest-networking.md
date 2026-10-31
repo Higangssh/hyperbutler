@@ -3,7 +3,7 @@
 - Status: accepted (2026-10-31), with the LAN-registry gate deferred to the release
   checklist; see "Gate results (2026-10-31)" and "Gate amendment"
 - Date: 2026-10-30; accepted 2026-10-31
-- Requirements: REQ-NET-001, REQ-NET-002, REQ-NET-003, REQ-PLAT-003, REQ-PLAT-004
+- Requirements: REQ-NET-001, REQ-NET-002, REQ-NET-003, REQ-NET-004, REQ-PLAT-003, REQ-PLAT-004
 
 ## Context
 
@@ -377,6 +377,105 @@ found 12 issues and no crash, hang or unbounded growth reachable from the guest.
 | 11 | Low | The Hello write had no deadline; "link up" was logged for a refused plain link. | **Fixed:** 5 s write deadline; refused plain links are no longer announced. |
 | 12 | Low | The 280 MiB bound covers relayed connections only. | **Fixed (documented):** published connections are stated on top. |
 
+## Host gateway (REQ-NET-004)
+
+Added 2026-10-31. The maintainer's decision: behave like Docker Desktop by default. This
+is the explicit host-gateway feature the "Security" consequence below asks for.
+
+**Design.**
+- **Address.** The last host address of the guest subnet, `192.168.127.254`
+  (`Config.HostGatewayAddr`). The stack answers ARP for it, as for `-host-forward`
+  addresses. A `-host-forward` on the same address and port takes precedence.
+- **Forward.** A guest TCP connection to it on port P is dialed to `127.0.0.1:P`; if that
+  is refused (`WSAECONNREFUSED`, and only then), to `[::1]:P`, because Windows dev servers
+  that listen on "localhost" often bind `::1` only. A refused loopback connect takes
+  about 0.5 ms on this machine (Windows 11 26200), so the fallback costs nothing
+  measurable, and a service that accepts on `127.0.0.1` never sees a second connection.
+  UDP goes to `127.0.0.1:P` only: a UDP connect cannot tell that nothing listens.
+- **No proxy.** The target is built from the port alone; the guest's destination address
+  is only compared with the gateway address, never dialed. The dialer's `Control` hook
+  refuses any address other than `127.0.0.1` and `::1` as a second line. Every other
+  destination goes through `Policy.Check` as before: loopback, link-local, the subnet and
+  the host's own addresses stay refused.
+- **DNS.** The stack's resolver answers `host.docker.internal` and
+  `gateway.docker.internal` (an alias, as Docker Desktop has both) itself: A is the
+  address, other types NODATA. The host resolver is never asked, so neither the LAN's DNS
+  nor the hosts file (where Docker Desktop writes the host's LAN address) can answer.
+  Off, the names are NXDOMAIN. Containers on the default bridge use the guest's resolver
+  and those on user networks dockerd's embedded DNS, which forwards to it, so the name
+  resolves in every container and on the guest.
+- **`--add-host NAME:host-gateway`.** The engine passes `hyperbutler.hostgw=ADDR` on the
+  kernel command line and the guest init starts dockerd with `--host-gateway-ip=ADDR`,
+  on or off, so a change needs no dockerd restart. `host-gateway-ip` and
+  `host-gateway-ips` are owned daemon.json keys; `bip`, `fixed-cidr` and
+  `default-address-pools` that overlap the guest subnet (and so the address) were already
+  refused, now with tests on the address itself.
+- **Settings.** `hostGateway.enabled` (default true) and `hostGateway.ports` (a port list
+  such as `5432,8000-8100`; default `all`; `netstack.ParsePortList`, fuzzed) apply
+  **live**: `config set` writes settings.json and sets the engine's settings event; the
+  engine re-reads the file, swaps the setting atomically in the stack, and publishes it
+  in state.json (`hostGateway`), which the CLI waits for. Connections already relayed
+  stay up. An invalid settings.json changes nothing and the state says why. The same
+  port list applies to TCP and UDP.
+
+**Security decisions.**
+1. **SSRF to host loopback is accepted** (Docker Desktop parity, maintainer decision).
+   Every container reaches every service on the host's loopback, which the Windows
+   firewall does not filter and which programs often trust. It is documented in the
+   README and [docs/compat.md](../compat.md#hostdockerinternal), with the two settings
+   to limit or turn it off.
+2. **Nothing but loopback.** Other host addresses, the LAN, VPN and link-local addresses
+   are not reachable through the gateway (by construction, tested by
+   `TestHostGatewayIsNotAProxy` and `FuzzPolicyRouteHostGateway`), and stay refused as
+   direct destinations.
+3. **DNS rebinding.** An outside name cannot point a container at the gateway: A records
+   from the host resolver inside the guest subnet are dropped, CNAME answers that name
+   `host.docker.internal` are dropped, and reverse names of the subnet are answered
+   locally (which also keeps PTR queries for `192.168.127.x` off the LAN).
+4. **Ports.** Port 0 is refused; the port list accepts decimal ports 1-65535 and
+   ascending ranges, at most 64 items and 512 bytes, merged into a canonical form.
+5. **Floods.** At most 256 host gateway TCP connections (within the stack's 512) and 256
+   UDP flows (within 1024) at once; more are reset or dropped. `bench/host-gateway` held
+   400 connections from one container and saw a peak of 256 at the host, and the
+   gateway worked right after. Each connection to loopback keeps the relay's 1 MiB
+   Windows socket buffers (see "Relay"); they are limits, used only by queued data.
+6. **hyperbutler's own endpoints.** The Docker API, the debug endpoint and the guest
+   control channel are named pipes and hvsock, not TCP; the engine had no TCP or UDP
+   listener during the e2e run. Ports auto-published on `127.0.0.1` are reachable
+   through the gateway (a hairpin back into the guest, as on Docker Desktop); every hop
+   is bounded and ends at docker-proxy, so there is no loop.
+
+**Evidence.** Unit tests in `internal/netstack/hostgw_test.go` and `policy_test.go`;
+fuzz targets `FuzzParsePortList`, `FuzzPolicyRouteHostGateway`, and `FuzzDNSAnswer` with
+a host gateway and a rebinding name. `bench/host-gateway` (Windows 11 Home 10.0.26200,
+non-elevated, `hyperbutler start` with a 3 GiB / 2 vCPU guest on its own pipe, guest
+image rebuilt with the init change) passed all 25 checks (log of the last of six runs; the first two failed only on the timing check described under "Open", which then moved to the address); servers bound `127.0.0.1` and
+`[::1]` only, so the wildcard leg (`-wildcard`, the host's LAN address against a
+`0.0.0.0` server) was not run; that case is covered by `TestStaleHostAddrsStillDenied`
+(gated) and the policy tests. `config set` applied in about 0.2 s.
+
+**Review.** The adversarial reviewer reviewed the change on 2026-10-31 and could
+not turn the gateway into a proxy. It found 7 issues:
+
+| # | Sev | Finding | Resolution |
+|---|---|---|---|
+| 1 | Med | The design, this section and the SSRF acceptance were not documented. | **Fixed:** this section, README, docs/compat.md, requirements status. |
+| 2 | Med | Host gateway UDP flows had no bound of their own and could take the whole flow table. | **Fixed:** 256 of the 1024 flows. Test: `TestHostGatewayUDPFlowLimit`. |
+| 3 | Med | The bench's LAN check cannot tell a policy refusal from an empty port by default. | **Documented:** the real check (`-wildcard`) binds `0.0.0.0`, which the project keeps opt-in because of Windows Firewall prompts; the policy is covered by unit tests. Added: a check that a refused port is a prompt reset, not a timeout. |
+| 4 | Low | 1 MiB socket buffers for up to 256 gateway connections. | **Rejected:** socket buffer sizes are limits, filled only by queued data, the same as for published ports; recorded in decision 5. |
+| 5 | Low | Three event-polling goroutines wake every 200 ms. | **Accepted:** the existing `StopEvent.Wait` pattern; a single `WaitForMultipleObjects` is a follow-up. |
+| 6 | Low | `config set hostGateway.*` against an engine without the settings event failed after saving. | **Fixed:** it says the change applies at the next start. |
+| 7 | Low | Leading zeros in port lists were accepted untested. | **Fixed:** accepted and tested (`080` is 80). |
+
+**Open.**
+- In 3 of 6 bench runs, the fetch by name of an unlisted port, in a fresh container
+  right after a fetch of the listed port, took 5.4 s (the busybox resolver's 5 s retry)
+  instead of 0.4 s. The same refusal by address was always prompt (0.4 s, every run),
+  and 30 refusals by name in one container never were slow. A lost DNS answer is
+  suspected, not found; the bench now times the refusal by address and prints the time
+  by name.
+- IPv6 inside the guest (AAAA for the name) waits for IPv6 in the stack.
+- `docker network create --subnet` overlapping the guest subnet is not checked.
 ## Consequences
 
 - **Acceptance gate.** Run gvisor-tap-vsock's `gvproxy` on hvsock against the spike guest,
@@ -405,7 +504,8 @@ found 12 issues and no crash, hang or unbounded growth reachable from the guest.
   needs per-flow NAT in the stack. Document both in `docs/compat.md`.
 - **Security:** the stack dials on the guest's behalf as the user. It must refuse loopback,
   link-local and the host's own addresses, except through an explicit host-gateway
-  feature (`host.docker.internal`) that is designed and reviewed on its own.
+  feature (`host.docker.internal`) that is designed and reviewed on its own: see "Host
+  gateway (REQ-NET-004)", which opens the host's loopback (and only that) by default.
 - **What we avoid:** HNS objects, subnet clash handling, WinNAT conflicts with WSL and
   Docker Desktop, and the class of WSL bugs where the VPN breaks the guest. All of this
   is argued, not yet measured.

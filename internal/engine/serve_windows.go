@@ -173,6 +173,30 @@ func Serve(opts ServeOptions) error {
 		dev.Close()
 	}()
 
+	// Live settings (hostGateway.*): applied again on `hyperbutler config set`, which
+	// sets the settings event.
+	live := &liveSettings{l: l, log: log, publish: func(h *HostGatewayState) {
+		pub.update(func(s *State) { s.HostGateway = h })
+	}}
+	sev, err := CreateSettingsEvent()
+	if err != nil {
+		return fail(err)
+	}
+	var liveWG sync.WaitGroup
+	liveWG.Add(1)
+	go func() {
+		defer liveWG.Done()
+		for sev.Wait(done) {
+			log.Info("settings reload requested")
+			live.reload()
+		}
+	}()
+	defer func() {
+		stopApply()
+		liveWG.Wait()
+		sev.Close()
+	}()
+
 	console, err := openCapped(l.ConsoleLogPath(), consoleLogMax)
 	if err != nil {
 		return fail(err)
@@ -189,7 +213,10 @@ func Serve(opts ServeOptions) error {
 		OnCreated: func(id string, rid guid.GUID) {
 			pub.update(func(s *State) { s.VMID, s.RuntimeID = id, strings.ToLower(rid.String()) })
 		},
-		OnReady: func(context.Context, *Running) error {
+		OnReady: func(_ context.Context, r *Running) error {
+			if r.Stack != nil {
+				live.attach(r.Stack)
+			}
 			pub.update(func(s *State) {
 				if s.Phase == PhaseStarting {
 					s.Phase = PhaseRunning
@@ -200,6 +227,7 @@ func Serve(opts ServeOptions) error {
 		},
 		OnStopping: func() { pub.update(func(s *State) { s.Phase = PhaseStopping }) },
 	})
+	live.attach(nil) // the stack is closed
 	if runErr != nil {
 		log.Error("engine stopped", "err", runErr)
 		return fail(runErr)

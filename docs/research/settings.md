@@ -30,6 +30,8 @@ hyperbutler restart
 | `pipe` | `\\.\pipe\NAME` | `\\.\pipe\docker_engine_hyperbutler` | VM restart |
 | `context.manage` | bool | true | at once (the next `start`) |
 | `engine.memoryLimit` | GOMEMLIMIT syntax or `off` | 256MiB | VM restart |
+| `hostGateway.enabled` | bool | true | at once (the running engine, no restart) |
+| `hostGateway.ports` | port list (`5432,8000-8100`) or `all` | all | at once (the running engine, no restart) |
 
 - **Reserved names** (refused with "reserved for a later release"): `proxy.mode`,
   `proxy.http`, `proxy.https`, `proxy.noProxy`, `ca.import`, `updates.check`, `autostart`,
@@ -176,8 +178,8 @@ fields are only added; removing or renaming one means a new version.
 - `version`: `schema`, `version`, `goVersion`, `os`, `arch`, and `revision`, `modified` when
   the build has them.
 - `status`: `schema`, `running`, `setUp`, `home`, `dockerContextSelected`, `daemonJson`,
-  `daemonJsonExists`, and when known `state` (the engine's state.json, with `daemonConfig`
-  and `imageDir`), `dataDir`, `disk`, `diskHostBytes`, `diskSizeBytes`, `hostFreeBytes`,
+  `daemonJsonExists`, and when known `state` (the engine's state.json, with `daemonConfig`,
+  `imageDir` and `hostGateway`: `address`, `enabled`, `ports`, `reloads`, `error`), `dataDir`, `disk`, `diskHostBytes`, `diskSizeBytes`, `hostFreeBytes`,
   `memoryMB`, `cpus`, `dockerContext`. The exit code is 3 when hyperbutler is not running.
 - `config list`: `schema`, `settingsFile`, `keys` (a list of the items below).
 - `config get KEY`: `schema` and one item: `key`, `value`, `default`, `source`, `type`,

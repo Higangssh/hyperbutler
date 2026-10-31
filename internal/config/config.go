@@ -18,6 +18,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/Higangssh/hyperbutler/internal/engine"
+	"github.com/Higangssh/hyperbutler/internal/netstack"
 	"github.com/Higangssh/hyperbutler/internal/transport"
 )
 
@@ -68,10 +69,14 @@ func (e Env) diskExists(dir string) bool { return e.DiskExists != nil && e.DiskE
 // Key is one setting.
 type Key struct {
 	Name string
-	// Type is the value's kind: "size", "int", "bool", "path", "pipe" or "memlimit".
+	// Type is the value's kind: "size", "int", "bool", "path", "pipe", "memlimit" or
+	// "ports" (a port list).
 	Type        string
 	Apply       ApplyTime
 	Description string
+	// Engine marks an ApplyLive key the running engine uses: `config set` asks it to
+	// read settings.json again (engine.RequestSettingsReload).
+	Engine bool
 
 	def   func(Env) string
 	get   func(*engine.Settings, Env) (value string, inFile bool)
@@ -225,6 +230,44 @@ var Keys = []*Key{
 		unset: func(s *engine.Settings, _ Env) error { s.ManageContext = nil; return nil },
 	},
 	{
+		Name: "hostGateway.enabled", Type: "bool", Apply: ApplyLive, Engine: true,
+		Description: "whether containers reach services on this host's 127.0.0.1 as host.docker.internal, as in Docker Desktop",
+		def:         func(Env) string { return "true" },
+		get: func(s *engine.Settings, _ Env) (string, bool) {
+			return strconv.FormatBool(s.HostGateway().Enabled), s.HostGatewayEnabled != nil
+		},
+		set: func(s *engine.Settings, v string, _ Env) error {
+			b, err := ParseBool(v)
+			if err != nil {
+				return err
+			}
+			s.HostGatewayEnabled = &b
+			return nil
+		},
+		unset: func(s *engine.Settings, _ Env) error { s.HostGatewayEnabled = nil; return nil },
+	},
+	{
+		Name: "hostGateway.ports", Type: "ports", Apply: ApplyLive, Engine: true,
+		Description: `the host ports host.docker.internal forwards, such as "5432,8000-8100", or "all"`,
+		def:         func(Env) string { return "all" },
+		get: func(s *engine.Settings, _ Env) (string, bool) {
+			return s.HostGateway().Ports.String(), s.HostGatewayPorts != ""
+		},
+		set: func(s *engine.Settings, v string, _ Env) error {
+			l, err := netstack.ParsePortList(v)
+			if err != nil {
+				return err
+			}
+			// Stored in canonical form; every port is the default (no entry).
+			s.HostGatewayPorts = ""
+			if len(l) > 0 {
+				s.HostGatewayPorts = l.String()
+			}
+			return nil
+		},
+		unset: func(s *engine.Settings, _ Env) error { s.HostGatewayPorts = ""; return nil },
+	},
+	{
 		Name: "engine.memoryLimit", Type: "memlimit", Apply: ApplyVM,
 		Description: `Go soft memory limit of the engine process, such as 256MiB or "off" (GOMEMLIMIT wins)`,
 		env:         "GOMEMLIMIT",
@@ -346,13 +389,21 @@ func copySettings(s *engine.Settings, e Env) *engine.Settings {
 		return NewSettings(e)
 	}
 	cp := *s
-	if s.ManageContext != nil {
-		b := *s.ManageContext
-		cp.ManageContext = &b
-	}
+	cp.ManageContext = copyBool(s.ManageContext)
+	cp.HostGatewayEnabled = copyBool(s.HostGatewayEnabled)
 	cp.Version = engine.SettingsVersion
 	return &cp
 }
+
+func copyBool(p *bool) *bool {
+	if p == nil {
+		return nil
+	}
+	b := *p
+	return &b
+}
+
+func sameBool(a, b *bool) bool { return (a == nil) == (b == nil) && (a == nil || *a == *b) }
 
 // Equal reports whether a and b hold the same values.
 func Equal(a, b *engine.Settings) bool {
@@ -361,8 +412,8 @@ func Equal(a, b *engine.Settings) bool {
 	}
 	ac, bc := *a, *b
 	ac.ManageContext, bc.ManageContext = nil, nil
-	return ac == bc && (a.ManageContext == nil) == (b.ManageContext == nil) &&
-		(a.ManageContext == nil || *a.ManageContext == *b.ManageContext)
+	ac.HostGatewayEnabled, bc.HostGatewayEnabled = nil, nil
+	return ac == bc && sameBool(a.ManageContext, b.ManageContext) && sameBool(a.HostGatewayEnabled, b.HostGatewayEnabled)
 }
 
 // Names returns the key names, sorted, for usage text.

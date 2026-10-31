@@ -59,8 +59,15 @@ func TestCheckRefuses(t *testing.T) {
 		"duplicate":     {`{"debug":true,"debug":false}`, "debug", "twice"},
 		"dup folded":    {`{"debug":true,"DEBUG":false}`, "DEBUG", "same key"},
 		"bip overlap":   {`{"bip":"192.168.127.1/24"}`, "bip", "overlaps"},
-		"pool overlap":  {`{"default-address-pools":[{"base":"192.168.0.0/16","size":24}]}`, "default-address-pools", "overlaps"},
-		"too large":     {`{"a":"` + strings.Repeat("x", MaxSize) + `"}`, "", "limit"},
+		// REQ-NET-004: the host gateway address (192.168.127.254) is in the guest
+		// subnet, so a bridge or pool on it is refused like any other overlap.
+		"bip on host gw":   {`{"bip":"192.168.127.254/31"}`, "bip", "overlaps"},
+		"cidr on host gw":  {`{"fixed-cidr":"192.168.127.252/30"}`, "fixed-cidr", "overlaps"},
+		"pool on host gw":  {`{"default-address-pools":[{"base":"192.168.127.128/25","size":28}]}`, "default-address-pools", "overlaps"},
+		"host-gateway-ip":  {`{"host-gateway-ip":"10.0.0.1"}`, "host-gateway-ip", "--host-gateway-ip"},
+		"host-gateway-ips": {`{"Host-Gateway-IPs":["10.0.0.1"]}`, "Host-Gateway-IPs", "hostGateway.enabled"},
+		"pool overlap":     {`{"default-address-pools":[{"base":"192.168.0.0/16","size":24}]}`, "default-address-pools", "overlaps"},
+		"too large":        {`{"a":"` + strings.Repeat("x", MaxSize) + `"}`, "", "limit"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			err := Check([]byte(c.in), guest)

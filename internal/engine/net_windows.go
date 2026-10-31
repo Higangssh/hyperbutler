@@ -43,6 +43,10 @@ type NetConfig struct {
 	Publish []netstack.Publish
 	// HostForwards let the guest reach host services.
 	HostForwards []netstack.HostForward
+	// HostGateway, if set, is the initial setting of host.docker.internal
+	// (REQ-NET-004); the guest's dockerd gets its address as --host-gateway-ip. nil
+	// leaves the guest without one (dockerd's own default, the docker0 address).
+	HostGateway *netstack.HostGateway
 	// AutoPublish mirrors `docker run -p` ports on the host's loopback.
 	AutoPublish bool
 	// Debug logs denied guest connections.
@@ -85,7 +89,7 @@ func setupNet(nc NetConfig, sddl string, log *slog.Logger) (g *guestNet, svcs []
 	if !subnet.IsValid() {
 		subnet = netstack.DefaultSubnet
 	}
-	cfg := netstack.Config{Subnet: subnet, MTU: nc.MTU, HostForwards: nc.HostForwards}
+	cfg := netstack.Config{Subnet: subnet, MTU: nc.MTU, HostForwards: nc.HostForwards, HostGateway: nc.HostGateway}
 	nlog := log
 	if !nc.Debug {
 		nlog = slog.New(levelFilter{h: log.Handler(), min: slog.LevelWarn})
@@ -101,6 +105,11 @@ func setupNet(nc NetConfig, sddl string, log *slog.Logger) (g *guestNet, svcs []
 	svc := vm.Service{ID: g.svc, BindSDDL: sddl}
 	args = fmt.Sprintf(" hyperbutler.net=%d hyperbutler.mtu=%d hyperbutler.ip=%s/%d hyperbutler.gw=%s hyperbutler.dns=%s",
 		nc.Port, cfg.MTU, cfg.GuestIP(), cfg.Subnet.Bits(), cfg.Gateway(), cfg.Gateway())
+	if cfg.HostGateway != nil {
+		// Always passed while the stack has a host gateway, on or off: turning it off
+		// refuses connections in the stack, so dockerd need not restart for it.
+		args += " hyperbutler.hostgw=" + cfg.HostGatewayAddr().String()
+	}
 	if !nc.NoOffload {
 		svc.ConnectSDDL = sddl
 		args += " hyperbutler.netvnet=1"
@@ -175,6 +184,9 @@ func (g *guestNet) start(ctx context.Context, vmid guid.GUID, step func(string, 
 			return err
 		}
 		step("published %s", p)
+	}
+	if a, hg := g.st.HostGateway(); a.IsValid() {
+		step("host gateway: host.docker.internal is %s, forwarding to this host's loopback (%s)", a, hg)
 	}
 	return nil
 }
