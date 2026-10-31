@@ -64,6 +64,29 @@ Option 3.
   process or is counted as the one optional helper of REQ-UX-002; the broker (ADR 0004)
   may need that slot, which is decided when the tray is built.
 
+### Languages (2026-11-01)
+
+- **Translated:** the GUI and its error guidance.
+  - English (the source text) and Korean from the first GUI release.
+  - Japanese and Simplified Chinese around 1.0.
+  - Other languages as community translations, through the same message files.
+- **English only, always:**
+  - engine and guest logs, `hyperbutler logs` and the `diagnose` bundle, so they can be
+    searched and shared in issues;
+  - CLI output, for now, because scripts parse it (`--json` does not depend on language);
+  - MCP responses.
+- **Errors bridge the two.** A GUI error shows the translated explanation next to a stable
+  error code (for example `HB-VM-001`) and a button that copies the English original.
+- **Rules from the start:**
+  - Every user-facing string comes from a message catalog with keys.
+  - Messages are whole sentences with placeholders and plural rules, never concatenated
+    fragments.
+  - The language follows Windows by default and can be changed in settings.
+  - Layouts leave room for about 30% longer text.
+  - The type stack covers Korean, Japanese and Chinese.
+  - The mascot's voice is written per language, not translated literally.
+- **Docs:** English, with a Korean README (`README.ko.md`).
+
 ### MCP shape
 
 - `hyperbutler mcp` speaks MCP over stdio. The AI client starts it and it exits with the
