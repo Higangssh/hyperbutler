@@ -28,8 +28,10 @@ package share
 //     writing by root, a file a Windows program holds exclusively) surface at the first
 //     read or write instead of at open(2);
 //   - POSIX "unlinked but still open": the guest's own unlink or rename-over of a file
-//     keeps a host handle to it (pinned) until the kernel forgets the inode, which it
-//     does as soon as no process has it open;
+//     keeps its cached host handle (pinned) until the kernel forgets the inode, which
+//     it does as soon as no process has it open. A file with no cached handle (not
+//     read or written for FileIdle) is not reopened for this: its pages in the guest
+//     cache still read, anything else gets ESTALE (pinLocked says why);
 //   - CREATE answers fh 0 and caches the file it opened: the kernel sends no RELEASE
 //     for a CREATE handle either once OPEN answered ENOSYS (seen on 6.18).
 //
@@ -52,14 +54,6 @@ type nodeFile struct {
 	// the node, for processes that still have it open. Not subject to FileIdle.
 	pinned bool
 	gone   bool // out of Server.files; f is closed when refs drops to 0
-}
-
-// keepUnlinker is an FS that can remove a file and keep a handle to it in one host
-// operation (NTFS: open with data access and DELETE, then a POSIX delete).
-type keepUnlinker interface {
-	// UnlinkKeep removes a file like Unlink. For a regular file it also returns an open
-	// handle to it, and whether that can write; nil if none could be had.
-	UnlinkKeep(path []string) (File, bool, error)
 }
 
 // can reports whether e serves a read (or, with write, a write).
@@ -91,21 +85,21 @@ func (s *Server) nodeFileGet(id uint64, write bool) (File, func(), error) {
 	s.mu.Lock()
 	n := s.nodes[id]
 	if n == nil || id == rootNode {
-		s.mu.Unlock()
+		s.unlock()
 		return nil, nil, ESTALE
 	}
 	if n.dir {
-		s.mu.Unlock()
+		s.unlock()
 		return nil, nil, EISDIR
 	}
 	if e := s.files[id]; e != nil && e.can(write) {
 		e.refs++
 		e.used = time.Now()
-		s.mu.Unlock()
+		s.unlock()
 		return e.f, func() { s.putFile(e) }, nil
 	}
 	path, sh, err := s.pathLocked(id)
-	s.mu.Unlock()
+	s.unlock()
 	if err != nil {
 		if errors.Is(err, ENOENT) {
 			// Removed (by the guest without a pin, or on the host): this open file
@@ -122,7 +116,7 @@ func (s *Server) nodeFileGet(id uint64, write bool) (File, func(), error) {
 		return nil, nil, err
 	}
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	defer s.unlock()
 	if s.nodes[id] != n || n.orphan {
 		// Forgotten or removed meanwhile: serve this request, keep nothing.
 		return f, func() { f.Close() }, nil
@@ -131,7 +125,7 @@ func (s *Server) nodeFileGet(id uint64, write bool) (File, func(), error) {
 		switch {
 		case e.can(write):
 			// Another request cached one good enough meanwhile.
-			f.Close()
+			s.closeLater(f)
 			e.refs++
 			e.used = time.Now()
 			return e.f, func() { s.putFile(e) }, nil
@@ -163,10 +157,10 @@ func (s *Server) cacheFileLocked(id uint64, f File, rd, wr bool, refs int) *node
 // handle table was full).
 func (s *Server) keepCreated(id uint64, f File, rd, wr bool) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	defer s.unlock()
 	n := s.nodes[id]
 	if n == nil || n.orphan || n.dir {
-		f.Close()
+		s.closeLater(f)
 		return
 	}
 	if e := s.files[id]; e != nil {
@@ -181,9 +175,25 @@ func (s *Server) putFile(e *nodeFile) {
 	e.refs--
 	e.used = time.Now()
 	if e.gone && e.refs == 0 {
-		e.f.Close()
+		s.closeLater(e.f)
 	}
+	s.unlock()
+}
+
+// closeLater closes f when s.mu is released (unlock): closing the last handle of a
+// file the guest deleted is when NTFS really deletes it (about 80 µs), and that must
+// not hold up every other request.
+func (s *Server) closeLater(f File) { s.closeq = append(s.closeq, f) }
+
+// unlock releases s.mu and then closes the files dropped under it. Every unlock of
+// s.mu in the server goes through here.
+func (s *Server) unlock() {
+	q := s.closeq
+	s.closeq = nil
 	s.mu.Unlock()
+	for _, f := range q {
+		f.Close()
+	}
 }
 
 // dropFileLocked takes e out of the cache; its file closes when no request uses it.
@@ -199,7 +209,7 @@ func (s *Server) dropFileLocked(e *nodeFile) {
 		s.pins--
 	}
 	if e.refs == 0 {
-		e.f.Close()
+		s.closeLater(e.f)
 	}
 	if len(s.files) == 0 && s.sweep != nil {
 		s.sweep.Stop()
@@ -227,63 +237,18 @@ func (s *Server) dropAllFilesLocked(sh *Share, pins bool) {
 	}
 }
 
-// pinLocked keeps f (may be nil; w if it can write) as the file of node id, which the
-// guest just removed or replaced, until the kernel forgets the node. An already cached
-// handle is kept instead if it can do at least as much.
-func (s *Server) pinLocked(id uint64, f File, w bool) {
-	e := s.files[id]
-	if e != nil && (f == nil || e.read && (e.write || !w)) {
-		if f != nil {
-			f.Close()
-		}
-		if !e.pinned && s.pins < s.opt.MaxHandles {
-			// Past the bound it stays an ordinary cached handle and closes when idle.
-			e.pinned = true
-			s.pins++
-		}
-		return
+// pinLocked keeps the cached handle of node id, which the guest just removed or
+// replaced, until the kernel forgets the node, for processes that still have it open.
+// Without a cached handle there is nothing to keep: opening one first would cost a
+// host open per delete, and the first open with read access of a file just written
+// costs about 0.5 ms under real-time antivirus scanning (measured; deletes went from
+// 0.5 to 1.3 ms each).
+func (s *Server) pinLocked(id uint64) {
+	if e := s.files[id]; e != nil && !e.pinned && s.pins < s.opt.MaxHandles {
+		// Past the bound it stays an ordinary cached handle and closes when idle.
+		e.pinned = true
+		s.pins++
 	}
-	if f == nil {
-		return
-	}
-	if e != nil {
-		s.dropFileLocked(e)
-	}
-	if s.pins >= s.opt.MaxHandles {
-		f.Close() // bounded: past this, removed files that are still open read as ESTALE
-		return
-	}
-	s.files[id] = &nodeFile{node: id, f: f, read: true, write: w, used: time.Now(), pinned: true}
-	s.pins++
-}
-
-// mayBeOpen reports whether name k is a file the guest knows, so that a process may
-// have it open without the server knowing (only without OPEN), and whether a cached
-// read-write handle already holds it (then that one is pinned, at no host cost).
-func (s *Server) mayBeOpen(k nodeKey) (may, cached bool) {
-	if !s.noOpen.Load() {
-		return false, false
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	id, ok := s.index[k]
-	if !ok || s.nodes[id].dir {
-		return false, false
-	}
-	e := s.files[id]
-	return true, e != nil && e.read && e.write
-}
-
-// openPin opens the file at path for a pin: read-write if the host allows, else
-// read-only, else nothing.
-func openPin(sh *Share, path []string) (File, bool) {
-	if f, err := sh.FS.Open(path, oRDWR); err == nil {
-		return f, true
-	}
-	if f, err := sh.FS.Open(path, oRDONLY); err == nil {
-		return f, false
-	}
-	return nil, false
 }
 
 // trimFilesLocked closes the least recently used idle handles past Options.MaxFiles.
@@ -315,7 +280,7 @@ func (s *Server) armSweepLocked() {
 // stopped too late (it had already fired) from the current one.
 func (s *Server) sweepFiles(g uint64) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	defer s.unlock()
 	if g != s.sweepGen || s.sweep == nil {
 		return
 	}
@@ -341,6 +306,6 @@ func (s *Server) sweepFiles(g uint64) {
 // and how many of them are pinned (for tests and diagnostics).
 func (s *Server) CachedFiles() (open, pinned int) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	defer s.unlock()
 	return len(s.files), s.pins
 }

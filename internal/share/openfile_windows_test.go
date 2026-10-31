@@ -180,9 +180,9 @@ func TestNoOpenTruncAndAppend(t *testing.T) {
 	}
 }
 
-// The guest unlinks (or renames over) a file a process may still have open: the name
-// is gone on Windows at once, the open file keeps working until the kernel forgets
-// it.
+// The guest unlinks (or renames over) a file a process is using: the name is gone on
+// Windows at once (its directory can be removed), and the open file keeps working
+// through its pinned handle until the kernel forgets it.
 func TestNoOpenUnlinkWhileOpen(t *testing.T) {
 	dir := testDir(t)
 	os.Mkdir(filepath.Join(dir, "sub"), 0o755)
@@ -191,7 +191,9 @@ func TestNoOpenUnlinkWhileOpen(t *testing.T) {
 	s, c, root := newTestServer(t, dir, Options{NoWatch: true, FileIdle: time.Millisecond}, nil)
 	sub := c.mustLookup(root, "sub")
 	en := c.mustLookup(sub.node, "f.txt")
-	time.Sleep(10 * time.Millisecond)
+	if e := c.write(en.node, 0, 0, []byte("o")); e != 0 { // in use: a cached handle
+		t.Fatal(e)
+	}
 	if e, _ := c.do(opUnlink, sub.node, (&wbuf{}).str("f.txt").b); e != 0 {
 		t.Fatalf("unlink: %d", e)
 	}
@@ -201,14 +203,13 @@ func TestNoOpenUnlinkWhileOpen(t *testing.T) {
 	if n, pins := s.CachedFiles(); n != 1 || pins != 1 {
 		t.Fatalf("cached %d pinned %d", n, pins)
 	}
-	time.Sleep(20 * time.Millisecond)
+	time.Sleep(20 * time.Millisecond) // longer than FileIdle: pins stay
 	if e, b := c.read(en.node, 0, 0, 100); e != 0 || string(b) != "old data" {
 		t.Fatalf("read of the unlinked open file: %d %q", e, b)
 	}
 	if e := c.write(en.node, 0, 0, []byte("OLD")); e != 0 {
 		t.Fatalf("write to the unlinked open file: %d", e)
 	}
-	// The directory is empty for Windows: it can be removed and made again.
 	if err := os.Remove(filepath.Join(dir, "sub")); err != nil {
 		t.Fatalf("Windows rmdir of the parent: %v", err)
 	}
@@ -221,11 +222,12 @@ func TestNoOpenUnlinkWhileOpen(t *testing.T) {
 		t.Fatalf("after FORGET: cached %d pinned %d", n, pins)
 	}
 
-	// Rename over a file a process may have open.
+	// Rename over a file a process is reading.
 	os.WriteFile(filepath.Join(dir, "a"), []byte("replacement"), 0o644)
 	os.WriteFile(filepath.Join(dir, "b"), []byte("original"), 0o644)
 	c.mustLookup(root, "a")
 	b := c.mustLookup(root, "b")
+	c.read(b.node, 0, 0, 1)
 	body := (&wbuf{}).u64(root).u32(0).u32(0).str("a").str("b").b
 	if e, _ := c.do(opRename2, root, body); e != 0 {
 		t.Fatalf("rename: %d", e)
@@ -233,22 +235,35 @@ func TestNoOpenUnlinkWhileOpen(t *testing.T) {
 	if got, _ := os.ReadFile(filepath.Join(dir, "b")); string(got) != "replacement" {
 		t.Fatalf("host b is %q", got)
 	}
+	time.Sleep(20 * time.Millisecond)
 	if e, got := c.read(b.node, 0, 0, 100); e != 0 || string(got) != "original" {
 		t.Fatalf("replaced open file reads %d %q", e, got)
 	}
 	if err := os.Remove(filepath.Join(dir, "b")); err != nil {
 		t.Fatalf("Windows delete of the new b: %v", err)
 	}
+
+	// A file idle past FileIdle has no handle to keep: ESTALE, never another file.
+	os.WriteFile(filepath.Join(dir, "c"), []byte("c"), 0o644)
+	cn := c.mustLookup(root, "c")
+	c.read(cn.node, 0, 0, 1)
+	eventually(t, 5*time.Second, "idle close", func() bool { n, _ := s.CachedFiles(); return n <= 1 })
+	c.do(opUnlink, root, (&wbuf{}).str("c").b)
+	os.WriteFile(filepath.Join(dir, "c"), []byte("other"), 0o644)
+	if e, _ := c.read(cn.node, 0, 0, 10); e != int(ESTALE) {
+		t.Fatalf("read of an idle unlinked file: %d", e)
+	}
 }
 
-// A read-only host file (FILE_ATTRIBUTE_READONLY) can still be removed by the guest;
-// the pin falls back to read access.
+// A read-only host file (FILE_ATTRIBUTE_READONLY) in use can be removed by the guest
+// and still read.
 func TestNoOpenUnlinkReadOnlyFile(t *testing.T) {
 	dir := testDir(t)
 	p := filepath.Join(dir, "ro.txt")
 	os.WriteFile(p, []byte("ro"), 0o444)
 	_, c, root := newTestServer(t, dir, Options{NoWatch: true}, nil)
 	en := c.mustLookup(root, "ro.txt")
+	c.read(en.node, 0, 0, 1)
 	if e, _ := c.do(opUnlink, root, (&wbuf{}).str("ro.txt").b); e != 0 {
 		t.Fatalf("unlink: %d", e)
 	}

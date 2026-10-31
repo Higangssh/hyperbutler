@@ -236,17 +236,17 @@ func (s *Server) HostChanged(ev HostEvent) {
 	sh := s.shares[ev.Share]
 	parent, ok := s.resolveLocked(ev.Share, ev.Path)
 	if sh == nil || !ok {
-		s.mu.Unlock()
+		s.unlock()
 		return
 	}
 	name := ev.Path[len(ev.Path)-1]
 	// A single-file share must not learn about, or get nodes for, its siblings.
 	if !s.allowedLocked(sh, parent, name) {
-		s.mu.Unlock()
+		s.unlock()
 		return
 	}
 	if s.echoLocked(parent, name) {
-		s.mu.Unlock()
+		s.unlock()
 		return
 	}
 	k := nodeKey{parent, name}
@@ -277,7 +277,7 @@ func (s *Server) HostChanged(ev HostEvent) {
 			// up). Found by bench/fs-notify: 88 of 100 such edits had no event. The
 			// replay looks the name up like any other process would. Regular files
 			// only: a directory's own times change with its contents.
-			s.mu.Unlock()
+			s.unlock()
 			a, err := sh.FS.Lstat(ev.Path)
 			s.mu.Lock()
 			if err == nil && a.Mode&sIFMT == sIFREG {
@@ -290,7 +290,7 @@ func (s *Server) HostChanged(ev HostEvent) {
 		delete(s.negative, k)
 		if inj {
 			since := s.hostSeq
-			s.mu.Unlock()
+			s.unlock()
 			a, err := sh.FS.Lstat(ev.Path)
 			s.mu.Lock()
 			if err == nil {
@@ -324,14 +324,14 @@ func (s *Server) HostChanged(ev HostEvent) {
 		newParent, ok2 := s.resolveLocked(ev.Share, ev.NewPath)
 		if len(ev.NewPath) == 0 || !ok2 {
 			// Moved somewhere nothing is cached: treat as a removal.
-			s.mu.Unlock()
+			s.unlock()
 			s.HostChanged(HostEvent{Share: ev.Share, Path: ev.Path, Kind: Removed})
 			return
 		}
 		newName := ev.NewPath[len(ev.NewPath)-1]
 		if !s.allowedLocked(sh, newParent, newName) {
 			// Renamed to a name the share hides: to the guest it is gone.
-			s.mu.Unlock()
+			s.unlock()
 			s.HostChanged(HostEvent{Share: ev.Share, Path: ev.Path, Kind: Removed})
 			return
 		}
@@ -355,7 +355,7 @@ func (s *Server) HostChanged(ev HostEvent) {
 			s.moveLocked(parent, name, newParent, newName)
 		}
 	}
-	s.mu.Unlock()
+	s.unlock()
 	for _, m := range msgs {
 		s.notify(m)
 	}
@@ -418,7 +418,7 @@ func (s *Server) HostOverflow(share string) {
 			delete(s.negative, k)
 		}
 	}
-	s.mu.Unlock()
+	s.unlock()
 	for _, m := range msgs {
 		s.notify(m)
 	}
@@ -437,13 +437,13 @@ func (s *Server) injectLookup(h *inHeader, name string) []byte {
 	s.mu.Lock()
 	p := s.pending[k]
 	if p == nil || p.kind == injModify {
-		s.mu.Unlock()
+		s.unlock()
 		// Not a replayed name: a normal lookup (the injector also walks the
 		// directories above the file it replays on).
 		return s.lookupBody(h, name)
 	}
 	if !p.present {
-		s.mu.Unlock()
+		s.unlock()
 		return errReply(h.Unique, int(ENOENT))
 	}
 	var n *node
@@ -458,7 +458,7 @@ func (s *Server) injectLookup(h *inHeader, name string) []byte {
 	}
 	n.nlookup++
 	a := p.attr
-	s.mu.Unlock()
+	s.unlock()
 	// A short TTL: this entry describes something the host no longer has.
 	w := newReply(h.Unique, 0)
 	w.entryOut(n.id, 0, 0, 0, &a)
@@ -470,19 +470,19 @@ func (s *Server) injectCreate(h *inHeader, name string) []byte {
 	s.mu.Lock()
 	p := s.pending[k]
 	if pn := s.nodes[h.NodeID]; p == nil || p.kind != injCreate || pn == nil || !s.allowedLocked(pn.share, h.NodeID, name) {
-		s.mu.Unlock()
+		s.unlock()
 		return errReply(h.Unique, int(EPERM))
 	}
 	delete(s.pending, k)
 	parent := s.nodes[h.NodeID]
 	if parent == nil || parent.share == nil {
-		s.mu.Unlock()
+		s.unlock()
 		return errReply(h.Unique, int(ENOENT))
 	}
 	a := p.attr
 	n, err := s.childLocked(h.NodeID, name, parent.share, &a)
 	raced := s.racedLocked(k, p.seq)
-	s.mu.Unlock()
+	s.unlock()
 	if err != nil {
 		return errReply(h.Unique, toErrno(err))
 	}
@@ -499,7 +499,7 @@ func (s *Server) injectCreate(h *inHeader, name string) []byte {
 func (s *Server) injectRemove(h *inHeader, name string) []byte {
 	k := nodeKey{h.NodeID, name}
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	defer s.unlock()
 	p := s.pending[k]
 	if p == nil || p.kind != injDelete {
 		return errReply(h.Unique, int(EPERM))
@@ -518,7 +518,7 @@ func (s *Server) injectRename(h *inHeader, in renameIn) []byte {
 	k := nodeKey{h.NodeID, in.OldName}
 	nk := nodeKey{in.NewDir, in.NewName}
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	defer s.unlock()
 	p := s.pending[k]
 	if p == nil || p.kind != injRename || !p.present || p.newParent != in.NewDir || p.newName != in.NewName {
 		return errReply(h.Unique, int(EPERM))
@@ -551,7 +551,7 @@ func (s *Server) injectSetattr(h *inHeader) []byte {
 
 func (s *Server) injectDone(id uint64) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	defer s.unlock()
 	for k, p := range s.pending {
 		if p.kind == injModify && p.node == id {
 			delete(s.pending, k)

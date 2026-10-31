@@ -165,7 +165,7 @@ func (s *Server) closeLocked(hd *handle) {
 // acquire returns the file of fh with a reference held; call done when finished.
 func (s *Server) acquire(fh uint64) (*handle, func(), error) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	defer s.unlock()
 	hd := s.handles[fh]
 	if hd == nil || hd.isDir || (hd.f == nil && !hd.inject) {
 		return nil, nil, EBADF
@@ -177,7 +177,7 @@ func (s *Server) acquire(fh uint64) (*handle, func(), error) {
 		if hd.closed && hd.refs == 0 && hd.f != nil {
 			hd.f.Close()
 		}
-		s.mu.Unlock()
+		s.unlock()
 	}, nil
 }
 
@@ -200,6 +200,7 @@ type Server struct {
 	files    map[uint64]*nodeFile
 	pins     int // entries of files that are pinned
 	sweep    *time.Timer
+	closeq   []File // closed by unlock, after s.mu is released
 	sweepGen uint64
 	noOpen   atomic.Bool // this session's kernel sends no OPEN for files
 
@@ -260,11 +261,11 @@ func (s *Server) AddShare(sh *Share) error {
 	}
 	s.mu.Lock()
 	if _, ok := s.shares[sh.Name]; ok {
-		s.mu.Unlock()
+		s.unlock()
 		return fmt.Errorf("share: %q is already shared", sh.Name)
 	}
 	s.shares[sh.Name] = sh
-	s.mu.Unlock()
+	s.unlock()
 	if w, ok := sh.FS.(watchable); ok && !s.opt.NoWatch {
 		name := sh.Name
 		c, err := w.Watch(func(k EventKind, p, np []string) {
@@ -275,7 +276,7 @@ func (s *Server) AddShare(sh *Share) error {
 		} else {
 			s.mu.Lock()
 			s.watchers[name] = c
-			s.mu.Unlock()
+			s.unlock()
 		}
 	}
 	s.notify(notifyInvalEntryMsg(rootNode, sh.Name))
@@ -289,7 +290,7 @@ func (s *Server) RemoveShare(name string) error {
 	s.mu.Lock()
 	w := s.watchers[name]
 	delete(s.watchers, name)
-	s.mu.Unlock()
+	s.unlock()
 	if w != nil {
 		w.Close()
 	}
@@ -313,7 +314,7 @@ func (s *Server) RemoveShare(name string) error {
 			}
 		}
 	}
-	s.mu.Unlock()
+	s.unlock()
 	if !ok {
 		return fmt.Errorf("share: %q is not shared", name)
 	}
@@ -349,7 +350,7 @@ func (s *Server) Mounted() bool {
 // Shares returns the registered share names.
 func (s *Server) Shares() []string {
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	defer s.unlock()
 	var out []string
 	for n := range s.shares {
 		out = append(out, n)
@@ -476,7 +477,7 @@ func (s *Server) Serve(rw io.ReadWriter) error {
 		// remount. Only the current session's end resets the table.
 		s.mu.Lock()
 		s.resetNodes()
-		s.mu.Unlock()
+		s.unlock()
 		c.notes = make(chan []byte, maxPendingNotes)
 		c.done = make(chan struct{})
 		go c.noteWriter()
@@ -496,7 +497,7 @@ func (s *Server) Serve(rw io.ReadWriter) error {
 			if current {
 				s.mu.Lock()
 				s.resetNodes()
-				s.mu.Unlock()
+				s.unlock()
 			}
 		}()
 	} else {
@@ -923,7 +924,7 @@ const EPROTO Errno = 71
 // pathOf returns the share-relative path of a node.
 func (s *Server) pathOf(id uint64) ([]string, *Share, error) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	defer s.unlock()
 	return s.pathLocked(id)
 }
 
@@ -982,7 +983,7 @@ func (s *Server) childLocked(parent uint64, name string, sh *Share, a *Attr) (*n
 
 func (s *Server) forget(id, n uint64) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	defer s.unlock()
 	nd := s.nodes[id]
 	if nd == nil || id == rootNode {
 		return
@@ -1071,7 +1072,7 @@ func (s *Server) doLookup(h *inHeader, name string) []byte {
 	if h.NodeID == rootNode {
 		s.mu.Lock()
 		sh := s.shares[name]
-		s.mu.Unlock()
+		s.unlock()
 		if sh == nil {
 			return errReply(u, int(ENOENT))
 		}
@@ -1088,7 +1089,7 @@ func (s *Server) doLookup(h *inHeader, name string) []byte {
 		s.fixAttr(&a)
 		s.mu.Lock()
 		n, err := s.childLocked(rootNode, name, sh, &a)
-		s.mu.Unlock()
+		s.unlock()
 		if err != nil {
 			return errReply(u, toErrno(err))
 		}
@@ -1110,7 +1111,7 @@ func (s *Server) lookupBody(h *inHeader, name string) []byte {
 	}
 	isShareRoot := err == nil && len(parent) == 0
 	since := s.hostSeq
-	s.mu.Unlock()
+	s.unlock()
 	if err != nil {
 		return errReply(u, toErrno(err))
 	}
@@ -1127,7 +1128,7 @@ func (s *Server) lookupBody(h *inHeader, name string) []byte {
 			if len(s.negative) < s.opt.MaxNodes && !raced {
 				s.negative[k] = time.Now()
 			}
-			s.mu.Unlock()
+			s.unlock()
 			ttl := s.ttl(s.opt.NegTTL)
 			if raced {
 				ttl = 0 // created on the host meanwhile
@@ -1145,7 +1146,7 @@ func (s *Server) lookupBody(h *inHeader, name string) []byte {
 	s.mu.Lock()
 	n, err := s.childLocked(h.NodeID, name, sh, &a)
 	raced := s.racedLocked(k, since)
-	s.mu.Unlock()
+	s.unlock()
 	if err != nil {
 		return errReply(u, toErrno(err))
 	}
@@ -1171,7 +1172,7 @@ func (s *Server) parentFor(id uint64, name string) ([]string, *Share, error) {
 		// through something that is not a directory to it (such as a junction).
 		err = ENOTDIR
 	}
-	s.mu.Unlock()
+	s.unlock()
 	if err != nil {
 		return nil, nil, err
 	}
@@ -1206,7 +1207,7 @@ func (s *Server) doCreateNode(h *inHeader, name string, mk func(*Share, []string
 	if n != nil {
 		n.touched = time.Now()
 	}
-	s.mu.Unlock()
+	s.unlock()
 	if err != nil {
 		return errReply(u, toErrno(err))
 	}
@@ -1224,22 +1225,8 @@ func (s *Server) doRemove(h *inHeader, name string, dir bool) []byte {
 	}
 	s.markRecent(h.NodeID, name)
 	k := nodeKey{h.NodeID, name}
-	var pin File
-	var pinWrite bool
 	if dir {
 		err = sh.FS.Rmdir(path)
-	} else if may, cached := s.mayBeOpen(k); may && !cached {
-		// Processes may still have it open, and the kernel no longer tells (no
-		// RELEASE): keep a handle so they can go on reading and writing it.
-		if ku, ok := sh.FS.(keepUnlinker); ok {
-			pin, pinWrite, err = ku.UnlinkKeep(path)
-		} else {
-			pin, pinWrite = openPin(sh, path)
-			if err = sh.FS.Unlink(path); err != nil && pin != nil {
-				pin.Close()
-				pin = nil
-			}
-		}
 	} else {
 		err = sh.FS.Unlink(path)
 	}
@@ -1251,15 +1238,13 @@ func (s *Server) doRemove(h *inHeader, name string, dir bool) []byte {
 		s.nodes[id].orphan = true
 		delete(s.index, k)
 		if !dir {
-			s.pinLocked(id, pin, pinWrite)
-			pin = nil
+			// A process may still have it open, and the kernel no longer says
+			// (no RELEASE): a cached handle is kept for it (openfile.go).
+			s.pinLocked(id)
 		}
 	}
-	if pin != nil {
-		pin.Close()
-	}
 	s.markRecentLocked(h.NodeID, name)
-	s.mu.Unlock()
+	s.unlock()
 	return newReply(u, 0).finish()
 }
 
@@ -1284,33 +1269,17 @@ func (s *Server) doRename(h *inHeader, in renameIn) []byte {
 	}
 	s.markRecent(h.NodeID, in.OldName)
 	s.markRecent(in.NewDir, in.NewName)
-	nk := nodeKey{in.NewDir, in.NewName}
-	var pin File
-	var pinWrite bool
-	if may, cached := s.mayBeOpen(nk); may && !cached && in.Flags&renameNoreplace == 0 && nk != (nodeKey{h.NodeID, in.OldName}) {
-		// The file this replaces may still be open (see doRemove).
-		pin, pinWrite = openPin(sh, newPath)
-	}
 	if err := sh.FS.Rename(oldPath, newPath, in.Flags&renameNoreplace != 0); err != nil {
-		if pin != nil {
-			pin.Close()
-		}
 		return errReply(u, toErrno(err))
 	}
 	s.mu.Lock()
-	if id, ok := s.index[nk]; ok && pin != nil {
-		s.pinLocked(id, pin, pinWrite)
-		pin = nil
-	} else if ok && nk != (nodeKey{h.NodeID, in.OldName}) && s.noOpen.Load() && !s.nodes[id].dir {
-		s.pinLocked(id, nil, false) // a cached handle, if any, becomes the pin
-	}
-	if pin != nil {
-		pin.Close()
+	if id, ok := s.index[nodeKey{in.NewDir, in.NewName}]; ok && id != s.index[nodeKey{h.NodeID, in.OldName}] && !s.nodes[id].dir {
+		s.pinLocked(id) // the file this replaced may still be open (see doRemove)
 	}
 	s.moveLocked(h.NodeID, in.OldName, in.NewDir, in.NewName)
 	s.markRecentLocked(h.NodeID, in.OldName)
 	s.markRecentLocked(in.NewDir, in.NewName)
-	s.mu.Unlock()
+	s.unlock()
 	return newReply(u, 0).finish()
 }
 
@@ -1389,7 +1358,7 @@ func (s *Server) doSetattr(h *inHeader, in setattrIn) []byte {
 
 func (s *Server) addHandle(hd *handle) (uint64, error) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	defer s.unlock()
 	if len(s.handles) >= s.opt.MaxHandles {
 		return 0, EMFILE
 	}
@@ -1447,7 +1416,7 @@ func (s *Server) doOpen(h *inHeader, flags uint32, dir bool) []byte {
 			_ = sh
 			es = append(es, DirEntry{Name: name, Attr: Attr{Mode: sIFDIR | 0o755}})
 		}
-		s.mu.Unlock()
+		s.unlock()
 		sort.Slice(es, func(i, j int) bool { return es[i].Name < es[j].Name })
 		fh, err := s.addHandle(&handle{node: rootNode, isDir: true, dir: es, loaded: true})
 		if err != nil {
@@ -1462,14 +1431,14 @@ func (s *Server) doOpen(h *inHeader, flags uint32, dir bool) []byte {
 	}
 	s.mu.Lock()
 	path, sh, err := s.pathLocked(h.NodeID)
-	s.mu.Unlock()
+	s.unlock()
 	if err != nil {
 		return errReply(u, toErrno(err))
 	}
 	if dir {
 		s.mu.Lock()
 		isDir := s.nodes[h.NodeID] != nil && s.nodes[h.NodeID].dir
-		s.mu.Unlock()
+		s.unlock()
 		if !isDir {
 			return errReply(u, int(ENOTDIR))
 		}
@@ -1532,7 +1501,7 @@ func (s *Server) doCreate(h *inHeader, in createIn) []byte {
 		n.touched = time.Now()
 	}
 	s.markRecentLocked(h.NodeID, in.Name)
-	s.mu.Unlock()
+	s.unlock()
 	if err != nil {
 		f.Close()
 		return errReply(u, toErrno(err))
@@ -1600,7 +1569,7 @@ func (s *Server) release(fh uint64) {
 	if hd != nil {
 		s.closeLocked(hd)
 	}
-	s.mu.Unlock()
+	s.unlock()
 	if hd != nil && hd.inject {
 		s.injectDone(hd.node)
 	}
@@ -1639,7 +1608,7 @@ func (s *Server) rootListing() []DirEntry {
 	for name := range s.shares {
 		es = append(es, DirEntry{Name: name, Attr: Attr{Mode: sIFDIR | 0o755}})
 	}
-	s.mu.Unlock()
+	s.unlock()
 	sort.Slice(es, func(i, j int) bool { return es[i].Name < es[j].Name })
 	return es
 }
@@ -1662,22 +1631,22 @@ func (s *Server) nodeListing(id, off uint64) (es []DirEntry, sh *Share, since ui
 		err = ENOTDIR
 	}
 	if err != nil {
-		s.mu.Unlock()
+		s.unlock()
 		return nil, nil, 0, err
 	}
 	if off != 0 && n.listed {
 		es, since = n.list, n.listSeq
-		s.mu.Unlock()
+		s.unlock()
 		return es, sh, since, nil
 	}
 	since = s.hostSeq
-	s.mu.Unlock()
+	s.unlock()
 	list, err := loadDir(sh, path)
 	if err != nil {
 		return nil, nil, 0, err
 	}
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	defer s.unlock()
 	if s.nodes[id] != n {
 		return list, sh, since, nil // forgotten meanwhile: answer, keep nothing
 	}
@@ -1711,7 +1680,7 @@ func (s *Server) handleListing(id, fh uint64) ([]DirEntry, *Share, error) {
 	s.mu.Lock()
 	hd := s.handles[fh]
 	ok := hd != nil && hd.isDir && hd.node == id && !hd.closed
-	s.mu.Unlock()
+	s.unlock()
 	if !ok {
 		return nil, nil, EBADF
 	}
@@ -1728,12 +1697,12 @@ func (s *Server) handleListing(id, fh uint64) ([]DirEntry, *Share, error) {
 		}
 		s.mu.Lock()
 		if hd.closed || s.dirEntries+len(list) > maxDirBudget {
-			s.mu.Unlock()
+			s.unlock()
 			return nil, nil, ENOMEM
 		}
 		s.dirEntries += len(list)
 		hd.dir, hd.loaded = list, true
-		s.mu.Unlock()
+		s.unlock()
 	}
 	return hd.dir, sh, nil
 }
@@ -1755,7 +1724,7 @@ func (s *Server) doReaddir(h *inHeader, in readIn, plus bool) []byte {
 			// longer needed.
 			s.mu.Lock()
 			s.dropListLocked(s.nodes[h.NodeID])
-			s.mu.Unlock()
+			s.unlock()
 		}
 	} else {
 		var err error
@@ -1811,7 +1780,7 @@ func (s *Server) doReaddir(h *inHeader, in readIn, plus bool) []byte {
 					id = n.id
 				}
 			}
-			s.mu.Unlock()
+			s.unlock()
 		}
 		if id != 0 {
 			w.entryOut(id, 0, s.ttl(s.opt.EntryTTL), s.ttl(s.opt.AttrTTL), &a)
@@ -1827,7 +1796,7 @@ func (s *Server) touch(id uint64) {
 	if n := s.nodes[id]; n != nil {
 		n.touched = time.Now()
 	}
-	s.mu.Unlock()
+	s.unlock()
 }
 
 // markRecent is markRecentLocked for callers without s.mu. Callers mark before the host
@@ -1835,7 +1804,7 @@ func (s *Server) touch(id uint64) {
 func (s *Server) markRecent(parent uint64, name string) {
 	s.mu.Lock()
 	s.markRecentLocked(parent, name)
-	s.mu.Unlock()
+	s.unlock()
 }
 
 // markRecentLocked records a name the guest changed, so its echo from the host

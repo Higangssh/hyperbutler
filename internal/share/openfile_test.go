@@ -380,11 +380,15 @@ func TestNoOpenConcurrent(t *testing.T) {
 	}
 }
 
-// The guest unlinks a file it may have open: later reads still reach the file (here a
-// memFS, whose files are gone with their name: the pin is checked, not the data).
+// The guest unlinks a file a process is using: its cached handle is pinned, so later
+// reads still reach the file (here a memFS, whose data goes with its name: the pin is
+// checked, not the data). A file with no cached handle gets no pin and no host open.
 func TestNoOpenUnlinkPins(t *testing.T) {
 	s, c, fs, root := hookShare(t, Options{FileIdle: time.Millisecond})
 	f := c.mustLookup(root, "f")
+	if e, _ := c.read(f.node, 0, 0, 10); e != 0 {
+		t.Fatal(e)
+	}
 	if e, _ := c.do(opUnlink, root, (&wbuf{}).str("f").b); e != 0 {
 		t.Fatal(e)
 	}
@@ -402,16 +406,18 @@ func TestNoOpenUnlinkPins(t *testing.T) {
 	if n, p := s.CachedFiles(); n != 0 || p != 0 {
 		t.Fatalf("after FORGET: cached %d pinned %d", n, p)
 	}
-	if o, cl := fs.counts(); o != cl {
+	if o, cl := fs.counts(); o != 1 || cl != 1 {
 		t.Fatalf("opens %d closes %d", o, cl)
 	}
-	// A name the guest never looked up needs no pin.
-	fs.files["u"] = []byte("x")
-	if e, _ := c.do(opUnlink, root, (&wbuf{}).str("u").b); e != 0 {
+	g := c.mustLookup(root, "g")
+	if e, _ := c.do(opUnlink, root, (&wbuf{}).str("g").b); e != 0 {
 		t.Fatal(e)
 	}
 	if o, _ := fs.counts(); o != 1 {
-		t.Fatalf("%d opens, want no pin for an unknown name", o)
+		t.Fatalf("%d host opens, want none for an unlink", o)
+	}
+	if e, _ := c.read(g.node, 0, 0, 10); e != int(ESTALE) {
+		t.Fatalf("read of an unlinked file without a handle: %d", e)
 	}
 }
 
