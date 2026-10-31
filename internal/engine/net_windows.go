@@ -34,6 +34,9 @@ type NetConfig struct {
 	Subnet netip.Prefix
 	// MTU is the guest link MTU; 0 means netstack.DefaultMTU.
 	MTU int
+	// NoOffload turns off checksum and TCP segmentation offload on the guest link
+	// (netstack.Config.Offload), for comparison.
+	NoOffload bool
 	// Port is the AF_VSOCK port the guest forwarder connects to; 0 means 1024.
 	Port uint32
 	// Publish are static published ports.
@@ -61,6 +64,9 @@ type guestNet struct {
 
 	apCancel context.CancelFunc
 	apDone   chan struct{}
+
+	dialCancel context.CancelFunc
+	dialDone   chan struct{}
 }
 
 // setupNet builds the stack. It returns nil when networking is off. The caller adds
@@ -90,11 +96,16 @@ func setupNet(nc NetConfig, sddl string, log *slog.Logger) (g *guestNet, svcs []
 	}
 	cfg = st.Config()
 	g = &guestNet{nc: nc, cfg: cfg, st: st, svc: transport.VsockServiceID(nc.Port), publish: nc.Publish, log: log}
-	// The guest connects to the host on this service; only this user may listen on it,
-	// and nobody may connect to it in the guest.
-	svcs = []vm.Service{{ID: g.svc, BindSDDL: sddl}}
+	// Only this user may listen on the link's service (for a guest forwarder that dials
+	// the host) and, in offload mode, connect to it (netfwd -vnet listens in the guest).
+	svc := vm.Service{ID: g.svc, BindSDDL: sddl}
 	args = fmt.Sprintf(" hyperbutler.net=%d hyperbutler.mtu=%d hyperbutler.ip=%s/%d hyperbutler.gw=%s hyperbutler.dns=%s",
 		nc.Port, cfg.MTU, cfg.GuestIP(), cfg.Subnet.Bits(), cfg.Gateway(), cfg.Gateway())
+	if !nc.NoOffload {
+		svc.ConnectSDDL = sddl
+		args += " hyperbutler.netvnet=1"
+	}
+	svcs = []vm.Service{svc}
 	return g, svcs, args, nil
 }
 
@@ -124,17 +135,34 @@ func (g *guestNet) start(ctx context.Context, vmid guid.GUID, step func(string, 
 	}
 	g.ln = ln
 	context.AfterFunc(ctx, func() { _ = ln.Close() })
+	var once sync.Once
+	linkUp := func(how string) {
+		once.Do(func() {
+			step("guest network link up (%s/%d, gateway %s, MTU %d, %s)", g.cfg.GuestIP(), g.cfg.Subnet.Bits(), g.cfg.Gateway(), g.cfg.MTU, how)
+		})
+	}
+	if !g.nc.NoOffload {
+		dctx, cancel := context.WithCancel(ctx)
+		g.dialCancel, g.dialDone = cancel, make(chan struct{})
+		go func() {
+			defer close(g.dialDone)
+			g.dialGuest(dctx, vmid, func() { linkUp("offload") })
+		}()
+	}
 	go func() {
-		first := true
 		for {
 			c, err := ln.Accept()
 			if err != nil {
 				return
 			}
-			if first {
-				step("guest network link up (%s/%d, gateway %s, MTU %d)", g.cfg.GuestIP(), g.cfg.Subnet.Bits(), g.cfg.Gateway(), g.cfg.MTU)
-				first = false
+			if offload, known := g.st.Offloading(); known && offload {
+				// The link is in offload mode for good; a guest program that dials
+				// the host is refused quietly, however often it tries.
+				_ = c.Close()
+				g.log.Debug("refused a plain guest link: the link is in offload mode")
+				continue
 			}
+			linkUp("plain")
 			go func() {
 				if err := g.st.ServeConn(c); err != nil && ctx.Err() == nil {
 					g.log.Warn("guest network link ended", "err", err)
@@ -151,6 +179,41 @@ func (g *guestNet) start(ctx context.Context, vmid guid.GUID, step func(string, 
 	return nil
 }
 
+// dialGuest connects to the guest forwarder in offload mode (netfwd -vnet listens on
+// the link's vsock port) and serves each connection until ctx ends, dialing again when
+// a link ends (netfwd restarted). A guest image whose netfwd dials the host instead
+// gets a plain link through the listener, and dialing stops once that link is up.
+func (g *guestNet) dialGuest(ctx context.Context, vmid guid.GUID, linkUp func()) {
+	d := &transport.HvsockDialer{Target: transport.HvsockTarget{VMID: vmid, ServiceID: g.svc}}
+	wait := 50 * time.Millisecond
+	for ctx.Err() == nil {
+		if offload, known := g.st.Offloading(); known && !offload {
+			return
+		}
+		// A connect to a port nobody listens on yet can stay pending for about 30 s
+		// (the abandoned attempt finishes in the background); bound each attempt so the
+		// guest's listener is found soon after it appears. With 1 s the link came up
+		// 0.8 s later than one the guest dials.
+		actx, cancel := context.WithTimeout(ctx, 250*time.Millisecond)
+		c, err := d.DialContext(actx)
+		cancel()
+		if err != nil {
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(wait):
+			}
+			wait = min(2*wait, time.Second)
+			continue
+		}
+		wait = 50 * time.Millisecond
+		linkUp()
+		if err := g.st.ServeOffload(c); err != nil && ctx.Err() == nil {
+			g.log.Warn("guest network link ended", "err", err)
+		}
+	}
+}
+
 func (g *guestNet) close() {
 	if g.apCancel != nil {
 		g.apCancel()
@@ -159,7 +222,13 @@ func (g *guestNet) close() {
 	if g.ln != nil {
 		_ = g.ln.Close()
 	}
+	if g.dialCancel != nil {
+		g.dialCancel()
+	}
 	g.st.Close()
+	if g.dialDone != nil {
+		<-g.dialDone
+	}
 }
 
 // --- auto-publish -------------------------------------------------------------------

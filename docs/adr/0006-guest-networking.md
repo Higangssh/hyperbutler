@@ -1,8 +1,8 @@
 # 0006. Guest networking
 
-- Status: proposed (implemented in `internal/netstack`; the acceptance gate is not yet
-  met, see "Gate results")
-- Date: 2026-10-30
+- Status: accepted (2026-10-31), with the LAN-registry gate deferred to the release
+  checklist; see "Gate results (2026-10-31)" and "Gate amendment"
+- Date: 2026-10-30; accepted 2026-10-31
 - Requirements: REQ-NET-001, REQ-NET-002, REQ-NET-003, REQ-PLAT-003, REQ-PLAT-004
 
 ## Context
@@ -171,13 +171,29 @@ its switch indexes the Ethernet header of a frame before checking its length, an
 answers every lookup error with NXDOMAIN and falls back to `/etc/resolv.conf`, which does
 not exist on Windows. Instead:
 
-- **Link.** The VM document declares the hvsock service of vsock port 1024 with a bind
-  descriptor for the current user only and a deny-all connect descriptor
-  (`vm.Service.BindSDDL`). hyperbutler listens on that service for this VM's runtime ID. In the
-  guest, `guest/cmd/netfwd` creates a persistent TAP `eth0` and relays its frames,
-  length-prefixed (`internal/netstack/frame`), over AF_VSOCK to CID 2. Both sides reject
-  frames shorter than an Ethernet header or longer than the MTU. Both batch: one read on
-  either side carries every frame queued.
+- **Link.** The VM document declares the hvsock service of vsock port 1024. Its bind
+  and connect descriptors admit the current user only (`vm.Service`). In the guest,
+  `guest/cmd/netfwd` creates a persistent TAP `eth0` and relays its frames,
+  length-prefixed (`internal/netstack/frame`), over one AF_VSOCK stream. Both sides
+  batch (one write carries every frame queued) and read the link ahead of the frame
+  handler (`frame.Pump`).
+  - **Offload mode** (default since 2026-10-31). The engine adds `hyperbutler.netvnet=1`
+    to the kernel command line. `netfwd -vnet` then opens the TAP with `IFF_VNET_HDR` and
+    checksum and IPv4 TSO offload, and listens on the port (CID 2 only). The engine
+    dials it and sends `frame.Hello`. Every frame then starts with a virtio_net_hdr.
+    TCP segments of up to 64 KiB cross the link in both directions with a partial
+    checksum: the guest's TSO on one side, gVisor's host GSO on the other. The host
+    dials because Windows sends slowly on an accepted hvsock connection (see "Gate
+    results (2026-10-31)"). The host accepts headers of the kinds the guest's TAP
+    produces (no GSO or TCPv4 GSO, `NEEDS_CSUM`, `DATA_VALID`, ECN) and rejects the rest
+    (`frame.ParseVnet`, fuzzed). A frame without GSO must fit the MTU; a GSO frame must
+    fit an IPv4 packet. gVisor does not verify checksums on this link
+    (`CapabilityRXChecksumOffload`, as before): it terminates every packet and forwards
+    none.
+  - **Plain mode** (`-net-offload=false`, or a guest image whose netfwd dials). The
+    guest dials the host's listener and sends bare Ethernet frames of at most the MTU.
+  - A stack keeps the mode of its first link. TCP endpoints created on an offload link
+    keep sending segments larger than the MTU.
 - **Addresses.** Static, from the kernel command line: guest 192.168.127.2/24, gateway
   and DNS 192.168.127.1, MTU 9000. There is no DHCP server. Containers on `docker0` are
   routed, not NATed: the guest forwards, and the stack's default route points back at the
@@ -195,12 +211,29 @@ not exist on Windows. Instead:
   and other errors are SERVFAIL. 64 queries in flight, 5 s timeout, names restricted to
   LDH, `_` and `.`, answers capped at 64 records and 1232 bytes over UDP.
 - **Limits.** 512 relayed TCP connections, 512 TCP handshakes in flight, a 10 s dial
-  timeout, 1024 UDP flows with a 60 s idle timeout, and 256 KiB per TCP buffer. Total
-  stack buffers are therefore at most 512 x 2 x 256 KiB = 256 MiB.
+  timeout, and 1024 UDP flows with a 60 s idle timeout.
+  - TCP buffers start at 128 KiB. gVisor tunes them (receive moderation, send
+    autotuning) up to 1 MiB, but only for 16 connections at a time; every other
+    connection is pinned at 256 KiB.
+  - A connection holds its token from start to close, idle or not. Once 16
+    long-lived connections exist (keep-alive pools, dockerd's registry connections),
+    later bulk transfers run with 256 KiB, which costs throughput under load (3-6
+    Gbit/s instead of 8-11). The gate numbers were taken on a fresh stack. Handing
+    tokens to active connections only is a follow-up.
+  - Relayed connections' buffers are therefore at most 16 x 2 x 1 MiB + 496 x 2 x
+    256 KiB = 280 MiB (it was 256 MiB with 256 KiB each). Published connections come
+    on top: 2 x 256 KiB each, up to 256 per published port and address family. The
+    memory is used only for data that is queued.
+  - TIME_WAIT is 1 s, not gVisor's 60 s; see "Gate results (2026-10-31)".
 - **TCP tuning.** gVisor's RACK loss detection is turned off. With RTTs of tens of
   microseconds and a queue in front of the guest, it declared in-flight segments lost.
   The guest then received each one about six times (`TCPDSACKOldSent`), and host-to-guest
   TCP was capped at 0.18 Gbit/s. With RACK off: 0 retransmits, 4.2–5.4 Gbit/s.
+- **Relay.** Copy buffers are pooled. A reset or abort that the relay sees on either
+  side (reading or writing) is passed on as a reset, so that neither Windows nor gVisor
+  keeps the connection in TIME_WAIT. Windows sockets whose peer is on loopback
+  (published ports, `-host-forward` to `127.0.0.1`) get 1 MiB send and receive buffers;
+  every other connection keeps Windows' autotuning.
 - **Published ports.** `-publish [IP:]HOST:GUEST` (loopback unless `-publish-lan`), and
   auto-publish. Auto-publish follows dockerd's `/events` and mirrors every TCP binding on
   the guest's wildcard address to `127.0.0.1:P` and `[::1]:P`, but refuses a port that a
@@ -223,9 +256,88 @@ Details are in [guest-networking.md](../research/guest-networking.md#the-user-mo
 | VPN split DNS, public DNS and a VPN-only address in one run | `peer-a.<tailnet>.ts.net` and the bare `peer-a` resolved to 100.64.0.10, `registry-1.docker.io` resolved, a missing tailnet name gave NXDOMAIN, and TCP to tailnet peers by IP and by MagicDNS name connected. The host's own Tailscale address was refused. | Yes (Tailscale only) |
 | p99 small-request latency (ADR 0003) | 64-byte round trips, n=20000. Idle: stack p99 239–271 µs (raw hvsock 89–154 µs). Under bulk load: stack p99 444–688 µs, p99.9 11.6 ms (raw 124–273 µs, p99.9 0.7–2.0 ms). | Recorded. The p99.9 tail under load (about 11 ms on every run) is open: GC or the 1 MiB guest-bound queue. |
 
-**ADR 0006 stays proposed.** Two gates are not met: the 50% throughput gate, under the
-256 KiB buffer bound the review asked for, and the LAN registry gate, which was not run.
-Internet pulls are not affected: container downloads matched the host (below).
+At that point ADR 0006 stayed proposed. Two gates were not met: the 50% throughput gate,
+under the 256 KiB buffer bound the review asked for, and the LAN registry gate, which was
+not run.
+
+## Gate results (2026-10-31)
+
+Same machine and account; 2048 MB and 2 vCPU guest, engine with the product's 256 MiB Go
+memory limit. The work is in [guest-networking.md](../research/guest-networking.md#throughput-work-2026-10-31).
+
+**Why the gate failed.** Profiles showed the engine and the guest mostly idle during
+bulk transfers; the stack was waiting, not computing. Four causes, each measured on its
+own:
+1. Containers' 1500-byte MTU, which put every container connection at a 1460-byte MSS
+   over the 9000-byte link. Fixed by segmentation offload: 64 KiB segments both ways.
+2. Slow host writes on the hvsock connection Windows had accepted: about 1 ms per
+   600 KB, against 50 µs on a connection the host dialed. Fixed by having the host dial.
+3. Autotuned loopback Windows sockets, on which the relay waited 67% of the time. Fixed
+   with 1 MiB buffers on sockets to this host.
+4. 256 KiB TCP windows against an RTT of 1-5 ms under load (queueing in front of the
+   guest). Fixed by letting 16 connections at a time tune up to 1 MiB.
+
+**Not a cause:** the GC (1-3 per 5 s bulk run, pauses below the 0.5 ms clock
+resolution, 30-36 MB of heap), the relay's syscalls per frame, copy buffer sizes, and
+splitting the link into one connection per direction.
+
+| Gate | Result | Pass? |
+|---|---|---|
+| Guest-to-host TCP at least 50% of raw hvsock, same boot | 6 boots, each the median of 5 x 1 GiB: **80, 74, 49, 56, 92, 64%** (median 69%; before: 36-38% on 2 boots). The stack ran at 6.9-10.6 Gbit/s; raw hvsock varied from 8.0 to 21.7 Gbit/s between boots, and the one boot under 50% was the one with the fastest raw run (stack 10.56 against raw 21.70). Without offload: 36%. Host to guest (not gated): 28-62% of a raw 23-29 Gbit/s. | **Yes**, on 5 of 6 boots and on the median |
+| Host CPU at most 1 core per Gbit/s | The engine: 0.11-0.20 cores per Gbit/s for every bulk path. The guest's share (vmmem) cannot be read by a non-elevated user; the guest was at about 30% of its 2 vCPUs during bulk transfers, which adds about 0.06 cores per Gbit/s at 10 Gbit/s. | Yes (engine measured, guest estimated) |
+| LAN registry pull within 20% of HNS NAT | Not run (no second machine). **Deferred** to the release checklist; see "Gate amendment". | Deferred |
+| Idle memory within REQ-MEM-001 | `bench/mem-idle` on this branch (`hyperbutler start`, 4 GiB / 8 vCPU): median 316.5 MiB (332 MB), engine 19.1 MiB (was 315 / 17.7 MiB). Under load the engine's private working set was 46-55 MB in every bulk, latency and connection-rate run (Go heap 30-36 MB). Before, it was 180-260 MB after a connection-rate run. | Yes |
+| VPN split DNS, public DNS and a VPN-only address in one run | Rechecked through `hyperbutler start` with the new image: `peer-a` resolved to 100.64.0.10 and `registry-1.docker.io` resolved, in the same run; HTTPS from a container; `-p` on `127.0.0.1` and `[::1]`; `docker pull`. | Yes (Tailscale only) |
+| p99 small-request latency (ADR 0003) | Gate bench, n=20000: stack idle p50/p99/p99.9 158/257/504 µs (raw 52/77/124); under bulk load 147/244/**491** µs (raw 52/96/259), max 2.6 ms. Containers (`bench/net-perf`): rr 187/392/1244 µs, during a download 356/1418/3093, `-p` 233/421/1196. | Recorded |
+
+The p99.9 of 11.6 ms under load came from the bench, which reconnected its bulk load
+every 256 MiB. The p99.9 of 20,000 samples is the 20th worst, and there were about 20 new
+load connections per measurement. With one load connection the tail is 0.49 ms. Raw
+hvsock under the old reconnecting load stayed at 0.5-0.7 ms, so a new bulk connection
+does stall others for 10-13 ms somewhere in the stack path. The place was not found;
+it is an open item.
+
+Container paths, `bench/net-perf` (medians of 5; the baseline is the host's own
+loopback, which varies from 8 to 25 Gbit/s):
+
+| Path | Before | After |
+|---|---|---|
+| Container downloads from a host server | 2.71 Gbit/s | **10.2** |
+| Container uploads to a host server | 3.34 | **8.29** |
+| Host downloads from a container (`-p`) | 3.19 | **7.54** |
+| Host uploads to a container (`-p`) | 4.45 | **11.6** |
+| Container connections/s to a host server | 640, then 4-7 (failing; see below) | **6024**, no errors |
+| `-p` connections/s | 4914 | 5475 |
+| Internet HTTPS download (link-limited) | = host | = host |
+
+Connections per second had failed outright. gVisor kept each closed connection in
+TIME_WAIT for 60 s, and answered a SYN that reused its port from that endpoint, because
+it hands SYNs over only to a listener, not to a forwarder. TIME_WAIT is now 1 s. Linux
+picks a guest's ports with a stride of 2 per destination, so it reuses a port to the
+same destination after about 14k connections, which at 1 s takes more than 14k
+connections per second. The gVisor behaviour itself is unchanged: the failure is
+bounded, not removed.
+
+### Gate amendment
+
+The LAN-registry gate needs a second machine on a wired link, which the project does not
+have; it has not run in two attempts. It was there to show that the user-mode stack does
+not make LAN pulls slower than HNS NAT. It is **deferred, not met**, and it stays
+release-blocking (docs/release.md, ADR 0006 section).
+
+What the local numbers say, and why they do not replace it:
+- HNS NAT's local throughput was measured on this machine on 2026-10-30 in one direction
+  only, guest to host: 5.5-9.6 Gbit/s (n=8, median 8.4).
+- The stack in that direction now runs at 6.9-10.6 Gbit/s (6 boots). Into a container,
+  the direction of a pull, it runs at 10.2 Gbit/s from a host-local server.
+- The NAT harness (`spike/net`) read with 8 KiB reads, which this work found to hold raw
+  hvsock at 4-7 Gbit/s. The NAT figure is therefore probably low, and the ranges overlap.
+- A LAN of 1-2.5 Gbit/s would limit either path. That is a reason to expect the gate to
+  pass, not a measurement.
+
+**ADR 0006 is accepted, with the LAN-registry gate deferred to the release checklist.**
+The other five gates are met. The user-mode stack stays the default and HNS NAT stays an
+opt-in backend. If the deferred check fails, the fallback in "Consequences" applies.
 
 ## Implementation review
 
@@ -245,6 +357,26 @@ issues. Each one is fixed or rejected below.
 | 9 | Low | 128 in-flight dials of 15 s stall new connections. | **Fixed:** 512 in flight, 10 s dial timeout. |
 | 10 | Low | Single-label names trigger LLMNR/NBNS on the LAN, and PTR reveals host names. | **Rejected:** this is the host resolver's behavior, and REQ-NET-002 wants it (the bare tailnet name resolved through the VPN's search suffix). Recorded in "What stays unverified". |
 
+## Throughput review (2026-10-31)
+
+The adversarial reviewer reviewed the throughput work and this decision. It
+found 12 issues and no crash, hang or unbounded growth reachable from the guest.
+
+| # | Sev | Finding | Resolution |
+|---|---|---|---|
+| 1 | High | The amended LAN gate was "met" against an HNS NAT baseline measured with 8 KiB reads, which this work found to be reader-limited, and in the other direction than a pull. | **Fixed:** the gate is deferred and release-blocking, not met; the bias is stated in "Gate amendment". |
+| 2 | Med | "Host CPU" was the engine's CPU only. | **Fixed (documented):** the row says so and estimates the guest's share; a non-elevated user cannot read vmmem. |
+| 3 | Med | The idle-memory row was asserted, and the change adds resident link buffers. | **Fixed:** the host reads the link in 4 x 256 KiB chunks (was 4 x 1 MiB) and keeps a spare queue buffer of at most about 1 MiB (was 4 MiB); `bench/mem-idle` was re-run (row above). |
+| 4 | Med | A guest process holding vsock port 1024 made netfwd exit every second for good; a guest that dials the host after an offload link logged a warning per attempt. | **Fixed:** netfwd retries the listen with backoff instead of exiting; plain links after an offload link are refused at debug level. The squatting itself is in "What stays unverified". |
+| 5 | Med | The 16 large-buffer tokens are held for a connection's life, so the result depends on connection order. | **Documented** under "Limits" as a follow-up. |
+| 6 | Med | 1 MiB fixed socket buffers also applied to `-publish-lan` clients and host forwards to other machines. | **Fixed:** only when the peer is on loopback. |
+| 7 | Low | The TIME_WAIT safety argument (28k) was imprecise, and the gVisor behaviour remains. | **Fixed (documented):** about 14k, bounded not removed. |
+| 8 | Low | Resets seen on writes, and aborts, were not passed on. | **Fixed:** both directions' errors, `WSAECONNABORTED` included. |
+| 9 | Low | No test proved the host's partial checksums. | **Fixed:** the fake guest completes each one as the kernel would and checks the TCP checksum (`TestOffloadLink`). |
+| 10 | Low | `ChunkReader` spun on a reader returning (0, nil). | **Fixed:** `io.ErrNoProgress` after 100 such reads; test added. |
+| 11 | Low | The Hello write had no deadline; "link up" was logged for a refused plain link. | **Fixed:** 5 s write deadline; refused plain links are no longer announced. |
+| 12 | Low | The 280 MiB bound covers relayed connections only. | **Fixed (documented):** published connections are stated on top. |
+
 ## Consequences
 
 - **Acceptance gate.** Run gvisor-tap-vsock's `gvproxy` on hvsock against the spike guest,
@@ -254,7 +386,8 @@ issues. Each one is fixed or rejected below.
     same boot.
   - Host CPU is at most one core per Gbit/s.
   - A pull of a large image from a LAN registry (`registry:2` on another machine) is
-    within 20% of HNS NAT.
+    within 20% of HNS NAT. *Deferred 2026-10-31* (see "Gate amendment"): a manual,
+    release-blocking check in docs/release.md.
   - Idle host memory of the stack stays within the REQ-MEM-001 budget.
   - With the VPN connected, a container resolves a split-DNS name and a public name in the
     same run, and reaches a VPN-only address.
@@ -287,7 +420,17 @@ issues. Each one is fixed or rejected below.
     so it shows nothing about reachability; UDP port publishing; IPv6 inside the guest;
   - single-label names and PTR queries go to the host resolver, which may use LLMNR or
     NetBIOS on the LAN;
-  - a guest can claim free host loopback ports through auto-publish (finding 1).
+  - a guest can claim free host loopback ports through auto-publish (finding 1);
+  - in offload mode a guest process with AF_VSOCK that listens on port 1024 before
+    netfwd (or between two netfwd restarts) receives the engine's link instead. This is
+    the same exposure as implementation finding 6, from the other side;
+  - a new bulk connection stalls other connections through the stack for 10-13 ms
+    (see "Gate results (2026-10-31)"); the cause was not found;
+  - host-to-guest TCP through the stack is 28-62% of raw hvsock (raw is 23-29 Gbit/s);
+  - many short connections from the guest to one host destination, closed first by the
+    guest, leave the engine's Windows sockets in TIME_WAIT, which bounds the sustained
+    rate to that destination by Windows' ephemeral port range (as for any relay; resets
+    leave none).
 
   These run in `bench/net-vpn`, `bench/coexist` and `bench/noadmin` before 0.1.
 - **Revisit if:** the netstack fails the gate, or Microsoft ships a supported per-process

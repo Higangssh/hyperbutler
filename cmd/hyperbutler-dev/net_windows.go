@@ -29,6 +29,7 @@ type netFlags struct {
 	mode        string
 	subnet      string
 	mtu         int
+	offload     bool
 	port        uint
 	publish     multiFlag
 	publishLAN  bool
@@ -36,6 +37,7 @@ type netFlags struct {
 	hostFwd     multiFlag
 	benchBytes  int64
 	debug       bool
+	statsEvery  time.Duration
 }
 
 type multiFlag []string
@@ -52,6 +54,7 @@ func (nf *netFlags) register(fs *flag.FlagSet) {
 	fs.StringVar(&nf.mode, "net", "user", `guest network: "user" (user-mode stack over hvsock, ADR 0006) or "none"`)
 	fs.StringVar(&nf.subnet, "net-subnet", netstack.DefaultSubnet.String(), "guest subnet (gateway .1, guest .2)")
 	fs.IntVar(&nf.mtu, "net-mtu", netstack.DefaultMTU, "guest link MTU")
+	fs.BoolVar(&nf.offload, "net-offload", true, "checksum and TCP segmentation offload on the guest link (needs a guest image with netfwd -vnet)")
 	fs.UintVar(&nf.port, "net-port", 1024, "AF_VSOCK port the guest forwarder connects to")
 	fs.Var(&nf.publish, "publish", "publish a guest TCP port: [HOST_IP:]HOST_PORT:GUEST_PORT (repeatable)")
 	fs.BoolVar(&nf.publishLAN, "publish-lan", false, "allow -publish and auto-publish on non-loopback host addresses")
@@ -59,12 +62,13 @@ func (nf *netFlags) register(fs *flag.FlagSet) {
 	fs.Var(&nf.hostFwd, "host-forward", "let the guest reach a host service: VIRTUAL_IP:PORT=HOST_IP:PORT (repeatable)")
 	fs.Int64Var(&nf.benchBytes, "bench-bytes", 0, "after boot, compare raw hvsock with the stack by reading this many bytes each way, then exit")
 	fs.BoolVar(&nf.debug, "net-debug", false, "log denied guest connections")
+	fs.DurationVar(&nf.statsEvery, "net-stats", 0, "log the stack's counters that changed at this interval (0: never)")
 }
 
 // config turns the flags into the engine's network configuration, plus the services
 // and kernel arguments the bench adds.
 func (nf *netFlags) config(sddl string) (engine.NetConfig, []vm.Service, string, error) {
-	nc := engine.NetConfig{MTU: nf.mtu, AutoPublish: nf.autoPublish, Debug: nf.debug}
+	nc := engine.NetConfig{MTU: nf.mtu, NoOffload: !nf.offload, AutoPublish: nf.autoPublish, Debug: nf.debug}
 	switch nf.mode {
 	case "none":
 		nc.Off = true
@@ -160,8 +164,9 @@ func (g *benchEnv) bench(ctx context.Context, vmid guid.GUID, n int64, step func
 	if err := g.benchLatency(ctx, vmid, paths[2], step); err != nil {
 		return err
 	}
+	rates := map[string][]float64{}
 	for _, pair := range [][]benchPath{paths[:2], paths[2:]} {
-		for round := 1; round <= 3; round++ {
+		for round := 1; round <= benchRounds; round++ {
 			for _, d := range pair {
 				s0 := g.st.Stats()
 				got, el, cpu, err := d.run(n)
@@ -174,10 +179,28 @@ func (g *benchEnv) bench(ctx context.Context, vmid guid.GUID, n int64, step func
 					round, d.name, got>>20, el.Round(time.Millisecond), gbit, float64(cpu.Milliseconds()),
 					cpu.Seconds()/el.Seconds(), cpu.Seconds()/el.Seconds()/gbit,
 					s1.TCPRetransmits-s0.TCPRetransmits, s1.TCPSegmentsSent-s0.TCPSegmentsSent, s1.TCPTimeouts-s0.TCPTimeouts)
+				rates[d.name] = append(rates[d.name], gbit)
 			}
 		}
+		raw, st := medianOf(rates[pair[0].name]), medianOf(rates[pair[1].name])
+		step("bench median %s %.2f Gbit/s, %s %.2f Gbit/s: stack/raw %.0f%% (n=%d)", pair[0].name, raw, pair[1].name, st, 100*st/raw, benchRounds)
 	}
 	return nil
+}
+
+// benchRounds is the number of runs per path and direction.
+const benchRounds = 5
+
+func medianOf(v []float64) float64 {
+	s := append([]float64(nil), v...)
+	sort.Float64s(s)
+	if len(s) == 0 {
+		return 0
+	}
+	if len(s)%2 == 1 {
+		return s[len(s)/2]
+	}
+	return (s[len(s)/2-1] + s[len(s)/2]) / 2
 }
 
 // latencyRounds is the number of 64-byte request/response round trips per measurement.
@@ -213,15 +236,22 @@ func (g *benchEnv) benchLatency(ctx context.Context, vmid guid.GUID, load benchP
 			if loaded {
 				done := make(chan struct{})
 				lctx, cancel := context.WithCancel(ctx)
+				// One connection for the whole measurement: reconnecting (as 256 MiB
+				// runs did) adds a new connection's setup to the tail every 0.2 s.
+				lc, err := load.dial()
+				if err != nil {
+					cancel()
+					return fmt.Errorf("latency load: %w", err)
+				}
 				go func() {
 					defer close(done)
 					for lctx.Err() == nil {
-						if _, _, _, err := load.run(256 << 20); err != nil {
+						if _, err := lc.Write(benchZeros); err != nil {
 							return
 						}
 					}
 				}()
-				stopLoad = func() { cancel(); <-done }
+				stopLoad = func() { cancel(); _ = lc.Close(); <-done }
 				time.Sleep(200 * time.Millisecond)
 			}
 			lat, err := roundTrips(e.dial, latencyRounds)
@@ -319,7 +349,14 @@ func (d benchPath) run(n int64) (int64, time.Duration, time.Duration, error) {
 	t0 := time.Now()
 	var got int64
 	if !d.up {
-		got, err = io.CopyN(io.Discard, c, n)
+		// Large reads, so that the reader is not what is measured (io.Discard reads
+		// 8 KiB at a time, which held raw hvsock at 4-7 Gbit/s).
+		buf := make([]byte, 256<<10)
+		for got < n && err == nil {
+			var k int
+			k, err = c.Read(buf[:min(int64(len(buf)), n-got)])
+			got += int64(k)
+		}
 	} else {
 		for got < n && err == nil {
 			k := int64(len(benchZeros))

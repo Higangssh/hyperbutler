@@ -5,7 +5,13 @@
 // The guest init configures the device's address, route and resolver. netfwd keeps the
 // TAP open across reconnects, so the configuration survives a host-side restart.
 //
-//	netfwd -port 1024 -dev eth0 -mtu 1500
+//	netfwd -port 1024 -dev eth0 -mtu 1500 [-vnet]
+//
+// With -vnet (the host asks for it with hyperbutler.netvnet=1) the TAP has a
+// virtio_net_hdr and TCP segmentation offload: the kernel hands netfwd TCP segments of
+// up to 64 KiB with a partial checksum and takes the same from the host, so a bulk
+// transfer costs one frame per 64 KiB on both sides instead of one per MSS. The stream
+// then starts with frame.Hello (see package frame).
 //
 // With -bench-tcp and -bench-vsock it also serves an endless stream of zeros on a TCP
 // port and an AF_VSOCK port, for comparing the stack with raw hvsock (hyperbutler-dev -bench).
@@ -32,6 +38,7 @@ func main() {
 	port := flag.Uint("port", 1024, "host AF_VSOCK port of the network stack")
 	dev := flag.String("dev", "eth0", "TAP device name")
 	mtu := flag.Int("mtu", 1500, "link MTU; must match the host")
+	vnet := flag.Bool("vnet", false, "virtio_net_hdr framing with TCP segmentation offload (the host must support it)")
 	benchTCP := flag.Int("bench-tcp", 0, "serve zeros on this TCP port (development)")
 	benchVsock := flag.Uint("bench-vsock", 0, "serve zeros on this AF_VSOCK port to the host (development)")
 	flag.Parse()
@@ -43,11 +50,11 @@ func main() {
 	log.SetPrefix("hyperbutler-netfwd: ")
 	log.SetFlags(0)
 
-	tap, err := openTAP(*dev)
+	tap, err := openTAP(*dev, *vnet)
 	if err != nil {
 		log.Fatal(err)
 	}
-	log.Printf("%s ready, relaying to host vsock port %d (MTU %d)", *dev, *port, *mtu)
+	log.Printf("%s ready, relaying to host vsock port %d (MTU %d, offload %v)", *dev, *port, *mtu, *vnet)
 	if *benchTCP > 0 {
 		go benchServeTCP(*benchTCP)
 	}
@@ -57,25 +64,130 @@ func main() {
 
 	// Frames the TAP produces while the host is away are dropped by the kernel once its
 	// queue fills; TCP recovers them.
-	wait := 50 * time.Millisecond
-	for {
-		conn, err := dialHost(uint32(*port))
-		if err != nil {
+	lk := linkFormat{mtu: *mtu, vnet: *vnet}
+	next := dialLoop(uint32(*port))
+	if lk.vnet {
+		// Retry rather than exit: exiting would only restart netfwd, which would
+		// reopen the TAP. While another process holds the port the link is down.
+		ln, err := listenHost(uint32(*port))
+		for wait := 50 * time.Millisecond; err != nil; ln, err = listenHost(uint32(*port)) {
+			log.Printf("%v; retrying", err)
 			time.Sleep(wait)
-			if wait < 2*time.Second {
-				wait *= 2
-			}
-			continue
+			wait = min(2*wait, 2*time.Second)
 		}
-		wait = 50 * time.Millisecond
-		err = relay(tap, conn, *mtu)
+		next = acceptLoop(ln)
+	}
+	for {
+		conn := next()
+		err := relay(tap, conn, lk)
 		_ = conn.Close()
 		log.Printf("link to host lost: %v; reconnecting", err)
 	}
 }
 
+// dialLoop returns a function that connects to the host (plain mode), retrying with
+// backoff until it succeeds.
+func dialLoop(port uint32) func() *os.File {
+	return func() *os.File {
+		wait := 50 * time.Millisecond
+		for {
+			conn, err := dialHost(port)
+			if err == nil {
+				return conn
+			}
+			time.Sleep(wait)
+			wait = min(2*wait, 2*time.Second)
+		}
+	}
+}
+
+// acceptLoop returns a function that waits for the host to connect (offload mode) and
+// to send frame.Hello. Only the host (CID 2) is accepted. The host dials because
+// Windows sends slowly on hvsock connections it accepted (ADR 0006).
+func acceptLoop(ln int) func() *os.File {
+	return func() *os.File {
+		for {
+			conn, err := acceptHost(ln)
+			if err != nil {
+				log.Printf("accept: %v", err)
+				time.Sleep(100 * time.Millisecond)
+				continue
+			}
+			if err := readHello(conn); err != nil {
+				log.Printf("host link: %v", err)
+				_ = conn.Close()
+				continue
+			}
+			return conn
+		}
+	}
+}
+
+// listenHost listens on an AF_VSOCK port for the host.
+func listenHost(port uint32) (int, error) {
+	fd, err := unix.Socket(unix.AF_VSOCK, unix.SOCK_STREAM|unix.SOCK_CLOEXEC, 0)
+	if err != nil {
+		return -1, fmt.Errorf("socket(AF_VSOCK): %w", err)
+	}
+	if err := unix.Bind(fd, &unix.SockaddrVM{CID: unix.VMADDR_CID_ANY, Port: port}); err != nil {
+		_ = unix.Close(fd)
+		return -1, fmt.Errorf("bind vsock port %d: %w", port, err)
+	}
+	if err := unix.Listen(fd, 1); err != nil {
+		_ = unix.Close(fd)
+		return -1, err
+	}
+	return fd, nil
+}
+
+// acceptHost accepts one connection from the host (CID 2) and refuses any other peer.
+func acceptHost(ln int) (*os.File, error) {
+	for {
+		nfd, sa, err := unix.Accept4(ln, unix.SOCK_CLOEXEC)
+		if err != nil {
+			if errors.Is(err, unix.EINTR) || errors.Is(err, unix.ECONNABORTED) {
+				continue
+			}
+			return nil, err
+		}
+		if vm, ok := sa.(*unix.SockaddrVM); !ok || vm.CID != unix.VMADDR_CID_HOST {
+			_ = unix.Close(nfd)
+			continue
+		}
+		if err := unix.SetNonblock(nfd, true); err != nil {
+			_ = unix.Close(nfd)
+			return nil, err
+		}
+		return os.NewFile(uintptr(nfd), "vsock"), nil
+	}
+}
+
+// readHello reads the host's frame.Hello, which opens an offload-mode link.
+func readHello(conn *os.File) error {
+	var b [frame.HeaderLen]byte
+	_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	defer conn.SetReadDeadline(time.Time{})
+	if _, err := io.ReadFull(conn, b[:]); err != nil {
+		return fmt.Errorf("reading hello: %w", err)
+	}
+	if b != frame.Hello {
+		return fmt.Errorf("unexpected hello %x", b)
+	}
+	return nil
+}
+
+// TUNSETOFFLOAD flags (linux/if_tun.h).
+const (
+	tunFCsum   = 0x01
+	tunFTSO4   = 0x02
+	tunFTSOECN = 0x08
+)
+
 // openTAP creates (or attaches to) TAP device name, without packet information headers.
-func openTAP(name string) (*os.File, error) {
+// With vnet, every read and write starts with a virtio_net_hdr and the device offloads
+// checksums and IPv4 TCP segmentation; without it, offloads are off, so a device left
+// in offload mode by an earlier netfwd hands out only plain frames.
+func openTAP(name string, vnet bool) (*os.File, error) {
 	fd, err := unix.Open("/dev/net/tun", unix.O_RDWR|unix.O_CLOEXEC|unix.O_NONBLOCK, 0)
 	if err != nil {
 		return nil, fmt.Errorf("open /dev/net/tun: %w (is the tun module loaded?)", err)
@@ -85,10 +197,26 @@ func openTAP(name string) (*os.File, error) {
 		_ = unix.Close(fd)
 		return nil, err
 	}
-	ifr.SetUint16(unix.IFF_TAP | unix.IFF_NO_PI)
+	flags := uint16(unix.IFF_TAP | unix.IFF_NO_PI)
+	offload := 0
+	if vnet {
+		flags |= unix.IFF_VNET_HDR
+		offload = tunFCsum | tunFTSO4 | tunFTSOECN
+	}
+	ifr.SetUint16(flags)
 	if err := unix.IoctlIfreq(fd, unix.TUNSETIFF, ifr); err != nil {
 		_ = unix.Close(fd)
 		return nil, fmt.Errorf("TUNSETIFF %s: %w", name, err)
+	}
+	if vnet {
+		if err := unix.IoctlSetPointerInt(fd, unix.TUNSETVNETHDRSZ, frame.VnetHdrLen); err != nil {
+			_ = unix.Close(fd)
+			return nil, fmt.Errorf("TUNSETVNETHDRSZ %s: %w", name, err)
+		}
+	}
+	if err := unix.IoctlSetInt(fd, unix.TUNSETOFFLOAD, offload); err != nil {
+		_ = unix.Close(fd)
+		return nil, fmt.Errorf("TUNSETOFFLOAD %s: %w", name, err)
 	}
 	// Keep the device (and the address and routes init gave it) if netfwd exits; the
 	// restarted netfwd attaches to it again.
@@ -116,15 +244,37 @@ func dialHost(port uint32) (*os.File, error) {
 	return os.NewFile(uintptr(fd), "vsock"), nil
 }
 
+// linkFormat is the framing on the vsock stream.
+type linkFormat struct {
+	mtu  int
+	vnet bool
+}
+
+// maxFrame is the largest frame (the length prefix's value) in either direction.
+func (lk linkFormat) maxFrame() int {
+	if lk.vnet {
+		return frame.MaxVnetFrameLen
+	}
+	return frame.MaxFrameLen(lk.mtu)
+}
+
+// minFrame is the smallest frame worth sending.
+func (lk linkFormat) minFrame() int {
+	if lk.vnet {
+		return frame.MinVnetFrameLen
+	}
+	return frame.EthernetHeaderLen
+}
+
 // relay copies frames both ways until either side fails.
-func relay(tap *os.File, conn *os.File, mtu int) error {
+func relay(tap *os.File, conn *os.File, lk linkFormat) error {
 	rc, err := tap.SyscallConn()
 	if err != nil {
 		return err
 	}
 	errc := make(chan error, 2)
-	go func() { errc <- tapToHost(tapBatchReader(rc, mtu), conn, mtu) }()
-	go func() { errc <- hostToTap(conn, tap, mtu) }()
+	go func() { errc <- tapToHost(tapBatchReader(rc, lk), conn, lk) }()
+	go func() { errc <- hostToTap(conn, tap, lk, func() { _ = conn.SetReadDeadline(time.Now()) }) }()
 	err = <-errc
 	// Unblock the other direction. The TAP read side is woken by its own poller; the
 	// vsock is closed by the caller, but a pending TAP read needs a deadline.
@@ -144,8 +294,9 @@ type readBatchFunc func(buf []byte) ([]byte, error)
 // tapBatchReader reads every frame the TAP has queued, up to the buffer's capacity, so
 // that one vsock write carries many frames. It blocks (in the runtime poller) only when
 // nothing is queued.
-func tapBatchReader(rc syscall.RawConn, mtu int) readBatchFunc {
-	slot := frame.HeaderLen + frame.MaxFrameLen(mtu)
+func tapBatchReader(rc syscall.RawConn, lk linkFormat) readBatchFunc {
+	slot := frame.HeaderLen + lk.maxFrame()
+	minLen := lk.minFrame()
 	return func(buf []byte) ([]byte, error) {
 		out := buf[:0]
 		var rerr error
@@ -163,7 +314,7 @@ func tapBatchReader(rc syscall.RawConn, mtu int) readBatchFunc {
 					rerr = err
 					return true
 				}
-				if n < frame.EthernetHeaderLen {
+				if n < minLen {
 					continue
 				}
 				out = out[:start+frame.HeaderLen+n]
@@ -175,41 +326,6 @@ func tapBatchReader(rc syscall.RawConn, mtu int) readBatchFunc {
 			return out, err
 		}
 		return out, rerr
-	}
-}
-
-func tapToHost(read readBatchFunc, conn io.Writer, mtu int) error {
-	buf := make([]byte, 0, batchBytes+frame.HeaderLen+frame.MaxFrameLen(mtu))
-	for {
-		b, err := read(buf)
-		if len(b) > 0 {
-			if _, werr := conn.Write(b); werr != nil {
-				return fmt.Errorf("vsock write: %w", werr)
-			}
-		}
-		if err != nil {
-			return fmt.Errorf("tap read: %w", err)
-		}
-	}
-}
-
-func hostToTap(conn io.Reader, tap io.Writer, mtu int) error {
-	fr, err := frame.NewReader(newBufReader(conn), mtu)
-	if err != nil {
-		return err
-	}
-	for {
-		b, err := fr.Next()
-		if err != nil {
-			return fmt.Errorf("vsock read: %w", err)
-		}
-		if _, err := tap.Write(b); err != nil {
-			// A frame the kernel refuses (for example while the device is down) is dropped.
-			if errors.Is(err, unix.EIO) || errors.Is(err, unix.EINVAL) || errors.Is(err, unix.EAGAIN) {
-				continue
-			}
-			return fmt.Errorf("tap write: %w", err)
-		}
 	}
 }
 
@@ -230,7 +346,12 @@ func serveZeros(c io.WriteCloser) {
 // arrived. Port+2 of each bench port is a sink.
 func sink(c io.ReadWriteCloser) {
 	defer c.Close()
-	_, _ = io.Copy(io.Discard, c)
+	buf := make([]byte, 256<<10) // io.Discard would read 8 KiB at a time
+	for {
+		if _, err := c.Read(buf); err != nil {
+			break
+		}
+	}
 	_, _ = c.Write([]byte{1})
 }
 

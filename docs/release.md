@@ -146,6 +146,15 @@ met blocks the release. Changing a gate needs an ADR change, not a waiver here.
   fields hyperbutler uses are undocumented.
 - [ ] REQ-MEM-002 (`bench/mem-reclaim`, 12 GB guest) is measured and recorded.
 
+**ADR 0006 (guest networking)**
+- [ ] `bench/net-perf` against the release candidate: bulk paths not below the ADR's
+  2026-10-31 numbers by more than run-to-run noise, connections per second with no
+  errors.
+- [ ] **LAN registry pull** (manual, `bench/net-lan`, when a second machine on a wired
+  link is available): a large image from `registry:2` on that machine, through the stack
+  and through HNS NAT, within 20% of each other (the gate ADR 0006 deferred to here).
+  It blocks the release.
+
 **ADR 0005 (guest image)**
 - [ ] The image comes from the release run's guest-image job in strict mode, so every
   input is a signed Alpine package. Since 2026-10-31 the engine is Alpine's

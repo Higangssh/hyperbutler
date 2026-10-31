@@ -169,6 +169,41 @@ func FuzzDeliver(f *testing.F) {
 		if len(b) > frame.MaxFrameLen(n.cfg.MTU) {
 			return
 		}
-		n.deliver(b)
+		n.deliver(b, frame.MaxFrameLen(n.cfg.MTU))
+	})
+}
+
+// FuzzDeliverVnet feeds arbitrary offload-mode frames (virtio_net_hdr plus Ethernet
+// frame, as netfwd -vnet sends them) into a stack whose link is in offload mode,
+// including GSO segments larger than the MTU. It must not panic, and the stack must
+// keep working.
+func FuzzDeliverVnet(f *testing.F) {
+	gw := []byte(DefaultGatewayMAC)
+	src := []byte{2, 0, 0, 0, 0, 2}
+	vnet := func(h frame.VnetHdr, t uint16, payload ...byte) []byte {
+		b := make([]byte, frame.VnetHdrLen)
+		h.Put(b)
+		b = append(append(append(b, gw...), src...), byte(t>>8), byte(t))
+		return append(b, payload...)
+	}
+	ip := []byte{0x45, 0, 0xFF, 0xFF, 0, 0, 0x40, 0, 64, 6, 0, 0, 192, 168, 127, 2, 1, 1, 1, 1}
+	f.Add(vnet(frame.VnetHdr{}, 0x0800, ip...))
+	f.Add(vnet(frame.VnetHdr{Flags: 1, GSOType: 1, GSOSize: 1448, HdrLen: 54, CsumStart: 34, CsumOffset: 16}, 0x0800, append(ip, make([]byte, 40000)...)...))
+	f.Add(vnet(frame.VnetHdr{GSOType: 0x81, GSOSize: 1}, 0x0806, 0, 1, 8, 0, 6, 4, 0, 1))
+	f.Add(make([]byte, frame.MinVnetFrameLen))
+	n, err := New(Config{
+		Resolver:  &fakeResolver{},
+		HostAddrs: func() ([]netip.Addr, error) { return nil, nil },
+	}, nil)
+	if err != nil {
+		f.Fatal(err)
+	}
+	defer n.Close()
+	n.mode.Store(linkVnet)
+	f.Fuzz(func(t *testing.T, b []byte) {
+		if len(b) < frame.MinVnetFrameLen || len(b) > frame.MaxVnetFrameLen {
+			return
+		}
+		n.deliverVnet(b)
 	})
 }

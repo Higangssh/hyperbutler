@@ -15,6 +15,8 @@ import (
 	"gvisor.dev/gvisor/pkg/tcpip"
 	"gvisor.dev/gvisor/pkg/tcpip/adapters/gonet"
 	"gvisor.dev/gvisor/pkg/tcpip/network/ipv4"
+	"gvisor.dev/gvisor/pkg/tcpip/transport/tcp"
+	"gvisor.dev/gvisor/pkg/waiter"
 
 	"github.com/Higangssh/hyperbutler/internal/netstack/frame"
 )
@@ -248,6 +250,274 @@ func TestPublishReachesGuest(t *testing.T) {
 	got, err := io.ReadAll(c)
 	if err != nil || string(got) != "hello from guest" {
 		t.Fatalf("got %q, %v", got, err)
+	}
+}
+
+// TestOffloadLink runs bulk TCP both ways over an offload-mode link and checks that
+// segments larger than the MTU crossed it in both directions, intact.
+func TestOffloadLink(t *testing.T) {
+	echo := echoServer(t)
+	virt := netip.MustParseAddrPort("192.168.127.254:7")
+	n := newTestStack(t, func(c *Config) {
+		c.HostForwards = []HostForward{{Virtual: virt, Host: echo}}
+		c.MTU = 1500
+	})
+	g := newFakeGuestMode(t, n, true)
+	c, err := guestDial(t, g, virt)
+	if err != nil {
+		t.Fatalf("dial host forward: %v", err)
+	}
+	defer c.Close()
+	msg := make([]byte, 4<<20)
+	for i := range msg {
+		msg[i] = byte(i * 7)
+	}
+	go func() { c.Write(msg); c.(*gonet.TCPConn).CloseWrite() }()
+	got, err := io.ReadAll(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, msg) {
+		t.Fatalf("echo returned %d bytes, want %d (or different bytes)", len(got), len(msg))
+	}
+	if g.csumOK.Load() == 0 {
+		t.Fatal("no partial checksum from the host was checked")
+	}
+	if g.bigIn.Load() == 0 || g.bigOut.Load() == 0 {
+		t.Fatalf("segments over the MTU: %d from the host, %d to it; want both", g.bigIn.Load(), g.bigOut.Load())
+	}
+	if on, known := n.Offloading(); !on || !known {
+		t.Fatalf("Offloading() = %v, %v", on, known)
+	}
+}
+
+// TestGuestResetPropagates: a guest that resets a relayed connection makes the relay
+// reset the Windows socket too (no TIME_WAIT on this host), while a normal close stays
+// a normal close.
+func TestGuestResetPropagates(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	results := make(chan error, 2)
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go func() {
+				defer c.Close()
+				b := make([]byte, 1)
+				_, err := io.ReadFull(c, b)
+				if err == nil {
+					_, err = c.Read(b)
+				}
+				results <- err
+			}()
+		}
+	}()
+	virt := netip.MustParseAddrPort("192.168.127.254:9")
+	host := netip.MustParseAddrPort(ln.Addr().String())
+	n := newTestStack(t, func(c *Config) { c.HostForwards = []HostForward{{Virtual: virt, Host: host}} })
+	g := newFakeGuest(t, n)
+	for _, reset := range []bool{true, false} {
+		var wq waiter.Queue
+		ep, terr := g.s.NewEndpoint(tcp.ProtocolNumber, ipv4.ProtocolNumber, &wq)
+		if terr != nil {
+			t.Fatal(terr)
+		}
+		c := gonet.NewTCPConn(&wq, ep)
+		entry, ready := waiter.NewChannelEntry(waiter.WritableEvents)
+		wq.EventRegister(&entry)
+		if terr := ep.Connect(tcpip.FullAddress{NIC: 1, Addr: tcpipAddr(virt.Addr()), Port: virt.Port()}); terr != nil {
+			if _, ok := terr.(*tcpip.ErrConnectStarted); !ok {
+				t.Fatal(terr)
+			}
+			select {
+			case <-ready:
+			case <-time.After(5 * time.Second):
+				t.Fatal("connect timed out")
+			}
+		}
+		wq.EventUnregister(&entry)
+		if _, err := c.Write([]byte{1}); err != nil {
+			t.Fatal(err)
+		}
+		time.Sleep(100 * time.Millisecond)
+		if reset {
+			ep.SocketOptions().SetLinger(tcpip.LingerOption{Enabled: true, Timeout: 0})
+		}
+		c.Close()
+		select {
+		case err := <-results:
+			if reset && (err == nil || err == io.EOF) {
+				t.Fatalf("guest reset arrived as %v, want a reset", err)
+			}
+			if !reset && err != io.EOF {
+				t.Fatalf("guest close arrived as %v, want EOF", err)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatal("server saw nothing")
+		}
+	}
+}
+
+// TestHostResetPropagates: a host client that resets a published connection makes the
+// relay reset the guest's connection too, instead of closing it (which would leave a
+// gVisor endpoint in TIME_WAIT).
+func TestHostResetPropagates(t *testing.T) {
+	n := newTestStack(t, nil)
+	g := newFakeGuest(t, n)
+	gl, err := gonet.ListenTCP(g.s, tcpip.FullAddress{NIC: 1, Port: 8081}, ipv4.ProtocolNumber)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer gl.Close()
+	results := make(chan error, 2)
+	go func() {
+		for {
+			c, err := gl.Accept()
+			if err != nil {
+				return
+			}
+			go func() {
+				defer c.Close()
+				b := make([]byte, 1)
+				_, err := io.ReadFull(c, b)
+				if err == nil {
+					_, err = c.Read(b)
+				}
+				results <- err
+			}()
+		}
+	}()
+	cl, err := n.Publish(Publish{Host: netip.MustParseAddrPort("127.0.0.1:0"), GuestPort: 8081})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cl.Close()
+	for _, reset := range []bool{true, false} {
+		c, err := net.DialTimeout("tcp", cl.(net.Listener).Addr().String(), 5*time.Second)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := c.Write([]byte{1}); err != nil {
+			t.Fatal(err)
+		}
+		time.Sleep(100 * time.Millisecond)
+		if reset {
+			_ = c.(*net.TCPConn).SetLinger(0)
+		}
+		c.Close()
+		select {
+		case err := <-results:
+			if reset && (err == nil || err == io.EOF) {
+				t.Fatalf("host reset arrived as %v, want a reset", err)
+			}
+			if !reset && err != io.EOF {
+				t.Fatalf("host close arrived as %v, want EOF", err)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatal("guest saw nothing")
+		}
+	}
+}
+
+// TestSizeBuffers: only largeBufferConns endpoints at a time keep tunable buffers; the
+// rest are pinned at tcpBufferMax, and a released token can be taken again.
+func TestSizeBuffers(t *testing.T) {
+	n := newTestStack(t, nil)
+	var releases []func()
+	pinned := 0
+	for i := 0; i < largeBufferConns+3; i++ {
+		var wq waiter.Queue
+		ep, err := n.s.NewEndpoint(tcp.ProtocolNumber, ipv4.ProtocolNumber, &wq)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer ep.Close()
+		releases = append(releases, n.sizeBuffers(ep))
+		if ep.SocketOptions().GetReceiveBufferSize() == tcpBufferMax && ep.SocketOptions().GetSendBufferSize() == tcpBufferMax {
+			pinned++
+		}
+	}
+	if pinned != 3 {
+		t.Fatalf("%d endpoints pinned, want 3", pinned)
+	}
+	releases[0]()
+	releases[0]() // idempotent
+	var wq waiter.Queue
+	ep, _ := n.s.NewEndpoint(tcp.ProtocolNumber, ipv4.ProtocolNumber, &wq)
+	defer ep.Close()
+	n.sizeBuffers(ep)
+	if ep.SocketOptions().GetReceiveBufferSize() == tcpBufferMax {
+		t.Fatal("released token not reused")
+	}
+	if len(n.largeSem) != largeBufferConns {
+		t.Fatalf("%d tokens taken", len(n.largeSem))
+	}
+}
+
+// TestLinkModeIsFixed: once a stack has had an offload link, a plain one is refused
+// (its TCP endpoints already send segments only an offload link can carry).
+func TestLinkModeIsFixed(t *testing.T) {
+	n := newTestStack(t, nil)
+	a, a2 := net.Pipe()
+	defer a2.Close()
+	done := make(chan error, 1)
+	go func() { done <- n.ServeOffload(a) }()
+	var hello [frame.HeaderLen]byte
+	if _, err := io.ReadFull(a2, hello[:]); err != nil || hello != frame.Hello {
+		t.Fatalf("hello %x, %v", hello, err)
+	}
+	b, _ := net.Pipe()
+	if err := n.ServeConn(b); !errors.Is(err, ErrLinkMode) {
+		t.Fatalf("plain link after an offload one: %v, want ErrLinkMode", err)
+	}
+	a2.Close()
+	<-done
+}
+
+// TestOffloadBadFrames: frames whose virtio_net_hdr the link does not accept are
+// dropped, and a bad length ends the link.
+func TestOffloadBadFrames(t *testing.T) {
+	n := newTestStack(t, nil)
+	host, guest := net.Pipe()
+	done := make(chan error, 1)
+	go func() { done <- n.ServeOffload(host) }()
+	var hello [frame.HeaderLen]byte
+	if _, err := io.ReadFull(guest, hello[:]); err != nil {
+		t.Fatal(err)
+	}
+	gwMAC := []byte(n.Config().GatewayMAC)
+	eth := append(append(append([]byte{}, gwMAC...), 2, 0, 0, 0, 0, 9), 0x08, 0x00)
+	for _, vh := range []frame.VnetHdr{
+		{Flags: 0x80},                 // unknown flag
+		{GSOType: 4, GSOSize: 1400},   // TCPv6
+		{GSOType: frame.VnetGSOECN},   // ECN without GSO
+		{GSOType: frame.VnetGSOTCPv4}, // GSO without a size
+		{Flags: 1, CsumStart: 100},    // checksum outside the frame
+		{GSOType: 3, GSOSize: 1400},   // UDP
+	} {
+		b := make([]byte, frame.VnetHdrLen)
+		vh.Put(b)
+		if _, err := guest.Write(frame.Append(nil, append(b, eth...))); err != nil {
+			t.Fatal(err)
+		}
+	}
+	guest.Write([]byte{0, 0, 0, 5})
+	select {
+	case err := <-done:
+		if !errors.Is(err, frame.ErrFrameSize) {
+			t.Fatalf("ServeOffload: %v, want ErrFrameSize", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("ServeOffload did not return")
+	}
+	if s := n.Stats(); s.FramesDropped != 6 {
+		t.Fatalf("FramesDropped = %d, want 6", s.FramesDropped)
 	}
 }
 

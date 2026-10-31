@@ -20,7 +20,6 @@
 package netstack
 
 import (
-	"bufio"
 	"context"
 	"errors"
 	"fmt"
@@ -34,7 +33,6 @@ import (
 	"time"
 
 	"github.com/containers/gvisor-tap-vsock/pkg/tap"
-	"gvisor.dev/gvisor/pkg/buffer"
 	"gvisor.dev/gvisor/pkg/tcpip"
 	"gvisor.dev/gvisor/pkg/tcpip/adapters/gonet"
 	"gvisor.dev/gvisor/pkg/tcpip/header"
@@ -44,23 +42,30 @@ import (
 	"gvisor.dev/gvisor/pkg/tcpip/transport/tcp"
 	"gvisor.dev/gvisor/pkg/tcpip/transport/udp"
 	"gvisor.dev/gvisor/pkg/waiter"
-
-	"github.com/Higangssh/hyperbutler/internal/netstack/frame"
 )
 
 const (
 	nicID = 1
-	// tcpBufferMax bounds each guest TCP endpoint's send and receive buffer. The link to
-	// the guest has microsecond RTTs, so large windows buy nothing, and the bound keeps a
-	// guest that opens many connections and never reads them from growing this process
-	// without limit: MaxTCPConns x 2 x tcpBufferMax, 256 MiB with the defaults. At the
-	// link's RTT, 256 KiB still covers well over 10 Gbit/s.
-	tcpBufferMax       = 256 << 10
-	maxPublishConns    = 256
-	maxDNSTCPConns     = 16
-	maxDNSTCPQueries   = 64
-	dnsTCPIdle         = 10 * time.Second
-	linkReadBufferSize = 256 << 10
+	// tcpBufferMax bounds the send and receive buffer of a relayed or published TCP
+	// connection, so that a guest that opens many connections and never reads them
+	// cannot grow this process without limit. tcpBufferLarge is the bound for the
+	// largeBufferConns connections that may have larger buffers at any one time: under
+	// load the link's RTT is a millisecond or more (the queues in front of the guest),
+	// and with 256 KiB the window, not the CPU, capped a bulk transfer at 3-6 Gbit/s;
+	// with 1 MiB it ran at 8-11 (ADR 0006). The buffers are used only as data queues.
+	// Relayed connections: 16 x 2 x 1 MiB + 496 x 2 x 256 KiB = 280 MiB at most.
+	tcpBufferMax     = 256 << 10
+	tcpBufferLarge   = 1 << 20
+	largeBufferConns = 16
+	// timeWait is the TIME-WAIT period of guest connections. The guest reuses a port
+	// only after its whole ephemeral range (28k ports), so 1 s is safe up to 28k
+	// connections per second, and it bounds the endpoints in TIME-WAIT to one second's
+	// worth of connections.
+	timeWait         = time.Second
+	maxPublishConns  = 256
+	maxDNSTCPConns   = 16
+	maxDNSTCPQueries = 64
+	dnsTCPIdle       = 10 * time.Second
 )
 
 // Stats are counters for diagnostics and tests.
@@ -92,9 +97,15 @@ type Stack struct {
 	closing bool
 
 	tcpSem, udpSem, dnsSem, dnsTCPSem chan struct{}
+	// largeSem holds a token for each connection whose buffers may grow past tcpBufferMax.
+	largeSem chan struct{}
 
 	linkMu sync.Mutex
 	link   *guestLink
+	// mode is the framing of the guest link (linkUnknown until the first link), fixed
+	// for the stack's life: TCP endpoints created while the link offloads segmentation
+	// keep sending segments larger than the MTU.
+	mode atomic.Int32
 
 	st struct {
 		framesIn, framesOut, framesDropped atomic.Uint64
@@ -140,6 +151,7 @@ func New(cfg Config, log *slog.Logger) (*Stack, error) {
 		udpSem:    make(chan struct{}, cfg.MaxUDPFlows),
 		dnsSem:    make(chan struct{}, cfg.MaxDNSInFlight),
 		dnsTCPSem: make(chan struct{}, maxDNSTCPConns),
+		largeSem:  make(chan struct{}, largeBufferConns),
 	}
 	ep.Connect(n)
 	if err := n.buildStack(); err != nil {
@@ -159,7 +171,7 @@ func (n *Stack) buildStack() error {
 		TransportProtocols: []stack.TransportProtocolFactory{tcp.NewProtocol, udp.NewProtocol},
 	})
 	n.s = s
-	if err := s.CreateNIC(nicID, n.ep); err != nil {
+	if err := s.CreateNIC(nicID, &gsoLink{LinkEndpoint: n.ep, n: n}); err != nil {
 		return fmt.Errorf("netstack: create NIC: %s", err)
 	}
 	gw := tcpipAddr(n.cfg.Gateway())
@@ -197,10 +209,24 @@ func (n *Stack) buildStack() error {
 	// and in order: classic duplicate-ACK recovery is enough.
 	recovery := tcpip.TCPRecovery(0)
 	_ = s.SetTransportProtocolOption(tcp.ProtocolNumber, &recovery)
-	rcv := tcpip.TCPReceiveBufferSizeRangeOption{Min: 4 << 10, Default: 128 << 10, Max: tcpBufferMax}
+	// Buffers start at 128 KiB and are tuned by gVisor (the receive buffer by how fast
+	// the relay reads it, the send buffer by the congestion window) up to
+	// tcpBufferLarge. Only largeBufferConns connections at a time may grow that far
+	// (see sizeBuffers); the others are pinned at tcpBufferMax.
+	rcv := tcpip.TCPReceiveBufferSizeRangeOption{Min: 4 << 10, Default: 128 << 10, Max: tcpBufferLarge}
 	_ = s.SetTransportProtocolOption(tcp.ProtocolNumber, &rcv)
-	snd := tcpip.TCPSendBufferSizeRangeOption{Min: 4 << 10, Default: 128 << 10, Max: tcpBufferMax}
+	mod := tcpip.TCPModerateReceiveBufferOption(true)
+	_ = s.SetTransportProtocolOption(tcp.ProtocolNumber, &mod)
+	snd := tcpip.TCPSendBufferSizeRangeOption{Min: 4 << 10, Default: 128 << 10, Max: tcpBufferLarge}
 	_ = s.SetTransportProtocolOption(tcp.ProtocolNumber, &snd)
+	// TIME-WAIT guards against delayed duplicates of an old connection; this link has
+	// none, its delays are microseconds. With gVisor's 60 s, a guest that opened short
+	// connections held one endpoint per connection for a minute (the engine grew to
+	// 180 MB at 640 connections/s), and once the guest reused a port, gVisor answered
+	// the new SYN from the TIME-WAIT endpoint instead of handing it to the forwarder
+	// (it only does that for a listener), so every new connection on that port failed.
+	tw := tcpip.TCPTimeWaitTimeoutOption(timeWait)
+	_ = s.SetTransportProtocolOption(tcp.ProtocolNumber, &tw)
 
 	tf := tcp.NewForwarder(s, 0, n.cfg.MaxTCPInFlight, n.handleTCP)
 	s.SetTransportProtocolHandler(tcp.ProtocolNumber, tf.HandlePacket)
@@ -211,6 +237,9 @@ func (n *Stack) buildStack() error {
 
 // Config returns the effective configuration (defaults applied).
 func (n *Stack) Config() Config { return n.cfg }
+
+// GVisorStats returns gVisor's own counters (for diagnostics).
+func (n *Stack) GVisorStats() tcpip.Stats { return n.s.Stats() }
 
 // Stats returns a snapshot of the counters.
 func (n *Stack) Stats() Stats {
@@ -254,187 +283,6 @@ func (n *Stack) track(k int) bool {
 	}
 	n.wg.Add(k)
 	return true
-}
-
-// --- guest link ---------------------------------------------------------------------
-
-// guestLink queues frames for the guest and writes them in batches: under load one
-// hvsock write carries many frames, which is what makes the host-to-guest direction
-// (image pulls) fast. Producers block while maxPending bytes are queued, so a guest that
-// stops reading slows the stack down instead of growing the queue.
-type guestLink struct {
-	conn    net.Conn
-	mu      sync.Mutex
-	cond    sync.Cond
-	pending []byte
-	spare   []byte
-	closed  bool
-}
-
-const maxPending = 1 << 20
-
-func newGuestLink(conn net.Conn) *guestLink {
-	l := &guestLink{conn: conn}
-	l.cond.L = &l.mu
-	return l
-}
-
-// enqueue appends one frame. It returns false once the link is closed.
-func (l *guestLink) enqueue(pkt *stack.PacketBuffer, size int) bool {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	for len(l.pending) >= maxPending && !l.closed {
-		l.cond.Wait()
-	}
-	if l.closed {
-		return false
-	}
-	var h [frame.HeaderLen]byte
-	frame.PutHeader(h[:], size)
-	l.pending = append(l.pending, h[:]...)
-	for _, s := range pkt.AsSlices() {
-		l.pending = append(l.pending, s...)
-	}
-	l.cond.Broadcast()
-	return true
-}
-
-// writeLoop writes queued frames until the link closes or a write fails.
-func (l *guestLink) writeLoop() {
-	for {
-		l.mu.Lock()
-		for len(l.pending) == 0 && !l.closed {
-			l.cond.Wait()
-		}
-		if l.closed {
-			l.mu.Unlock()
-			return
-		}
-		buf := l.pending
-		l.pending = l.spare[:0]
-		l.cond.Broadcast()
-		l.mu.Unlock()
-
-		_, err := l.conn.Write(buf)
-
-		l.mu.Lock()
-		if cap(buf) <= 4*maxPending {
-			l.spare = buf[:0]
-		}
-		l.mu.Unlock()
-		if err != nil {
-			l.close()
-			return
-		}
-	}
-}
-
-func (l *guestLink) close() {
-	l.mu.Lock()
-	l.closed = true
-	l.cond.Broadcast()
-	l.mu.Unlock()
-	_ = l.conn.Close()
-}
-
-// ServeConn runs the guest link over conn until it fails or the stack is closed. Only
-// one link is active: a new ServeConn replaces (and closes) the previous one, which is
-// what a restarted guest forwarder needs.
-func (n *Stack) ServeConn(conn net.Conn) error {
-	l := newGuestLink(conn)
-	n.linkMu.Lock()
-	if n.ctx.Err() != nil {
-		n.linkMu.Unlock()
-		_ = conn.Close()
-		return n.ctx.Err()
-	}
-	old := n.link
-	n.link = l
-	n.linkMu.Unlock()
-	if old != nil {
-		old.close()
-	}
-	writerDone := make(chan struct{})
-	go func() { defer close(writerDone); l.writeLoop() }()
-	defer func() {
-		n.linkMu.Lock()
-		if n.link == l {
-			n.link = nil
-		}
-		n.linkMu.Unlock()
-		l.close()
-		<-writerDone
-	}()
-	stop := context.AfterFunc(n.ctx, l.close)
-	defer stop()
-
-	fr, err := frame.NewReader(newBufReader(conn), n.cfg.MTU)
-	if err != nil {
-		return err
-	}
-	for {
-		b, err := fr.Next()
-		if err != nil {
-			if n.ctx.Err() != nil {
-				return n.ctx.Err()
-			}
-			return err
-		}
-		n.deliver(b)
-	}
-}
-
-// deliver hands one guest frame to the stack. Only frames for the gateway (or
-// broadcast) carrying IPv4 or ARP are accepted.
-func (n *Stack) deliver(b []byte) {
-	if !n.acceptFrame(b) {
-		n.st.framesDropped.Add(1)
-		return
-	}
-	n.st.framesIn.Add(1)
-	eth := header.Ethernet(b)
-	data := buffer.MakeWithData(b[header.EthernetMinimumSize:])
-	pkt := stack.NewPacketBuffer(stack.PacketBufferOptions{Payload: data})
-	n.ep.DeliverNetworkPacket(eth.Type(), pkt)
-	pkt.DecRef()
-}
-
-func (n *Stack) acceptFrame(b []byte) bool {
-	if len(b) < header.EthernetMinimumSize || len(b) > frame.MaxFrameLen(n.cfg.MTU) {
-		return false
-	}
-	eth := header.Ethernet(b)
-	dst := eth.DestinationAddress()
-	if dst != n.gwMAC && dst != header.EthernetBroadcastAddress {
-		return false
-	}
-	if src := eth.SourceAddress(); src == n.gwMAC || header.IsMulticastEthernetAddress(src) {
-		return false
-	}
-	switch eth.Type() {
-	case header.IPv4ProtocolNumber, header.ARPProtocolNumber:
-		return true
-	}
-	return false
-}
-
-// DeliverNetworkPacket implements tap.NetworkSwitch: the stack sends a frame to the
-// guest.
-func (n *Stack) DeliverNetworkPacket(_ tcpip.NetworkProtocolNumber, pkt *stack.PacketBuffer) {
-	n.linkMu.Lock()
-	l := n.link
-	n.linkMu.Unlock()
-	if l == nil {
-		return
-	}
-	size := pkt.Size()
-	if size > frame.MaxFrameLen(n.cfg.MTU) {
-		n.st.framesDropped.Add(1)
-		return
-	}
-	if l.enqueue(pkt, size) {
-		n.st.framesOut.Add(1)
-	}
 }
 
 // --- TCP ------------------------------------------------------------------------------
@@ -490,11 +338,15 @@ func (n *Stack) handleTCP(r *tcp.ForwarderRequest) {
 		return
 	}
 	in := gonet.NewTCPConn(&wq, ep)
+	defer n.sizeBuffers(ep)()
+	if explicit {
+		setLocalBuffers(out)
+	}
 	n.st.tcpActive.Add(1)
 	defer n.st.tcpActive.Add(-1)
 	stop := context.AfterFunc(n.ctx, func() { _ = in.Close(); _ = out.Close() })
 	defer stop()
-	proxy(in, out)
+	proxy(in, ep, out)
 }
 
 // dialer returns a dialer that re-checks the policy on the address actually connected
@@ -539,19 +391,37 @@ func addrOf(a net.Addr) (netip.Addr, bool) {
 
 type closeWriter interface{ CloseWrite() error }
 
-// proxy copies both ways and propagates half-close. It returns when both directions
-// are done or one fails, and closes both connections.
-func proxy(a, b net.Conn) {
+// proxy copies between the guest side (a gonet connection on endpoint gep) and the
+// host side both ways, and propagates half-close. It returns when both directions are
+// done or one fails, and closes both connections.
+//
+// A reset is passed on as a reset. Closed normally, the side that closes first keeps
+// the connection in TIME_WAIT: a Windows socket for minutes, which a guest that opens
+// and resets many connections to one destination turns into ephemeral port
+// exhaustion, and a gVisor endpoint for timeWait, with its memory.
+func proxy(guest *gonet.TCPConn, gep tcpip.Endpoint, host net.Conn) {
 	done := make(chan error, 2)
 	cp := func(dst, src net.Conn) {
-		_, err := io.Copy(dst, src)
-		if err == nil {
+		bp := copyBufs.Get().(*[]byte)
+		_, err := io.CopyBuffer(writerOnly{dst}, readerOnly{src}, *bp)
+		copyBufs.Put(bp)
+		switch {
+		case err == nil:
 			if cw, ok := dst.(closeWriter); ok {
 				err = cw.CloseWrite()
 			}
+		// The error may come from reading src or writing dst; the two sides' errors
+		// are told apart by their kind.
+		case guestReset(err):
+			if tc, ok := host.(*net.TCPConn); ok {
+				_ = tc.SetLinger(0)
+			}
+		case hostReset(err):
+			gep.SocketOptions().SetLinger(tcpip.LingerOption{Enabled: true})
 		}
 		done <- err
 	}
+	a, b := net.Conn(guest), host
 	go cp(a, b)
 	go cp(b, a)
 	if err := <-done; err != nil {
@@ -561,6 +431,32 @@ func proxy(a, b net.Conn) {
 	<-done
 	_ = a.Close()
 	_ = b.Close()
+}
+
+// copyBufs are the relay's copy buffers, reused across connections. io.Copy between a
+// Windows socket and gonet allocated two fresh 32 KiB buffers per connection; at 5000
+// published connections per second that was 320 MB/s of garbage, and the engine's heap
+// stood at 240 MB.
+var copyBufs = sync.Pool{New: func() any { b := make([]byte, 32<<10); return &b }}
+
+// writerOnly and readerOnly hide ReadFrom and WriteTo, so that io.CopyBuffer uses the
+// pooled buffer instead of the net package's own.
+type writerOnly struct{ io.Writer }
+type readerOnly struct{ io.Reader }
+
+// resetText is how gonet reports a connection reset (it keeps only the text of
+// gVisor's error).
+var resetText = (&tcpip.ErrConnectionReset{}).String()
+
+// guestReset reports whether err, from reading the guest side, is a reset: the
+// innermost error is gonet's, with exactly gVisor's text.
+func guestReset(err error) bool {
+	for ; err != nil; err = errors.Unwrap(err) {
+		if errors.Unwrap(err) == nil {
+			return err.Error() == resetText
+		}
+	}
+	return false
 }
 
 // --- UDP ------------------------------------------------------------------------------
@@ -800,24 +696,97 @@ func (n *Stack) Publish(p Publish) (io.Closer, error) {
 				defer n.wg.Done()
 				defer func() { <-sem }()
 				ctx, cancel := context.WithTimeout(n.ctx, 5*time.Second)
-				g, err := gonet.DialContextTCP(ctx, n.s, guest, ipv4.ProtocolNumber)
+				g, gep, release, err := n.dialGuest(ctx, guest)
 				cancel()
 				if err != nil {
 					_ = c.Close()
 					return
 				}
+				defer release()
 				stop := context.AfterFunc(n.ctx, func() { _ = c.Close(); _ = g.Close() })
 				defer stop()
-				proxy(c, g)
+				setLocalBuffers(c)
+				proxy(g, gep, c)
 			}()
 		}
 	}()
 	return ln, nil
 }
 
+// dialGuest connects to a guest TCP port, as gonet.DialContextTCP does, but sizes the
+// endpoint's buffers (sizeBuffers) before the handshake, so that the window scale it
+// offers covers them. Call release when the connection is done.
+func (n *Stack) dialGuest(ctx context.Context, addr tcpip.FullAddress) (*gonet.TCPConn, tcpip.Endpoint, func(), error) {
+	var wq waiter.Queue
+	ep, terr := n.s.NewEndpoint(tcp.ProtocolNumber, ipv4.ProtocolNumber, &wq)
+	if terr != nil {
+		return nil, nil, nil, errors.New(terr.String())
+	}
+	release := n.sizeBuffers(ep)
+	fail := func(err error) (*gonet.TCPConn, tcpip.Endpoint, func(), error) {
+		ep.Close()
+		release()
+		return nil, nil, nil, err
+	}
+	entry, ready := waiter.NewChannelEntry(waiter.WritableEvents)
+	wq.EventRegister(&entry)
+	defer wq.EventUnregister(&entry)
+	terr = ep.Connect(addr)
+	if _, ok := terr.(*tcpip.ErrConnectStarted); ok {
+		select {
+		case <-ctx.Done():
+			return fail(ctx.Err())
+		case <-ready:
+		}
+		terr = ep.LastError()
+	}
+	if terr != nil {
+		return fail(fmt.Errorf("netstack: connect to the guest: %s", terr))
+	}
+	return gonet.NewTCPConn(&wq, ep), ep, release, nil
+}
+
+// sizeBuffers lets ep's buffers be tuned up to tcpBufferLarge if one of the
+// largeBufferConns tokens is free, and pins them at tcpBufferMax otherwise (setting a
+// size turns gVisor's tuning off for that endpoint). The returned function gives the
+// token back.
+func (n *Stack) sizeBuffers(ep tcpip.Endpoint) (release func()) {
+	select {
+	case n.largeSem <- struct{}{}:
+		var once sync.Once
+		return func() { once.Do(func() { <-n.largeSem }) }
+	default:
+	}
+	ops := ep.SocketOptions()
+	ops.SetReceiveBufferSize(tcpBufferMax, true)
+	ops.SetSendBufferSize(tcpBufferMax, true)
+	return func() {}
+}
+
 // --- helpers --------------------------------------------------------------------------
 
-func newBufReader(r io.Reader) *bufio.Reader { return bufio.NewReaderSize(r, linkReadBufferSize) }
+// localSocketBuffer is the Windows socket send and receive buffer for connections
+// between this process and another program on this host: published ports and explicit
+// host forwards. With the default (autotuned) buffers a loopback connection was the
+// slowest part of the path: bulk transfers through the stack ran at 2-4 Gbit/s while
+// the relay goroutine waited on the socket, and at 9-11 Gbit/s with 1 MiB. Connections
+// to other machines keep Windows' autotuning, which a fixed size would cap on long
+// paths. The memory is the kernel's and is used only as data queues.
+const localSocketBuffer = 1 << 20
+
+// setLocalBuffers sets the buffers of c if its peer is on loopback; a `-publish-lan`
+// client or a host forward to another machine keeps autotuning.
+func setLocalBuffers(c net.Conn) {
+	tc, ok := c.(*net.TCPConn)
+	if !ok {
+		return
+	}
+	if a, ok := addrOf(c.RemoteAddr()); !ok || !a.IsLoopback() {
+		return
+	}
+	_ = tc.SetReadBuffer(localSocketBuffer)
+	_ = tc.SetWriteBuffer(localSocketBuffer)
+}
 
 func tcpipAddr(a netip.Addr) tcpip.Address {
 	b := a.Unmap().As4()
