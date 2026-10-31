@@ -62,7 +62,7 @@ func TestGuardNativeGrowth(t *testing.T) {
 	if p1 < p0+30<<20 {
 		t.Fatalf("working set %d -> %d after writing 32 MiB", p0, p1)
 	}
-	g := &guardState{window: GuardWindow, minGap: GuardMinGap, rise: GuardRise, slack: GuardSlack}
+	g := &guardState{window: GuardWindow, minGap: GuardMinGap, rise: GuardRise, slack: GuardSlack, bigRise: GuardBigRise, flat: GuardFlat}
 	t0 := time.Now()
 	g.observe(guardSample{at: t0, private: p0, commit: c0})
 	if g.observe(guardSample{at: t0.Add(GuardInterval), private: p1, commit: c1}) {

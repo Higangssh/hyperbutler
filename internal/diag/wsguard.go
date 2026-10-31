@@ -8,18 +8,26 @@ import (
 
 // WorkingSetGuard undoes outside memory scans. Another process that reads this
 // process's whole address space (on the reference machine something, most likely the
-// antivirus, did so once, five minutes after start, while a bench ran PowerShell) makes
+// antivirus, did so five minutes after start while a bench ran PowerShell) makes
 // every committed page resident, including memory the process never touches: the Go
 // runtime's 8 MiB heap index, idle thread stacks, untouched data-section variables. The
 // private working set then equals the commit and stays there
 // (docs/research/mem-reclaim.md, section 3).
 //
-// That end state is the signature: the process itself never touches all of its commit
-// (the heap index alone keeps megabytes untouched), so a private working set within
-// GuardSlack of the commit, reached by a rise of at least GuardRise over the lowest
-// value of the last GuardWindow, is an outside read. Growth the process does itself
-// (Go heap, native DLL heaps, new thread stacks) raises the commit too and keeps the
-// gap. On that signature the guard empties the working set once
+// Two signatures mark an outside read; both compare a sample with the lowest private
+// working set of the last GuardWindow:
+//   - Full: a rise of at least GuardRise to within GuardSlack of the commit. The process
+//     itself never touches all of its commit (the heap index alone keeps megabytes
+//     untouched); growth it does (Go heap, native DLL heaps, new thread stacks) raises
+//     the commit too and keeps the gap.
+//   - Partial: a rise of at least GuardBigRise while the commit grew by at most
+//     GuardFlat. A reader that skips part of the address space leaves a gap to the
+//     commit, but the commit does not grow (seen once, in a run without the PowerShell
+//     sampler: +33 MiB, about the FIPS buffer's size, 15 MiB under the commit). The process can only touch memory it
+//     has committed and not used, which outside the scan's targets is a few MiB of
+//     heap, well under GuardBigRise.
+//
+// On either the guard empties the working set once
 // (SetProcessWorkingSetSizeEx(-1, -1)). Pages the process uses fault back from the
 // standby list; the ones only the scan touched stay out. The trim takes pages out of
 // the working set, which is what REQ-MEM-001/002 count; Windows frees the RAM when it
@@ -36,6 +44,8 @@ const (
 	GuardWindow   = 30 * time.Second
 	GuardRise     = 8 << 20
 	GuardSlack    = 4 << 20
+	GuardBigRise  = 16 << 20
+	GuardFlat     = 1 << 20
 	// GuardMinGap is the shortest time between two trims.
 	GuardMinGap = time.Minute
 )
@@ -55,6 +65,7 @@ type guardSample struct {
 type guardState struct {
 	window, minGap time.Duration
 	rise, slack    uint64
+	bigRise, flat  uint64
 	recent         []guardSample
 	lastTrim       time.Time
 }
@@ -75,7 +86,9 @@ func (g *guardState) observe(s guardSample) bool {
 		}
 	}
 	g.recent = append(g.recent, s)
-	if s.private < low.private+g.rise || s.private+g.slack < s.commit {
+	full := s.private >= low.private+g.rise && s.private+g.slack >= s.commit
+	partial := g.bigRise > 0 && s.private >= low.private+g.bigRise && s.commit <= low.commit+g.flat
+	if !full && !partial {
 		return false
 	}
 	if !g.lastTrim.IsZero() && s.at.Sub(g.lastTrim) < g.minGap {
@@ -111,7 +124,7 @@ func startGuard(tick <-chan time.Time, stopTick func(), os guardOS, trimmed func
 	go func() {
 		defer close(w.done)
 		defer stopTick()
-		g := &guardState{window: GuardWindow, minGap: GuardMinGap, rise: GuardRise, slack: GuardSlack}
+		g := &guardState{window: GuardWindow, minGap: GuardMinGap, rise: GuardRise, slack: GuardSlack, bigRise: GuardBigRise, flat: GuardFlat}
 		for {
 			select {
 			case <-w.stop:

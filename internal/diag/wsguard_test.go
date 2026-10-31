@@ -31,9 +31,15 @@ func TestGuardRule(t *testing.T) {
 		{"slow climb", []step{{0, 19, 35, false}, {20, 24, 35, false}, {40, 29, 35, false}, {60, 33, 35, false}}},
 		// After a trim the engine refaults its real working set: not a rise.
 		{"refault after trim", []step{{0, 19, 35, false}, {5, 34, 35, true}, {10, 3, 35, false}, {15, 12, 35, false}, {70, 19, 35, false}, {75, 21, 35, false}}},
+		// A partial read: +33 MiB with the commit flat, still 15 MiB under it.
+		{"partial scan", []step{{0, 19, 67, false}, {10, 52, 67, true}}},
+		{"partial scan, commit up by 1 MiB", []step{{0, 19, 66, false}, {10, 52, 67, true}}},
+		{"partial-sized rise with commit growth", []step{{0, 19, 67, false}, {10, 52, 69, false}}},
+		{"heap reuse under the big rise", []step{{0, 19, 67, false}, {5, 28, 67, false}, {10, 34, 67, false}}},
+		{"partial scan after a full one is rate limited", []step{{0, 19, 67, false}, {5, 66, 67, true}, {10, 2, 67, false}, {20, 40, 67, false}, {70, 40, 67, false}}},
 		{"second scan, rate limited", []step{{0, 19, 35, false}, {5, 34, 35, true}, {10, 3, 35, false}, {15, 34, 35, false}, {70, 34, 35, false}, {75, 3, 35, false}, {80, 34, 35, true}}},
 	} {
-		g := &guardState{window: 30 * time.Second, minGap: time.Minute, rise: 8 * mib, slack: 4 * mib}
+		g := &guardState{window: 30 * time.Second, minGap: time.Minute, rise: 8 * mib, slack: 4 * mib, bigRise: 16 * mib, flat: 1 * mib}
 		for i, s := range tc.steps {
 			at := t0.Add(time.Duration(s.sec) * time.Second)
 			if got := g.observe(guardSample{at: at, private: s.private * mib, commit: s.commt * mib}); got != s.trim {
