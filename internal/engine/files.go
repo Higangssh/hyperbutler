@@ -74,6 +74,11 @@ type State struct {
 	Updated     time.Time `json:"updated"`
 	Error       string    `json:"error,omitempty"`
 	ErrorCode   string    `json:"errorCode,omitempty"`
+	// Daemon is the guest's daemon.json delivery (REQ-UX-007), once there was one.
+	Daemon *DaemonState `json:"daemonConfig,omitempty"`
+	// ImageDir is the directory of the guest image the engine runs, so `hyperbutler
+	// restart` can start the same one.
+	ImageDir string `json:"imageDir,omitempty"`
 }
 
 const stateVersion = 1
@@ -107,6 +112,8 @@ func (s *State) Validate() error {
 		return fmt.Errorf("state: bad runtime id %q", s.RuntimeID)
 	case s.DataDir != "" && !filepath.IsAbs(s.DataDir):
 		return fmt.Errorf("state: data dir %q is not absolute", s.DataDir)
+	case s.ImageDir != "" && (!filepath.IsAbs(s.ImageDir) || len(s.ImageDir) > 1024 || !utf8.ValidString(s.ImageDir) || strings.ContainsRune(s.ImageDir, 0)):
+		return fmt.Errorf("state: bad image dir %q", s.ImageDir)
 	}
 	if s.Pipe != "" {
 		if err := transport.ValidatePipeName(s.Pipe); err != nil {
@@ -115,6 +122,11 @@ func (s *State) Validate() error {
 	}
 	if s.Phase.Live() && s.PID == 0 {
 		return errors.New("state: a live phase without a pid")
+	}
+	if s.Daemon != nil {
+		if err := s.Daemon.Validate(); err != nil {
+			return fmt.Errorf("state: %w", err)
+		}
 	}
 	return nil
 }
@@ -152,15 +164,19 @@ func ParseState(b []byte) (*State, error) {
 	return &s, nil
 }
 
-// Settings are the user's choices, made on the first start and kept in settings.json.
+// Settings are the user's choices, kept in settings.json. `hyperbutler config` reads and
+// changes them (REQ-UX-006); internal/config describes each key.
 type Settings struct {
 	Version int `json:"version"`
-	// DataDir holds the data disk (REQ-DISK-007). It is fixed after the first start.
+	// DataDir holds the data disk (REQ-DISK-007). DataDir and DiskSize are recorded when
+	// settings.json is created and pin the data disk: they change only while there is
+	// no data disk yet.
 	DataDir string `json:"dataDir"`
 	// DiskSize is the data disk's virtual size in bytes, used when it is created.
 	DiskSize uint64 `json:"diskSizeBytes"`
-	MemoryMB int    `json:"memoryMB"`
-	CPUs     int    `json:"cpus"`
+	// MemoryMB and CPUs size the VM; 0 means the default (Memory, CPUCount).
+	MemoryMB int `json:"memoryMB,omitempty"`
+	CPUs     int `json:"cpus,omitempty"`
 	// Pipe is the Docker API pipe; empty means transport.DefaultPipeName. Another name
 	// lets two installations (or a development harness) run side by side.
 	Pipe string `json:"pipe,omitempty"`
@@ -168,7 +184,39 @@ type Settings struct {
 	// ("256MiB", "off"). Empty means DefaultEngineMemoryLimit. The GOMEMLIMIT
 	// environment variable overrides it (ADR 0003, guardrail 4).
 	MemoryLimit string `json:"memoryLimit,omitempty"`
+	// ManageContext says whether `hyperbutler start` creates and selects the
+	// "hyperbutler" docker context; nil means yes.
+	ManageContext *bool `json:"manageContext,omitempty"`
 }
+
+// Defaults of Settings values.
+const (
+	DefaultDiskSize = 64 << 30
+	DefaultMemoryMB = 4096
+)
+
+// DefaultCPUs is the CPU count of a VM whose settings name none: half the host's
+// logical CPUs, from 2 to 8.
+func DefaultCPUs(hostCPUs int) int { return min(max(hostCPUs/2, 2), 8) }
+
+// Memory is the guest memory in MiB.
+func (s *Settings) Memory() int {
+	if s.MemoryMB == 0 {
+		return DefaultMemoryMB
+	}
+	return s.MemoryMB
+}
+
+// CPUCount is the VM's CPU count on a host with hostCPUs logical CPUs.
+func (s *Settings) CPUCount(hostCPUs int) int {
+	if s.CPUs == 0 {
+		return DefaultCPUs(hostCPUs)
+	}
+	return s.CPUs
+}
+
+// ContextManaged reports whether start manages the docker context.
+func (s *Settings) ContextManaged() bool { return s.ManageContext == nil || *s.ManageContext }
 
 // DefaultEngineMemoryLimit is the engine's Go soft memory limit when settings.json sets
 // none. The engine's live heap is a few MiB (ADR 0003), so the limit acts only on
@@ -217,9 +265,9 @@ func (s *Settings) Validate() error {
 		return fmt.Errorf("settings: data dir %q must be an absolute path", s.DataDir)
 	case s.DiskSize < MinDiskSize || s.DiskSize > MaxDiskSize || s.DiskSize%(1<<20) != 0:
 		return fmt.Errorf("settings: disk size %d must be a multiple of 1 MiB from %s to %s", s.DiskSize, FormatSize(MinDiskSize), FormatSize(MaxDiskSize))
-	case s.MemoryMB < MinMemoryMB || s.MemoryMB > MaxMemoryMB:
+	case s.MemoryMB != 0 && (s.MemoryMB < MinMemoryMB || s.MemoryMB > MaxMemoryMB):
 		return fmt.Errorf("settings: memory %d MiB is outside %d..%d", s.MemoryMB, MinMemoryMB, MaxMemoryMB)
-	case s.CPUs < 1 || s.CPUs > MaxCPUs:
+	case s.CPUs < 0 || s.CPUs > MaxCPUs:
 		return fmt.Errorf("settings: %d CPUs is outside 1..%d", s.CPUs, MaxCPUs)
 	}
 	if s.Pipe != "" {

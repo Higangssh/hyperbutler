@@ -92,6 +92,9 @@ type Config struct {
 	Net NetConfig
 	// Share is the bind-mount file server for Windows paths (ADR 0007).
 	Share ShareConfig
+	// DaemonConfig, if set, delivers the user's daemon.json to the guest on every
+	// control connection; the guest's init waits for it before starting dockerd.
+	DaemonConfig *DaemonConfig
 	// ReadyTimeout bounds the wait for dockerd (90 s). ShutdownTimeout bounds the guest's
 	// orderly power-off before the VM is terminated (25 s).
 	ReadyTimeout, ShutdownTimeout time.Duration
@@ -276,6 +279,9 @@ func Run(ctx context.Context, cfg Config) (err error) {
 
 	var disk *dataDisk
 	cmdline := cfg.CmdLine + HashTableArgs(cfg.MemoryMB) + netArgs + shareArgs + cfg.ExtraCmdLine
+	if cfg.DaemonConfig != nil {
+		cmdline += " hyperbutler.daemoncfg=1"
+	}
 	var disks []vm.Disk
 	if cfg.Disk.Data != "" {
 		if disk, err = prepareDisk(cfg.Disk, cfg.DiskSize); err != nil {
@@ -401,6 +407,9 @@ func Run(ctx context.Context, cfg Config) (err error) {
 		MaxBackoff:  2 * time.Second,
 		Logf:        func(f string, a ...any) { log.Debug(fmt.Sprintf(f, a...)) },
 	}
+	if dc := cfg.DaemonConfig; dc != nil {
+		sup.OnConnect = func(ctx context.Context, c *guestctl.Client) { dc.Connected(ctx, c) }
+	}
 	var guard *hostGuard
 	gs := &guestStats{log: log}
 	sup.Config.OnStatus = func(s guestctl.Status) {
@@ -436,6 +445,27 @@ func Run(ctx context.Context, cfg Config) (err error) {
 			return nil // stopped while booting
 		}
 		return err
+	}
+	if dc := cfg.DaemonConfig; dc != nil {
+		// At boot the guest may still be settling daemon.json (a file dockerd did not
+		// start with is rolled back, and a previous one applied with a dockerd restart):
+		// report ready only for the dockerd that stays.
+		wctx, cancel := context.WithTimeout(runCtx, cfg.ReadyTimeout)
+		err := dc.WaitDelivered(wctx)
+		cancel()
+		if err != nil {
+			log.Warn("daemon.json delivery did not finish; continuing", "err", err)
+		} else if st := dc.State(); st.Restarted {
+			if err := waitPing(runCtx, target, cfg.ReadyTimeout); err != nil {
+				if r.exited() {
+					return r.exitErr()
+				}
+				if ctx.Err() != nil {
+					return nil
+				}
+				return err
+			}
+		}
 	}
 	ready := time.Now()
 	step("dockerd answered /_ping over hvsock")

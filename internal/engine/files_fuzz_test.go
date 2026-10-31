@@ -13,6 +13,8 @@ import (
 func FuzzParseState(f *testing.F) {
 	f.Add([]byte(`{"version":1,"phase":"running","pid":4,"pidCreated":1,"vmId":"hyperbutler-65fd2a1a-c01f6278e7ec","runtimeId":"6cf7ba4c-5e89-5915-bea5-3642d57a897b","pipe":"\\\\.\\pipe\\docker_engine_hyperbutler","dataDir":"C:\\x","started":"2026-10-30T08:00:00Z","readyMillis":1700,"updated":"2026-10-30T08:00:01Z"}`))
 	f.Add([]byte(`{"version":1,"phase":"failed","pid":0,"pidCreated":0,"pipe":"","dataDir":"","started":"0001-01-01T00:00:00Z","updated":"0001-01-01T00:00:00Z","error":"boom","errorCode":"hcs-access-denied"}`))
+	f.Add([]byte(`{"version":1,"phase":"running","pid":4,"pidCreated":1,"pipe":"","dataDir":"C:\\x","imageDir":"C:\\img","started":"2026-10-30T08:00:00Z","updated":"2026-10-30T08:00:01Z","daemonConfig":{"generation":2,"applies":1,"source":"file","sha256":"44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a","bytes":2,"restarted":true,"error":"","updated":"2026-10-30T08:00:01Z"}}`))
+	f.Add([]byte(`{"version":1,"phase":"running","pid":4,"daemonConfig":{"generation":1,"applies":0,"source":"none","bytes":0,"error":"x","updated":"2026-10-30T08:00:01Z"}}`))
 	f.Add([]byte(`{"version":1,"phase":"running","pid":0}`))
 	f.Add([]byte(`{"version":1,"phase":"stopped","pid":1e3}`))
 	f.Fuzz(func(t *testing.T, b []byte) {
@@ -46,6 +48,8 @@ func FuzzParseSettings(f *testing.F) {
 	f.Add([]byte(`{"version":1,"dataDir":"C:\\x","diskSizeBytes":-1,"memoryMB":4096,"cpus":4}`))
 	f.Add([]byte(`{"version":1,"dataDir":"C:\\x","diskSizeBytes":68719476736,"memoryMB":4096,"cpus":4,"memoryLimit":"128MiB"}`))
 	f.Add([]byte(`{"version":1,"dataDir":"C:\\x","diskSizeBytes":68719476736,"memoryMB":4096,"cpus":4,"memoryLimit":"1KiB"}`))
+	f.Add([]byte(`{"version":1,"dataDir":"C:\\x","diskSizeBytes":68719476736,"manageContext":false}`))
+	f.Add([]byte(`{"version":1,"dataDir":"C:\\x","diskSizeBytes":68719476736,"manageContext":null,"cpus":0}`))
 	f.Fuzz(func(t *testing.T, b []byte) {
 		s, err := ParseSettings(b)
 		if err != nil {
@@ -54,7 +58,7 @@ func FuzzParseSettings(f *testing.F) {
 		if err := s.Validate(); err != nil {
 			t.Fatalf("accepted invalid settings: %v", err)
 		}
-		if s.DiskSize%(1<<20) != 0 || s.MemoryMB < MinMemoryMB || s.CPUs < 1 {
+		if s.DiskSize%(1<<20) != 0 || s.Memory() < MinMemoryMB || s.CPUCount(1) < 1 || s.CPUCount(1) > MaxCPUs {
 			t.Fatalf("out of range: %+v", s)
 		}
 		if ValidateMemoryLimit(s.EngineMemoryLimit()) != nil {
@@ -65,7 +69,7 @@ func FuzzParseSettings(f *testing.F) {
 			t.Fatal(err)
 		}
 		s2, err := ParseSettings(again)
-		if err != nil || *s2 != *s {
+		if err != nil || !reflect.DeepEqual(s2, s) {
 			t.Fatalf("re-encode changed the settings: %v", err)
 		}
 	})

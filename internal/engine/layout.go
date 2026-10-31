@@ -53,6 +53,15 @@ func (l Layout) EngineLogPath() string { return filepath.Join(l.LogDir(), "engin
 func (l Layout) ConsoleLogPath() string {
 	return filepath.Join(l.LogDir(), "console.log")
 }
+
+// DaemonConfigPath is the user's daemon.json for the guest's dockerd (REQ-UX-007).
+// hyperbutler reads it and never writes it.
+func (l Layout) DaemonConfigPath() string { return filepath.Join(l.Home, "daemon.json") }
+
+// DaemonAppliedPath is the engine's copy of the last daemon.json the guest accepted:
+// what stays in effect while the user's file is invalid.
+func (l Layout) DaemonAppliedPath() string { return filepath.Join(l.Home, "daemon.applied.json") }
+
 func (l Layout) DiskPath() string     { return filepath.Join(l.Data, "data.vhdx") }
 func (l Layout) DiskMetaPath() string { return filepath.Join(l.Data, "disk.json") }
 
