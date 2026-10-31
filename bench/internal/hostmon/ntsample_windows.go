@@ -54,11 +54,11 @@ func SampleNT(_ context.Context, pids []uint32) (map[uint32]ProcSample, error) {
 			return nil, errors.New("hostmon: truncated process information")
 		}
 		pi := (*windows.SYSTEM_PROCESS_INFORMATION)(unsafe.Pointer(&buf[off]))
-		pid := uint32(pi.UniqueProcessID)
+		pid := uint32(pi.UniqueProcessID) //nolint:gosec // G115: Windows process IDs are DWORDs
 		if want[pid] {
 			res[pid] = ProcSample{
 				PID:            pid,
-				WorkingSetPriv: uint64(pi.WorkingSetPrivateSize),
+				WorkingSetPriv: uint64(max(pi.WorkingSetPrivateSize, 0)), //nolint:gosec // G115: clamped to >= 0
 				HandleCount:    uint64(pi.HandleCount),
 				ThreadCount:    uint64(pi.NumberOfThreads),
 				PrivateBytes:   uint64(pi.PagefileUsage),
@@ -75,7 +75,9 @@ func SampleNT(_ context.Context, pids []uint32) (map[uint32]ProcSample, error) {
 func querySystemProcesses() ([]byte, error) {
 	n := uint32(256 << 10)
 	for {
-		buf := make([]byte, n)
+		// SYSTEM_PROCESS_INFORMATION has 8-byte fields: the buffer must be 8-byte aligned.
+		words := make([]uint64, (n+7)/8)
+		buf := unsafe.Slice((*byte)(unsafe.Pointer(&words[0])), n)
 		var ret uint32
 		err := windows.NtQuerySystemInformation(windows.SystemProcessInformation, unsafe.Pointer(&buf[0]), n, &ret)
 		if err == nil {

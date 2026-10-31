@@ -95,7 +95,7 @@ func readExeLayout(exe string) (*exeLayout, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }() // read-only
 	l := &exeLayout{}
 	for _, s := range f.Sections {
 		size := uint64(max(s.VirtualSize, s.Size))
@@ -175,7 +175,7 @@ func ResidencyOf(pid uint32, exe string) (Residency, error) {
 	if err != nil {
 		return Residency{}, fmt.Errorf("hostmon: open PID %d: %w", pid, err)
 	}
-	defer windows.CloseHandle(h)
+	defer func() { _ = windows.CloseHandle(h) }()
 	exeName := strings.ToLower(filepath.Base(exe))
 	r := Residency{Kinds: map[string]Bytes{}}
 	add := func(k string, res, com uint64) {
@@ -245,8 +245,12 @@ func ResidencyOf(pid uint32, exe string) (Residency, error) {
 		for i := range info {
 			info[i] = wsExInfo{va: mbi.BaseAddress + uintptr(i)*page}
 		}
-		if err := windows.QueryWorkingSetEx(h, uintptr(unsafe.Pointer(&info[0])), uint32(uintptr(pages)*unsafe.Sizeof(info[0]))); err != nil {
-			return r, fmt.Errorf("hostmon: QueryWorkingSetEx: %w", err)
+		// The call takes the buffer size as a DWORD; query a huge region in chunks.
+		for lo := 0; lo < pages; lo += wsExChunk {
+			chunk := info[lo:min(lo+wsExChunk, pages)]
+			if err := windows.QueryWorkingSetEx(h, uintptr(unsafe.Pointer(&chunk[0])), uint32(len(chunk))*wsExInfoSize); err != nil { //nolint:gosec // G115: a chunk has at most wsExChunk (2^20) entries
+				return r, fmt.Errorf("hostmon: QueryWorkingSetEx: %w", err)
+			}
 		}
 		for i := range info {
 			resident := uint64(0)
@@ -293,15 +297,22 @@ type wsExInfo struct {
 	attr windows.PSAPI_WORKING_SET_EX_BLOCK
 }
 
+const (
+	wsExInfoSize = uint32(unsafe.Sizeof(wsExInfo{}))
+	// wsExChunk entries per QueryWorkingSetEx call: 16 MiB of entries, far below the
+	// DWORD size limit.
+	wsExChunk = 1 << 20
+)
+
 // ImagePath is the full path of pid's executable.
 func ImagePath(pid uint32) (string, error) {
 	h, err := windows.OpenProcess(windows.PROCESS_QUERY_LIMITED_INFORMATION, false, pid)
 	if err != nil {
 		return "", fmt.Errorf("hostmon: open PID %d: %w", pid, err)
 	}
-	defer windows.CloseHandle(h)
+	defer func() { _ = windows.CloseHandle(h) }()
 	buf := make([]uint16, windows.MAX_LONG_PATH)
-	n := uint32(len(buf))
+	n := uint32(windows.MAX_LONG_PATH)
 	if err := windows.QueryFullProcessImageName(h, 0, &buf[0], &n); err != nil {
 		return "", fmt.Errorf("hostmon: image of PID %d: %w", pid, err)
 	}
