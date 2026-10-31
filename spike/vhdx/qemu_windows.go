@@ -343,7 +343,7 @@ func runQEMU(args []string) error {
 	writeMB := fs.Int("mb", 1024, "MiB the guest writes and deletes")
 	flush := fs.Bool("hostflush", true, "flush the image from the host before each measurement")
 	fsync := fs.Bool("fsync", false, "guest dd uses conv=fsync, so the guest sends a device flush")
-	fs.Parse(args)
+	_ = fs.Parse(args)
 
 	initrd, err := buildInitrd(filepath.Join(*guestDir, "initramfs-virt"), nil)
 	if err != nil {
@@ -361,7 +361,7 @@ func runQEMU(args []string) error {
 		drive = []string{"-drive", "if=none,id=d0,format=raw,discard=unmap,detect-zeroes=unmap,file=" + qemuOpt(image)}
 	case "qcow2":
 		image = fresh("guest.qcow2")
-		out, err := exec.Command(filepath.Join(*qemuDir, "qemu-img.exe"), "create", "-f", "qcow2", image, fmt.Sprint(*diskSize)).CombinedOutput()
+		out, err := exec.Command(filepath.Join(*qemuDir, "qemu-img.exe"), "create", "-f", "qcow2", image, fmt.Sprint(*diskSize)).CombinedOutput() //nolint:gosec // G204: command and arguments come from the operator's own flags or this tool's work directory; exec passes argv, no shell
 		if err != nil {
 			return fmt.Errorf("qemu-img: %w\n%s", err, out)
 		}
@@ -401,7 +401,7 @@ func runQEMU(args []string) error {
 	}
 	qargs = append(qargs, drive...)
 	qargs = append(qargs, "-device", "virtio-blk-pci,drive=d0,discard=on,write-zeroes=on")
-	cmd := exec.Command(filepath.Join(*qemuDir, "qemu-system-x86_64.exe"), qargs...)
+	cmd := exec.Command(filepath.Join(*qemuDir, "qemu-system-x86_64.exe"), qargs...) //nolint:gosec // G204: command and arguments come from the operator's own flags or this tool's work directory; exec passes argv, no shell
 	var qemuOut bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &qemuOut, &qemuOut
 	fmt.Printf("backend=%s image=%s guest writes %d MiB hostflush=%v fsync=%v\n", *backend, image, *writeMB, *flush, *fsync)
@@ -411,7 +411,7 @@ func runQEMU(args []string) error {
 	}
 	// Runs before the NBD server's Close (defers are LIFO), so an error path never leaves a
 	// QEMU process holding the image. After a normal exit Kill just returns an error.
-	defer cmd.Process.Kill()
+	defer func() { _ = cmd.Process.Kill() }()
 	exited := make(chan error, 1)
 	go func() { exited <- cmd.Wait() }()
 
@@ -430,12 +430,16 @@ func runQEMU(args []string) error {
 	if err != nil {
 		return err
 	}
+	var qemuErr error
 	select {
-	case <-exited:
+	case qemuErr = <-exited:
 	case <-time.After(30 * time.Second):
-		cmd.Process.Kill()
+		_ = cmd.Process.Kill()
 	}
 	if !done {
+		if qemuErr != nil {
+			return fmt.Errorf("guest did not finish (qemu: %w)\n%s", qemuErr, qemuOut.String())
+		}
 		return fmt.Errorf("guest did not finish\n%s", qemuOut.String())
 	}
 	report("after QEMU exit", image)
@@ -481,7 +485,7 @@ func driveGuest(conn io.ReadWriter, image string, start time.Time, settle time.D
 // written and synced 1 GiB): QEMU writes through the cache manager, and the allocation
 // only showed up once the cached data was written out.
 func hostFlush(path string) {
-	f, err := os.OpenFile(path, os.O_RDWR, 0)
+	f, err := os.OpenFile(path, os.O_RDWR, 0) //nolint:gosec // G304: the path comes from the operator's own flags or this tool's work directory
 	if err != nil {
 		fmt.Println("  host flush: open:", err)
 		return
@@ -506,14 +510,14 @@ func acceptOrExit(ln net.Listener, exited <-chan error) (net.Conn, error) {
 	case r := <-ch:
 		return r.c, r.err
 	case err := <-exited:
-		return nil, fmt.Errorf("qemu exited before connecting the serial port: %v", err)
+		return nil, fmt.Errorf("qemu exited before connecting the serial port: %w", err)
 	case <-time.After(30 * time.Second):
 		return nil, fmt.Errorf("timeout waiting for qemu serial connection")
 	}
 }
 
 func newSparseFile(path string, size int64) error {
-	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE|os.O_EXCL, 0o644)
+	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE|os.O_EXCL, 0o600)
 	if err != nil {
 		return err
 	}
@@ -533,7 +537,7 @@ func buildInitrd(alpine string, modules []string) (string, error) {
 // buildInitrdExtra also packs every file in extraDir (flat) under /wbextra, for guest
 // tools that initramfs-virt lacks, such as mke2fs and its shared libraries.
 func buildInitrdExtra(alpine string, modules []string, extraDir string) (string, error) {
-	base, err := os.ReadFile(alpine)
+	base, err := os.ReadFile(alpine) //nolint:gosec // G304: the path comes from the operator's own flags or this tool's work directory
 	if err != nil {
 		return "", err
 	}
@@ -545,7 +549,7 @@ func buildInitrdExtra(alpine string, modules []string, extraDir string) (string,
 		cw.entry("wbmods", 0o040755, nil)
 	}
 	for _, m := range modules {
-		data, err := os.ReadFile(m)
+		data, err := os.ReadFile(m) //nolint:gosec // G304: the path comes from the operator's own flags or this tool's work directory
 		if err != nil {
 			return "", err
 		}
@@ -558,14 +562,14 @@ func buildInitrdExtra(alpine string, modules []string, extraDir string) (string,
 		}
 		cw.entry("wbextra", 0o040755, nil)
 		for _, f := range files {
-			data, err := os.ReadFile(filepath.Join(extraDir, f.Name()))
+			data, err := os.ReadFile(filepath.Join(extraDir, f.Name())) //nolint:gosec // G304: the path comes from the operator's own flags or this tool's work directory
 			if err != nil {
 				return "", err
 			}
 			cw.file("wbextra/"+f.Name(), 0o100755, data)
 		}
 		for _, p := range initrdExtraFiles {
-			data, err := os.ReadFile(p)
+			data, err := os.ReadFile(p) //nolint:gosec // G304: the path comes from the operator's own flags or this tool's work directory
 			if err != nil {
 				return "", err
 			}
@@ -580,7 +584,7 @@ func buildInitrdExtra(alpine string, modules []string, extraDir string) (string,
 		return "", err
 	}
 	out := filepath.Join(*dir, "initramfs-wb")
-	return out, os.WriteFile(out, append(base, extra.Bytes()...), 0o644)
+	return out, os.WriteFile(out, append(base, extra.Bytes()...), 0o600)
 }
 
 // cpioWriter writes the "newc" (070701) format the kernel's initramfs unpacker reads.

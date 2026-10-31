@@ -38,7 +38,7 @@ func logNetStats(ctx context.Context, st *netstack.Stack, every time.Duration, l
 		sort.Strings(keys)
 		var b strings.Builder
 		for _, k := range keys {
-			fmt.Fprintf(&b, " %s=%d", k, int64(cur[k]-prev[k]))
+			fmt.Fprintf(&b, " %s=%d", k, int64(cur[k]-prev[k])) //nolint:gosec // G115: deliberate; a gauge that went down shows as a negative delta
 		}
 		if b.Len() > 0 {
 			log.Info("net stats" + b.String())
@@ -51,7 +51,7 @@ func netCounters(st *netstack.Stack) map[string]uint64 {
 	m := map[string]uint64{}
 	s := st.Stats()
 	m["FramesIn"], m["FramesOut"], m["FramesDropped"] = s.FramesIn, s.FramesOut, s.FramesDropped
-	m["TCPDenied"], m["TCPRefused"], m["TCPActive"] = s.TCPDenied, s.TCPRefused, uint64(s.TCPActive)
+	m["TCPDenied"], m["TCPRefused"], m["TCPActive"] = s.TCPDenied, s.TCPRefused, uint64(s.TCPActive) //nolint:gosec // G115: TCPActive is a connection count, never negative
 	g := st.GVisorStats()
 	walkStats("", reflect.ValueOf(&g).Elem(), m)
 	return m

@@ -180,7 +180,7 @@ func (v *vm) stop() {
 	if v.console != nil {
 		v.console.Close()
 	}
-	hcsCall("HcsTerminateComputeSystem", 30*time.Second, func(op uintptr) uintptr {
+	_, _ = hcsCall("HcsTerminateComputeSystem", 30*time.Second, func(op uintptr) uintptr {
 		hr, _, _ := procHcsTerminateSystem.Call(v.system, op, 0)
 		return hr
 	})
@@ -228,7 +228,7 @@ func (v *vm) drive(timeout time.Duration, verbose bool, onResult func(probe.Resu
 	case <-done:
 	case <-time.After(timeout):
 		fmt.Println("  timed out waiting for the guest")
-		hcsCall("HcsTerminateComputeSystem", 30*time.Second, func(op uintptr) uintptr {
+		_, _ = hcsCall("HcsTerminateComputeSystem", 30*time.Second, func(op uintptr) uintptr {
 			hr, _, _ := procHcsTerminateSystem.Call(v.system, op, 0)
 			return hr
 		})
@@ -244,11 +244,11 @@ func (v *vm) drive(timeout time.Duration, verbose bool, onResult func(probe.Resu
 
 // buildInitrd appends a gzip cpio with /wbinit, /wbnet/* and /wbmods/* to initramfs-virt.
 func buildInitrd(guestDir, probeBin, rootsPEM string, mods []string) (string, error) {
-	base, err := os.ReadFile(filepath.Join(guestDir, "initramfs-virt"))
+	base, err := os.ReadFile(filepath.Join(guestDir, "initramfs-virt")) //nolint:gosec // G304: the path comes from the operator's own flags or this tool's work directory
 	if err != nil {
 		return "", err
 	}
-	bin, err := os.ReadFile(probeBin)
+	bin, err := os.ReadFile(probeBin) //nolint:gosec // G304: the path comes from the operator's own flags or this tool's work directory
 	if err != nil {
 		return "", fmt.Errorf("guest probe (build with GOOS=linux): %w", err)
 	}
@@ -277,11 +277,11 @@ func buildInitrd(guestDir, probeBin, rootsPEM string, mods []string) (string, er
 		return "", err
 	}
 	out := filepath.Join(workDir, "initramfs-net")
-	return out, os.WriteFile(out, append(base, extra.Bytes()...), 0o644)
+	return out, os.WriteFile(out, append(base, extra.Bytes()...), 0o600)
 }
 
 func readModule(path string) ([]byte, error) {
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(path) //nolint:gosec // G304: the path comes from the operator's own flags or this tool's work directory
 	if err != nil || !strings.HasSuffix(path, ".gz") {
 		return data, err
 	}
@@ -338,7 +338,7 @@ func rootsFromChains(chains [][]*x509.Certificate, seen map[string]bool, out *by
 			continue
 		}
 		seen[k] = true
-		pem.Encode(out, &pem.Block{Type: "CERTIFICATE", Bytes: root.Raw})
+		_ = pem.Encode(out, &pem.Block{Type: "CERTIFICATE", Bytes: root.Raw}) // out is a bytes.Buffer
 	}
 }
 

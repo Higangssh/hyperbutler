@@ -42,7 +42,7 @@ func CreatedTime(pid int) (int64, error) {
 	if err != nil {
 		return 0, fmt.Errorf("engine: open process %d: %w", pid, err)
 	}
-	defer windows.CloseHandle(h)
+	defer func() { _ = windows.CloseHandle(h) }()
 	return processCreated(h)
 }
 
@@ -85,9 +85,14 @@ func OpenProcess(pid int, created int64) (*Process, error) {
 
 // Wait waits up to timeout for the process to exit and reports whether it did.
 func (p *Process) Wait(timeout time.Duration) (bool, error) {
-	ms := uint32(timeout.Milliseconds())
-	if timeout < 0 {
-		ms = windows.INFINITE
+	ms := uint32(windows.INFINITE)
+	if timeout >= 0 {
+		// Clamp: a longer wait would wrap, and INFINITE itself means forever.
+		d := timeout.Milliseconds()
+		if d > windows.INFINITE-1 {
+			d = windows.INFINITE - 1
+		}
+		ms = uint32(d) //nolint:gosec // G115: d is 0..INFINITE-1 (timeout >= 0, clamped above)
 	}
 	ev, err := windows.WaitForSingleObject(p.h, ms)
 	switch {
@@ -227,6 +232,6 @@ func setEvent(eventName string) error {
 	if err != nil {
 		return fmt.Errorf("engine: open event %s: %w", eventName, err)
 	}
-	defer windows.CloseHandle(h)
+	defer func() { _ = windows.CloseHandle(h) }()
 	return windows.SetEvent(h)
 }

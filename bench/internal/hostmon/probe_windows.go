@@ -37,7 +37,7 @@ func SampleCIM(ctx context.Context, pids []uint32) (map[uint32]ProcSample, error
 		"ForEach-Object { '{0},{1},{2},{3},{4}' -f $_.IDProcess,$_.WorkingSetPrivate,$_.HandleCount,$_.ThreadCount,$_.PrivateBytes }"
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script)
+	cmd := exec.CommandContext(ctx, "powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script) //nolint:gosec // G204: the PowerShell script is built here from numeric process IDs only
 	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
 	var stderr strings.Builder
 	cmd.Stderr = &stderr
@@ -72,7 +72,7 @@ func Snapshot() ([]Proc, error) {
 	if err != nil {
 		return nil, fmt.Errorf("hostmon: process snapshot: %w", err)
 	}
-	defer windows.CloseHandle(snap)
+	defer func() { _ = windows.CloseHandle(snap) }()
 	var e windows.ProcessEntry32
 	e.Size = uint32(unsafe.Sizeof(e))
 	var ps []Proc
@@ -150,7 +150,7 @@ func (d *DiagClient) get(ctx context.Context, path string, limit int64) ([]byte,
 	if err != nil {
 		return nil, fmt.Errorf("hostmon: diag: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("hostmon: diag %s: HTTP %d", path, resp.StatusCode)
 	}

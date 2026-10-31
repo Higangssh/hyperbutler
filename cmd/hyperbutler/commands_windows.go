@@ -168,9 +168,9 @@ func cmdStart(args []string, stdout, stderr io.Writer) error {
 			return err
 		}
 		p.Close()
-		fmt.Fprintf(stdout, "hyperbutler is already running (engine pid %d, %s).\n", st.PID, st.Phase)
+		_, _ = fmt.Fprintf(stdout, "hyperbutler is already running (engine pid %d, %s).\n", st.PID, st.Phase)
 		if dcfg.DebugPipe != "" || memLimitSet {
-			fmt.Fprintln(stderr, "hyperbutler: --debug-pipe and --memlimit apply at the next start; the running engine is unchanged")
+			_, _ = fmt.Fprintln(stderr, "hyperbutler: --debug-pipe and --memlimit apply at the next start; the running engine is unchanged")
 		}
 		if !*noContext && in.settings.ContextManaged() {
 			selectContext(st.Pipe, stdout, stderr)
@@ -195,9 +195,9 @@ func cmdStart(args []string, stdout, stderr io.Writer) error {
 	if err != nil {
 		return in.explainFailure(err, st, stderr)
 	}
-	fmt.Fprintf(stdout, "hyperbutler is running: the Docker API answered after %.1f s (engine pid %d).\n", time.Since(t0).Seconds(), st.PID)
+	_, _ = fmt.Fprintf(stdout, "hyperbutler is running: the Docker API answered after %.1f s (engine pid %d).\n", time.Since(t0).Seconds(), st.PID)
 	if st.Daemon != nil && st.Daemon.Error != "" {
-		fmt.Fprintf(stderr, "hyperbutler: daemon.json: %s\n", printable([]byte(st.Daemon.Error)))
+		_, _ = fmt.Fprintf(stderr, "hyperbutler: daemon.json: %s\n", printable([]byte(st.Daemon.Error)))
 	}
 	if !*noContext && in.settings.ContextManaged() {
 		selectContext(st.Pipe, stdout, stderr)
@@ -299,7 +299,7 @@ func (in *install) noteCrash(stderr io.Writer) {
 	if err != nil || !st.Phase.Live() {
 		return
 	}
-	fmt.Fprintf(stderr, "hyperbutler: the previous engine (pid %d) exited without shutting down; see `hyperbutler logs`.\n", st.PID)
+	_, _ = fmt.Fprintf(stderr, "hyperbutler: the previous engine (pid %d) exited without shutting down; see `hyperbutler logs`.\n", st.PID)
 	if lk, err := engine.TryLock(in.l.LockPath()); err == nil {
 		engine.CleanupOrphans(engine.HCSBackend{}, in.l.VMPrefix(), slog.New(slog.NewTextHandler(stderr, &slog.HandlerOptions{Level: slog.LevelWarn})))
 		// The dead engine could not revoke its VM account's access to the disk.
@@ -327,18 +327,18 @@ func spawnEngine(in *install, kernel, initrd, manifest string, dcfg diag.Config)
 	if fi, err := os.Stat(logPath); err == nil && fi.Size() > engineLogMax {
 		_ = os.Rename(logPath, logPath+".1")
 	}
-	logf, err := os.OpenFile(logPath, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0o600)
+	logf, err := os.OpenFile(logPath, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0o600) //nolint:gosec // G304: the engine log in the user's own data layout
 	if err != nil {
 		return nil, err
 	}
-	defer logf.Close()
+	defer func() { _ = logf.Close() }()
 	const (
 		detachedProcess        = 0x00000008
 		createNewProcessGroup  = 0x00000200
 		createBreakawayFromJob = 0x01000000
 	)
 	for _, breakaway := range []bool{true, false} {
-		cmd := exec.Command(exe, engineArgs(in.l.Home, kernel, initrd, manifest, dcfg)...)
+		cmd := exec.Command(exe, engineArgs(in.l.Home, kernel, initrd, manifest, dcfg)...) //nolint:gosec // G204: exe is this program (os.Executable); the arguments are built by engineArgs
 		cmd.Dir = in.l.Home
 		cmd.Stdout, cmd.Stderr = logf, logf
 		flags := uint32(detachedProcess | createNewProcessGroup)
@@ -386,7 +386,10 @@ func (in *install) waitReady(proc *os.Process, created int64, exited <-chan erro
 				}
 				last = st
 			}
-			return last, fmt.Errorf("the engine exited before it was ready (%v); see `hyperbutler logs`", err)
+			if err == nil {
+				err = errors.New("exit status 0")
+			}
+			return last, fmt.Errorf("the engine exited before it was ready (%w); see `hyperbutler logs`", err)
 		case <-time.After(100 * time.Millisecond):
 		}
 		if time.Now().After(deadline) {
@@ -425,23 +428,23 @@ func engineError(st *engine.State) error {
 
 // explainFailure prints err and, for known causes, what to do about it.
 func (in *install) explainFailure(err error, st *engine.State, stderr io.Writer) error {
-	fmt.Fprintln(stderr, "hyperbutler: start failed:", err)
+	_, _ = fmt.Fprintln(stderr, "hyperbutler: start failed:", err)
 	var ee *engineErr
 	if errors.As(err, &ee) {
 		if d := engine.Describe(ee.code); d != "" {
-			fmt.Fprintln(stderr)
-			fmt.Fprintln(stderr, d)
+			_, _ = fmt.Fprintln(stderr)
+			_, _ = fmt.Fprintln(stderr, d)
 		}
 		if ee.code == engine.CodeHCSAccessDenied {
-			fmt.Fprintln(stderr)
+			_, _ = fmt.Fprintln(stderr)
 			if member, merr := inHyperVAdmins(); merr == nil && member {
-				fmt.Fprintln(stderr, "Your sign-in token IS a member of Hyper-V Administrators, so the denial has another cause; see `hyperbutler logs`.")
+				_, _ = fmt.Fprintln(stderr, "Your sign-in token IS a member of Hyper-V Administrators, so the denial has another cause; see `hyperbutler logs`.")
 			} else if merr == nil {
-				fmt.Fprintln(stderr, "Your current sign-in token is NOT a member of Hyper-V Administrators.")
+				_, _ = fmt.Fprintln(stderr, "Your current sign-in token is NOT a member of Hyper-V Administrators.")
 			}
 		}
 	}
-	fmt.Fprintf(stderr, "Logs: %s\n", in.l.EngineLogPath())
+	_, _ = fmt.Fprintf(stderr, "Logs: %s\n", in.l.EngineLogPath())
 	return &shownError{err: err}
 }
 
@@ -460,41 +463,41 @@ func inHyperVAdmins() (bool, error) {
 func selectContext(pipe string, stdout, stderr io.Writer) {
 	store, err := dockerctx.DefaultStore()
 	if err != nil {
-		fmt.Fprintln(stderr, "hyperbutler: docker context:", err)
+		_, _ = fmt.Fprintln(stderr, "hyperbutler: docker context:", err)
 		return
 	}
 	host := npipeHost(pipe)
 	if err := store.Ensure(contextName, host, "hyperbutler (managed by hyperbutler.exe)"); err != nil {
 		if errors.Is(err, dockerctx.ErrNotOurs) {
-			fmt.Fprintf(stderr, "hyperbutler: a docker context named %q already exists and was not created by hyperbutler; it was left alone.\n"+
+			_, _ = fmt.Fprintf(stderr, "hyperbutler: a docker context named %q already exists and was not created by hyperbutler; it was left alone.\n"+
 				"        Use DOCKER_HOST=%s, or remove that context (docker context rm %s) and run hyperbutler start again.\n", contextName, host, contextName)
 			return
 		}
-		fmt.Fprintln(stderr, "hyperbutler: docker context:", err)
+		_, _ = fmt.Fprintln(stderr, "hyperbutler: docker context:", err)
 		return
 	}
 	prev, err := store.Current()
 	if err != nil {
-		fmt.Fprintf(stderr, "hyperbutler: docker context %q is registered but not selected: %v\n", contextName, err)
+		_, _ = fmt.Fprintf(stderr, "hyperbutler: docker context %q is registered but not selected: %v\n", contextName, err)
 		return
 	}
 	if prev != contextName {
 		if err := store.Use(contextName); err != nil {
-			fmt.Fprintf(stderr, "hyperbutler: docker context %q is registered but not selected: %v\n", contextName, err)
+			_, _ = fmt.Fprintf(stderr, "hyperbutler: docker context %q is registered but not selected: %v\n", contextName, err)
 			return
 		}
 		was := prev
 		if was == "" {
 			was = "default"
 		}
-		fmt.Fprintf(stdout, "Docker context %q selected (was %q).\n", contextName, was)
+		_, _ = fmt.Fprintf(stdout, "Docker context %q selected (was %q).\n", contextName, was)
 	} else {
-		fmt.Fprintf(stdout, "Docker context %q is selected.\n", contextName)
+		_, _ = fmt.Fprintf(stdout, "Docker context %q is selected.\n", contextName)
 	}
 	if h := os.Getenv("DOCKER_HOST"); h != "" {
-		fmt.Fprintf(stderr, "hyperbutler: note: DOCKER_HOST=%s overrides the docker context in this shell.\n", h)
+		_, _ = fmt.Fprintf(stderr, "hyperbutler: note: DOCKER_HOST=%s overrides the docker context in this shell.\n", h)
 	} else if c := os.Getenv("DOCKER_CONTEXT"); c != "" && c != contextName {
-		fmt.Fprintf(stderr, "hyperbutler: note: DOCKER_CONTEXT=%s overrides the selected context in this shell.\n", c)
+		_, _ = fmt.Fprintf(stderr, "hyperbutler: note: DOCKER_CONTEXT=%s overrides the selected context in this shell.\n", c)
 	}
 }
 
@@ -522,7 +525,7 @@ func cmdStop(args []string, stdout, stderr io.Writer) error {
 	}
 	forced, took, err := in.stop(*timeout, stderr)
 	if errors.Is(err, errNotRunning) {
-		fmt.Fprintln(stdout, "hyperbutler is not running.")
+		_, _ = fmt.Fprintln(stdout, "hyperbutler is not running.")
 		return nil
 	}
 	if err != nil {
@@ -532,7 +535,7 @@ func cmdStop(args []string, stdout, stderr io.Writer) error {
 	if forced {
 		how = "killed after the orderly shutdown timed out"
 	}
-	fmt.Fprintf(stdout, "hyperbutler stopped: %s in %.1f s.\n", how, took.Seconds())
+	_, _ = fmt.Fprintf(stdout, "hyperbutler stopped: %s in %.1f s.\n", how, took.Seconds())
 	return nil
 }
 
@@ -557,7 +560,7 @@ func (in *install) stop(timeout time.Duration, stderr io.Writer) (forced bool, t
 	}
 	defer p.Close()
 	if err := engine.RequestStop(st.PID, st.PIDCreated); err != nil {
-		fmt.Fprintln(stderr, "hyperbutler: could not ask the engine to stop; killing it:", err)
+		_, _ = fmt.Fprintln(stderr, "hyperbutler: could not ask the engine to stop; killing it:", err)
 		forced = true
 	} else if ok, _ := p.Wait(timeout); !ok {
 		forced = true
@@ -577,7 +580,7 @@ func (in *install) stop(timeout time.Duration, stderr io.Writer) (forced bool, t
 	}
 	defer func() { _ = lk.Unlock() }()
 	if n := engine.CleanupOrphans(engine.HCSBackend{}, in.l.VMPrefix(), slog.New(slog.NewTextHandler(stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))); n > 0 {
-		fmt.Fprintf(stderr, "hyperbutler: terminated %d VM(s) the engine left behind.\n", n)
+		_, _ = fmt.Fprintf(stderr, "hyperbutler: terminated %d VM(s) the engine left behind.\n", n)
 	}
 	if forced {
 		if st, err := engine.LoadState(in.l); err == nil && st.Phase.Live() {
@@ -639,31 +642,31 @@ func cmdStatus(args []string, stdout, stderr io.Writer) (int, error) {
 	st := r.State
 	switch {
 	case r.Running && st != nil && st.Phase.Live():
-		fmt.Fprintf(stdout, "hyperbutler: %s (engine pid %d, up %s", st.Phase, st.PID, time.Since(st.Started).Round(time.Second))
+		_, _ = fmt.Fprintf(stdout, "hyperbutler: %s (engine pid %d, up %s", st.Phase, st.PID, time.Since(st.Started).Round(time.Second))
 		if st.ReadyMillis > 0 {
-			fmt.Fprintf(stdout, ", Docker API ready after %.1f s", float64(st.ReadyMillis)/1000)
+			_, _ = fmt.Fprintf(stdout, ", Docker API ready after %.1f s", float64(st.ReadyMillis)/1000)
 		}
-		fmt.Fprintln(stdout, ")")
-		fmt.Fprintf(stdout, "  docker:  %s\n", npipeHost(st.Pipe))
-		fmt.Fprintf(stdout, "  vm:      %s\n", st.VMID)
+		_, _ = fmt.Fprintln(stdout, ")")
+		_, _ = fmt.Fprintf(stdout, "  docker:  %s\n", npipeHost(st.Pipe))
+		_, _ = fmt.Fprintf(stdout, "  vm:      %s\n", st.VMID)
 	case r.Running:
-		fmt.Fprintln(stdout, "hyperbutler: starting")
+		_, _ = fmt.Fprintln(stdout, "hyperbutler: starting")
 	case st != nil && st.Phase.Live():
-		fmt.Fprintf(stdout, "hyperbutler: stopped (the engine, pid %d, exited without shutting down; see `hyperbutler logs`)\n", st.PID)
+		_, _ = fmt.Fprintf(stdout, "hyperbutler: stopped (the engine, pid %d, exited without shutting down; see `hyperbutler logs`)\n", st.PID)
 	case st != nil && st.Phase == engine.PhaseFailed:
-		fmt.Fprintf(stdout, "hyperbutler: stopped (last run failed: %s)\n", string(printable([]byte(st.Error))))
+		_, _ = fmt.Fprintf(stdout, "hyperbutler: stopped (last run failed: %s)\n", string(printable([]byte(st.Error))))
 	case in.settings == nil:
-		fmt.Fprintln(stdout, "hyperbutler: not set up yet (run hyperbutler start)")
+		_, _ = fmt.Fprintln(stdout, "hyperbutler: not set up yet (run hyperbutler start)")
 		return code, nil
 	default:
-		fmt.Fprintln(stdout, "hyperbutler: stopped")
+		_, _ = fmt.Fprintln(stdout, "hyperbutler: stopped")
 	}
 	if in.settings != nil {
-		fmt.Fprintf(stdout, "  guest:   %d MiB, %d CPUs\n", r.MemoryMB, r.CPUs)
+		_, _ = fmt.Fprintf(stdout, "  guest:   %d MiB, %d CPUs\n", r.MemoryMB, r.CPUs)
 		if r.Disk != "" {
-			fmt.Fprintf(stdout, "  data:    %s (%s on the host, %s maximum; %s free on the volume)\n", r.Disk, engine.HumanSize(r.DiskUsed), engine.FormatSize(r.DiskMax), engine.HumanSize(r.HostFree))
+			_, _ = fmt.Fprintf(stdout, "  data:    %s (%s on the host, %s maximum; %s free on the volume)\n", r.Disk, engine.HumanSize(r.DiskUsed), engine.FormatSize(r.DiskMax), engine.HumanSize(r.HostFree))
 		} else {
-			fmt.Fprintf(stdout, "  data:    %s (no data disk yet)\n", r.DataDir)
+			_, _ = fmt.Fprintf(stdout, "  data:    %s (no data disk yet)\n", r.DataDir)
 		}
 	}
 	if r.Context != "" {
@@ -671,10 +674,10 @@ func cmdStatus(args []string, stdout, stderr io.Writer) (int, error) {
 		if r.ContextSel {
 			sel = "selected"
 		}
-		fmt.Fprintf(stdout, "  context: %s (%s)\n", r.Context, sel)
+		_, _ = fmt.Fprintf(stdout, "  context: %s (%s)\n", r.Context, sel)
 	}
-	fmt.Fprintf(stdout, "  daemon:  %s\n", daemonStatusLine(in.l, st))
-	fmt.Fprintf(stdout, "  state:   %s\n", in.l.Home)
+	_, _ = fmt.Fprintf(stdout, "  daemon:  %s\n", daemonStatusLine(in.l, st))
+	_, _ = fmt.Fprintf(stdout, "  state:   %s\n", in.l.Home)
 	return code, nil
 }
 
@@ -696,7 +699,7 @@ func cmdLogs(args []string, stdout, stderr io.Writer) error {
 	if *console {
 		path = in.l.ConsoleLogPath()
 	}
-	f, err := os.Open(path)
+	f, err := os.Open(path) //nolint:gosec // G304: a log file in the user's own data layout
 	if errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("no log yet at %s", path)
 	}
@@ -734,7 +737,7 @@ func cmdLogs(args []string, stdout, stderr io.Writer) error {
 		}
 		if fi.Size() < pos { // rotated or truncated: start over
 			_ = f.Close()
-			if f, err = os.Open(path); err != nil {
+			if f, err = os.Open(path); err != nil { //nolint:gosec // G304: a log file in the user's own data layout
 				continue
 			}
 			pos = 0
@@ -787,19 +790,19 @@ func cmdDelete(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 		if u, err := vm.Usage(disk); err == nil {
 			size = engine.HumanSize(u.Allocated) + " on the host"
 		}
-		fmt.Fprintf(stdout, "This deletes hyperbutler's VM state and its data disk:\n  %s (%s)\n"+
+		_, _ = fmt.Fprintf(stdout, "This deletes hyperbutler's VM state and its data disk:\n  %s (%s)\n"+
 			"All images, containers and volumes in it are lost.", disk, size)
 		if up {
-			fmt.Fprint(stdout, " hyperbutler is running and will be stopped first.")
+			_, _ = fmt.Fprint(stdout, " hyperbutler is running and will be stopped first.")
 		}
-		fmt.Fprint(stdout, "\nType \"yes\" to continue: ")
+		_, _ = fmt.Fprint(stdout, "\nType \"yes\" to continue: ")
 		if !isConsole(stdin) {
-			fmt.Fprintln(stdout)
+			_, _ = fmt.Fprintln(stdout)
 			return errors.New("delete: input is not a terminal; pass --yes to confirm")
 		}
 		line, _ := bufio.NewReader(stdin).ReadString('\n')
 		if a := strings.ToLower(strings.TrimSpace(line)); a != "yes" && a != "y" {
-			fmt.Fprintln(stdout, "Nothing was deleted.")
+			_, _ = fmt.Fprintln(stdout, "Nothing was deleted.")
 			return nil
 		}
 	}
@@ -850,7 +853,7 @@ func cmdDelete(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	if len(failed) > 0 {
 		return fmt.Errorf("delete: could not remove:\n  %s", strings.Join(failed, "\n  "))
 	}
-	fmt.Fprintln(stdout, "hyperbutler deleted. `hyperbutler start` sets it up again.")
+	_, _ = fmt.Fprintln(stdout, "hyperbutler deleted. `hyperbutler start` sets it up again.")
 	return nil
 }
 
@@ -920,7 +923,7 @@ func cmdEngine(args []string, stderr io.Writer) (int, error) {
 	if err != nil {
 		return 1, err
 	}
-	defer dbg.Close()
+	defer func() { _ = dbg.Close() }()
 	if dcfg.DebugPipe != "" {
 		log.Info("debug endpoint", "pipe", dcfg.DebugPipe)
 	}

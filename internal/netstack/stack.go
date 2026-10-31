@@ -21,6 +21,7 @@ package netstack
 
 import (
 	"context"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
@@ -140,7 +141,8 @@ func New(cfg Config, log *slog.Logger) (*Stack, error) {
 	if cfg.HostGateway != nil {
 		virtual = append(virtual, cfg.HostGatewayAddr().String())
 	}
-	ep, err := tap.NewLinkEndpoint(false, uint32(cfg.MTU), cfg.GatewayMAC.String(), gw.String(), virtual)
+	mtu := uint32(cfg.MTU) //nolint:gosec // G115: the config check keeps MTU in frame.MinMTU..MaxMTU
+	ep, err := tap.NewLinkEndpoint(false, mtu, cfg.GatewayMAC.String(), gw.String(), virtual)
 	if err != nil {
 		return nil, fmt.Errorf("netstack: link endpoint: %w", err)
 	}
@@ -202,7 +204,7 @@ func (n *Stack) buildStack() error {
 	}
 	subnet, err := tcpip.NewSubnet(tcpipAddr(n.cfg.Subnet.Masked().Addr()), tcpip.MaskFromBytes(net.CIDRMask(n.cfg.Subnet.Bits(), 32)))
 	if err != nil {
-		return fmt.Errorf("netstack: subnet: %v", err)
+		return fmt.Errorf("netstack: subnet: %w", err)
 	}
 	// Replies to addresses outside the subnet (containers behind the guest's docker0
 	// bridge, which the guest routes without NAT) go to the guest.
@@ -451,11 +453,13 @@ func proxy(guest *gonet.TCPConn, gep tcpip.Endpoint, host net.Conn) {
 	a, b := net.Conn(guest), host
 	go cp(a, b)
 	go cp(b, a)
-	if err := <-done; err != nil {
-		_ = a.Close()
-		_ = b.Close()
+	for range 2 {
+		// The first copy to fail ends both: closing unblocks the other.
+		if err := <-done; err != nil {
+			_ = a.Close()
+			_ = b.Close()
+		}
 	}
-	<-done
 	_ = a.Close()
 	_ = b.Close()
 }
@@ -668,7 +672,7 @@ func (n *Stack) serveDNSTCP(ln net.Listener) {
 }
 
 func (n *Stack) serveDNSTCPConn(c net.Conn) {
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 	stop := context.AfterFunc(n.ctx, func() { _ = c.Close() })
 	defer stop()
 	var hdr [2]byte
@@ -694,11 +698,11 @@ func (n *Stack) serveDNSTCPConn(c net.Conn) {
 		}
 		resp := n.dns.answer(n.ctx, buf[:l], false)
 		<-n.dnsSem
-		if resp == nil {
-			return
+		if resp == nil || len(resp) > 0xFFFF {
+			return // the 2-byte length prefix cannot frame a longer message
 		}
 		out := make([]byte, 2+len(resp))
-		out[0], out[1] = byte(len(resp)>>8), byte(len(resp))
+		binary.BigEndian.PutUint16(out, uint16(len(resp))) //nolint:gosec // G115: at most 0xFFFF, checked above
 		copy(out[2:], resp)
 		if _, err := c.Write(out); err != nil {
 			return

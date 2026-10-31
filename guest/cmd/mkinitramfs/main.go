@@ -76,17 +76,17 @@ func run() error {
 		return err
 	}
 	spec, err := cpio.ParseSpec(sf, vs)
-	sf.Close()
+	_ = sf.Close()
 	if err != nil {
 		return err
 	}
 
 	tmp := *out + ".tmp"
-	of, err := os.Create(tmp)
+	of, err := os.Create(tmp) //nolint:gosec // G304: build tool; the output path is the -o flag
 	if err != nil {
 		return err
 	}
-	defer os.Remove(tmp)
+	defer func() { _ = os.Remove(tmp) }() // fails harmlessly once renamed
 	bw := bufio.NewWriterSize(of, 1<<20)
 	var sink io.Writer = bw
 	var gz *gzip.Writer
@@ -99,21 +99,21 @@ func run() error {
 	}
 	w := cpio.NewWriter(sink)
 	if err := spec.Build(w, *base, uint32(mtime)); err != nil {
-		of.Close()
+		_ = of.Close()
 		return err
 	}
 	if err := w.Close(); err != nil {
-		of.Close()
+		_ = of.Close()
 		return err
 	}
 	if gz != nil {
 		if err := gz.Close(); err != nil {
-			of.Close()
+			_ = of.Close()
 			return err
 		}
 	}
 	if err := bw.Flush(); err != nil {
-		of.Close()
+		_ = of.Close()
 		return err
 	}
 	if err := of.Close(); err != nil {
@@ -123,11 +123,11 @@ func run() error {
 }
 
 func listArchive(p string) error {
-	f, err := os.Open(p)
+	f, err := os.Open(p) //nolint:gosec // G304: build tool; lists the archive named on the command line
 	if err != nil {
 		return err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	br := bufio.NewReader(f)
 	var r io.Reader = br
 	if magic, _ := br.Peek(2); bytes.Equal(magic, []byte{0x1f, 0x8b}) {
@@ -140,7 +140,7 @@ func listArchive(p string) error {
 	cr := cpio.NewReader(r)
 	for {
 		h, err := cr.Next()
-		if err == io.EOF {
+		if errors.Is(err, io.EOF) {
 			return nil
 		}
 		if err != nil {

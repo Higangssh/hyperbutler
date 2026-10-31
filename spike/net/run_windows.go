@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -48,7 +49,7 @@ func runBaseline() (string, error) {
 	}
 	p := filepath.Join(workDir, "roots.pem")
 	fmt.Printf("collected %d root(s) into %s\n", len(seen), p)
-	return roots.String(), os.WriteFile(p, roots.Bytes(), 0o644)
+	return roots.String(), os.WriteFile(p, roots.Bytes(), 0o600)
 }
 
 func loadRoots() (string, error) {
@@ -73,7 +74,7 @@ func runHNS(args []string) error {
 	reach := fs.String("reach", "", "comma-separated host:port targets the guest dials (VPN checks)")
 	bulk := fs.Uint("bulk", 0, "guest TCP port for the bulk throughput test (0 = skip)")
 	dnsTry := fs.String("dnstry", "", "extra comma-separated DNS servers the guest tries with nslookup")
-	fs.Parse(args)
+	_ = fs.Parse(args)
 
 	if err := hcn.Load(); err != nil {
 		return fmt.Errorf("load computenetwork.dll: %w", err)
@@ -259,7 +260,7 @@ func hostDNS() string {
 		buf := make([]byte, size)
 		aa := (*windows.IpAdapterAddresses)(unsafe.Pointer(&buf[0]))
 		err := windows.GetAdaptersAddresses(windows.AF_INET, 0, 0, aa, &size)
-		if err == windows.ERROR_BUFFER_OVERFLOW {
+		if errors.Is(err, windows.ERROR_BUFFER_OVERFLOW) {
 			continue
 		}
 		if err != nil {
@@ -289,7 +290,7 @@ func runRelay(args []string) error {
 	logTunnels := fs.Bool("log", false, "log each tunnel")
 	reach := fs.String("reach", "", "comma-separated host:port targets the guest dials (VPN checks)")
 	bulk := fs.Uint("bulk", 0, "guest vsock port for the bulk throughput test (0 = skip)")
-	fs.Parse(args)
+	_ = fs.Parse(args)
 
 	roots, err := loadRoots()
 	if err != nil {
@@ -361,7 +362,7 @@ func runRelay(args []string) error {
 		if err != nil {
 			return nil, err
 		}
-		go srv.Serve(ln)
+		go func() { _ = srv.Serve(ln) }()
 		return func() { ln.Close() }, nil
 	}, dialBulk)
 }

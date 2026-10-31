@@ -217,7 +217,7 @@ func Open(id string) (*System, error) {
 	}
 	var h uintptr
 	if hr, _, _ := procHcsOpenComputeSystem.Call(uintptr(unsafe.Pointer(idp)), windows.GENERIC_ALL, uintptr(unsafe.Pointer(&h))); hr != 0 {
-		return nil, &Error{Op: "HcsOpenComputeSystem", HR: uint32(hr)}
+		return nil, &Error{Op: "HcsOpenComputeSystem", HR: dword(hr)}
 	}
 	return &System{id: id, h: h}, nil
 }
@@ -274,7 +274,7 @@ func vmAccess(name string, proc *windows.LazyProc, id, path string) error {
 		return err
 	}
 	if hr, _, _ := proc.Call(uintptr(unsafe.Pointer(idp)), uintptr(unsafe.Pointer(pp))); hr != 0 {
-		return &Error{Op: name, HR: uint32(hr)}
+		return &Error{Op: name, HR: dword(hr)}
 	}
 	return nil
 }
@@ -322,6 +322,11 @@ func (s *System) Close() error {
 	return nil
 }
 
+// dword is the 32-bit result (HRESULT or DWORD) a Win32 call returns in a register.
+func dword(r uintptr) uint32 {
+	return uint32(r) //nolint:gosec // G115: the callee returns 32 bits; the rest of the register is not part of the result
+}
+
 // call runs one HCS operation synchronously and returns its result document.
 func call(name string, fn func(op uintptr) uintptr) (string, error) {
 	op, _, _ := procHcsCreateOperation.Call(0, 0)
@@ -330,18 +335,18 @@ func call(name string, fn func(op uintptr) uintptr) (string, error) {
 	}
 	defer procHcsCloseOperation.Call(op)
 
-	if hr := uint32(fn(op)); hr != 0 {
+	if hr := dword(fn(op)); hr != 0 {
 		return "", &Error{Op: name, HR: hr}
 	}
 	var res *uint16
-	hr, _, _ := procHcsWaitForOperationResult.Call(op, uintptr(opTimeout.Milliseconds()), uintptr(unsafe.Pointer(&res)))
+	hr, _, _ := procHcsWaitForOperationResult.Call(op, uintptr(opTimeout/time.Millisecond), uintptr(unsafe.Pointer(&res)))
 	doc := ""
 	if res != nil {
 		doc = windows.UTF16PtrToString(res)
 		_, _ = windows.LocalFree(windows.Handle(unsafe.Pointer(res)))
 	}
-	if uint32(hr) != 0 {
-		return doc, &Error{Op: name, HR: uint32(hr), Result: doc}
+	if code := dword(hr); code != 0 {
+		return doc, &Error{Op: name, HR: code, Result: doc}
 	}
 	return doc, nil
 }

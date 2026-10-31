@@ -40,7 +40,7 @@ func readAll(r io.Reader) ([]entry, error) {
 	var out []entry
 	for {
 		h, err := cr.Next()
-		if err == io.EOF {
+		if errors.Is(err, io.EOF) {
 			return out, nil
 		}
 		if err != nil {
@@ -139,7 +139,7 @@ func TestConcatenated(t *testing.T) {
 	var names []string
 	for {
 		h, err := r.Next()
-		if err == io.EOF {
+		if errors.Is(err, io.EOF) {
 			break
 		}
 		if err != nil {

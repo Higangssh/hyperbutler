@@ -50,14 +50,15 @@ func takeString(p *uint16) string {
 // result turns an HRESULT and error record into an error.
 func result(op string, hr uintptr, record *uint16) error {
 	rec := takeString(record)
-	if uint32(hr) == 0 {
+	code := uint32(hr) //nolint:gosec // G115: an HRESULT is 32 bits; the rest of the register is not part of it
+	if code == 0 {
 		return nil
 	}
 	msg, _, perr := ParseErrorRecord(rec)
 	if perr != nil {
 		msg = sanitize(rec, 512)
 	}
-	return &ResultError{Op: op, HResult: uint32(hr), Message: msg}
+	return &ResultError{Op: op, HResult: code, Message: msg}
 }
 
 func u16(s string) (*uint16, error) { return windows.UTF16PtrFromString(s) }

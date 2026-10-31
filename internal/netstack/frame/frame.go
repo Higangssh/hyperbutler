@@ -63,7 +63,7 @@ func (fr *Reader) Next() ([]byte, error) {
 		return nil, err
 	}
 	n := binary.BigEndian.Uint32(fr.hdr[:])
-	if n < uint32(fr.min) || n > uint32(fr.max) {
+	if int64(n) < int64(fr.min) || int64(n) > int64(fr.max) {
 		return nil, fmt.Errorf("%w: %d (allowed %d..%d)", ErrFrameSize, n, fr.min, fr.max)
 	}
 	b := fr.buf[:n]
@@ -78,7 +78,7 @@ func (fr *Reader) Next() ([]byte, error) {
 
 // PutHeader writes the length prefix for a frame of n bytes into b[:HeaderLen].
 func PutHeader(b []byte, n int) {
-	binary.BigEndian.PutUint32(b[:HeaderLen], uint32(n))
+	binary.BigEndian.PutUint32(b[:HeaderLen], uint32(n)) //nolint:gosec // G115: callers pass frame lengths, at most MaxFrameLen
 }
 
 // Append appends the encoding of frame to dst.

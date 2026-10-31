@@ -8,8 +8,9 @@ import (
 	"time"
 	"unsafe"
 
-	"github.com/Higangssh/hyperbutler/internal/vm"
 	"golang.org/x/sys/windows"
+
+	"github.com/Higangssh/hyperbutler/internal/vm"
 )
 
 // probeDevices creates (and immediately terminates) a VM whose Devices object has extra
@@ -29,7 +30,9 @@ func probeDevices(extra string) error {
 		return err
 	}
 	var m map[string]any
-	json.Unmarshal(doc, &m)
+	if err := json.Unmarshal(doc, &m); err != nil {
+		return err
+	}
 	var add map[string]any
 	if err := json.Unmarshal([]byte(extra), &add); err != nil {
 		return fmt.Errorf("-probe: %w", err)
@@ -52,7 +55,7 @@ func probeDevices(extra string) error {
 		s := ""
 		if res != nil {
 			s = windows.UTF16PtrToString(res)
-			windows.LocalFree(windows.Handle(unsafe.Pointer(res)))
+			_, _ = windows.LocalFree(windows.Handle(unsafe.Pointer(res)))
 		}
 		fmt.Printf("%s: call 0x%08X, result 0x%08X %s\n", name, uint32(hr), uint32(whr), s)
 	}

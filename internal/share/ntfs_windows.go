@@ -97,18 +97,18 @@ func OpenNTFS(dir string) (*NTFS, error) {
 	}
 	var bi windows.ByHandleFileInformation
 	if err := windows.GetFileInformationByHandle(h, &bi); err != nil {
-		windows.CloseHandle(h)
+		_ = windows.CloseHandle(h)
 		return nil, err
 	}
 	if bi.FileAttributes&windows.FILE_ATTRIBUTE_DIRECTORY == 0 {
-		windows.CloseHandle(h)
+		_ = windows.CloseHandle(h)
 		return nil, fmt.Errorf("share: %s is not a directory", dir)
 	}
 	buf := make([]uint16, 1024)
-	n, err := windows.GetFinalPathNameByHandle(h, &buf[0], uint32(len(buf)), 0)
+	n, err := windows.GetFinalPathNameByHandle(h, &buf[0], len32(len(buf)), 0)
 	if err != nil || int(n) >= len(buf) {
-		windows.CloseHandle(h)
-		return nil, fmt.Errorf("share: final path of %s: %v", dir, err)
+		_ = windows.CloseHandle(h)
+		return nil, fmt.Errorf("share: final path of %s: %w", dir, err)
 	}
 	id := fmt.Sprintf("%08x-%08x%08x", bi.VolumeSerialNumber, bi.FileIndexHigh, bi.FileIndexLow)
 	return &NTFS{root: h, rootPath: windows.UTF16ToString(buf[:n]), rootID: id}, nil
@@ -238,7 +238,7 @@ func ntCreate(dir windows.Handle, name string, access, disp, opts, objAttrs uint
 		eaPtr = uintptr(unsafe.Pointer(&ea[0]))
 	}
 	err = windows.NtCreateFile(&h, access|windows.SYNCHRONIZE, &oa, &iosb, nil, windows.FILE_ATTRIBUTE_NORMAL, shareAll, disp,
-		opts|windows.FILE_SYNCHRONOUS_IO_NONALERT|windows.FILE_OPEN_REPARSE_POINT, eaPtr, uint32(len(ea)))
+		opts|windows.FILE_SYNCHRONOUS_IO_NONALERT|windows.FILE_OPEN_REPARSE_POINT, eaPtr, len32(len(ea)))
 	if err != nil {
 		return 0, err
 	}
@@ -278,7 +278,7 @@ func (f *NTFS) walkAt(path []string, access, disp, opts uint32, ea []byte) (wind
 	dir := f.root
 	closeDir := func() {
 		if dir != f.root {
-			windows.CloseHandle(dir)
+			_ = windows.CloseHandle(dir)
 		}
 	}
 	defer closeDir()
@@ -293,7 +293,7 @@ func (f *NTFS) walkAt(path []string, access, disp, opts uint32, ea []byte) (wind
 		}
 		attrs, tag, err := reparseTag(h)
 		if err != nil || (attrs&windows.FILE_ATTRIBUTE_REPARSE_POINT != 0 && tag&tagSurrogate != 0) {
-			windows.CloseHandle(h)
+			_ = windows.CloseHandle(h)
 			return 0, ENOTDIR
 		}
 		closeDir()
@@ -317,7 +317,7 @@ func filetime(t int64) (uint64, uint32) {
 		return 0, 0
 	}
 	ns := (t - epoch) * 100
-	return uint64(ns / 1e9), uint32(ns % 1e9)
+	return uint64(ns / 1e9), uint32(ns % 1e9) //nolint:gosec // G115: t >= epoch, so ns >= 0; ns % 1e9 < 1e9
 }
 
 func toFiletime(unixNs int64) int64 {
@@ -369,9 +369,9 @@ func statLx(b []byte) Attr {
 		UID:    NoID,
 		GID:    NoID,
 	}
-	a.Atime, a.AtimeNsec = filetime(int64(le.Uint64(b[16:])))
-	a.Mtime, a.MtimeNsec = filetime(int64(le.Uint64(b[24:])))
-	a.Ctime, a.CtimeNsec = filetime(int64(le.Uint64(b[32:])))
+	a.Atime, a.AtimeNsec = filetime(leInt64(b[16:]))
+	a.Mtime, a.MtimeNsec = filetime(leInt64(b[24:]))
+	a.Ctime, a.CtimeNsec = filetime(leInt64(b[32:]))
 	flags := le.Uint32(b[72:])
 	perm := defaultPerm(typ, attrs)
 	if flags&lxHasMode != 0 {
@@ -424,7 +424,7 @@ func (f *NTFS) Lstat(path []string) (Attr, error) {
 		if r == 0 {
 			return statLx(b[:]), nil
 		}
-		st := windows.NTStatus(r)
+		st := ntstatus(r)
 		if st != windows.STATUS_REPARSE_POINT_ENCOUNTERED && st != windows.STATUS_INVALID_INFO_CLASS && st != windows.STATUS_NOT_IMPLEMENTED && st != windows.STATUS_INVALID_PARAMETER {
 			return Attr{}, ntErr(st)
 		}
@@ -433,7 +433,7 @@ func (f *NTFS) Lstat(path []string) (Attr, error) {
 	if err != nil {
 		return Attr{}, err
 	}
-	defer windows.CloseHandle(h)
+	defer closeHandle(h)
 	return statHandle(h)
 }
 
@@ -444,7 +444,7 @@ func (f *NTFS) ReadDir(path []string) ([]DirEntry, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer windows.CloseHandle(h)
+	defer closeHandle(h)
 	if _, tag, err := reparseTag(h); err == nil && tag&tagSurrogate != 0 {
 		return nil, ENOTDIR
 	}
@@ -453,7 +453,7 @@ func (f *NTFS) ReadDir(path []string) ([]DirEntry, error) {
 	var out []DirEntry
 	le := binary.LittleEndian
 	for {
-		err := windows.GetFileInformationByHandleEx(h, class, &buf[0], uint32(len(buf)))
+		err := windows.GetFileInformationByHandleEx(h, class, &buf[0], len32(len(buf)))
 		class = windows.FileIdBothDirectoryInfo
 		if errors.Is(err, windows.ERROR_NO_MORE_FILES) {
 			return out, nil
@@ -492,9 +492,9 @@ func (f *NTFS) ReadDir(path []string) ([]DirEntry, error) {
 					GID:    NoID,
 					Mode:   typ | defaultPerm(typ, attrs),
 				}
-				a.Atime, a.AtimeNsec = filetime(int64(le.Uint64(e[16:])))
-				a.Mtime, a.MtimeNsec = filetime(int64(le.Uint64(e[24:])))
-				a.Ctime, a.CtimeNsec = filetime(int64(le.Uint64(e[32:])))
+				a.Atime, a.AtimeNsec = filetime(leInt64(e[16:]))
+				a.Mtime, a.MtimeNsec = filetime(leInt64(e[24:]))
+				a.Ctime, a.CtimeNsec = filetime(leInt64(e[32:]))
 				if typ != sIFREG && typ != sIFDIR {
 					a.Size = 0
 				}
@@ -534,7 +534,10 @@ func (n *ntFile) ReadAt(p []byte, off int64) (int, error) {
 	if len(p) == 0 {
 		return 0, nil
 	}
-	ov := windows.Overlapped{Offset: uint32(off), OffsetHigh: uint32(off >> 32)}
+	if off < 0 {
+		return 0, EINVAL
+	}
+	ov := windows.Overlapped{Offset: uint32(off), OffsetHigh: uint32(off >> 32)} //nolint:gosec // G115: off >= 0 split into its low and high halves
 	var done uint32
 	err := windows.ReadFile(n.h, p, &done, &ov)
 	if errors.Is(err, windows.ERROR_HANDLE_EOF) || (err == nil && done == 0) {
@@ -547,7 +550,10 @@ func (n *ntFile) ReadAt(p []byte, off int64) (int, error) {
 }
 
 func (n *ntFile) WriteAt(p []byte, off int64) (int, error) {
-	ov := windows.Overlapped{Offset: uint32(off), OffsetHigh: uint32(off >> 32)}
+	if off < 0 {
+		return 0, EINVAL
+	}
+	ov := windows.Overlapped{Offset: uint32(off), OffsetHigh: uint32(off >> 32)} //nolint:gosec // G115: off >= 0 split into its low and high halves
 	var done uint32
 	if err := windows.WriteFile(n.h, p, &done, &ov); err != nil {
 		return int(done), ntErr(err)
@@ -591,7 +597,7 @@ func lxEA(mode uint32, o *Owner) []byte {
 	add := func(name string, v uint32, last bool) {
 		start := len(b)
 		entry := make([]byte, 8+len(name)+1+4)
-		entry[5] = byte(len(name))
+		entry[5] = byte(len(name)) //nolint:gosec // G115: name is one of the $LX attribute names (6 bytes)
 		binary.LittleEndian.PutUint16(entry[6:], 4)
 		copy(entry[8:], name)
 		binary.LittleEndian.PutUint32(entry[8+len(name)+1:], v)
@@ -600,7 +606,7 @@ func lxEA(mode uint32, o *Owner) []byte {
 			for len(b)%4 != 0 {
 				b = append(b, 0)
 			}
-			binary.LittleEndian.PutUint32(b[start:], uint32(len(b)-start))
+			binary.LittleEndian.PutUint32(b[start:], len32(len(b)-start))
 		}
 	}
 	if o != nil {
@@ -619,7 +625,7 @@ func lxOwnerEA(uid, gid uint32) []byte {
 	}{{"$LXUID", uid}, {"$LXGID", gid}} {
 		start := len(b)
 		entry := make([]byte, 8+len(kv.n)+1+4)
-		entry[5] = byte(len(kv.n))
+		entry[5] = byte(len(kv.n)) //nolint:gosec // G115: $LXUID or $LXGID (6 bytes)
 		binary.LittleEndian.PutUint16(entry[6:], 4)
 		copy(entry[8:], kv.n)
 		binary.LittleEndian.PutUint32(entry[8+len(kv.n)+1:], kv.v)
@@ -628,7 +634,7 @@ func lxOwnerEA(uid, gid uint32) []byte {
 			for len(b)%4 != 0 {
 				b = append(b, 0)
 			}
-			binary.LittleEndian.PutUint32(b[start:], uint32(len(b)-start))
+			binary.LittleEndian.PutUint32(b[start:], len32(len(b)-start))
 		}
 	}
 	return b
@@ -638,7 +644,7 @@ func setEA(h windows.Handle, ea []byte) error {
 	var iosb windows.IO_STATUS_BLOCK
 	r, _, _ := procNtSetEaFile.Call(uintptr(h), uintptr(unsafe.Pointer(&iosb)), uintptr(unsafe.Pointer(&ea[0])), uintptr(len(ea)))
 	if r != 0 {
-		return ntErr(windows.NTStatus(r))
+		return ntErr(ntstatus(r))
 	}
 	return nil
 }
@@ -661,7 +667,7 @@ func (f *NTFS) Create(path []string, flags, mode uint32, o Owner) (File, Attr, e
 	}
 	a, err := statHandle(h)
 	if err != nil {
-		windows.CloseHandle(h)
+		_ = windows.CloseHandle(h)
 		return nil, Attr{}, err
 	}
 	return &ntFile{h: h, access: acc}, a, nil
@@ -673,17 +679,17 @@ func (f *NTFS) Mkdir(path []string, mode uint32, o Owner) (Attr, error) {
 	if err != nil {
 		return Attr{}, err
 	}
-	defer windows.CloseHandle(h)
+	defer closeHandle(h)
 	return statHandle(h)
 }
 
 func setReparse(h windows.Handle, tag uint32, data []byte) error {
 	b := make([]byte, 8+len(data))
 	binary.LittleEndian.PutUint32(b[0:], tag)
-	binary.LittleEndian.PutUint16(b[4:], uint16(len(data)))
+	binary.LittleEndian.PutUint16(b[4:], uint16(len(data))) //nolint:gosec // G115: callers pass at most 4+maxSymlinkLen bytes
 	copy(b[8:], data)
 	var n uint32
-	return windows.DeviceIoControl(h, fsctlSetReparsePoint, &b[0], uint32(len(b)), nil, 0, &n, nil)
+	return windows.DeviceIoControl(h, fsctlSetReparsePoint, &b[0], len32(len(b)), nil, 0, &n, nil)
 }
 
 // special creates an empty file and makes it a WSL-style reparse point.
@@ -692,9 +698,9 @@ func (f *NTFS) special(path []string, mode uint32, o Owner, tag uint32, data []b
 	if err != nil {
 		return Attr{}, err
 	}
-	defer windows.CloseHandle(h)
+	defer closeHandle(h)
 	if err := setReparse(h, tag, data); err != nil {
-		deleteHandle(h)
+		_ = deleteHandle(h) // best effort: setReparse already failed
 		return Attr{}, ntErr(err)
 	}
 	return statHandle(h)
@@ -735,10 +741,10 @@ func (f *NTFS) Readlink(path []string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	defer windows.CloseHandle(h)
+	defer closeHandle(h)
 	buf := make([]byte, 16<<10)
 	var n uint32
-	if err := windows.DeviceIoControl(h, fsctlGetReparsePoint, nil, 0, &buf[0], uint32(len(buf)), &n, nil); err != nil {
+	if err := windows.DeviceIoControl(h, fsctlGetReparsePoint, nil, 0, &buf[0], len32(len(buf)), &n, nil); err != nil {
 		return "", ntErr(err)
 	}
 	return parseReparse(buf[:n], path, f.rootPath)
@@ -873,12 +879,12 @@ func (f *NTFS) openParent(path []string) (windows.Handle, string, error) {
 		return 0, "", err
 	}
 	if _, tag, err := reparseTag(dir); err != nil || tag&tagSurrogate != 0 {
-		windows.CloseHandle(dir)
+		_ = windows.CloseHandle(dir)
 		return 0, "", ENOTDIR
 	}
 	name, err := toNT(path[len(path)-1])
 	if err != nil {
-		windows.CloseHandle(dir)
+		_ = windows.CloseHandle(dir)
 		return 0, "", err
 	}
 	return dir, name, nil
@@ -891,7 +897,7 @@ func renameBuf(flags uint32, dir windows.Handle, name string) []byte {
 	b := make([]byte, 20+2*len(u)+2)
 	binary.LittleEndian.PutUint32(b[0:], flags)
 	binary.LittleEndian.PutUint64(b[8:], uint64(dir))
-	binary.LittleEndian.PutUint32(b[16:], uint32(2*len(u)))
+	binary.LittleEndian.PutUint32(b[16:], len32(2*len(u)))
 	for i, c := range u {
 		binary.LittleEndian.PutUint16(b[20+2*i:], c)
 	}
@@ -905,24 +911,39 @@ func (f *NTFS) Link(oldPath, newPath []string) (Attr, error) {
 	if err != nil {
 		return Attr{}, err
 	}
-	defer windows.CloseHandle(h)
+	defer closeHandle(h)
 	dir, name, err := f.openParent(newPath)
 	if err != nil {
 		return Attr{}, err
 	}
-	defer windows.CloseHandle(dir)
+	defer closeHandle(dir)
 	var iosb windows.IO_STATUS_BLOCK
 	b := renameBuf(linkPosix, dir, name)
-	err = windows.NtSetInformationFile(h, &iosb, &b[0], uint32(len(b)), fileLinkInformationEx)
+	err = windows.NtSetInformationFile(h, &iosb, &b[0], len32(len(b)), fileLinkInformationEx)
 	if errors.Is(err, windows.STATUS_INVALID_INFO_CLASS) || errors.Is(err, windows.STATUS_NOT_SUPPORTED) {
 		b = renameBuf(0, dir, name)
-		err = windows.NtSetInformationFile(h, &iosb, &b[0], uint32(len(b)), fileLinkInformation)
+		err = windows.NtSetInformationFile(h, &iosb, &b[0], len32(len(b)), fileLinkInformation)
 	}
 	if err != nil {
 		return Attr{}, ntErr(err)
 	}
 	return statHandle(h)
 }
+
+// ntstatus is the NTSTATUS an ntdll call returns in a register.
+func ntstatus(r uintptr) windows.NTStatus {
+	return windows.NTStatus(r) //nolint:gosec // G115: an NTSTATUS is 32 bits; the rest of the register is not part of it
+}
+
+// leInt64 reads a little-endian LARGE_INTEGER (a signed FILETIME).
+func leInt64(b []byte) int64 {
+	return int64(binary.LittleEndian.Uint64(b)) //nolint:gosec // G115: the field is signed on the wire; this reinterprets its bits
+}
+
+// closeHandle closes a handle opened for one call. Every operation through it has
+// already reported its own result (file data goes through ntFile, whose Close is
+// checked), so a failed close leaves nothing for the caller to act on.
+func closeHandle(h windows.Handle) { _ = windows.CloseHandle(h) }
 
 func deleteHandle(h windows.Handle) error {
 	var iosb windows.IO_STATUS_BLOCK
@@ -942,7 +963,7 @@ func (f *NTFS) Unlink(path []string) error {
 	if err != nil {
 		return err
 	}
-	defer windows.CloseHandle(h)
+	defer closeHandle(h)
 	attrs, tag, err := reparseTag(h)
 	if err != nil {
 		return ntErr(err)
@@ -959,7 +980,7 @@ func (f *NTFS) Rmdir(path []string) error {
 	if err != nil {
 		return err
 	}
-	defer windows.CloseHandle(h)
+	defer closeHandle(h)
 	attrs, tag, err := reparseTag(h)
 	if err != nil {
 		return ntErr(err)
@@ -976,26 +997,26 @@ func (f *NTFS) Rename(oldPath, newPath []string, noReplace bool) error {
 	if err != nil {
 		return err
 	}
-	defer windows.CloseHandle(h)
+	defer closeHandle(h)
 	dir, name, err := f.openParent(newPath)
 	if err != nil {
 		return err
 	}
-	defer windows.CloseHandle(dir)
+	defer closeHandle(dir)
 	flags := uint32(renamePosix | renameIgnoreReadonly)
 	if !noReplace {
 		flags |= renameReplace
 	}
 	var iosb windows.IO_STATUS_BLOCK
 	b := renameBuf(flags, dir, name)
-	err = windows.NtSetInformationFile(h, &iosb, &b[0], uint32(len(b)), fileRenameInformationEx)
+	err = windows.NtSetInformationFile(h, &iosb, &b[0], len32(len(b)), fileRenameInformationEx)
 	if errors.Is(err, windows.STATUS_INVALID_INFO_CLASS) || errors.Is(err, windows.STATUS_NOT_SUPPORTED) {
 		var rep uint32
 		if !noReplace {
 			rep = 1
 		}
 		b = renameBuf(rep, dir, name)
-		err = windows.NtSetInformationFile(h, &iosb, &b[0], uint32(len(b)), fileRenameInformation)
+		err = windows.NtSetInformationFile(h, &iosb, &b[0], len32(len(b)), fileRenameInformation)
 	}
 	if errors.Is(err, windows.STATUS_ACCESS_DENIED) && !noReplace {
 		// NTFS will not replace a directory; POSIX rename replaces an empty one.
@@ -1006,7 +1027,7 @@ func (f *NTFS) Rename(oldPath, newPath []string, noReplace bool) error {
 			if rerr := f.Rmdir(newPath); rerr != nil {
 				return rerr
 			}
-			err = windows.NtSetInformationFile(h, &iosb, &b[0], uint32(len(b)), fileRenameInformationEx)
+			err = windows.NtSetInformationFile(h, &iosb, &b[0], len32(len(b)), fileRenameInformationEx)
 		}
 	}
 	return ntErr(err)
@@ -1025,10 +1046,10 @@ func (f *NTFS) Setattr(path []string, file File, s SetAttr) (Attr, error) {
 	if err != nil {
 		return Attr{}, err
 	}
-	defer windows.CloseHandle(h)
+	defer closeHandle(h)
 	var iosb windows.IO_STATUS_BLOCK
 	if s.SetSize {
-		size := int64(s.Size)
+		size := int64(s.Size) //nolint:gosec // G115: the server refuses sizes above MaxInt64 with EFBIG
 		if err := windows.NtSetInformationFile(h, &iosb, (*byte)(unsafe.Pointer(&size)), 8, fileEndOfFileInformation); err != nil {
 			return Attr{}, ntErr(err)
 		}

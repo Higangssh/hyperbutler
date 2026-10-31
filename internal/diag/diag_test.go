@@ -128,7 +128,7 @@ func TestSnapshot(t *testing.T) {
 	if s.Goroutines < 1 {
 		t.Errorf("Goroutines = %d", s.Goroutines)
 	}
-	if s.Handles < 1 && !(s.Handles == -1 && runtime.GOOS != "windows" && runtime.GOOS != "linux") {
+	if s.Handles < 1 && (s.Handles != -1 || runtime.GOOS == "windows" || runtime.GOOS == "linux") {
 		t.Errorf("Handles = %d", s.Handles)
 	}
 	if s.MemStats.HeapAlloc == 0 || s.MemStats.Sys == 0 || s.MemoryLimit <= 0 {

@@ -55,7 +55,7 @@ func SlopePerHour(t, v []float64) float64 {
 	var slopes []float64
 	for i := range t {
 		for j := i + 1; j < len(t); j++ {
-			if dt := t[j] - t[i]; dt != 0 {
+			if dt := t[j] - t[i]; dt != 0 { //nolint:gosec // G602: j < len(t) by the loop condition
 				slopes = append(slopes, (v[j]-v[i])/dt)
 			}
 		}

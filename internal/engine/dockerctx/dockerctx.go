@@ -146,7 +146,7 @@ func (s Store) Ensure(name, host, description string) error {
 	case err == nil && c.Host == host:
 		return nil
 	case err != nil && !errors.Is(err, os.ErrNotExist):
-		return fmt.Errorf("%w (%v)", ErrNotOurs, err)
+		return fmt.Errorf("%w (%w)", ErrNotOurs, err)
 	}
 	b, err := encodeMeta(name, host, description)
 	if err != nil {
@@ -274,11 +274,11 @@ func parseConfig(config []byte) (map[string]json.RawMessage, error) {
 }
 
 func readBounded(path string) ([]byte, error) {
-	f, err := os.Open(path)
+	f, err := os.Open(path) //nolint:gosec // G304: reading the named Docker CLI file is this function's job; size is bounded below
 	if err != nil {
 		return nil, err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }() // read-only
 	b, err := io.ReadAll(io.LimitReader(f, maxFile+1))
 	if err != nil {
 		return nil, err

@@ -31,7 +31,7 @@ func vmmemUsage() (ws, private uint64, n int, err error) {
 	if err != nil {
 		return 0, 0, 0, err
 	}
-	defer syscall.CloseHandle(snap)
+	defer func() { _ = syscall.CloseHandle(snap) }()
 	var pe syscall.ProcessEntry32
 	pe.Size = uint32(unsafe.Sizeof(pe))
 	for err = syscall.Process32First(snap, &pe); err == nil; err = syscall.Process32Next(snap, &pe) {
@@ -50,7 +50,7 @@ func vmmemUsage() (ws, private uint64, n int, err error) {
 			private += uint64(c.privateUsage)
 			n++
 		}
-		syscall.CloseHandle(h)
+		_ = syscall.CloseHandle(h)
 	}
 	return ws, private, n, nil
 }

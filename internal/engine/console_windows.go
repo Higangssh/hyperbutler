@@ -118,7 +118,7 @@ func waitPing(ctx context.Context, target transport.HvsockTarget, timeout time.D
 			if errors.Is(ctx.Err(), context.Canceled) {
 				return ctx.Err()
 			}
-			return fmt.Errorf("dockerd not ready after %v: %v", timeout, last)
+			return fmt.Errorf("dockerd not ready after %v: %w", timeout, last)
 		case <-time.After(20 * time.Millisecond):
 		}
 	}
@@ -135,8 +135,9 @@ type cappedFile struct {
 }
 
 func openCapped(path string, max int64) (*cappedFile, error) {
-	_ = os.Rename(path, path+".1") // keep the previous boot's console
-	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
+	// Keep the previous boot's console.
+	_ = os.Rename(path, path+".1")
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600) //nolint:gosec // G304: path is the console log in the data directory
 	if err != nil {
 		return nil, err
 	}

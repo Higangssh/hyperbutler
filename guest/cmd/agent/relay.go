@@ -32,7 +32,7 @@ func relay(a, b stream) error {
 	err := <-errc
 	if err != nil {
 		closeBoth() // unblocks the other direction
-		<-errc
+		<-errc      //nolint:errcheck // fails only because closeBoth closed it; err is the cause
 		return err
 	}
 	err = <-errc

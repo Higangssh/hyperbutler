@@ -161,7 +161,7 @@ func vmmemPIDs() map[uint32]bool {
 	if err != nil {
 		return m
 	}
-	defer syscall.CloseHandle(snap)
+	defer func() { _ = syscall.CloseHandle(snap) }()
 	var pe syscall.ProcessEntry32
 	pe.Size = uint32(unsafe.Sizeof(pe))
 	for err = syscall.Process32First(snap, &pe); err == nil; err = syscall.Process32Next(snap, &pe) {
@@ -195,7 +195,7 @@ func newVmmemPID(before map[uint32]bool) (uint32, error) {
 // from the raw WMI perf class (Get-Counter's counter names are localized).
 func vmmemPrivateWS(pid uint32) (uint64, error) {
 	script := fmt.Sprintf(`(Get-CimInstance Win32_PerfRawData_PerfProc_Process -Filter "IDProcess = %d").WorkingSetPrivate`, pid)
-	out, err := exec.Command("powershell.exe", "-NoProfile", "-Command", script).Output()
+	out, err := exec.Command("powershell.exe", "-NoProfile", "-Command", script).Output() //nolint:gosec // G204: the PowerShell script is built here from numeric process IDs only
 	if err != nil {
 		return 0, err
 	}

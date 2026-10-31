@@ -223,7 +223,7 @@ func launch(ctx context.Context, c *config) (target, func() error, error) {
 	if c.host == "" {
 		c.host = hostmon.NpipeHost(pipe)
 	}
-	return target{engine: uint32(st.PID), vmmem: vm.VMMem, vmwp: vm.VMWP}, stop, nil
+	return target{engine: uint32(st.PID), vmmem: vm.VMMem, vmwp: vm.VMWP}, stop, nil //nolint:gosec // G115: Windows process IDs are DWORDs
 }
 
 func attach(c *config) (target, error) {
@@ -278,12 +278,12 @@ func run() (err error) {
 	if err != nil {
 		return err
 	}
-	defer windows.CloseHandle(targetH)
+	defer func() { _ = windows.CloseHandle(targetH) }()
 	var vmmemH windows.Handle
 	if tg.vmmem != 0 {
 		if h, err := hostmon.Pin(tg.vmmem); err == nil {
 			vmmemH = h
-			defer windows.CloseHandle(vmmemH)
+			defer func() { _ = windows.CloseHandle(vmmemH) }()
 		}
 	}
 
@@ -291,7 +291,7 @@ func run() (err error) {
 	if err != nil {
 		return err
 	}
-	defer os.RemoveAll(cfgDir)
+	defer func() { _ = os.RemoveAll(cfgDir) }()
 
 	w := &Workload{Docker: c.docker, Host: c.host, ImageTar: c.imageTar, Image: c.image,
 		OpTimeout: c.opTimeout, Pause: c.pause, ConfigDir: cfgDir, ShareDir: c.shareDir, Port: c.port}
@@ -317,7 +317,7 @@ func run() (err error) {
 		if err != nil {
 			return err
 		}
-		defer f.Close()
+		defer func() { _ = f.Close() }()
 		csvw = csv.NewWriter(f)
 		defer csvw.Flush()
 		_ = csvw.Write(append(append([]string{"t_seconds"}, metrics...), extraColumns...))

@@ -64,10 +64,11 @@ func ParseCIM(out string) (map[uint32]ProcSample, error) {
 			}
 			n[i] = v
 		}
-		if n[0] == 0 || n[0] > math.MaxUint32 {
-			return nil, fmt.Errorf("hostmon: CIM line %d: bad PID %d", line, n[0])
+		raw := n[0]
+		if raw == 0 || raw > math.MaxUint32 {
+			return nil, fmt.Errorf("hostmon: CIM line %d: bad PID %d", line, raw)
 		}
-		pid := uint32(n[0])
+		pid := uint32(raw)
 		if _, dup := res[pid]; dup {
 			return nil, fmt.Errorf("hostmon: CIM line %d: PID %d twice", line, pid)
 		}

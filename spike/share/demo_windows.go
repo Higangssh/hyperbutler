@@ -18,13 +18,14 @@ import (
 	"regexp"
 	"time"
 
+	"github.com/Microsoft/go-winio"
+	"github.com/Microsoft/go-winio/pkg/guid"
+
 	"github.com/Higangssh/hyperbutler/guest/cpio"
 	"github.com/Higangssh/hyperbutler/internal/engine"
 	"github.com/Higangssh/hyperbutler/internal/share"
 	"github.com/Higangssh/hyperbutler/internal/transport"
 	"github.com/Higangssh/hyperbutler/internal/vm"
-	"github.com/Microsoft/go-winio"
-	"github.com/Microsoft/go-winio/pkg/guid"
 )
 
 var (
@@ -102,7 +103,7 @@ func serveShares(ctx context.Context, srv *share.Server, rid guid.GUID) {
 		}
 		go func() {
 			defer c.Close()
-			srv.Serve(c)
+			_ = srv.Serve(c)
 		}()
 	}
 }
@@ -142,7 +143,7 @@ func serveProxy(ctx context.Context, r *engine.Running, reg *share.Registry) err
 		}
 		rp.ServeHTTP(w, req)
 	})
-	hs := &http.Server{Handler: h}
+	hs := &http.Server{Handler: h, ReadHeaderTimeout: 10 * time.Second}
 	context.AfterFunc(ctx, func() { hs.Close() })
 	fmt.Printf("demo ready: docker -H npipe://%s run -v C:\\some\\dir:/src ...\n", filepathToNpipe(*demoPipe))
 	if err := hs.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
@@ -177,7 +178,7 @@ func buildDemoInitrd(guestBin string) (string, error) {
 		_, err := w.Write(data)
 		return err
 	}
-	bin, err := os.ReadFile(guestBin)
+	bin, err := os.ReadFile(guestBin) //nolint:gosec // G304: the path comes from the operator's own flags or this tool's work directory
 	if err != nil {
 		return "", err
 	}
@@ -201,5 +202,5 @@ func buildDemoInitrd(guestBin string) (string, error) {
 		return "", err
 	}
 	out := filepath.Join(*work, "initramfs-demo")
-	return out, os.WriteFile(out, append(base, extra.Bytes()...), 0o644)
+	return out, os.WriteFile(out, append(base, extra.Bytes()...), 0o600)
 }

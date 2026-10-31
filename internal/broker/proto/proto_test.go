@@ -186,7 +186,7 @@ func TestReadFrame(t *testing.T) {
 			t.Fatalf("ReadFrame = %x, %v; want %x", got, err, want)
 		}
 	}
-	if _, err := ReadFrame(r, &buf); err != io.EOF {
+	if _, err := ReadFrame(r, &buf); err != io.EOF { //nolint:errorlint // ReadFrame's contract is to return io.EOF and io.ErrUnexpectedEOF themselves, unwrapped, like io.ReadFull
 		t.Fatalf("at end: %v, want io.EOF", err)
 	}
 
@@ -201,10 +201,10 @@ func TestReadFrame(t *testing.T) {
 	if _, err := ReadFrame(bytes.NewReader([]byte{0, 1, 1}), &buf); !errors.Is(err, ErrInvalid) {
 		t.Fatalf("length 1: %v", err)
 	}
-	if _, err := ReadFrame(bytes.NewReader([]byte{0, 4, 1, 2}), &buf); err != io.ErrUnexpectedEOF {
+	if _, err := ReadFrame(bytes.NewReader([]byte{0, 4, 1, 2}), &buf); err != io.ErrUnexpectedEOF { //nolint:errorlint // ReadFrame's contract is to return io.EOF and io.ErrUnexpectedEOF themselves, unwrapped, like io.ReadFull
 		t.Fatalf("truncated body: %v", err)
 	}
-	if _, err := ReadFrame(bytes.NewReader([]byte{0}), &buf); err != io.ErrUnexpectedEOF {
+	if _, err := ReadFrame(bytes.NewReader([]byte{0}), &buf); err != io.ErrUnexpectedEOF { //nolint:errorlint // ReadFrame's contract is to return io.EOF and io.ErrUnexpectedEOF themselves, unwrapped, like io.ReadFull
 		t.Fatalf("truncated length: %v", err)
 	}
 }

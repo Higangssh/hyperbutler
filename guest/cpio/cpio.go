@@ -89,7 +89,7 @@ func (w *Writer) finishEntry() error {
 func (w *Writer) WriteHeader(h Header) error {
 	if h.Name == trailer {
 		// The kernel would stop unpacking here and choke on the rest.
-		return errors.New("cpio: reserved name " + trailer)
+		return fmt.Errorf("cpio: reserved name %q", trailer)
 	}
 	return w.writeHeader(h)
 }
@@ -124,7 +124,7 @@ func (w *Writer) writeHeader(h Header) error {
 		}
 	}
 	fields := []uint32{h.Ino, h.Mode, h.UID, h.GID, h.Nlink, h.Mtime, h.Size,
-		h.DevMajor, h.DevMinor, h.RdevMajor, h.RdevMinor, uint32(len(h.Name) + 1), 0}
+		h.DevMajor, h.DevMinor, h.RdevMajor, h.RdevMinor, uint32(len(h.Name) + 1), 0} //nolint:gosec // G115: the name length is checked against maxNameLen above
 	buf := make([]byte, 0, headerLen+len(h.Name)+1)
 	buf = append(buf, magic...)
 	for _, f := range fields {
@@ -215,7 +215,7 @@ func (r *Reader) skip(n int64) error {
 	m, err := io.CopyN(io.Discard, r.r, n)
 	r.off += m
 	if err != nil {
-		return fmt.Errorf("%w: truncated: %v", ErrFormat, err)
+		return fmt.Errorf("%w: truncated: %v", ErrFormat, err) //nolint:errorlint // do not wrap io.EOF: callers take errors.Is(err, io.EOF) as a clean end
 	}
 	return nil
 }
@@ -245,10 +245,10 @@ func (r *Reader) Next() (*Header, error) {
 		r.pending = false
 		r.off++
 		if err := r.readFull(hb[1:]); err != nil {
-			return nil, fmt.Errorf("%w: short header: %v", ErrFormat, err)
+			return nil, fmt.Errorf("%w: short header: %v", ErrFormat, err) //nolint:errorlint // do not wrap io.EOF: callers take errors.Is(err, io.EOF) as a clean end
 		}
 	} else if err := r.readFull(hb[:]); err != nil {
-		return nil, fmt.Errorf("%w: short header: %v", ErrFormat, err)
+		return nil, fmt.Errorf("%w: short header: %v", ErrFormat, err) //nolint:errorlint // do not wrap io.EOF: callers take errors.Is(err, io.EOF) as a clean end
 	}
 	if string(hb[:6]) != magic {
 		return nil, fmt.Errorf("%w: bad magic %q", ErrFormat, hb[:6])
@@ -267,7 +267,7 @@ func (r *Reader) Next() (*Header, error) {
 	}
 	name := make([]byte, nameSize)
 	if err := r.readFull(name); err != nil {
-		return nil, fmt.Errorf("%w: short name: %v", ErrFormat, err)
+		return nil, fmt.Errorf("%w: short name: %v", ErrFormat, err) //nolint:errorlint // do not wrap io.EOF: callers take errors.Is(err, io.EOF) as a clean end
 	}
 	if bytes.IndexByte(name, 0) != int(nameSize-1) {
 		return nil, fmt.Errorf("%w: name not NUL-terminated or contains NUL", ErrFormat)
@@ -312,7 +312,7 @@ func (r *Reader) Read(p []byte) (int, error) {
 	n, err := r.r.Read(p)
 	r.off += int64(n)
 	r.remain -= int64(n)
-	if err == io.EOF && r.remain > 0 {
+	if errors.Is(err, io.EOF) && r.remain > 0 {
 		err = fmt.Errorf("%w: truncated data", ErrFormat)
 	}
 	return n, err

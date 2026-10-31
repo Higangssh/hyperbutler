@@ -107,7 +107,7 @@ func (d *dockerdConfig) apply(ctx context.Context, data []byte, restart bool) (r
 		d.markReady()
 		return fail(guestctl.DaemonFailed, "hold file: %v", err)
 	}
-	defer os.Remove(d.hold)
+	defer func() { _ = os.Remove(d.hold) }()
 	d.markReady()
 	if boot {
 		gen, err = d.waitUp(ctx, 0)
@@ -177,6 +177,7 @@ func (d *dockerdConfig) install(ctx context.Context, data []byte) error {
 // installed file.
 func (d *dockerdConfig) put(data []byte) error {
 	if data == nil {
+		//nolint:gosec // G703: d.path is the -daemon-config flag value fixed at start, not guest or host input
 		if err := os.Remove(d.path); err != nil && !errors.Is(err, fs.ErrNotExist) {
 			return err
 		}
@@ -193,7 +194,8 @@ func (d *dockerdConfig) markReady() {
 	if d.readyDone {
 		return
 	}
-	if err := os.WriteFile(d.ready, nil, 0o644); err != nil {
+	// An empty marker; the init (root) only tests that it exists.
+	if err := os.WriteFile(d.ready, nil, 0o600); err != nil {
 		logf("daemon.json ready file: %v", err)
 	}
 	d.readyDone = true
@@ -238,7 +240,7 @@ func (d *dockerdConfig) waitUp(ctx context.Context, gen uint64) (uint64, error) 
 
 // readGen parses the init's "N PID" line.
 func readGen(path string) (gen uint64, pid int, err error) {
-	b, err := os.ReadFile(path)
+	b, err := os.ReadFile(path) //nolint:gosec // G304: the init's generation file in the fixed state dir
 	if err != nil {
 		return 0, 0, err
 	}
@@ -263,7 +265,7 @@ func pingDocker(ctx context.Context, sock string) error {
 	if err != nil {
 		return err
 	}
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 	deadline, _ := ctx.Deadline()
 	_ = c.SetDeadline(deadline)
 	if _, err := c.Write([]byte("GET /_ping HTTP/1.0\r\nHost: docker\r\n\r\n")); err != nil {

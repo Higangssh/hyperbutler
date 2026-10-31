@@ -9,8 +9,9 @@ import (
 	"sync"
 	"unsafe"
 
-	"github.com/Higangssh/hyperbutler/internal/broker/proto"
 	"golang.org/x/sys/windows"
+
+	"github.com/Higangssh/hyperbutler/internal/broker/proto"
 )
 
 // DataDir is a data directory handle that passed the ADR 0004 rule 2 checks. The handle
@@ -81,7 +82,7 @@ func openDataDir(p Peer, v uint64, sid string, validate func(windows.Handle, str
 	if err != nil {
 		return nil, &rejectError{code: proto.CodeInvalidHandle, reason: "cannot take the handle from the caller", err: err}
 	}
-	defer windows.CloseHandle(src)
+	defer func() { _ = windows.CloseHandle(src) }()
 	typ, err := objectTypeName(src)
 	if err != nil || typ != "File" {
 		return nil, reject("handle is not a directory", err)
@@ -96,7 +97,7 @@ func openDataDir(p Peer, v uint64, sid string, validate func(windows.Handle, str
 		return nil, reject("cannot open the handle as a directory", err)
 	}
 	if err := validate(h, sid); err != nil {
-		windows.CloseHandle(h)
+		_ = windows.CloseHandle(h)
 		return nil, err
 	}
 	return &DataDir{h: h}, nil
@@ -157,7 +158,7 @@ func objectTypeName(h windows.Handle) (string, error) {
 	r, _, _ := procNtQueryObject.Call(uintptr(h), objectTypeInformation,
 		uintptr(unsafe.Pointer(&buf[0])), uintptr(len(buf)), uintptr(unsafe.Pointer(&n)))
 	if r != 0 {
-		return "", windows.NTStatus(r)
+		return "", ntStatus(r)
 	}
 	us := (*windows.NTUnicodeString)(unsafe.Pointer(&buf[0]))
 	if us.Length > us.MaximumLength || uintptr(us.MaximumLength) > uintptr(len(buf)) {
@@ -187,7 +188,7 @@ func ValidateDataDir(h windows.Handle, sid string) error {
 	r, _, _ := procNtQueryVolumeInformationFile.Call(uintptr(h), uintptr(unsafe.Pointer(&iosb)),
 		uintptr(unsafe.Pointer(&dev)), unsafe.Sizeof(dev), fileFsDeviceInformation)
 	if r != 0 {
-		return reject("cannot query the volume device", windows.NTStatus(r))
+		return reject("cannot query the volume device", ntStatus(r))
 	}
 	if dev.DeviceType != fileDeviceDisk || dev.Characteristics&fileRemoteDevice != 0 {
 		return reject("not on a local disk", nil)
@@ -264,4 +265,10 @@ func checkDACL(sd *windows.SECURITY_DESCRIPTOR, caller *windows.SID) error {
 		}
 	}
 	return nil
+}
+
+// ntStatus converts the r1 of an Nt* call to its NTSTATUS. NTSTATUS is 32 bits; the
+// register's upper half carries nothing.
+func ntStatus(r uintptr) windows.NTStatus {
+	return windows.NTStatus(r) //nolint:gosec // G115: NTSTATUS is a 32-bit value returned in a register
 }

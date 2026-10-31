@@ -8,8 +8,9 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/Higangssh/hyperbutler/internal/share/relay"
 	"golang.org/x/sys/unix"
+
+	"github.com/Higangssh/hyperbutler/internal/share/relay"
 )
 
 // wrapMain runs as PID 1 when the kernel command line has sb.wrap=1: it starts the

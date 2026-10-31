@@ -437,7 +437,7 @@ func WriteFileAtomic(path string, data []byte) error {
 	var rnd [6]byte
 	_, _ = rand.Read(rnd[:])
 	tmp := path + ".tmp-" + hex.EncodeToString(rnd[:])
-	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600) //nolint:gosec // G304: a new file next to the caller's path, created exclusively
 	if err != nil {
 		return err
 	}
@@ -462,11 +462,11 @@ func WriteFileAtomic(path string, data []byte) error {
 func ReadFileBounded(path string) ([]byte, error) {
 	var b []byte
 	err := retrySharing(func() error {
-		f, err := os.Open(path)
+		f, err := os.Open(path) //nolint:gosec // G304: reading the caller's file is this function's job; size is bounded below
 		if err != nil {
 			return err
 		}
-		defer f.Close()
+		defer func() { _ = f.Close() }() // read-only
 		b, err = io.ReadAll(io.LimitReader(f, maxFileSize+1))
 		if err == nil && len(b) > maxFileSize {
 			err = fmt.Errorf("%s is larger than %d bytes", path, maxFileSize)

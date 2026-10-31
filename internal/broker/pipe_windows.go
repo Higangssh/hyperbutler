@@ -13,9 +13,10 @@ import (
 	"time"
 	"unsafe"
 
+	"golang.org/x/sys/windows"
+
 	"github.com/Higangssh/hyperbutler/internal/broker/proto"
 	"github.com/Higangssh/hyperbutler/internal/transport"
-	"golang.org/x/sys/windows"
 )
 
 // ErrPipeExists is returned by ListenPipe when the pipe name is already taken, for
@@ -132,7 +133,7 @@ func ListenPipe(cfg PipeConfig) (*PipeListener, error) {
 		}
 		inst, err := newPipeInstance(h, stop)
 		if err != nil {
-			windows.CloseHandle(h)
+			_ = windows.CloseHandle(h)
 			l.closeHandles()
 			return nil, err
 		}
@@ -175,7 +176,7 @@ func (l *PipeListener) closeHandles() {
 	}
 	l.insts = nil
 	if l.stop != 0 {
-		windows.CloseHandle(l.stop)
+		_ = windows.CloseHandle(l.stop)
 		l.stop = 0
 	}
 }
@@ -258,7 +259,7 @@ var (
 
 // pipeInstance is one server instance of the pipe and the connection it currently
 // serves. Its OVERLAPPED and buffers are heap fields that the kernel writes into; every
-// operation waits for its I/O to complete (or be cancelled) before returning, so they are
+// operation waits for its I/O to complete (or be canceled) before returning, so they are
 // never reused or freed while the kernel still owns them.
 type pipeInstance struct {
 	h    windows.Handle
@@ -281,18 +282,31 @@ func newPipeInstance(h, stop windows.Handle) (*pipeInstance, error) {
 
 func (p *pipeInstance) close() {
 	if p.h != 0 {
-		windows.CloseHandle(p.h)
+		_ = windows.CloseHandle(p.h)
 		p.h = 0
 	}
 	if p.ov != nil && p.ov.HEvent != 0 {
-		windows.CloseHandle(p.ov.HEvent)
+		_ = windows.CloseHandle(p.ov.HEvent)
 		p.ov.HEvent = 0
 	}
 }
 
 func (p *pipeInstance) sleep(d time.Duration) (stopped bool) {
-	s, _ := windows.WaitForSingleObject(p.stop, uint32(d/time.Millisecond))
+	s, _ := windows.WaitForSingleObject(p.stop, waitMillis(d))
 	return s == windows.WAIT_OBJECT_0
+}
+
+// waitMillis converts d to a wait timeout in milliseconds, clamped to [0, INFINITE-1] so
+// that a long duration never wraps around or turns into an infinite wait.
+func waitMillis(d time.Duration) uint32 {
+	ms := d.Milliseconds()
+	if ms <= 0 {
+		return 0
+	}
+	if ms >= windows.INFINITE {
+		return windows.INFINITE - 1
+	}
+	return uint32(ms)
 }
 
 // do starts one overlapped operation and waits until it completes, the deadline passes,
@@ -492,7 +506,7 @@ func (p *pipePeer) Identify() (Identity, error) {
 		if err := windows.OpenThreadToken(windows.CurrentThread(), windows.TOKEN_QUERY, true, &tok); err != nil {
 			return fmt.Errorf("broker: open client token: %w", err)
 		}
-		defer tok.Close()
+		defer func() { _ = tok.Close() }()
 		sid, err := checkClientToken(tok)
 		if err != nil {
 			return err
@@ -572,14 +586,14 @@ func (p *pipePeer) DuplicateHandle(v uint64) (windows.Handle, error) {
 	if err != nil {
 		return 0, err
 	}
-	defer windows.CloseHandle(proc)
+	defer func() { _ = windows.CloseHandle(proc) }()
 
 	var tok windows.Token
 	if err := windows.OpenProcessToken(proc, windows.TOKEN_QUERY, &tok); err != nil {
 		return 0, fmt.Errorf("broker: client process token: %w", err)
 	}
 	tu, err := tok.GetTokenUser()
-	tok.Close()
+	_ = tok.Close()
 	if err != nil {
 		return 0, fmt.Errorf("broker: client process user: %w", err)
 	}

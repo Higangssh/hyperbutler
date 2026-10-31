@@ -50,7 +50,7 @@ const exitNotRunning = 3
 
 func run(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
-		fmt.Fprint(stderr, usageText)
+		_, _ = fmt.Fprint(stderr, usageText)
 		return 2
 	}
 	var err error
@@ -75,19 +75,19 @@ func run(args []string, stdout, stderr io.Writer) int {
 	case "version", "--version":
 		err = cmdVersion(args[1:], stdout, stderr)
 	case "help", "-h", "--help":
-		fmt.Fprint(stdout, usageText)
+		_, _ = fmt.Fprint(stdout, usageText)
 	default:
-		fmt.Fprintf(stderr, "hyperbutler: unknown command %q\n\n%s", args[0], usageText)
+		_, _ = fmt.Fprintf(stderr, "hyperbutler: unknown command %q\n\n%s", args[0], usageText)
 		return 2
 	}
 	if errors.Is(err, errUsage) {
-		fmt.Fprint(stderr, usageText)
+		_, _ = fmt.Fprint(stderr, usageText)
 		return 2
 	}
 	if err != nil {
 		var se *shownError
 		if !errors.As(err, &se) {
-			fmt.Fprintln(stderr, "hyperbutler:", err)
+			_, _ = fmt.Fprintln(stderr, "hyperbutler:", err)
 		}
 		if code == 0 {
 			code = 1

@@ -60,7 +60,7 @@ func run(pipe string, fake bool, dcfg diag.Config) error {
 	if err != nil {
 		return err
 	}
-	defer dbg.Close()
+	defer func() { _ = dbg.Close() }()
 	if dcfg.DebugPipe != "" {
 		log.Printf("debug endpoint on %s", dcfg.DebugPipe)
 	}
@@ -78,7 +78,7 @@ func run(pipe string, fake bool, dcfg diag.Config) error {
 	if err != nil {
 		return err
 	}
-	defer srv.Close()
+	defer func() { _ = srv.Close() }()
 	l, err := broker.ListenPipe(broker.PipeConfig{Name: pipe, ClientSID: user})
 	if err != nil {
 		return err
@@ -87,7 +87,7 @@ func run(pipe string, fake bool, dcfg diag.Config) error {
 	signal.Notify(sig, os.Interrupt)
 	go func() {
 		<-sig
-		l.Close()
+		_ = l.Close()
 	}()
 	log.Printf("serving %s for %s (fake backend)", pipe, user)
 	return srv.Serve(l)

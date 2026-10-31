@@ -7,17 +7,17 @@ import (
 
 // Rename moves a file (memFS has none).
 func (h *hookFS) Rename(o, n []string, noReplace bool) error {
-	h.memFS.mu.Lock()
-	defer h.memFS.mu.Unlock()
-	d, ok := h.memFS.files[key(o)]
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	d, ok := h.files[key(o)]
 	if !ok {
 		return ENOENT
 	}
-	if _, exists := h.memFS.files[key(n)]; exists && noReplace {
+	if _, exists := h.files[key(n)]; exists && noReplace {
 		return EEXIST
 	}
-	h.memFS.files[key(n)] = d
-	delete(h.memFS.files, key(o))
+	h.files[key(n)] = d
+	delete(h.files, key(o))
 	h.imu.Lock()
 	h.inos[key(n)] = h.inos[key(o)]
 	delete(h.inos, key(o))
@@ -97,9 +97,9 @@ func FuzzNoOpen(f *testing.F) {
 			case 11:
 				c.open(id, oWRONLY|oTRUNC)
 			case 12:
-				fs.memFS.mu.Lock()
+				fs.mu.Lock()
 				fs.files[name] = []byte("host")
-				fs.memFS.mu.Unlock()
+				fs.mu.Unlock()
 				s.HostChanged(HostEvent{Share: "src", Path: []string{name}, Kind: Created})
 			default:
 				c.do(opFlush, id, (&wbuf{}).u64(0).u32(0).u32(0).u64(0).b)

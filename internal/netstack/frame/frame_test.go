@@ -31,7 +31,7 @@ func TestRoundTrip(t *testing.T) {
 			t.Fatalf("frame %d differs", i)
 		}
 	}
-	if _, err := r.Next(); err != io.EOF {
+	if _, err := r.Next(); !errors.Is(err, io.EOF) {
 		t.Fatalf("after last frame: %v, want EOF", err)
 	}
 }

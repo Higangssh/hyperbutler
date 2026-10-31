@@ -435,7 +435,7 @@ func (m ErrorReply) put(b []byte) {
 
 func (m DaemonChunk) put(b []byte) {
 	be.PutUint32(b, m.Offset)
-	be.PutUint16(b[4:], uint16(len(m.Data)))
+	be.PutUint16(b[4:], uint16(len(m.Data))) //nolint:gosec // G115: validate bounds it by DaemonChunkData
 	copy(b[8:], m.Data)
 }
 
@@ -448,7 +448,7 @@ func (m DaemonCommit) put(b []byte) {
 func (m DaemonResult) put(b []byte) {
 	be.PutUint32(b, uint32(m.Code))
 	b[4] = byte(m.Flags)
-	be.PutUint16(b[6:], uint16(len(m.Message)))
+	be.PutUint16(b[6:], uint16(len(m.Message))) //nolint:gosec // G115: validate bounds it by MaxDaemonMessage
 	be.PutUint64(b[8:], durMS(m.Duration))
 	copy(b[16:], m.Message)
 }
@@ -542,7 +542,7 @@ func Append(dst []byte, seq uint32, m Msg) ([]byte, error) {
 	start := len(dst)
 	dst = append(dst, make([]byte, 4+n)...)
 	f := dst[start:]
-	be.PutUint32(f, uint32(n))
+	be.PutUint32(f, uint32(n)) //nolint:gosec // G115: n is HeaderLen plus a fixed message size, at most MaxBody
 	f[4] = Version
 	f[5] = byte(m.Type())
 	be.PutUint32(f[8:], seq)

@@ -233,7 +233,7 @@ func Run(ctx context.Context, cfg Config) (err error) {
 		if img, err = openImage(cfg.Image); err != nil {
 			return err
 		}
-		defer img.Close()
+		defer func() { _ = img.Close() }()
 		kpath, ipath = img.kernel, img.initrd
 		step("verified guest image %s (system disk %s)", cfg.Image, HumanSize(img.man.System.Size))
 	} else {
@@ -260,7 +260,7 @@ func Run(ctx context.Context, cfg Config) (err error) {
 	if err != nil {
 		return codeErr(CodePipeInUse, err)
 	}
-	defer ln.Close()
+	defer func() { _ = ln.Close() }()
 
 	gnet, netSvcs, netArgs, err := setupNet(cfg.Net, sddl, log)
 	if err != nil {

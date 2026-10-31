@@ -65,7 +65,7 @@ func main() {
 	if err != nil {
 		fail(err)
 	}
-	os.Stdout.Write(r.JSON())
+	_, _ = os.Stdout.Write(r.JSON())
 }
 
 func fail(err error) {

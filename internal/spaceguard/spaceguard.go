@@ -84,7 +84,7 @@ var DefaultConfig = Config{
 	Quantum:    1 << 20, // the hyperbutler VHDX block size
 }
 
-// Validate reports a configuration the policy cannot honour.
+// Validate reports a configuration the policy cannot honor.
 func (c Config) Validate() error {
 	switch {
 	case c.Quantum == 0:
@@ -100,7 +100,7 @@ func (c Config) Validate() error {
 // Host is what the host measures.
 type Host struct {
 	// Free is the free space of the host volume that holds the VHDX, as available to the
-	// VM worker (GetDiskFreeSpaceEx's caller-available bytes, which honours quotas).
+	// VM worker (GetDiskFreeSpaceEx's caller-available bytes, which honors quotas).
 	Free uint64
 	// VHDXAllocated is the bytes the VHDX occupies on the host volume now.
 	VHDXAllocated uint64

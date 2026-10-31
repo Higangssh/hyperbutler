@@ -17,7 +17,7 @@ func TestReadBudgets(t *testing.T) {
 		"budget unlimited\n" +
 		"budget 3 4" // no newline before EOF: not a complete line
 	var got []spaceguard.Budget
-	err := readBudgets(strings.NewReader(in), func(e event) { got = append(got, e.b) })
+	err := readBudgets(strings.NewReader(in), func(b spaceguard.Budget) { got = append(got, b) })
 	if !errors.Is(err, io.EOF) {
 		t.Fatalf("err = %v, want EOF", err)
 	}

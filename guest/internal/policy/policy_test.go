@@ -213,7 +213,7 @@ func FuzzParseProc(f *testing.F) {
 
 // FuzzPolicies drives both policies with arbitrary sample streams. They must never
 // panic, the trim policy never asks twice within MinInterval when every request is
-// honoured, and the cache policy never asks for more than FileCache - Keep.
+// honored, and the cache policy never asks for more than FileCache - Keep.
 func FuzzPolicies(f *testing.F) {
 	f.Add([]byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16})
 	f.Fuzz(func(t *testing.T, b []byte) {

@@ -80,7 +80,7 @@ func Geometry(size uint64) (cyl uint16, heads, spt uint8) {
 			cth = ts / s
 		}
 	}
-	return uint16(cth / h), uint8(h), uint8(s)
+	return uint16(cth / h), uint8(h), uint8(s) //nolint:gosec // G115: ts is capped at 65535*16*255 sectors above, so cth/h <= 65535
 }
 
 // EncodeFooter builds the footer of a fixed VHD whose content is size bytes. size must

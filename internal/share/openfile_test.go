@@ -454,9 +454,9 @@ func TestNegativeLookupRacingHostCreate(t *testing.T) {
 	fs.hook = func(p []string) {
 		if key(p) == "new" {
 			fs.hook = nil
-			fs.memFS.mu.Lock()
+			fs.mu.Lock()
 			fs.files["new"] = []byte("data")
-			fs.memFS.mu.Unlock()
+			fs.mu.Unlock()
 			s.HostChanged(HostEvent{Share: "src", Path: []string{"new"}, Kind: Created})
 		}
 	}

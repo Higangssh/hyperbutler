@@ -50,7 +50,7 @@ func run() error {
 	rounds := fs.Int("rounds", 5, "measured rounds of the tree workload after the warm-up")
 	npm := fs.Bool("npm", true, "time npm ci (needs network the first time; the npm cache is kept in a volume)")
 	node := fs.String("node-image", "node:22-alpine", "image for git status and npm ci")
-	fs.Parse(os.Args[1:])
+	_ = fs.Parse(os.Args[1:])
 	if err := c.Prepare(); err != nil {
 		return err
 	}
@@ -74,7 +74,7 @@ func run() error {
 		fmt.Fprintf(os.Stderr, "fs-meta: %s\n", name)
 		res[name], out, err = c.Run(image, mounts, script)
 		if err != nil {
-			return fmt.Errorf("%s: %v: %s", name, err, out)
+			return fmt.Errorf("%s: %w: %s", name, err, out)
 		}
 		return nil
 	}
@@ -171,14 +171,14 @@ func run() error {
 // kept as committed, so git status in the guest sees a clean tree.
 func checkout(dir, repo, ref, commit string) error {
 	if _, err := os.Stat(filepath.Join(dir, ".git")); os.IsNotExist(err) {
-		cmd := exec.Command("git", "-c", "core.autocrlf=false", "clone", "-q", "--depth", "1", "--branch", ref, repo, dir)
+		cmd := exec.Command("git", "-c", "core.autocrlf=false", "clone", "-q", "--depth", "1", "--branch", ref, repo, dir) //nolint:gosec // G204: command and arguments come from the operator's own flags or this tool's work directory; exec passes argv, no shell
 		if out, err := cmd.CombinedOutput(); err != nil {
-			return fmt.Errorf("git clone: %v: %s", err, out)
+			return fmt.Errorf("git clone: %w: %s", err, out)
 		}
 	}
-	out, err := exec.Command("git", "-C", dir, "rev-parse", "HEAD").Output()
+	out, err := exec.Command("git", "-C", dir, "rev-parse", "HEAD").Output() //nolint:gosec // G204: command and arguments come from the operator's own flags or this tool's work directory; exec passes argv, no shell
 	if err != nil {
-		return fmt.Errorf("git rev-parse: %v", err)
+		return fmt.Errorf("git rev-parse: %w", err)
 	}
 	if got := strings.TrimSpace(string(out)); got != commit {
 		return fmt.Errorf("%s is at %s, want %s", dir, got, commit)

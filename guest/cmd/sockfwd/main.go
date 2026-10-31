@@ -43,18 +43,18 @@ func serve(ln net.Listener, unixPath string) error {
 }
 
 func relay(c net.Conn, unixPath string) {
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 	u, err := net.Dial("unix", unixPath)
 	if err != nil {
 		log.Printf("dial %s: %v", unixPath, err)
 		return
 	}
-	defer u.Close()
+	defer func() { _ = u.Close() }()
 	done := make(chan struct{}, 2)
 	pipe := func(dst, src net.Conn) {
-		io.Copy(dst, src)
+		_, _ = io.Copy(dst, src) // either side closing ends the relay; nothing to report
 		if cw, ok := dst.(interface{ CloseWrite() error }); ok {
-			cw.CloseWrite()
+			_ = cw.CloseWrite()
 		}
 		done <- struct{}{}
 	}

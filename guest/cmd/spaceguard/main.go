@@ -94,6 +94,12 @@ func main() {
 	}
 }
 
+// event is a new budget from the host, or lost: the control channel broke.
+type event struct {
+	b    spaceguard.Budget
+	lost bool
+}
+
 // control opens the control channel, reads budget lines from it, and reopens it when it
 // breaks. Only the newest event matters, so the reader never blocks on a slow main loop.
 func control(path string, events chan event, outs chan io.Writer) {
@@ -116,7 +122,7 @@ func control(path string, events chan event, outs chan io.Writer) {
 			log.Printf("spaceguard: tty setup: %v", err)
 		}
 		outs <- c
-		err = readBudgets(c, send)
+		err = readBudgets(c, func(b spaceguard.Budget) { send(event{b: b}) })
 		log.Printf("spaceguard: control channel: %v", err)
 		send(event{lost: true})
 		c.Close()

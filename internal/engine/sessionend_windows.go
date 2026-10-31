@@ -164,7 +164,7 @@ func WatchSessionEnd(stop func(), done <-chan struct{}) (func(), error) {
 		var m msg
 		for {
 			r, _, _ := procGetMessageW.Call(uintptr(unsafe.Pointer(&m)), 0, 0, 0)
-			if int32(r) <= 0 {
+			if int32(r) <= 0 { //nolint:gosec // G115: GetMessageW returns a BOOL (int32, -1 on error) in the low half
 				break
 			}
 			procTranslateMessage.Call(uintptr(unsafe.Pointer(&m)))

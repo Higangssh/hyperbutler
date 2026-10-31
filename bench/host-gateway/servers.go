@@ -25,7 +25,7 @@ func startHTTP(network, addr, body string) (*httpServer, error) {
 	}
 	srv := &http.Server{
 		Handler: http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-			fmt.Fprint(w, body)
+			_, _ = fmt.Fprint(w, body)
 		}),
 		ReadHeaderTimeout: 5 * time.Second,
 	}

@@ -88,7 +88,7 @@ func (c *ChunkReader) scan(b []byte) (int, error) {
 	end := 0
 	for len(b)-end >= HeaderLen {
 		n := binary.BigEndian.Uint32(b[end:])
-		if n < uint32(c.min) || n > uint32(c.max) {
+		if int64(n) < int64(c.min) || int64(n) > int64(c.max) {
 			return end, fmt.Errorf("%w: %d (allowed %d..%d)", ErrFrameSize, n, c.min, c.max)
 		}
 		if len(b)-end-HeaderLen < int(n) {

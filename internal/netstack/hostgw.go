@@ -206,7 +206,7 @@ func (n *Stack) dialHostGateway(ctx context.Context, network string, port uint16
 	}
 	c, err6 := d.DialContext(ctx, "tcp", netip.AddrPortFrom(netip.IPv6Loopback(), port).String())
 	if err6 != nil {
-		return nil, fmt.Errorf("%w (127.0.0.1 and [::1] port %d): %v", ErrHostGatewayRefused, port, err)
+		return nil, fmt.Errorf("%w (127.0.0.1 and [::1] port %d): %w", ErrHostGatewayRefused, port, err)
 	}
 	return c, nil
 }

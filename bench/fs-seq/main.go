@@ -29,12 +29,12 @@ func run() error {
 	c.Flags(fs)
 	mb := fs.Int("mb", 256, "MiB to write and read")
 	rounds := fs.Int("rounds", 3, "runs per target; the median is reported")
-	fs.Parse(os.Args[1:])
+	_ = fs.Parse(os.Args[1:])
 	if err := c.Prepare(); err != nil {
 		return err
 	}
 	dir := filepath.Join(c.Work, "seq")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(dir, 0o750); err != nil {
 		return err
 	}
 	if err := c.ResetVolume(); err != nil {
@@ -45,12 +45,12 @@ func run() error {
 	for i := 0; i < *rounds; i++ {
 		rs, out, err := c.Run(c.Image, []fsbench.Mount{fsbench.Bind(dir, "/w")}, cmd("/w"))
 		if err != nil {
-			return fmt.Errorf("bind: %v: %s", err, out)
+			return fmt.Errorf("bind: %w: %s", err, out)
 		}
 		targets["bind"] = append(targets["bind"], rs)
 		rs, out, err = c.Run(c.Image, []fsbench.Mount{{"-v", c.Volume + ":/v"}}, cmd("/v"))
 		if err != nil {
-			return fmt.Errorf("ext4: %v: %s", err, out)
+			return fmt.Errorf("ext4: %w: %s", err, out)
 		}
 		targets["ext4"] = append(targets["ext4"], rs)
 		if c.WSL != "" {

@@ -83,7 +83,7 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	defer os.RemoveAll(cfgDir)
+	defer func() { _ = os.RemoveAll(cfgDir) }()
 	if up, err := c.hb.Running(); err != nil {
 		return err
 	} else if up {
@@ -134,10 +134,10 @@ func foreignNote(f string) string {
 // bootMarker reports whether this is the first time the tool runs since the host
 // booted (by a marker file in home holding the boot time), and the uptime.
 func bootMarker(home string) (bool, time.Duration) {
-	up := time.Duration(windows.DurationSinceBoot())
+	up := windows.DurationSinceBoot()
 	boot := time.Now().Add(-up).Truncate(time.Minute).Unix()
 	p := filepath.Join(home, "bench-start-boot")
-	old, _ := os.ReadFile(p)
+	old, _ := os.ReadFile(p) //nolint:gosec // G304: the path comes from the operator's own flags or this tool's work directory
 	first := strings.TrimSpace(string(old)) != strconv.FormatInt(boot, 10)
 	if first {
 		_ = os.MkdirAll(home, 0o700)
@@ -191,7 +191,7 @@ func once(ctx context.Context, c *config, cfgDir string) (r Run) {
 	var ours = map[uint32]bool{}
 	var vm hostmon.VMProcs
 	if st, serr := c.hb.State(); serr == nil {
-		ours[uint32(st.PID)] = true
+		ours[uint32(st.PID)] = true //nolint:gosec // G115: Windows process IDs are DWORDs
 		r.ReadyMs = st.ReadyMillis
 	}
 	if after, serr := hostmon.Snapshot(); serr == nil {

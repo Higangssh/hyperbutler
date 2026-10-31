@@ -30,7 +30,7 @@ func Watch(every time.Duration) *Watcher {
 	w := &Watcher{ours: map[uint32]bool{}, seen: map[uint32]string{}, cancel: cancel, done: make(chan struct{})}
 	go func() {
 		defer close(w.done)
-		self := uint32(os.Getpid())
+		self := uint32(os.Getpid()) //nolint:gosec // G115: Windows process IDs are DWORDs
 		for {
 			if ps, err := Snapshot(); err == nil {
 				mine := Descendants(ps, self)

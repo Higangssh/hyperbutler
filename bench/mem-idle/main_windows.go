@@ -92,7 +92,7 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	defer os.RemoveAll(cfgDir)
+	defer func() { _ = os.RemoveAll(cfgDir) }()
 	if up, err := c.hb.Running(); err != nil {
 		return err
 	} else if up {
@@ -115,9 +115,8 @@ func run() error {
 			if attempt > 0 {
 				p = strings.TrimSuffix(p, filepath.Ext(p)) + fmt.Sprintf("-%d", attempt) + filepath.Ext(p)
 			}
-			if f, err := os.Create(p); err == nil {
-				err = WriteCSV(f, ss)
-				f.Close()
+			if f, err := os.Create(p); err == nil { //nolint:gosec // G304: the path comes from the operator's own flags or this tool's work directory
+				err = errors.Join(WriteCSV(f, ss), f.Close())
 				if err != nil {
 					return err
 				}
@@ -191,12 +190,12 @@ func measure(ctx context.Context, c *config, cfgDir string) (ss []Sample, err er
 	if err != nil {
 		return nil, err
 	}
-	enginePID := uint32(st.PID)
+	enginePID := uint32(st.PID) //nolint:gosec // G115: Windows process IDs are DWORDs
 	eh, err := hostmon.Pin(enginePID)
 	if err != nil {
 		return nil, err
 	}
-	defer windows.CloseHandle(eh)
+	defer func() { _ = windows.CloseHandle(eh) }()
 	after, err := hostmon.Snapshot()
 	if err != nil {
 		return nil, err
@@ -210,7 +209,7 @@ func measure(ctx context.Context, c *config, cfgDir string) (ss []Sample, err er
 	if err != nil {
 		vh = 0 // vmmem is protected; its disappearance from the counters still shows
 	} else {
-		defer windows.CloseHandle(vh)
+		defer func() { _ = windows.CloseHandle(vh) }()
 	}
 
 	d := &hostmon.Docker{Exe: c.docker, Host: hostmon.NpipeHost(pipe), ConfigDir: cfgDir}

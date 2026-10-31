@@ -358,10 +358,10 @@ func TestGuestResetPropagates(t *testing.T) {
 		c.Close()
 		select {
 		case err := <-results:
-			if reset && (err == nil || err == io.EOF) {
+			if reset && (err == nil || errors.Is(err, io.EOF)) {
 				t.Fatalf("guest reset arrived as %v, want a reset", err)
 			}
-			if !reset && err != io.EOF {
+			if !reset && !errors.Is(err, io.EOF) {
 				t.Fatalf("guest close arrived as %v, want EOF", err)
 			}
 		case <-time.After(5 * time.Second):
@@ -419,10 +419,10 @@ func TestHostResetPropagates(t *testing.T) {
 		c.Close()
 		select {
 		case err := <-results:
-			if reset && (err == nil || err == io.EOF) {
+			if reset && (err == nil || errors.Is(err, io.EOF)) {
 				t.Fatalf("host reset arrived as %v, want a reset", err)
 			}
-			if !reset && err != io.EOF {
+			if !reset && !errors.Is(err, io.EOF) {
 				t.Fatalf("host close arrived as %v, want EOF", err)
 			}
 		case <-time.After(5 * time.Second):

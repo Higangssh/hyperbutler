@@ -201,7 +201,7 @@ func Serve(opts ServeOptions) error {
 	if err != nil {
 		return fail(err)
 	}
-	defer console.Close()
+	defer func() { _ = console.Close() }()
 
 	runErr := Run(ctx, Config{
 		KernelPath: opts.KernelPath, InitrdPath: opts.InitrdPath, Image: opts.Image,

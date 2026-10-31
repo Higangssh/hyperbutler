@@ -4,6 +4,7 @@ import (
 	"archive/tar"
 	"bytes"
 	"encoding/json"
+	"errors"
 	"io"
 	"testing"
 )
@@ -32,7 +33,7 @@ func readTar(t *testing.T, b []byte) (map[string][]byte, map[string]*tar.Header)
 	tr := tar.NewReader(bytes.NewReader(b))
 	for {
 		h, err := tr.Next()
-		if err == io.EOF {
+		if errors.Is(err, io.EOF) {
 			return files, hdrs
 		}
 		if err != nil {

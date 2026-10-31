@@ -89,7 +89,11 @@ func openImage(path string) (_ *guestImage, err error) {
 // bytes before it.
 func checkFooter(f *os.File, size uint64) error {
 	var b [image.FooterSize]byte
-	if _, err := f.ReadAt(b[:], int64(size)-image.FooterSize); err != nil && !errors.Is(err, io.EOF) {
+	off := int64(size) - image.FooterSize //nolint:gosec // G115: a size above MaxInt64 wraps negative, refused below
+	if off < 0 {
+		return fmt.Errorf("vhd: system disk size %d is out of range", size)
+	}
+	if _, err := f.ReadAt(b[:], off); err != nil && !errors.Is(err, io.EOF) {
 		return err
 	}
 	ft, err := image.ParseFooter(b[:])

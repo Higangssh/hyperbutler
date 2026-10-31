@@ -178,14 +178,12 @@ func TestServeMaxTunnels(t *testing.T) {
 	}
 	defer ln.Close()
 	go (&Server{MaxTunnels: 2}).Serve(ln)
-	var open []net.Conn
 	for i := 0; i < 2; i++ {
 		c, err := net.Dial("tcp", ln.Addr().String())
 		if err != nil {
 			t.Fatal(err)
 		}
-		defer c.Close()
-		open = append(open, c)
+		defer c.Close() // held open until the test ends, filling both slots
 	}
 	time.Sleep(100 * time.Millisecond) // let Serve take both slots
 	c, err := net.Dial("tcp", ln.Addr().String())

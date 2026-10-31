@@ -4,9 +4,10 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/Higangssh/hyperbutler/internal/transport"
 	"github.com/Microsoft/go-winio"
 	"github.com/Microsoft/go-winio/pkg/guid"
+
+	"github.com/Higangssh/hyperbutler/internal/transport"
 )
 
 var vsockBW = flagBool("vsockbw", false, "measure raw hvsock bandwidth and latency (guest buffer sizes 0, 256 KiB, 1 MiB)")
@@ -27,27 +28,27 @@ func runVsockBW(g *guest, vmid guid.GUID) {
 			defer c.Close()
 			rb := make([]byte, 1<<20)
 			for i := 0; i < mb; i++ {
-				io.ReadFull(c, rb)
+				_, _ = io.ReadFull(c, rb)
 			}
-			c.Write([]byte{1})
+			_, _ = c.Write([]byte{1})
 			buf := make([]byte, 1<<20)
 			for i := 0; i < mb; i++ {
-				c.Write(buf)
+				_, _ = c.Write(buf)
 			}
 			one := make([]byte, 1)
 			for i := 0; i < 2000; i++ {
 				if _, err := io.ReadFull(c, one); err != nil {
 					return
 				}
-				c.Write(one)
+				_, _ = c.Write(one)
 			}
 		}()
-		g.call("sockbuf", map[string]string{"bytes": fmt.Sprint(sb)})
+		_, _ = g.call("sockbuf", map[string]string{"bytes": fmt.Sprint(sb)})
 		out, err := g.bench2("vsockbw", map[string]string{"port": fmt.Sprint(syncPort), "mb": fmt.Sprint(mb)})
 		ln.Close()
 		fmt.Printf("== vsock (guest SO_SNDBUF/SO_RCVBUF %d): %v %v\n", sb, out, err)
 	}
-	g.call("sockbuf", map[string]string{"bytes": "0"})
+	_, _ = g.call("sockbuf", map[string]string{"bytes": "0"})
 }
 
 func runVsockPar(g *guest, vmid guid.GUID) {
@@ -73,13 +74,13 @@ func runVsockPar(g *guest, vmid guid.GUID) {
 							return
 						}
 					}
-					c.Write(buf[:1])
+					_, _ = c.Write(buf[:1])
 					for i := 0; i < per; i++ {
 						if _, err := c.Write(buf); err != nil {
 							return
 						}
 					}
-					io.ReadFull(c, buf[:1])
+					_, _ = io.ReadFull(c, buf[:1])
 				}()
 			}
 		}()

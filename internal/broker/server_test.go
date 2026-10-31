@@ -12,8 +12,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Higangssh/hyperbutler/internal/broker/proto"
 	"golang.org/x/sys/windows"
+
+	"github.com/Higangssh/hyperbutler/internal/broker/proto"
 )
 
 const (

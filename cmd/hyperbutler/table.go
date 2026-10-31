@@ -21,7 +21,7 @@ func (t *table) row(cells ...string) {
 		// Values can come from settings.json; keep them on one line and printable.
 		cells[i] = strings.NewReplacer("\t", " ", "\n", " ").Replace(string(printable([]byte(c))))
 	}
-	fmt.Fprintln(t.w, strings.Join(cells, "\t"))
+	_, _ = fmt.Fprintln(t.w, strings.Join(cells, "\t"))
 }
 
 func (t *table) flush() { _ = t.w.Flush() }

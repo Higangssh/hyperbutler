@@ -265,10 +265,10 @@ func (b *builder) emit(h Header, src string) error {
 	var f *os.File
 	if src != "" {
 		var err error
-		if f, err = os.Open(src); err != nil {
+		if f, err = os.Open(src); err != nil { //nolint:gosec // G304: src is a host file the build spec names, read by the build tool
 			return err
 		}
-		defer f.Close()
+		defer func() { _ = f.Close() }()
 		st, err := f.Stat()
 		if err != nil {
 			return err
@@ -279,7 +279,7 @@ func (b *builder) emit(h Header, src string) error {
 		if st.Size() > 0xFFFFFFFF {
 			return fmt.Errorf("%s is larger than 4 GiB", src)
 		}
-		h.Size = uint32(st.Size())
+		h.Size = uint32(st.Size()) //nolint:gosec // G115: checked against 4 GiB above, and Stat sizes are not negative
 	}
 	if err := b.w.WriteHeader(h); err != nil {
 		return err
@@ -311,7 +311,7 @@ func (b *builder) line(l SpecLine, base string) error {
 	case "file":
 		return b.emit(Header{Name: l.Name, Mode: TypeRegular | l.Mode, UID: l.UID, GID: l.GID}, resolve(base, l.Src))
 	case "slink":
-		if err := b.emit(Header{Name: l.Name, Mode: TypeSymlink | l.Mode, UID: l.UID, GID: l.GID, Size: uint32(len(l.Src))}, ""); err != nil {
+		if err := b.emit(Header{Name: l.Name, Mode: TypeSymlink | l.Mode, UID: l.UID, GID: l.GID, Size: uint32(len(l.Src))}, ""); err != nil { //nolint:gosec // G115: WriteHeader rejects symlink targets of maxNameLen or more
 			return err
 		}
 		_, err := b.w.Write([]byte(l.Src))

@@ -14,9 +14,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Higangssh/hyperbutler/internal/broker/proto"
 	"github.com/Microsoft/go-winio"
 	"golang.org/x/sys/windows"
+
+	"github.com/Higangssh/hyperbutler/internal/broker/proto"
 )
 
 var pipeSeq atomic.Int64
@@ -63,7 +64,7 @@ func dial(t *testing.T, name string) net.Conn {
 // isClosed reports whether err means the server closed the connection (go-winio reports
 // a disconnected pipe as ERROR_PIPE_NOT_CONNECTED rather than io.EOF).
 func isClosed(err error) bool {
-	return err == io.EOF || errors.Is(err, windows.ERROR_PIPE_NOT_CONNECTED) || errors.Is(err, windows.ERROR_BROKEN_PIPE)
+	return errors.Is(err, io.EOF) || errors.Is(err, windows.ERROR_PIPE_NOT_CONNECTED) || errors.Is(err, windows.ERROR_BROKEN_PIPE)
 }
 
 func roundTrip(t *testing.T, c net.Conn, req proto.Request) proto.Reply {

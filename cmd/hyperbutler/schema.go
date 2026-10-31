@@ -100,7 +100,7 @@ func cmdVersion(args []string, stdout, stderr io.Writer) error {
 	if *asJSON {
 		return writeJSON(stdout, v)
 	}
-	fmt.Fprintln(stdout, "hyperbutler", v.Version)
+	_, _ = fmt.Fprintln(stdout, "hyperbutler", v.Version)
 	return nil
 }
 

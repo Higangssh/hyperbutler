@@ -198,7 +198,7 @@ func (c *pipeConn) peerClosed() bool {
 		errors.Is(err, windows.ERROR_INVALID_HANDLE)
 }
 
-// maxCancelWait bounds how long Close keeps cancelling an in-progress flush.
+// maxCancelWait bounds how long Close keeps canceling an in-progress flush.
 const maxCancelWait = 5 * time.Second
 
 func (c *pipeConn) Close() error {
@@ -218,7 +218,7 @@ func (c *pipeConn) Close() error {
 	err := c.Conn.Close()
 
 	// A CloseWrite that duplicated the handle just before Close may enter
-	// FlushFileBuffers after that single cancel. Keep cancelling until it has returned.
+	// FlushFileBuffers after that single cancel. Keep canceling until it has returned.
 	deadline := time.Now().Add(maxCancelWait)
 	for {
 		c.mu.Lock()
@@ -234,7 +234,7 @@ func (c *pipeConn) Close() error {
 	}
 
 	if ev != 0 {
-		// The cancelled or completed write signals ev. Wait a bounded time; if the OS
+		// The canceled or completed write signals ev. Wait a bounded time; if the OS
 		// never signals, keep the OVERLAPPED reachable forever rather than free memory
 		// the kernel may still write to.
 		if s, _ := windows.WaitForSingleObject(ev, uint32(maxCancelWait/time.Millisecond)); s == windows.WAIT_OBJECT_0 {

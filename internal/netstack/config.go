@@ -1,6 +1,7 @@
 package netstack
 
 import (
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"net"
@@ -176,7 +177,9 @@ func broadcast(p netip.Prefix) netip.Addr {
 	host := uint32(1)<<(32-p.Bits()) - 1
 	v := uint32(a[0])<<24 | uint32(a[1])<<16 | uint32(a[2])<<8 | uint32(a[3])
 	v |= host
-	return netip.AddrFrom4([4]byte{byte(v >> 24), byte(v >> 16), byte(v >> 8), byte(v)})
+	var out [4]byte
+	binary.BigEndian.PutUint32(out[:], v)
+	return netip.AddrFrom4(out)
 }
 
 // ParseHostForward parses "VIRTUAL_IP:PORT=HOST_IP:PORT", for example

@@ -111,7 +111,7 @@ func validHostname(h string) bool {
 		}
 		for i := 0; i < len(label); i++ {
 			c := label[i]
-			if !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '-') {
+			if (c < 'a' || c > 'z') && (c < 'A' || c > 'Z') && (c < '0' || c > '9') && c != '-' {
 				return false
 			}
 		}
@@ -165,7 +165,7 @@ func interfaceAddrs() ([]netip.Addr, error) {
 }
 
 // Handshake sends a CONNECT request for addr on c and reads the reply. It reads one byte
-// at a time so that no tunnelled data is consumed.
+// at a time so that no tunneled data is consumed.
 func Handshake(c io.ReadWriter, addr string) error {
 	if _, _, err := SplitTarget(addr); err != nil {
 		return err
@@ -248,7 +248,7 @@ func (s *Server) handle(c net.Conn) {
 	host, port, err := ParseConnect(br)
 	if err != nil {
 		_ = c.SetWriteDeadline(time.Now().Add(errorReplyTimeout))
-		fmt.Fprint(c, "HTTP/1.1 400 Bad Request\r\n\r\n")
+		_, _ = fmt.Fprint(c, "HTTP/1.1 400 Bad Request\r\n\r\n")
 		s.logf("relay: %v", err)
 		return
 	}
@@ -257,7 +257,7 @@ func (s *Server) handle(c net.Conn) {
 	up, err := s.dial(host, port)
 	if err != nil {
 		_ = c.SetWriteDeadline(time.Now().Add(errorReplyTimeout))
-		fmt.Fprint(c, "HTTP/1.1 502 Bad Gateway\r\n\r\n")
+		_, _ = fmt.Fprint(c, "HTTP/1.1 502 Bad Gateway\r\n\r\n")
 		s.logf("relay: %s:%d: %v", host, port, err)
 		return
 	}
@@ -269,16 +269,16 @@ func (s *Server) handle(c net.Conn) {
 	// Bytes the guest sent after the header are still in br.
 	done := make(chan struct{}, 2)
 	go func() {
-		io.Copy(up, br)
+		_, _ = io.Copy(up, br)
 		if cw, ok := up.(interface{ CloseWrite() error }); ok {
-			cw.CloseWrite()
+			_ = cw.CloseWrite()
 		}
 		done <- struct{}{}
 	}()
 	go func() {
-		io.Copy(c, up)
+		_, _ = io.Copy(c, up)
 		if cw, ok := c.(interface{ CloseWrite() error }); ok {
-			cw.CloseWrite()
+			_ = cw.CloseWrite()
 		}
 		done <- struct{}{}
 	}()
@@ -315,7 +315,7 @@ func (s *Server) dial(host string, port uint16) (net.Conn, error) {
 		return nil, fmt.Errorf("relay: list host addresses: %w", err)
 	}
 	var d net.Dialer
-	var lastErr error = errors.New("relay: no allowed address")
+	lastErr := errors.New("relay: no allowed address")
 	for _, a := range addrs {
 		if !Allowed(a) || slices.Contains(own, a.Unmap()) {
 			lastErr = fmt.Errorf("relay: %v is not an allowed destination", a)

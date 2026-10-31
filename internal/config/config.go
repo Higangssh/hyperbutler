@@ -427,7 +427,7 @@ func Names() []string {
 }
 
 // ParseMemoryMB turns a memory value into whole MiB. A bare number means MiB, as in
-// most VM tools; a unit is honoured ("4GiB", "4096MiB").
+// most VM tools; a unit is honored ("4GiB", "4096MiB").
 func ParseMemoryMB(v string) (int, error) {
 	t := strings.TrimSpace(v)
 	if t != "" && strings.Trim(t, "0123456789") == "" {

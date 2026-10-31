@@ -29,12 +29,13 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Microsoft/go-winio"
+	"github.com/Microsoft/go-winio/pkg/guid"
+
 	"github.com/Higangssh/hyperbutler/guest/cpio"
 	"github.com/Higangssh/hyperbutler/internal/engine"
 	"github.com/Higangssh/hyperbutler/internal/transport"
 	"github.com/Higangssh/hyperbutler/internal/vm"
-	"github.com/Microsoft/go-winio"
-	"github.com/Microsoft/go-winio/pkg/guid"
 )
 
 const (
@@ -54,7 +55,7 @@ var (
 	targets  = flag.String("targets", "ext4,plan9,fuse", "comma-separated: ext4, plan9, fuse, fuse-nocache, sync")
 	suite    = flag.String("suite", "seqwrite,seqread,untar,walk,stat,open,statmiss,smallfiles,rm", "comma-separated benchmarks")
 	notifyN  = flag.Int("notify", 0, "run the change-notification test this many times per target")
-	compatF  = flag.Bool("compat", false, "run the REQ-FS-004 behaviour checks per target")
+	compatF  = flag.Bool("compat", false, "run the REQ-FS-004 behavior checks per target")
 	files    = flag.Int("files", 20000, "files in the untar tree")
 	seqMB    = flag.Int("mb", 1024, "MiB for the sequential test")
 	runs     = flag.Int("runs", 1, "repeat the suite this many times")
@@ -104,7 +105,7 @@ func has(list, item string) bool {
 }
 
 func run() error {
-	if err := os.MkdirAll(*work, 0o755); err != nil {
+	if err := os.MkdirAll(*work, 0o750); err != nil {
 		return err
 	}
 	guestBin, err := buildGuest()
@@ -122,20 +123,20 @@ func run() error {
 	id := fmt.Sprintf("hyperbutler-share-spike-%d", time.Now().UnixNano()%1e9)
 
 	vhdx := filepath.Join(*work, "ext4.vhdx")
-	os.Remove(vhdx)
+	_ = os.Remove(vhdx)
 	if err := vm.CreateSparseVHDX(vhdx, 32<<30); err != nil {
 		return fmt.Errorf("create vhdx: %w", err)
 	}
 	if err := vm.GrantVMAccess(id, vhdx); err != nil {
 		return err
 	}
-	defer vm.RevokeVMAccess(id, vhdx)
+	defer func() { _ = vm.RevokeVMAccess(id, vhdx) }()
 
 	p9dir := filepath.Join(*work, "p9")
 	fusedir := filepath.Join(*work, "fuse")
 	for _, d := range []string{p9dir, fusedir} {
-		os.RemoveAll(d)
-		if err := os.MkdirAll(d, 0o755); err != nil {
+		_ = os.RemoveAll(d)
+		if err := os.MkdirAll(d, 0o750); err != nil {
 			return err
 		}
 	}
@@ -159,7 +160,7 @@ func run() error {
 		if err := vm.GrantVMAccess(id, p9dir); err != nil {
 			return fmt.Errorf("grant plan9 dir: %w", err)
 		}
-		defer vm.RevokeVMAccess(id, p9dir)
+		defer func() { _ = vm.RevokeVMAccess(id, p9dir) }()
 		cfg.Plan9 = []vm.Plan9Share{{Name: "p9", AccessName: "p9", Path: p9dir, Port: plan9Port, Flags: uint32(*p9Flags)}}
 	}
 	t0 := time.Now()
@@ -168,7 +169,7 @@ func run() error {
 		return err
 	}
 	defer func() {
-		sys.Terminate()
+		_ = sys.Terminate()
 		sys.Close()
 	}()
 	if err := sys.Start(); err != nil {
@@ -191,7 +192,7 @@ func run() error {
 
 	// Baseline: ext4 on the SCSI disk.
 	if out, err := g.sh("/sbin/mke2fs -q -t ext4 -m 0 -E nodiscard,lazy_itable_init=1,lazy_journal_init=1 /dev/sda 2>&1"); err != nil {
-		return fmt.Errorf("mke2fs: %v: %s", err, out)
+		return fmt.Errorf("mke2fs: %w: %s", err, out)
 	}
 	if _, err := g.call("mount", map[string]string{"source": "/dev/sda", "target": "/mnt/ext4", "fstype": "ext4"}); err != nil {
 		return fmt.Errorf("mount ext4: %w", err)
@@ -242,7 +243,7 @@ func run() error {
 		for _, t := range tgts {
 			res := map[string]float64{}
 			dir := t.guestDir + "/bench"
-			g.sh("mkdir -p " + dir)
+			_, _ = g.sh("mkdir -p " + dir)
 			for _, b := range strings.Split(*suite, ",") {
 				b = strings.TrimSpace(b)
 				if b == "" {
@@ -312,7 +313,7 @@ func run() error {
 			}
 		}
 	}
-	g.call("poweroff", nil)
+	_, _ = g.call("poweroff", nil)
 	time.Sleep(300 * time.Millisecond)
 	return nil
 }
@@ -330,13 +331,15 @@ func printResult(name string, res map[string]float64) {
 }
 
 func appendJSON(path, name string, res map[string]float64) {
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
 	if err != nil {
 		return
 	}
-	defer f.Close()
 	b, _ := json.Marshal(map[string]any{"target": name, "time": time.Now().Format(time.RFC3339), "res": res})
-	f.Write(append(b, '\n'))
+	_, werr := f.Write(append(b, '\n'))
+	if err := errors.Join(werr, f.Close()); err != nil {
+		fmt.Println("append", path+":", err)
+	}
 }
 
 func printHostView(dir string) {
@@ -355,7 +358,7 @@ func printHostView(dir string) {
 // buildGuest cross-compiles spike/share/guest for linux/amd64.
 func buildGuest() (string, error) {
 	out := filepath.Join(*work, "sharebench")
-	cmd := exec.Command("go", "build", "-trimpath", "-ldflags=-s -w", "-o", out, "./spike/share/guest")
+	cmd := exec.Command("go", "build", "-trimpath", "-ldflags=-s -w", "-o", out, "./spike/share/guest") //nolint:gosec // G204: command and arguments come from the operator's own flags or this tool's work directory; exec passes argv, no shell
 	cmd.Env = append(os.Environ(), "GOOS=linux", "GOARCH=amd64", "CGO_ENABLED=0")
 	cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
 	if err := cmd.Run(); err != nil {
@@ -381,7 +384,7 @@ func buildInitrd(guestBin string) (string, error) {
 		_, err := w.Write(data)
 		return err
 	}
-	bin, err := os.ReadFile(guestBin)
+	bin, err := os.ReadFile(guestBin) //nolint:gosec // G304: the path comes from the operator's own flags or this tool's work directory
 	if err != nil {
 		return "", err
 	}
@@ -419,11 +422,11 @@ func buildInitrd(guestBin string) (string, error) {
 		return "", err
 	}
 	out := filepath.Join(*work, "initramfs-share")
-	return out, os.WriteFile(out, append(base, extra.Bytes()...), 0o644)
+	return out, os.WriteFile(out, append(base, extra.Bytes()...), 0o600)
 }
 
 func gunzipFile(p string) ([]byte, error) {
-	f, err := os.Open(p)
+	f, err := os.Open(p) //nolint:gosec // G304: the path comes from the operator's own flags or this tool's work directory
 	if err != nil {
 		return nil, err
 	}
@@ -451,7 +454,7 @@ func streamConsole(pipe, logPath string) {
 		return
 	}
 	defer c.Close()
-	f, err := os.Create(logPath)
+	f, err := os.Create(logPath) //nolint:gosec // G304: the path comes from the operator's own flags or this tool's work directory
 	if err != nil {
 		return
 	}
@@ -459,7 +462,10 @@ func streamConsole(pipe, logPath string) {
 	sc := bufio.NewScanner(c)
 	for sc.Scan() {
 		line := sc.Text()
-		f.WriteString(line + "\n")
+		if _, err := f.WriteString(line + "\n"); err != nil {
+			fmt.Println("  [guest log]", err)
+			return
+		}
 		if strings.Contains(line, "sharebench") || strings.Contains(line, "panic") || strings.Contains(line, "9p") || strings.Contains(line, "fuse") || strings.Contains(line, "BUG") {
 			fmt.Println("  [guest]", line)
 		}
@@ -536,7 +542,9 @@ func (g *guest) read() {
 				Mask uint32 `json:"mask"`
 				Seq  int64  `json:"seq"`
 			}
-			json.Unmarshal(sc.Bytes(), &e)
+			if err := json.Unmarshal(sc.Bytes(), &e); err != nil {
+				continue
+			}
 			select {
 			case g.events <- event{e.Path, e.Mask, e.Seq, now}:
 			default:
@@ -570,7 +578,11 @@ func (g *guest) call(op string, args map[string]string) (any, error) {
 	select {
 	case r := <-ch:
 		var out any
-		json.Unmarshal(r.Out, &out)
+		if len(r.Out) > 0 {
+			if err := json.Unmarshal(r.Out, &out); err != nil {
+				return nil, fmt.Errorf("%s: reply: %w", op, err)
+			}
+		}
 		if !r.OK {
 			return out, errors.New(r.Err)
 		}

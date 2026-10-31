@@ -126,7 +126,7 @@ func (p *Policy) Check(addr netip.Addr) error {
 	host, err := p.hostSet()
 	if err != nil {
 		// Fail closed: without the host's addresses we cannot tell them apart.
-		return fmt.Errorf("%w: reading host addresses: %v", ErrHostAddress, err)
+		return fmt.Errorf("%w: reading host addresses: %w", ErrHostAddress, err)
 	}
 	if host[addr] {
 		return fmt.Errorf("%w: %s", ErrHostAddress, addr)

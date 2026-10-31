@@ -101,8 +101,8 @@ func (w *Workload) Run(ctx context.Context) {
 func (w *Workload) bind(ctx context.Context, name string) {
 	in := filepath.Join(w.ShareDir, "in-"+name+".txt")
 	out := filepath.Join(w.ShareDir, "out-"+name+".txt")
-	defer os.Remove(in)
-	defer os.Remove(out)
+	defer func() { _ = os.Remove(in) }()
+	defer func() { _ = os.Remove(out) }()
 	if err := writeReplace(in, []byte(name+"\n")); err != nil {
 		w.record("bind", fmt.Errorf("write %s: %w", in, err), "")
 		return
@@ -112,7 +112,7 @@ func (w *Workload) bind(ctx context.Context, name string) {
 		if strings.TrimSpace(stdout) != name {
 			return fmt.Errorf("container read %q, want %q", stdout, name)
 		}
-		b, err := os.ReadFile(out)
+		b, err := os.ReadFile(out) //nolint:gosec // G304: the path comes from the operator's own flags or this tool's work directory
 		if err != nil {
 			return fmt.Errorf("the container's write is not on the host: %w", err)
 		}
@@ -166,7 +166,7 @@ func writeReplace(path string, b []byte) error {
 		return err
 	}
 	if err := os.Rename(tmp, path); err != nil {
-		os.Remove(tmp)
+		_ = os.Remove(tmp)
 		return err
 	}
 	return nil
@@ -185,7 +185,7 @@ func fetchUntil(ctx context.Context, url, want string, wait time.Duration) error
 		resp, err := c.Do(req)
 		if err == nil {
 			b, rerr := io.ReadAll(io.LimitReader(resp.Body, 1<<16))
-			resp.Body.Close()
+			_ = resp.Body.Close()
 			switch {
 			case rerr != nil:
 				last = rerr

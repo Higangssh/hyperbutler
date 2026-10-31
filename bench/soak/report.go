@@ -29,34 +29,34 @@ func report(out io.Writer, c verdictConfig, series map[string][]Point, ops, errs
 	failures, sampleErrs []string, fatal error, interrupted bool,
 ) error {
 	ok := true
-	fmt.Fprintln(out)
+	_, _ = fmt.Fprintln(out)
 	for _, m := range metrics {
 		pts := series[m]
 		if len(pts) == 0 {
 			if c.optedOut[m] {
-				fmt.Fprintf(out, "%-16s skipped (opted out)\n", m)
+				_, _ = fmt.Fprintf(out, "%-16s skipped (opted out)\n", m)
 			} else {
 				ok = false
-				fmt.Fprintf(out, "%-16s FAIL: no samples\n", m)
+				_, _ = fmt.Fprintf(out, "%-16s FAIL: no samples\n", m)
 			}
 			continue
 		}
 		lim, have := c.limits[m]
 		if !have {
 			ok = false
-			fmt.Fprintf(out, "%-16s FAIL: no noise limit configured\n", m)
+			_, _ = fmt.Fprintf(out, "%-16s FAIL: no noise limit configured\n", m)
 			continue
 		}
 		v := Analyze(m, pts, Options{Warmup: c.warmup, MinWindow: c.minWindow, Bucket: c.bucket, MinBuckets: minBuckets, Limit: lim})
-		fmt.Fprintln(out, v)
+		_, _ = fmt.Fprintln(out, v)
 		ok = ok && v.Pass
 	}
-	fmt.Fprintf(out, "\nworkload: %d docker commands, %d failed (%s)\n", ops, errs, byKind)
+	_, _ = fmt.Fprintf(out, "\nworkload: %d docker commands, %d failed (%s)\n", ops, errs, byKind)
 	for _, f := range failures {
-		fmt.Fprintln(out, "  ", f)
+		_, _ = fmt.Fprintln(out, "  ", f)
 	}
 	if len(sampleErrs) > 0 {
-		fmt.Fprintf(out, "samples: %d failed, first: %s\n", len(sampleErrs), sampleErrs[0])
+		_, _ = fmt.Fprintf(out, "samples: %d failed, first: %s\n", len(sampleErrs), sampleErrs[0])
 	}
 	switch {
 	case fatal != nil:
@@ -70,6 +70,6 @@ func report(out io.Writer, c verdictConfig, series map[string][]Point, ops, errs
 	case !ok:
 		return errors.New("FAIL: a metric trends upward beyond noise, or has too little data")
 	}
-	fmt.Fprintln(out, "PASS")
+	_, _ = fmt.Fprintln(out, "PASS")
 	return nil
 }

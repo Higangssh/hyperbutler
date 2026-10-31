@@ -66,7 +66,7 @@ func (r result) String() string { return fmt.Sprintf("(%v) %s", r.err, strings.T
 
 func run(exe string, args ...string) result {
 	t := time.Now()
-	cmd := exec.Command(exe, args...)
+	cmd := exec.Command(exe, args...) //nolint:gosec // G204: command and arguments come from the operator's own flags or this tool's work directory; exec passes argv, no shell
 	var out bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &out, &out
 	err := cmd.Run()
@@ -104,7 +104,7 @@ func (b *bench) status() (*status, error) {
 	r := b.hbc("status", "--json")
 	var s status
 	if err := json.Unmarshal([]byte(r.out), &s); err != nil {
-		return nil, fmt.Errorf("status --json: %v: %s", err, r.out)
+		return nil, fmt.Errorf("status --json: %w: %s", err, r.out)
 	}
 	return &s, nil
 }
@@ -170,7 +170,7 @@ func (b *bench) run() error {
 	} else {
 		p6 := strconv.Itoa(v6.port())
 		if c, err := net.DialTimeout("tcp4", "127.0.0.1:"+p6, time.Second); err == nil {
-			c.Close()
+			_ = c.Close()
 			fmt.Println("SKIP [::1] fallback: 127.0.0.1 has a listener on port", p6)
 		} else {
 			r = b.wget(nil, "http://host.docker.internal:"+p6+"/")

@@ -245,7 +245,7 @@ func TestDialFailureClosesClient(t *testing.T) {
 	_ = c.SetReadDeadline(time.Now().Add(5 * time.Second))
 	if _, err := c.Read(make([]byte, 1)); err == nil {
 		t.Fatal("read succeeded; want the client to be closed")
-	} else if ne, ok := err.(net.Error); ok && ne.Timeout() {
+	} else if ne := net.Error(nil); errors.As(err, &ne) && ne.Timeout() {
 		t.Fatal("client left open after dial failure")
 	}
 }
@@ -389,7 +389,7 @@ func TestForwardWithoutHalfClose(t *testing.T) {
 	checkNoGoroutineLeak(t, base)
 }
 
-// TestForwardContextCancel: cancelling ctx closes both sides and forward returns.
+// TestForwardContextCancel: canceling ctx closes both sides and forward returns.
 func TestForwardContextCancel(t *testing.T) {
 	ln := tcpListener(t)
 	defer ln.Close()

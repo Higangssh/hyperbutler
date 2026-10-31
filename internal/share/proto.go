@@ -80,7 +80,6 @@ const (
 const (
 	notifyInvalInode = 2
 	notifyInvalEntry = 3
-	notifyDelete     = 6
 	// notifyInject is not a kernel code: the relay consumes it and replays an event
 	// on the mount so that inotify watchers see it.
 	notifyInject = 0x7762
@@ -493,13 +492,6 @@ func parseBatchForget(b []byte) ([]forgetOne, error) {
 	return out, r.err
 }
 
-type accessIn struct{ Mask uint32 }
-
-func parseAccess(b []byte) (accessIn, error) {
-	r := reader{b: b}
-	return accessIn{Mask: r.u32()}, r.err
-}
-
 // helloIn is the relay's first frame on each connection: the injector thread id and
 // the connection's queue number (0 opens the session).
 type helloIn struct {
@@ -514,17 +506,6 @@ func parseHello(b []byte) (helloIn, error) {
 		h.Queue = r.u32()
 	}
 	return h, r.err
-}
-
-type fallocateIn struct {
-	Fh, Offset, Length uint64
-	Mode               uint32
-}
-
-func parseFallocate(b []byte) (fallocateIn, error) {
-	r := reader{b: b}
-	f := fallocateIn{Fh: r.u64(), Offset: r.u64(), Length: r.u64(), Mode: r.u32()}
-	return f, r.err
 }
 
 // Reply encoding.
@@ -606,23 +587,30 @@ func (w *writer) attrOut(attrTTL uint64, a *Attr) {
 	w.attr(a)
 }
 
+// len32 is the length field of something this package built: a reply, a name, a path or
+// a buffer it allocated. They are bounded far below 4 GiB (MaxWrite, maxSymlinkLen, the
+// NTFS name limit), whatever the guest sends.
+func len32(n int) uint32 {
+	return uint32(n) //nolint:gosec // G115: n is a length (never negative) far below 4 GiB, see above
+}
+
 // header writes an out header; the length is patched by finish.
 func newReply(unique uint64, errno int32) *writer {
 	w := &writer{b: make([]byte, 0, 256)}
 	w.u32(0)
-	w.u32(uint32(errno))
+	w.u32(uint32(errno)) //nolint:gosec // G115: the error field is an int32 on the wire; u32 writes its two's complement
 	w.u64(unique)
 	return w
 }
 
 func (w *writer) finish() []byte {
-	binary.LittleEndian.PutUint32(w.b[0:], uint32(len(w.b)))
+	binary.LittleEndian.PutUint32(w.b[0:], len32(len(w.b)))
 	return w.b
 }
 
 // errReply is a reply carrying only -errno.
 func errReply(unique uint64, errno int) []byte {
-	return newReply(unique, -int32(errno)).finish()
+	return newReply(unique, -int32(errno)).finish() //nolint:gosec // G115: errno is a Linux errno (below 4096)
 }
 
 // dirent appends a fuse_dirent padded to 8 bytes; it returns false (and appends
@@ -635,7 +623,7 @@ func (w *writer) dirent(bodyStart, max int, ino, off uint64, typ uint32, name st
 	}
 	w.u64(ino)
 	w.u64(off)
-	w.u32(uint32(len(name)))
+	w.u32(len32(len(name)))
 	w.u32(typ)
 	w.b = append(w.b, name...)
 	w.zero(pad)
@@ -656,26 +644,15 @@ func direntSize(name string, plus bool) int {
 func notifyInvalInodeMsg(node uint64, off, length int64) []byte {
 	w := newReply(0, notifyInvalInode)
 	w.u64(node)
-	w.u64(uint64(off))
-	w.u64(uint64(length))
+	w.u64(uint64(off))    //nolint:gosec // G115: fuse_notify_inval_inode_out has s64 fields; u64 writes the same bits
+	w.u64(uint64(length)) //nolint:gosec // G115: as above (a negative length means to the end)
 	return w.finish()
 }
 
 func notifyInvalEntryMsg(parent uint64, name string) []byte {
 	w := newReply(0, notifyInvalEntry)
 	w.u64(parent)
-	w.u32(uint32(len(name)))
-	w.u32(0)
-	w.b = append(w.b, name...)
-	w.b = append(w.b, 0)
-	return w.finish()
-}
-
-func notifyDeleteMsg(parent, child uint64, name string) []byte {
-	w := newReply(0, notifyDelete)
-	w.u64(parent)
-	w.u64(child)
-	w.u32(uint32(len(name)))
+	w.u32(len32(len(name)))
 	w.u32(0)
 	w.b = append(w.b, name...)
 	w.b = append(w.b, 0)

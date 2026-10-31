@@ -6,16 +6,16 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/Higangssh/hyperbutler/internal/share"
-	"github.com/Higangssh/hyperbutler/internal/transport"
 	"github.com/Microsoft/go-winio"
 	"github.com/Microsoft/go-winio/pkg/guid"
+
+	"github.com/Higangssh/hyperbutler/internal/share"
+	"github.com/Higangssh/hyperbutler/internal/transport"
 )
 
 var (
 	fuseTTL       = flagDuration("fuse-ttl", 0, "FUSE entry/attr TTL (0 = server default, 1h)")
 	fuseWriteback = flagBool("fuse-writeback", false, "FUSE writeback cache")
-	fuseServer    *share.Server
 	fuseQueues    = flagInt("fuse-queues", 4, "hvsock connections per FUSE mount")
 	fuseRA        = flagInt("fuse-readahead", 4096, "FUSE mount readahead in KiB")
 )
@@ -32,7 +32,6 @@ func startFuse(ctx context.Context, g *guest, vmid guid.GUID, hostDir string, no
 		opt.Trace = traceOp
 	}
 	srv := share.NewServer(opt)
-	fuseServer = srv
 	if err := srv.AddShare(&share.Share{Name: "src", FS: fs}); err != nil {
 		return "", err
 	}

@@ -143,7 +143,7 @@ func (g *benchEnv) bench(ctx context.Context, vmid guid.GUID, n int64, step func
 		if err != nil {
 			return err
 		}
-		defer pub.Close()
+		defer func() { _ = pub.Close() }()
 		stackAddr := pub.(net.Listener).Addr().String()
 		raw := &transport.HvsockDialer{Target: transport.HvsockTarget{VMID: vmid, ServiceID: transport.VsockServiceID(benchVsockPort + uint32(off))}, Retries: 20, RetryWait: 100 * time.Millisecond}
 		paths = append(paths,
@@ -165,7 +165,7 @@ func (g *benchEnv) bench(ctx context.Context, vmid guid.GUID, n int64, step func
 				break
 			}
 			if time.Now().After(deadline) || ctx.Err() != nil {
-				return fmt.Errorf("bench %s not ready: %v", d.name, err)
+				return fmt.Errorf("bench %s not ready: %w", d.name, err)
 			}
 			time.Sleep(200 * time.Millisecond)
 		}
@@ -223,7 +223,7 @@ func (g *benchEnv) benchLatency(ctx context.Context, vmid guid.GUID, load benchP
 	if err != nil {
 		return err
 	}
-	defer pub.Close()
+	defer func() { _ = pub.Close() }()
 	stackAddr := pub.(net.Listener).Addr().String()
 	raw := &transport.HvsockDialer{Target: transport.HvsockTarget{VMID: vmid, ServiceID: transport.VsockServiceID(benchVsockPort + 4)}, Retries: 20, RetryWait: 100 * time.Millisecond}
 	echoes := []struct {
@@ -286,7 +286,7 @@ func roundTrips(dial func() (net.Conn, error), n int) ([]time.Duration, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 	req := make([]byte, 64)
 	resp := make([]byte, 64)
 	// Warm up the connection and both stacks.
@@ -302,7 +302,7 @@ func roundTrips(dial func() (net.Conn, error), n int) ([]time.Duration, error) {
 	// performance counter.
 	var freq int64
 	if r, _, err := procQPF.Call(uintptr(unsafe.Pointer(&freq))); r == 0 || freq <= 0 {
-		return nil, fmt.Errorf("QueryPerformanceFrequency: %v", err)
+		return nil, fmt.Errorf("QueryPerformanceFrequency: %w", err)
 	}
 	qpc := func() int64 {
 		var v int64
@@ -353,7 +353,7 @@ func (d benchPath) run(n int64) (int64, time.Duration, time.Duration, error) {
 	if err != nil {
 		return 0, 0, 0, err
 	}
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 	cpu0 := processCPU()
 	t0 := time.Now()
 	var got int64

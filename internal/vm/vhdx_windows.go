@@ -108,7 +108,7 @@ func CreateSparseVHDX(path string, size uint64) error {
 	// FSCTL_SET_SPARSE works without admin on an existing VHDX; CreateVirtualDisk's own
 	// sparse flag needs SUPPORT_SPARSE_FILES_ANY_FS as well (disk-reclaim.md, Q1). This
 	// is the path the HCS measurements used.
-	f, err := os.OpenFile(path, os.O_RDWR, 0)
+	f, err := os.OpenFile(path, os.O_RDWR, 0) //nolint:gosec // G304: the VHDX this function just created
 	if err != nil {
 		return err
 	}
@@ -155,18 +155,18 @@ func Usage(path string) (FileUsage, error) {
 	var high uint32
 	procSetLastError.Call(0)
 	low, _, callErr := procGetCompressedFileSz.Call(uintptr(unsafe.Pointer(p)), uintptr(unsafe.Pointer(&high)))
-	if uint32(low) == 0xFFFFFFFF && callErr != nil && !errors.Is(callErr, windows.Errno(0)) {
+	if dword(low) == 0xFFFFFFFF && callErr != nil && !errors.Is(callErr, windows.Errno(0)) {
 		return FileUsage{}, fmt.Errorf("vm: GetCompressedFileSizeW %s: %w", path, callErr)
 	}
 	return FileUsage{
 		Size:      uint64(fa.FileSizeHigh)<<32 | uint64(fa.FileSizeLow),
-		Allocated: uint64(high)<<32 | uint64(uint32(low)),
+		Allocated: uint64(high)<<32 | uint64(dword(low)),
 		Sparse:    fa.FileAttributes&fileAttributeSparseFile != 0,
 	}, nil
 }
 
 // FreeBytes is the free space of the volume holding dir that is available to the caller
-// (GetDiskFreeSpaceEx, which honours quotas).
+// (GetDiskFreeSpaceEx, which honors quotas).
 func FreeBytes(dir string) (uint64, error) {
 	p, err := windows.UTF16PtrFromString(dir)
 	if err != nil {

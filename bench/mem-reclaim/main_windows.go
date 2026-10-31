@@ -123,7 +123,7 @@ func run() error {
 		if c.work, err = os.MkdirTemp("", "hyperbutler-memreclaim"); err != nil {
 			return err
 		}
-		defer os.RemoveAll(c.work)
+		defer func() { _ = os.RemoveAll(c.work) }()
 	}
 	if up, err := c.hb.Running(); err != nil {
 		return err
@@ -137,9 +137,7 @@ func run() error {
 	ss, gi, err := measure(ctx, c, tarPath)
 	if len(ss) > 0 && c.out != "" {
 		if f, ferr := os.Create(c.out); ferr == nil {
-			ferr = WriteCSV(f, ss)
-			f.Close()
-			err = errors.Join(err, ferr)
+			err = errors.Join(err, WriteCSV(f, ss), f.Close())
 		} else {
 			err = errors.Join(err, ferr)
 		}
@@ -151,7 +149,7 @@ func run() error {
 	sum := Summarize(ss, Criteria{
 		Limit:    uint64((c.targetMB + c.marginMB) * 1e6),
 		Within:   c.within,
-		Workload: uint64(c.anon + c.cache),
+		Workload: uint64(c.anon + c.cache), //nolint:gosec // G115: parseBytes bounds -anon and -cache to [0, 1 TiB]
 	})
 	sum.Print(os.Stdout)
 	if !sum.Pass {
@@ -182,13 +180,13 @@ func (c *config) guestTar() (string, error) {
 	} else {
 		_, self, _, _ := runtime.Caller(0)
 		p := filepath.Join(c.work, "mem-guest")
-		cmd := exec.Command("go", "build", "-trimpath", "-o", p, ".")
+		cmd := exec.Command("go", "build", "-trimpath", "-o", p, ".") //nolint:gosec // G204: command and arguments come from the operator's own flags or this tool's work directory; exec passes argv, no shell
 		cmd.Dir = filepath.Join(filepath.Dir(self), "..", "mem-guest")
 		cmd.Env = append(os.Environ(), "GOOS=linux", "GOARCH=amd64", "CGO_ENABLED=0")
 		if out, err := cmd.CombinedOutput(); err != nil {
-			return "", fmt.Errorf("build mem-guest (or pass -guest): %v: %s", err, out)
+			return "", fmt.Errorf("build mem-guest (or pass -guest): %w: %s", err, out)
 		}
-		b, err := os.ReadFile(p)
+		b, err := os.ReadFile(p) //nolint:gosec // G304: the path comes from the operator's own flags or this tool's work directory
 		if err != nil {
 			return "", err
 		}
@@ -214,7 +212,7 @@ func (c *config) guestTar() (string, error) {
 		return "", err
 	}
 	p := filepath.Join(c.work, "mem-guest.tar")
-	return p, os.WriteFile(p, buf.Bytes(), 0o644)
+	return p, os.WriteFile(p, buf.Bytes(), 0o600)
 }
 
 // guestInfo is what the guest itself reported.
@@ -235,20 +233,20 @@ func (g *guestInfo) print(w io.Writer) {
 			return
 		}
 		m := r.Meminfo
-		fmt.Fprintf(w, "guest %-5s MemTotal %s MemFree %s Cached %s AnonPages %s Shmem %s file LRU %s Slab %s\n", name,
+		_, _ = fmt.Fprintf(w, "guest %-5s MemTotal %s MemFree %s Cached %s AnonPages %s Shmem %s file LRU %s Slab %s\n", name,
 			mib(float64(m["MemTotal"])), mib(float64(m["MemFree"])), mib(float64(m["Cached"])), mib(float64(m["AnonPages"])),
 			mib(float64(m["Shmem"])), mib(float64(m["Active(file)"]+m["Inactive(file)"])), mib(float64(m["Slab"])))
 	}
 	if g.peak != nil {
-		fmt.Fprintf(w, "\nfill: %s anonymous in %.1f s, %s written+read in %.1f s\n", mib(float64(g.peak.AnonBytes)), g.peak.AnonSecs,
+		_, _ = fmt.Fprintf(w, "\nfill: %s anonymous in %.1f s, %s written+read in %.1f s\n", mib(float64(g.peak.AnonBytes)), g.peak.AnonSecs,
 			mib(float64(g.peak.CacheBytes)), g.peak.CacheSecs)
 	}
 	show("peak", g.peak)
 	show("end", g.end)
 	if len(g.logLines) > 0 {
-		fmt.Fprintln(w, "engine log during the run (guest page-cache reclaim, guest memory, working-set guard):")
+		_, _ = fmt.Fprintln(w, "engine log during the run (guest page-cache reclaim, guest memory, working-set guard):")
 		for _, l := range g.logLines {
-			fmt.Fprintln(w, "  "+l)
+			_, _ = fmt.Fprintln(w, "  "+l)
 		}
 	}
 }
@@ -309,12 +307,12 @@ func measure(ctx context.Context, c *config, tarPath string) (ss []Sample, gi gu
 	if err != nil {
 		return nil, gi, err
 	}
-	enginePID := uint32(st.PID)
+	enginePID := uint32(st.PID) //nolint:gosec // G115: Windows process IDs are DWORDs
 	eh, err := hostmon.Pin(enginePID)
 	if err != nil {
 		return nil, gi, err
 	}
-	defer windows.CloseHandle(eh)
+	defer func() { _ = windows.CloseHandle(eh) }()
 	after, err := hostmon.Snapshot()
 	if err != nil {
 		return nil, gi, err
@@ -536,11 +534,11 @@ func fileSize(p string) int64 {
 
 // engineLog returns the engine log lines about guest memory written since off.
 func engineLog(p string, off int64) []string {
-	f, err := os.Open(p)
+	f, err := os.Open(p) //nolint:gosec // G304: the path comes from the operator's own flags or this tool's work directory
 	if err != nil {
 		return nil
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	if _, err := f.Seek(off, io.SeekStart); err != nil {
 		return nil
 	}

@@ -97,7 +97,7 @@ type Server struct {
 	closeErr error
 
 	mu      sync.Mutex
-	idle    *sync.Cond // signalled when active drops to 0
+	idle    *sync.Cond // signaled when active drops to 0
 	active  int        // handlers running
 	closing bool       // Close has begun; new handlers are refused
 }

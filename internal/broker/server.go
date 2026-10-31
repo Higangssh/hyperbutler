@@ -10,8 +10,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/Higangssh/hyperbutler/internal/broker/proto"
 	"golang.org/x/sys/windows"
+
+	"github.com/Higangssh/hyperbutler/internal/broker/proto"
 )
 
 // Identity is the caller of one connection, as reported by the OS (ADR 0004 rule 4). It
@@ -82,7 +83,7 @@ type Config struct {
 
 	// AllowedSIDs, if not empty, is the set of user SIDs that may use this server (a
 	// per-user endpoint has exactly one). The pipe ACL already enforces this; the check
-	// is defence in depth.
+	// is defense in depth.
 	AllowedSIDs []string
 
 	// MaxConnsPerUser caps one user's concurrent identified connections (default 2), so
@@ -265,7 +266,7 @@ func (s *Server) ServeConn(ctx context.Context, rw io.ReadWriter, p Peer) error 
 		}
 		b, err := proto.ReadFrame(rw, &buf)
 		switch {
-		case err == io.EOF:
+		case errors.Is(err, io.EOF):
 			return nil
 		case errors.Is(err, proto.ErrFrameTooLarge), errors.Is(err, proto.ErrInvalid):
 			return fail(proto.CodeBadRequest, "malformed frame", err)
@@ -430,7 +431,7 @@ const dataDirTimeout = 10 * time.Second
 // openDataDirBounded runs openDataDir but stops waiting when ctx is done. Reopening a
 // caller-chosen object goes through whatever file system or filter serves it (a remote
 // share, a ProjFS or cloud-files provider the caller runs), which may never answer, and
-// those calls cannot be cancelled. On timeout the caller gets a rejection, the per-user
+// those calls cannot be canceled. On timeout the caller gets a rejection, the per-user
 // lock and the pipe instance are released, and the abandoned goroutine closes the handle
 // if the call ever returns.
 func (s *Server) openDataDirBounded(ctx context.Context, p Peer, v uint64, sid string) (*DataDir, error) {

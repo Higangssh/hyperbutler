@@ -220,11 +220,13 @@ func TestProxyRefusalAfterPipelinedRequest(t *testing.T) {
 		t.Fatal(err)
 	}
 	b, _ := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
 	mustEqual(t, string(b), "OK")
 	resp, err = http.ReadResponse(br, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer resp.Body.Close()
 	b, _ = io.ReadAll(resp.Body)
 	if resp.StatusCode != http.StatusRequestEntityTooLarge || !strings.Contains(string(b), `"message":"hyperbutler: container create body exceeds 4 MiB"`) {
 		t.Fatalf("got %d %s", resp.StatusCode, b)
@@ -331,8 +333,12 @@ func FuzzRequestFilter(f *testing.F) {
 		}
 		if rej != nil {
 			resp, rerr := http.ReadResponse(bufio.NewReader(bytes.NewReader(rej.response())), nil)
-			if rerr != nil || resp.StatusCode != rej.status {
+			if rerr != nil {
 				t.Fatalf("bad refusal response %q: %v", rej.response(), rerr)
+			}
+			_ = resp.Body.Close()
+			if resp.StatusCode != rej.status {
+				t.Fatalf("bad refusal status in %q: %d, want %d", rej.response(), resp.StatusCode, rej.status)
 			}
 		}
 		if !transform && complete && !bytes.Contains(in, []byte("containers/create")) && !bytes.Equal(out.Bytes(), in) {

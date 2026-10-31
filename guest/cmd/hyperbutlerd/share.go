@@ -95,7 +95,7 @@ func (s *shareRelay) run() {
 			}
 		case <-s.stop:
 			_ = r.Close()
-			<-ended
+			<-ended //nolint:errcheck // ends because r was closed; stopping, nothing to report
 			return
 		}
 	}

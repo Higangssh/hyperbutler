@@ -35,7 +35,7 @@ func mkimageCmd(args []string) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(*out, img, 0o644)
+	return os.WriteFile(*out, img, 0o600)
 }
 
 // epoch is the fixed mtime of every entry, so the image is reproducible.

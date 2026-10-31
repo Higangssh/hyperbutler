@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math"
 	"sort"
 	"sync"
 	"sync/atomic"
@@ -158,7 +159,7 @@ func (s *Server) closeLocked(hd *handle) {
 		s.dirEntries -= len(hd.dir)
 	}
 	if hd.refs == 0 && hd.f != nil {
-		hd.f.Close()
+		_ = hd.f.Close()
 	}
 }
 
@@ -175,7 +176,7 @@ func (s *Server) acquire(fh uint64) (*handle, func(), error) {
 		s.mu.Lock()
 		hd.refs--
 		if hd.closed && hd.refs == 0 && hd.f != nil {
-			hd.f.Close()
+			_ = hd.f.Close()
 		}
 		s.unlock()
 	}, nil
@@ -296,7 +297,7 @@ func (s *Server) RemoveShare(name string) error {
 	delete(s.watchers, name)
 	s.unlock()
 	if w != nil {
-		w.Close()
+		_ = w.Close()
 	}
 	s.mu.Lock()
 	sh, ok := s.shares[name]
@@ -312,7 +313,7 @@ func (s *Server) RemoveShare(name string) error {
 		for fh, h := range s.handles {
 			if n := s.nodes[h.node]; n != nil && n.share == sh {
 				if h.f != nil {
-					h.f.Close()
+					_ = h.f.Close()
 				}
 				delete(s.handles, fh)
 			}
@@ -337,10 +338,11 @@ type Closer interface{ Close() error }
 
 // Close removes every share.
 func (s *Server) Close() error {
+	var errs []error
 	for _, n := range s.Shares() {
-		s.RemoveShare(n)
+		errs = append(errs, s.RemoveShare(n))
 	}
-	return nil
+	return errors.Join(errs...)
 }
 
 // Mounted reports whether a guest session is live: a queue-0 connection is being
@@ -395,7 +397,7 @@ func (c *conn) noteWriter() {
 // queueNote queues a notification without blocking.
 func (c *conn) queueNote(m []byte) {
 	if c.notes == nil {
-		c.write(m) // tests drive a bare conn
+		_ = c.write(m) // tests drive a bare conn
 		return
 	}
 	select {
@@ -574,7 +576,7 @@ func (s *Server) handle(c *conn, b []byte) {
 	if err != nil {
 		s.opt.Logger.Debug("share: bad frame", "err", err)
 		if len(b) >= inHeaderLen {
-			c.write(errReply(binary.LittleEndian.Uint64(b[8:]), int(EINVAL)))
+			_ = c.write(errReply(binary.LittleEndian.Uint64(b[8:]), int(EINVAL))) // c.err keeps a failure
 		}
 		return
 	}
@@ -584,7 +586,7 @@ func (s *Server) handle(c *conn, b []byte) {
 		s.opt.Trace(req.h.Opcode, time.Since(t0))
 	}
 	if reply != nil {
-		c.write(reply)
+		_ = c.write(reply) // c.err keeps a failure
 	}
 }
 
@@ -592,7 +594,7 @@ func (s *Server) ttl(d time.Duration) uint64 {
 	if d <= 0 {
 		return 0
 	}
-	return uint64(d.Nanoseconds())
+	return uint64(d.Nanoseconds()) //nolint:gosec // G115: d > 0, checked above
 }
 
 func (s *Server) isInjector(h *inHeader) bool {
@@ -676,7 +678,7 @@ func (s *Server) dispatch(r *request) []byte {
 			case sIFREG:
 				f, a, err := sh.FS.Create(p, oWRONLY|oCREAT|oEXCL, in.Mode&^in.Umask, owner(h))
 				if err == nil {
-					f.Close()
+					_ = f.Close() // MKNOD keeps no handle; nothing was written
 				}
 				return a, err
 			case sIFIFO, sIFSOCK:
@@ -741,7 +743,8 @@ func (s *Server) dispatch(r *request) []byte {
 		return s.doCreate(h, in)
 	case opRead:
 		in, err := parseRead(r.body)
-		if err != nil || in.Size > MaxWrite || int64(in.Offset) < 0 {
+		off := int64(in.Offset) //nolint:gosec // G115: an offset past 2^63 wraps negative and is refused here
+		if err != nil || in.Size > MaxWrite || off < 0 {
 			// An offset past 2^63 would reach ReadAt as a negative int64 (found by
 			// FuzzDispatch).
 			return fail(EINVAL)
@@ -754,7 +757,7 @@ func (s *Server) dispatch(r *request) []byte {
 		w := newReply(u, 0)
 		start := len(w.b)
 		w.b = append(w.b, make([]byte, in.Size)...)
-		n, err := f.ReadAt(w.b[start:], int64(in.Offset))
+		n, err := f.ReadAt(w.b[start:], off)
 		if err != nil && !errors.Is(err, io.EOF) && n == 0 {
 			return fail(err)
 		}
@@ -765,7 +768,8 @@ func (s *Server) dispatch(r *request) []byte {
 		if err != nil {
 			return fail(EINVAL)
 		}
-		if int64(in.Offset) < 0 {
+		off := int64(in.Offset) //nolint:gosec // G115: an offset past 2^63 wraps negative and is refused here
+		if off < 0 {
 			return fail(EFBIG)
 		}
 		f, done, err := s.fileFor(h, in.Fh, true)
@@ -774,13 +778,13 @@ func (s *Server) dispatch(r *request) []byte {
 		}
 		defer done()
 		s.touch(h.NodeID)
-		n, err := f.WriteAt(in.Data, int64(in.Offset))
+		n, err := f.WriteAt(in.Data, off)
 		if err != nil && n == 0 {
 			return fail(err)
 		}
 		s.touch(h.NodeID)
 		w := newReply(u, 0)
-		w.u32(uint32(n))
+		w.u32(len32(n)) // n <= len(in.Data) <= MaxWrite
 		w.u32(0)
 		return w.finish()
 	case opStatfs:
@@ -912,8 +916,6 @@ func (s *Server) doInit(r *request) []byte {
 	w.u16(MaxWrite / 4096)
 	w.u16(0)
 	w.zero(64 - 32) // flags2, max_stack_depth, request_timeout, unused
-	s.cmu.Lock()
-	s.cmu.Unlock()
 	return w.finish()
 }
 
@@ -1321,7 +1323,7 @@ func (s *Server) doSetattr(h *inHeader, in setattrIn) []byte {
 	}
 	sa := SetAttr{Valid: in.Valid}
 	if in.Valid&fattrSize != 0 {
-		if int64(in.Size) < 0 {
+		if in.Size > math.MaxInt64 {
 			return errReply(u, int(EFBIG))
 		}
 		sa.SetSize, sa.Size = true, in.Size
@@ -1468,7 +1470,7 @@ func (s *Server) doOpen(h *inHeader, flags uint32, dir bool) []byte {
 	}
 	fh, err := s.addHandle(&handle{node: h.NodeID, f: f})
 	if err != nil {
-		f.Close()
+		_ = f.Close()
 		return errReply(u, toErrno(err))
 	}
 	return s.openReply(u, fh, false)
@@ -1508,14 +1510,14 @@ func (s *Server) doCreate(h *inHeader, in createIn) []byte {
 	s.markRecentLocked(h.NodeID, in.Name)
 	s.unlock()
 	if err != nil {
-		f.Close()
+		_ = f.Close()
 		return errReply(u, toErrno(err))
 	}
 	var fh uint64
 	if noOpen {
 		s.keepCreated(n.id, f, flags&oACCMODE != oWRONLY, flags&oACCMODE != oRDONLY)
 	} else if fh, err = s.addHandle(&handle{node: n.id, f: f}); err != nil {
-		f.Close()
+		_ = f.Close()
 		s.forget(n.id, 1)
 		return errReply(u, toErrno(err))
 	}

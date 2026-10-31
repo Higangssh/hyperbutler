@@ -9,14 +9,9 @@ import (
 	"github.com/Higangssh/hyperbutler/internal/spaceguard"
 )
 
-type event struct {
-	b    spaceguard.Budget
-	lost bool
-}
-
 // readBudgets parses budget lines until the reader fails. Bad lines are logged and
 // dropped.
-func readBudgets(r io.Reader, send func(event)) error {
+func readBudgets(r io.Reader, send func(spaceguard.Budget)) error {
 	br := bufio.NewReaderSize(r, 2*spaceguard.MaxLineLen)
 	for {
 		line, err := br.ReadSlice('\n')
@@ -35,6 +30,6 @@ func readBudgets(r io.Reader, send func(event)) error {
 			log.Printf("spaceguard: %v", perr)
 			continue
 		}
-		send(event{b: b})
+		send(b)
 	}
 }

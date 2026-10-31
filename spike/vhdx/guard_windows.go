@@ -379,7 +379,7 @@ func (h *hostFiller) tick(free uint64) {
 		if free >= h.at {
 			return
 		}
-		f, err := os.OpenFile(h.path, os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0o644)
+		f, err := os.OpenFile(h.path, os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0o600)
 		if err != nil {
 			h.g.logf("hostfill: %v", err)
 			h.state = 3
@@ -394,7 +394,7 @@ func (h *hostFiller) tick(free uint64) {
 		for i := 0; i < 16; i++ {
 			free = freeBytes(h.g.vdir)
 			if free <= h.target {
-				h.f.Sync()
+				_ = h.f.Sync()
 				h.state, h.heldAt = 2, time.Now()
 				h.g.logf("hostfill: wrote %.1f MiB, host free %.1f MiB; holding %v", float64(h.filled)/mb, float64(free)/mb, h.hold)
 				return
@@ -403,7 +403,7 @@ func (h *hostFiller) tick(free uint64) {
 			w, err := h.f.Write(buf[:n])
 			h.filled += int64(w)
 			if err != nil {
-				h.f.Sync()
+				_ = h.f.Sync()
 				h.state, h.heldAt = 2, time.Now()
 				h.g.logf("hostfill: write: %v after %.1f MiB; holding", err, float64(h.filled)/mb)
 				return

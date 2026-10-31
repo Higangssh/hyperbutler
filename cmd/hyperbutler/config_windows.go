@@ -62,7 +62,7 @@ func diskExists(l engine.Layout) bool {
 
 func cmdConfig(args []string, stdout, stderr io.Writer) error {
 	if len(args) == 0 || args[0] == "-h" || args[0] == "--help" || args[0] == "help" {
-		fmt.Fprint(stdout, configUsageText())
+		_, _ = fmt.Fprint(stdout, configUsageText())
 		if len(args) == 0 {
 			return &shownError{err: errors.New("config: no subcommand")}
 		}
@@ -103,7 +103,7 @@ func configList(args []string, stdout, stderr io.Writer) error {
 	}
 	w.flush()
 	if in.settings == nil {
-		fmt.Fprintf(stdout, "\nNo settings file yet (%s): every value is a default.\n", in.l.SettingsPath())
+		_, _ = fmt.Fprintf(stdout, "\nNo settings file yet (%s): every value is a default.\n", in.l.SettingsPath())
 	}
 	return nil
 }
@@ -144,7 +144,7 @@ func configGet(args []string, stdout, stderr io.Writer) error {
 	if *asJSON {
 		return writeJSON(stdout, ConfigGetJSON{Schema: SchemaVersion, Item: it})
 	}
-	fmt.Fprintln(stdout, it.Value)
+	_, _ = fmt.Fprintln(stdout, it.Value)
 	return nil
 }
 
@@ -167,7 +167,7 @@ func configPath(args []string, stdout, stderr io.Writer) error {
 	if *asJSON {
 		return writeJSON(stdout, p)
 	}
-	fmt.Fprintf(stdout, "settings:    %s\ndaemon.json: %s\nstate:       %s\ndata:        %s\n", p.SettingsFile, p.DaemonJSON, p.Home, p.DataDir)
+	_, _ = fmt.Fprintf(stdout, "settings:    %s\ndaemon.json: %s\nstate:       %s\ndata:        %s\n", p.SettingsFile, p.DaemonJSON, p.Home, p.DataDir)
 	return nil
 }
 
@@ -226,15 +226,15 @@ func configSet(verb string, args []string, stdout, stderr io.Writer) error {
 	}
 	after := k.Get(next, env)
 	if in.settings != nil && config.Equal(next, in.settings) {
-		fmt.Fprintf(stdout, "%s is already %s; nothing changed.\n", k.Name, after.Value)
+		_, _ = fmt.Fprintf(stdout, "%s is already %s; nothing changed.\n", k.Name, after.Value)
 		return nil
 	}
 	if err := engine.SaveSettings(in.l, next); err != nil {
 		return fmt.Errorf("write %s: %w", in.l.SettingsPath(), err)
 	}
-	fmt.Fprintf(stdout, "%s: %s -> %s (%s)\n", k.Name, before.Value, after.Value, after.Source)
+	_, _ = fmt.Fprintf(stdout, "%s: %s -> %s (%s)\n", k.Name, before.Value, after.Value, after.Source)
 	if after.Source == config.SourceEnv {
-		fmt.Fprintf(stdout, "Note: the environment overrides this setting in this shell.\n")
+		_, _ = fmt.Fprintf(stdout, "Note: the environment overrides this setting in this shell.\n")
 	}
 	up, err := in.running()
 	if err != nil {
@@ -245,25 +245,25 @@ func configSet(verb string, args []string, stdout, stderr io.Writer) error {
 		if k.Engine && up {
 			return reloadLive(in, stdout)
 		}
-		fmt.Fprintln(stdout, "Applies at once; nothing restarts.")
+		_, _ = fmt.Fprintln(stdout, "Applies at once; nothing restarts.")
 		return nil
 	case config.ApplyFirstStart:
-		fmt.Fprintln(stdout, "Used when the data disk is created, at the first start.")
+		_, _ = fmt.Fprintln(stdout, "Used when the data disk is created, at the first start.")
 		return nil
 	case config.ApplyDockerd:
-		fmt.Fprintln(stdout, "Applies when dockerd restarts: hyperbutler config daemon apply.")
+		_, _ = fmt.Fprintln(stdout, "Applies when dockerd restarts: hyperbutler config daemon apply.")
 		return nil
 	}
 	if !up {
-		fmt.Fprintln(stdout, "Applies at the next hyperbutler start.")
+		_, _ = fmt.Fprintln(stdout, "Applies at the next hyperbutler start.")
 		return nil
 	}
 	if !*apply {
-		fmt.Fprintln(stdout, "The VM must restart to apply it: run `hyperbutler restart`, or repeat this with --apply. Nothing was restarted.")
+		_, _ = fmt.Fprintln(stdout, "The VM must restart to apply it: run `hyperbutler restart`, or repeat this with --apply. Nothing was restarted.")
 		return nil
 	}
 	unlock()
-	fmt.Fprintln(stdout, "Restarting the VM (--apply).")
+	_, _ = fmt.Fprintln(stdout, "Restarting the VM (--apply).")
 	return restart(*imageDir, 2*time.Minute, stdout, stderr)
 }
 
@@ -277,14 +277,14 @@ func reloadLive(in *install, stdout io.Writer) error {
 	p.Close()
 	if st.Phase != engine.PhaseRunning || st.HostGateway == nil {
 		// The engine applies settings.json as it is once its guest network is up.
-		fmt.Fprintf(stdout, "hyperbutler is %s; it applies this once the guest is up. Nothing restarts.\n", st.Phase)
+		_, _ = fmt.Fprintf(stdout, "hyperbutler is %s; it applies this once the guest is up. Nothing restarts.\n", st.Phase)
 		return nil
 	}
 	prev := st.HostGateway.Reloads
 	if err := engine.RequestSettingsReload(st.PID, st.PIDCreated); err != nil {
 		if errors.Is(err, windows.ERROR_FILE_NOT_FOUND) {
 			// An engine from a release without live settings: settings.json is saved.
-			fmt.Fprintln(stdout, "The running engine cannot apply settings live; this applies at the next hyperbutler start.")
+			_, _ = fmt.Fprintln(stdout, "The running engine cannot apply settings live; this applies at the next hyperbutler start.")
 			return nil
 		}
 		return err
@@ -304,7 +304,7 @@ func reloadLive(in *install, stdout io.Writer) error {
 			if h.Enabled {
 				state = "on, ports " + h.Ports
 			}
-			fmt.Fprintf(stdout, "Applied to the running engine; nothing restarted. host.docker.internal (%s): %s.\n", h.Address, state)
+			_, _ = fmt.Fprintf(stdout, "Applied to the running engine; nothing restarted. host.docker.internal (%s): %s.\n", h.Address, state)
 			return nil
 		}
 		if time.Now().After(deadline) {
@@ -347,7 +347,7 @@ func daemonValidate(args []string, stdout, stderr io.Writer) error {
 	}
 	b, err := engine.ReadFileBounded(path)
 	if errors.Is(err, os.ErrNotExist) {
-		fmt.Fprintf(stdout, "There is no %s: dockerd runs with its defaults.\n", path)
+		_, _ = fmt.Fprintf(stdout, "There is no %s: dockerd runs with its defaults.\n", path)
 		return nil
 	}
 	if err != nil {
@@ -356,7 +356,7 @@ func daemonValidate(args []string, stdout, stderr io.Writer) error {
 	if err := daemoncfg.Check(b, guestSubnet()); err != nil {
 		return fmt.Errorf("%s: %w", path, err)
 	}
-	fmt.Fprintf(stdout, "%s is valid for hyperbutler (%d bytes). dockerd checks it again (dockerd --validate) when it is applied.\n", path, len(b))
+	_, _ = fmt.Fprintf(stdout, "%s is valid for hyperbutler (%d bytes). dockerd checks it again (dockerd --validate) when it is applied.\n", path, len(b))
 	return nil
 }
 
@@ -387,9 +387,9 @@ func daemonApply(args []string, stdout, stderr io.Writer) error {
 	}
 	if !up {
 		if data == nil {
-			fmt.Fprintf(stdout, "There is no %s. hyperbutler is not running; dockerd starts with its defaults.\n", path)
+			_, _ = fmt.Fprintf(stdout, "There is no %s. hyperbutler is not running; dockerd starts with its defaults.\n", path)
 		} else {
-			fmt.Fprintf(stdout, "%s is valid. hyperbutler is not running; dockerd starts with it at the next start.\n", path)
+			_, _ = fmt.Fprintf(stdout, "%s is valid. hyperbutler is not running; dockerd starts with it at the next start.\n", path)
 		}
 		return nil
 	}
@@ -408,7 +408,7 @@ func daemonApply(args []string, stdout, stderr io.Writer) error {
 	if err := engine.RequestDaemonApply(st.PID, st.PIDCreated); err != nil {
 		return err
 	}
-	fmt.Fprintln(stdout, "Restarting dockerd with", describeDaemonFile(path, data), "(the VM keeps running)...")
+	_, _ = fmt.Fprintln(stdout, "Restarting dockerd with", describeDaemonFile(path, data), "(the VM keeps running)...")
 	t0 := time.Now()
 	deadline := t0.Add(*timeout)
 	for {
@@ -421,7 +421,7 @@ func daemonApply(args []string, stdout, stderr io.Writer) error {
 			if d.Error != "" {
 				return fmt.Errorf("daemon.json not applied: %s", printable([]byte(d.Error)))
 			}
-			fmt.Fprintf(stdout, "dockerd restarted with %s in %.1f s.\n", describeState(d), time.Since(t0).Seconds())
+			_, _ = fmt.Fprintf(stdout, "dockerd restarted with %s in %.1f s.\n", describeState(d), time.Since(t0).Seconds())
 			return nil
 		}
 		if time.Now().After(deadline) {

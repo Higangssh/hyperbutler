@@ -148,7 +148,7 @@ func Summarize(ss []Sample, c Criteria) Summary {
 		sum.EngineCommitEnd = last.EnginePriv
 		sum.CoversWindow = last.T >= within
 		if len(base) > 0 {
-			sum.EndOverBaseline = int64(last.Total()) - int64(sum.Baseline.Median)
+			sum.EndOverBaseline = int64(last.Total()) - int64(sum.Baseline.Median) //nolint:gosec // G115: memory totals are far below 2^63 bytes
 		}
 	}
 	met := !math.IsNaN(sum.Reached) && sum.Reached <= within
@@ -176,25 +176,25 @@ func mb(b float64) string { return strconv.FormatFloat(b/1e6, 'f', 0, 64) + " MB
 
 // Print writes the summary as the table docs/ records.
 func (s Summary) Print(w io.Writer) {
-	fmt.Fprintf(w, "\nREQ-MEM-002 memory reclaim, %d samples (private working set of engine + vmmem + vmwp + helpers):\n\n", s.N)
-	fmt.Fprintf(w, "| Point | Total | vmmem private bytes |\n|---|---|---|\n")
-	fmt.Fprintf(w, "| baseline (idle, median) | %s (%s) | %s |\n", mib(s.Baseline.Median), mb(s.Baseline.Median), mib(s.VMMemPrivBaseMed))
-	fmt.Fprintf(w, "| peak | %s | %s |\n", mib(float64(s.Peak)), mib(float64(s.VMMemPrivAtPeak)))
+	_, _ = fmt.Fprintf(w, "\nREQ-MEM-002 memory reclaim, %d samples (private working set of engine + vmmem + vmwp + helpers):\n\n", s.N)
+	_, _ = fmt.Fprintf(w, "| Point | Total | vmmem private bytes |\n|---|---|---|\n")
+	_, _ = fmt.Fprintf(w, "| baseline (idle, median) | %s (%s) | %s |\n", mib(s.Baseline.Median), mb(s.Baseline.Median), mib(s.VMMemPrivBaseMed))
+	_, _ = fmt.Fprintf(w, "| peak | %s | %s |\n", mib(float64(s.Peak)), mib(float64(s.VMMemPrivAtPeak)))
 	if s.AtWithinT > 0 {
-		fmt.Fprintf(w, "| exit + %.0f s | %s (%s) | |\n", s.AtWithinT, mib(float64(s.AtWithin)), mb(float64(s.AtWithin)))
+		_, _ = fmt.Fprintf(w, "| exit + %.0f s | %s (%s) | |\n", s.AtWithinT, mib(float64(s.AtWithin)), mb(float64(s.AtWithin)))
 	}
-	fmt.Fprintf(w, "| lowest after exit (+%.0f s) | %s | |\n", s.MinAfterT, mib(float64(s.MinAfter)))
-	fmt.Fprintf(w, "| end (exit + %.0f s) | %s (%s) | %s |\n", s.EndT, mib(float64(s.End)), mb(float64(s.End)), mib(float64(s.VMMemPrivAtEnd)))
-	fmt.Fprintf(w, "\nGrowth over baseline at peak %s for a %s workload; end ??baseline %+.1f MiB\n",
+	_, _ = fmt.Fprintf(w, "| lowest after exit (+%.0f s) | %s | |\n", s.MinAfterT, mib(float64(s.MinAfter)))
+	_, _ = fmt.Fprintf(w, "| end (exit + %.0f s) | %s (%s) | %s |\n", s.EndT, mib(float64(s.End)), mb(float64(s.End)), mib(float64(s.VMMemPrivAtEnd)))
+	_, _ = fmt.Fprintf(w, "\nGrowth over baseline at peak %s for a %s workload; end ??baseline %+.1f MiB\n",
 		mib(float64(s.Growth)), mib(float64(s.Workload)), float64(s.EndOverBaseline)/(1<<20))
-	fmt.Fprintf(w, "Engine %s at baseline, %s at the end (commit %s); VM (vmmem + vmwp) %s at baseline, %s at the end\n",
+	_, _ = fmt.Fprintf(w, "Engine %s at baseline, %s at the end (commit %s); VM (vmmem + vmwp) %s at baseline, %s at the end\n",
 		mib(s.EngineBase), mib(float64(s.EngineEnd)), mib(float64(s.EngineCommitEnd)), mib(s.VMBase), mib(float64(s.VMEnd)))
 	reached := "never"
 	if !math.IsNaN(s.Reached) {
 		reached = fmt.Sprintf("+%.0f s", s.Reached)
 	}
-	fmt.Fprintf(w, "At or below %s (%s) for good from: %s; required within %s\n", mb(float64(s.Limit)), mib(float64(s.Limit)), reached, s.Within)
-	fmt.Fprintf(w, "\nREQ-MEM-002: %s\n", s.VerdictText)
+	_, _ = fmt.Fprintf(w, "At or below %s (%s) for good from: %s; required within %s\n", mb(float64(s.Limit)), mib(float64(s.Limit)), reached, s.Within)
+	_, _ = fmt.Fprintf(w, "\nREQ-MEM-002: %s\n", s.VerdictText)
 }
 
 var csvHeader = []string{"t_seconds", "phase", "engine_ws", "vmmem_ws", "vmwp_ws", "helpers_ws", "total", "vmmem_private", "foreign", "engine_private", "engine_faults"}

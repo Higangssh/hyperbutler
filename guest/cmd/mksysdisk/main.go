@@ -70,11 +70,11 @@ func run() error {
 }
 
 func wrap(in, out string, ts time.Time) error {
-	f, err := os.Open(in)
+	f, err := os.Open(in) //nolint:gosec // G304: build tool; the input is the -erofs flag
 	if err != nil {
 		return err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	fi, err := f.Stat()
 	if err != nil {
 		return err
@@ -83,7 +83,7 @@ func wrap(in, out string, ts time.Time) error {
 	if _, err := f.ReadAt(sb[:], 1024); err != nil || binary.LittleEndian.Uint32(sb[:]) != erofsMagic {
 		return fmt.Errorf("%s is not an erofs image", in)
 	}
-	n := uint64(fi.Size())
+	n := uint64(fi.Size()) //nolint:gosec // G115: a file size from Stat is never negative
 	size := (n + image.DiskAlign - 1) / image.DiskAlign * image.DiskAlign
 	h := sha256.New()
 	if _, err := io.Copy(h, f); err != nil {
@@ -101,7 +101,7 @@ func wrap(in, out string, ts time.Time) error {
 		return err
 	}
 	tmp := out + ".tmp"
-	o, err := os.Create(tmp)
+	o, err := os.Create(tmp) //nolint:gosec // G304: build tool; the output path is the -o flag
 	if err != nil {
 		return err
 	}
@@ -133,11 +133,11 @@ func writeManifest(path, kernel, initrd, system string) error {
 		if filepath.Dir(p) != filepath.Dir(path) {
 			return image.File{}, fmt.Errorf("%s must be next to %s", p, path)
 		}
-		f, err := os.Open(p)
+		f, err := os.Open(p) //nolint:gosec // G304: build tool; image files named on the command line
 		if err != nil {
 			return image.File{}, err
 		}
-		defer f.Close()
+		defer func() { _ = f.Close() }()
 		return image.Describe(filepath.Base(p), f)
 	}
 	var m image.Manifest
@@ -156,5 +156,5 @@ func writeManifest(path, kernel, initrd, system string) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(path, b, 0o644)
+	return os.WriteFile(path, b, 0o644) //nolint:gosec // G306: image.json is a published build artifact, like the image files next to it
 }

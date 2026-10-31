@@ -45,7 +45,7 @@ func main() {
 		flag.Usage()
 		os.Exit(2)
 	}
-	if err := os.MkdirAll(*dir, 0o755); err != nil {
+	if err := os.MkdirAll(*dir, 0o750); err != nil {
 		fatal(err)
 	}
 	var err error
@@ -105,7 +105,7 @@ func qemuIO(format, path string, cmds ...string) error {
 		args = append(args, "-c", c)
 	}
 	args = append(args, path)
-	out, err := exec.Command(filepath.Join(*qemuDir, "qemu-io.exe"), args...).CombinedOutput()
+	out, err := exec.Command(filepath.Join(*qemuDir, "qemu-io.exe"), args...).CombinedOutput() //nolint:gosec // G204: command and arguments come from the operator's own flags or this tool's work directory; exec passes argv, no shell
 	if err != nil {
 		return fmt.Errorf("qemu-io %v: %w\n%s", cmds, err, out)
 	}
@@ -138,7 +138,7 @@ func runVHDX() error {
 	if err := createVHDX(a, size, createFlagNone); err != nil {
 		return err
 	}
-	if f, err := os.OpenFile(a, os.O_RDWR, 0); err != nil {
+	if f, err := os.OpenFile(a, os.O_RDWR, 0); err != nil { //nolint:gosec // G304: the path comes from the operator's own flags or this tool's work directory
 		fmt.Println("   open:", err)
 	} else {
 		if err := setSparse(f); err != nil {
@@ -152,7 +152,7 @@ func runVHDX() error {
 			fmt.Println("  ", err)
 		} else {
 			fmt.Printf("   OpenVirtualDisk(METAOPS, flags=0x%x): ok\n", of)
-			syscall.CloseHandle(h)
+			_ = syscall.CloseHandle(h)
 		}
 	}
 
@@ -173,7 +173,7 @@ func runVHDX() error {
 			return err
 		}
 		if tc.sparse {
-			f, err := os.OpenFile(p, os.O_RDWR, 0)
+			f, err := os.OpenFile(p, os.O_RDWR, 0) //nolint:gosec // G304: the path comes from the operator's own flags or this tool's work directory
 			if err != nil {
 				return err
 			}
@@ -201,7 +201,7 @@ func runVHDX() error {
 			fmt.Println("  ", err)
 		}
 		fmt.Printf("   CompactVirtualDisk returned after %v\n", time.Since(t0).Round(time.Millisecond))
-		syscall.CloseHandle(h)
+		_ = syscall.CloseHandle(h)
 		report("after CompactVirtualDisk", p)
 	}
 
@@ -215,7 +215,7 @@ func runVHDX() error {
 		fmt.Println("  ", err)
 		return nil
 	}
-	defer syscall.CloseHandle(h)
+	defer func() { _ = syscall.CloseHandle(h) }()
 	if err := attachVHDX(h, attachFlagReadOnly|attachFlagNoDriveLetter); err != nil {
 		fmt.Println("  ", err)
 		return nil
@@ -226,7 +226,7 @@ func runVHDX() error {
 
 func runRaw() error {
 	p := fresh("sparse.raw")
-	f, err := os.OpenFile(p, os.O_RDWR|os.O_CREATE|os.O_EXCL, 0o644)
+	f, err := os.OpenFile(p, os.O_RDWR|os.O_CREATE|os.O_EXCL, 0o600)
 	if err != nil {
 		return err
 	}

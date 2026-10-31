@@ -27,13 +27,13 @@ func (f *NTFS) Watch(fn func(kind EventKind, path, newPath []string), overflow f
 	}
 	ev, err := windows.CreateEvent(nil, 1, 0, nil)
 	if err != nil {
-		windows.CloseHandle(h)
+		_ = windows.CloseHandle(h)
 		return nil, err
 	}
 	stop, err := windows.CreateEvent(nil, 1, 0, nil)
 	if err != nil {
-		windows.CloseHandle(ev)
-		windows.CloseHandle(h)
+		_ = windows.CloseHandle(ev)
+		_ = windows.CloseHandle(h)
 		return nil, err
 	}
 	w := &watcher{h: h, ev: ev, stop: stop, done: make(chan struct{})}
@@ -56,15 +56,15 @@ func (w *watcher) loop(fn func(EventKind, []string, []string), overflow func()) 
 	buf := make([]byte, 256<<10)
 	for {
 		ov := windows.Overlapped{HEvent: w.ev}
-		windows.ResetEvent(w.ev)
+		_ = windows.ResetEvent(w.ev)
 		var n uint32
-		if err := windows.ReadDirectoryChanges(w.h, &buf[0], uint32(len(buf)), true, watchFilter, &n, &ov, 0); err != nil {
+		if err := windows.ReadDirectoryChanges(w.h, &buf[0], len32(len(buf)), true, watchFilter, &n, &ov, 0); err != nil {
 			return
 		}
 		r, err := windows.WaitForMultipleObjects([]windows.Handle{w.ev, w.stop}, false, windows.INFINITE)
 		if err != nil || r != windows.WAIT_OBJECT_0 {
-			windows.CancelIoEx(w.h, &ov)
-			windows.GetOverlappedResult(w.h, &ov, &n, true)
+			_ = windows.CancelIoEx(w.h, &ov)
+			_ = windows.GetOverlappedResult(w.h, &ov, &n, true)
 			return
 		}
 		if err := windows.GetOverlappedResult(w.h, &ov, &n, false); err != nil {
@@ -157,11 +157,11 @@ func splitNT(raw string) []string {
 
 func (w *watcher) Close() error {
 	w.once.Do(func() {
-		windows.SetEvent(w.stop)
+		_ = windows.SetEvent(w.stop)
 		<-w.done
-		windows.CloseHandle(w.h)
-		windows.CloseHandle(w.ev)
-		windows.CloseHandle(w.stop)
+		_ = windows.CloseHandle(w.h)
+		_ = windows.CloseHandle(w.ev)
+		_ = windows.CloseHandle(w.stop)
 	})
 	return nil
 }

@@ -265,6 +265,24 @@ type fields struct {
 	guid    [16]byte
 }
 
+// The u8, u16 and u32 accessors narrow a decoded number to its tag's wire width.
+// decodeFrame only stores a tag's number after checking that its value is exactly
+// kindSize(kind) bytes, so the stored uint64 never exceeds that width and the
+// conversions below cannot truncate. Each accessor must only be used for tags whose
+// schema kind is at most that wide.
+
+func (f *fields) u8(tag int) uint8 {
+	return uint8(f.num[tag]) //nolint:gosec // G115: decodeFrame stored at most one byte for this tag
+}
+
+func (f *fields) u16(tag int) uint16 {
+	return uint16(f.num[tag]) //nolint:gosec // G115: decodeFrame stored at most two bytes for this tag
+}
+
+func (f *fields) u32(tag int) uint32 {
+	return uint32(f.num[tag]) //nolint:gosec // G115: decodeFrame stored at most four bytes for this tag
+}
+
 func kindSize(k kind) int {
 	switch k {
 	case kindBool, kindU8:
@@ -386,8 +404,8 @@ func DecodeRequest(b []byte) (Request, error) {
 	r := Request{
 		Op:       Op(typ),
 		Force:    f.num[tagForce] == 1,
-		CPUs:     uint32(f.num[tagCPUs]),
-		MemoryMB: uint32(f.num[tagMemoryMB]),
+		CPUs:     f.u32(tagCPUs),
+		MemoryMB: f.u32(tagMemoryMB),
 		Handle:   f.num[tagHandle],
 	}
 	if err := r.Validate(); err != nil {
@@ -444,13 +462,13 @@ func DecodeReply(b []byte) (Reply, error) {
 	}
 	r := Reply{
 		Type:            typ,
-		Code:            Code(f.num[tagCode]),
+		Code:            Code(f.u16(tagCode)),
 		Message:         f.str[tagMessage],
-		ProtoVersion:    uint8(f.num[tagProtoVersion]),
+		ProtoVersion:    f.u8(tagProtoVersion),
 		BrokerVersion:   f.str[tagBrokerVersion],
-		State:           State(f.num[tagState]),
-		CPUs:            uint32(f.num[tagCPUs]),
-		MemoryMB:        uint32(f.num[tagMemoryMB]),
+		State:           State(f.u8(tagState)),
+		CPUs:            f.u32(tagCPUs),
+		MemoryMB:        f.u32(tagMemoryMB),
 		VMID:            f.guid,
 		DataLocationSet: f.num[tagDataLocationSet] == 1,
 	}
@@ -512,7 +530,9 @@ func (r *Reply) Validate() error {
 type encoder struct{ b []byte }
 
 func (e *encoder) field(tag uint8, v []byte) {
-	e.b = append(e.b, tag, uint8(len(v)))
+	// Every value is a fixed-width number, a GUID, or a string Validate bounded by its
+	// schema maximum (far below 256), and finish rejects an oversized frame anyway.
+	e.b = append(e.b, tag, uint8(len(v))) //nolint:gosec // G115: field values are shorter than 256 bytes
 	e.b = append(e.b, v...)
 }
 
@@ -554,7 +574,7 @@ func (e *encoder) finish() ([]byte, error) {
 	if len(e.b) > MaxFrameSize {
 		return nil, ErrFrameTooLarge
 	}
-	binary.BigEndian.PutUint16(e.b, uint16(len(e.b)-2))
+	binary.BigEndian.PutUint16(e.b, uint16(len(e.b)-2)) //nolint:gosec // G115: len(e.b) <= MaxFrameSize (512) was checked above
 	return e.b, nil
 }
 

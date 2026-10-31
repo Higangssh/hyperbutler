@@ -73,13 +73,13 @@ type HostEvent struct {
 
 // injectMsg builds the frame the relay turns into a replayed operation. Paths are
 // relative to the FUSE mount point.
-func injectMsg(kind int, mode uint32, p1, p2 string) []byte {
+func injectMsg(kind uint32, mode uint32, p1, p2 string) []byte {
 	w := newReply(0, notifyInject)
-	w.u32(uint32(kind))
+	w.u32(kind)
 	w.u32(mode)
-	w.u32(uint32(len(p1)))
+	w.u32(len32(len(p1)))
 	w.b = append(w.b, p1...)
-	w.u32(uint32(len(p2)))
+	w.u32(len32(len(p2)))
 	w.b = append(w.b, p2...)
 	return w.finish()
 }
@@ -113,7 +113,7 @@ func ParseInject(b []byte) (InjectFrame, bool) {
 // IsInject reports whether an out frame from the host is a replay request.
 func IsInject(frame []byte) bool {
 	return len(frame) >= outHeaderLen && binary.LittleEndian.Uint64(frame[8:]) == 0 &&
-		int32(binary.LittleEndian.Uint32(frame[4:])) == notifyInject
+		binary.LittleEndian.Uint32(frame[4:]) == notifyInject
 }
 
 func joinPath(share string, p []string) string {

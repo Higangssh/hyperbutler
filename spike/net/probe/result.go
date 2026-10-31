@@ -71,7 +71,7 @@ func validKey(k string) bool {
 	}
 	for i := 0; i < len(k); i++ {
 		c := k[i]
-		if !(c >= 'a' && c <= 'z' || c >= '0' && c <= '9' || c == '_') {
+		if (c < 'a' || c > 'z') && (c < '0' || c > '9') && c != '_' {
 			return false
 		}
 	}

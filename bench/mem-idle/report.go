@@ -136,19 +136,19 @@ func mib(b float64) string { return strconv.FormatFloat(b/(1<<20), 'f', 1, 64) +
 
 // Print writes the summary as the table docs/ records.
 func (s Summary) Print(w io.Writer) {
-	fmt.Fprintf(w, "\nREQ-MEM-001 idle memory, %d samples (private working set):\n\n", s.N)
-	fmt.Fprintf(w, "| Process | Median | Min | Max |\n|---|---|---|---|\n")
+	_, _ = fmt.Fprintf(w, "\nREQ-MEM-001 idle memory, %d samples (private working set):\n\n", s.N)
+	_, _ = fmt.Fprintf(w, "| Process | Median | Min | Max |\n|---|---|---|---|\n")
 	for _, r := range []struct {
 		name string
 		st   Stat
 	}{{"engine (hyperbutler.exe)", s.Engine}, {"vmmem (this VM)", s.VMMem}, {"vmwp (this VM)", s.VMWP}, {"engine helpers", s.Helpers}, {"**total**", s.Total}} {
-		fmt.Fprintf(w, "| %s | %s | %s | %s |\n", r.name, mib(r.st.Median), mib(r.st.Min), mib(r.st.Max))
+		_, _ = fmt.Fprintf(w, "| %s | %s | %s | %s |\n", r.name, mib(r.st.Median), mib(r.st.Min), mib(r.st.Max))
 	}
-	fmt.Fprintf(w, "\nEngine Go runtime (medians): heap alloc %s, heap in use %s, GC slack (free but retained) %s, stacks %s, Go Sys %s; goroutines %.0f, handles %.0f; %d GCs in the window\n",
+	_, _ = fmt.Fprintf(w, "\nEngine Go runtime (medians): heap alloc %s, heap in use %s, GC slack (free but retained) %s, stacks %s, Go Sys %s; goroutines %.0f, handles %.0f; %d GCs in the window\n",
 		mib(s.HeapAlloc.Median), mib(s.HeapInuse.Median), mib(s.HeapRetained.Median), mib(s.StackInuse.Median), mib(s.GoSys.Median), s.Goroutines.Median, s.Handles.Median, s.NumGC)
-	fmt.Fprintf(w, "Engine commit (private bytes) %s, of which Windows heaps %s; the gap to the working set is committed but untouched memory\n",
+	_, _ = fmt.Fprintf(w, "Engine commit (private bytes) %s, of which Windows heaps %s; the gap to the working set is committed but untouched memory\n",
 		mib(s.OSPrivate.Median), mib(s.NativeHeap.Median))
-	fmt.Fprintf(w, "Slopes over the window: engine WS %+.1f MiB/h, heap alloc %+.1f MiB/h (5 minutes only shows fast growth)\n",
+	_, _ = fmt.Fprintf(w, "Slopes over the window: engine WS %+.1f MiB/h, heap alloc %+.1f MiB/h (5 minutes only shows fast growth)\n",
 		s.EngineWSSlope/(1<<20), s.HeapAllocSlope/(1<<20))
 	verdict := "PASS"
 	switch {
@@ -159,7 +159,7 @@ func (s Summary) Print(w io.Writer) {
 	case !s.Pass:
 		verdict = "FAIL"
 	}
-	fmt.Fprintf(w, "\nTotal median %s (%.0f MB) against %.0f MB: %s\n", mib(s.Total.Median), s.Total.Median/1e6, float64(s.Target)/1e6, verdict)
+	_, _ = fmt.Fprintf(w, "\nTotal median %s (%.0f MB) against %.0f MB: %s\n", mib(s.Total.Median), s.Total.Median/1e6, float64(s.Target)/1e6, verdict)
 }
 
 // csvHeader names the CSV columns WriteCSV writes.

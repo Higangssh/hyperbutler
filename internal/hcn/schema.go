@@ -2,6 +2,7 @@ package hcn
 
 import (
 	"bytes"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -100,7 +101,7 @@ func ValidateName(name string) error {
 		return fmt.Errorf("hcn: name length %d out of range", len(name))
 	}
 	for _, r := range name {
-		if !(r >= 'a' && r <= 'z' || r >= '0' && r <= '9' || r == '-') {
+		if (r < 'a' || r > 'z') && (r < '0' || r > '9') && r != '-' {
 			return fmt.Errorf("hcn: name %q has character %q outside [a-z0-9-]", name, r)
 		}
 	}
@@ -154,7 +155,9 @@ func lastAddr(p netip.Prefix) netip.Addr {
 	host := 32 - p.Bits()
 	v := uint32(b[0])<<24 | uint32(b[1])<<16 | uint32(b[2])<<8 | uint32(b[3])
 	v |= (1 << host) - 1
-	return netip.AddrFrom4([4]byte{byte(v >> 24), byte(v >> 16), byte(v >> 8), byte(v)})
+	var out [4]byte
+	binary.BigEndian.PutUint32(out[:], v)
+	return netip.AddrFrom4(out)
 }
 
 // StaticEndpoint builds an endpoint document on network with one static address.
@@ -171,7 +174,7 @@ func StaticEndpoint(name, networkID string, addr netip.Prefix, gateway netip.Add
 	ep := Endpoint{
 		Name:               name,
 		HostComputeNetwork: networkID,
-		IPConfigurations:   []IPConfig{{IPAddress: addr.Addr().String(), PrefixLength: uint8(addr.Bits())}},
+		IPConfigurations:   []IPConfig{{IPAddress: addr.Addr().String(), PrefixLength: uint8(addr.Bits())}}, //nolint:gosec // G115: checkGateway accepted addr, so Bits is 8..30,
 		Routes:             []Route{{NextHop: gateway.String(), DestinationPrefix: "0.0.0.0/0"}},
 		SchemaVersion:      V2,
 	}
@@ -207,7 +210,7 @@ type errorRecord struct {
 }
 
 // ParseErrorRecord extracts the message and code from an HCN error record. An empty
-// record yields ("", 0, nil). The message is sanitised for logging: control characters
+// record yields ("", 0, nil). The message is sanitized for logging: control characters
 // are replaced and its length is bounded.
 func ParseErrorRecord(doc string) (msg string, code uint32, err error) {
 	doc = strings.TrimSpace(doc)

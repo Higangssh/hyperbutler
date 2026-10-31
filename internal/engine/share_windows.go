@@ -219,7 +219,7 @@ func (s *shareService) lifetime(ctx context.Context, client *http.Client) {
 		if err != nil {
 			return err
 		}
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		if resp.StatusCode != http.StatusOK {
 			return fmt.Errorf("events: %s", resp.Status)
 		}
@@ -296,7 +296,7 @@ func (s *shareService) prune(ctx context.Context, client *http.Client) error {
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("containers: %s", resp.Status)
 	}

@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"strings"
 	"unicode/utf8"
 )
@@ -88,7 +89,7 @@ func validName(s string) bool {
 	}
 	for i := 0; i < len(s); i++ {
 		c := s[i]
-		if !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '.' || c == '_' || c == '-') {
+		if (c < 'a' || c > 'z') && (c < 'A' || c > 'Z') && (c < '0' || c > '9') && c != '.' && c != '_' && c != '-' {
 			return false
 		}
 	}
@@ -100,7 +101,7 @@ func validHash(s string) bool {
 		return false
 	}
 	for i := 0; i < len(s); i++ {
-		if c := s[i]; !(c >= '0' && c <= '9' || c >= 'a' && c <= 'f') {
+		if c := s[i]; (c < '0' || c > '9') && (c < 'a' || c > 'f') {
 			return false
 		}
 	}
@@ -146,12 +147,15 @@ func (m *Manifest) Encode() ([]byte, error) {
 // Check reads r to the end and reports whether it is exactly f: the same size and
 // SHA-256. It reads at most f.Size+1 bytes.
 func (f File) Check(r io.Reader) error {
+	if f.Size >= math.MaxInt64 {
+		return fmt.Errorf("image: %s: size %d out of range", f.Name, f.Size)
+	}
 	h := sha256.New()
-	n, err := io.Copy(h, io.LimitReader(r, int64(f.Size)+1))
+	n, err := io.Copy(h, io.LimitReader(r, int64(f.Size)+1)) //nolint:gosec // G115: f.Size < MaxInt64 is checked above
 	if err != nil {
 		return fmt.Errorf("image: read %s: %w", f.Name, err)
 	}
-	if uint64(n) != f.Size {
+	if uint64(n) != f.Size { //nolint:gosec // G115: io.Copy never returns a negative count
 		return fmt.Errorf("image: %s is not the file of this image (size differs from %s)", f.Name, ManifestName)
 	}
 	if got := hex.EncodeToString(h.Sum(nil)); got != f.SHA256 {
@@ -167,5 +171,5 @@ func Describe(name string, r io.Reader) (File, error) {
 	if err != nil {
 		return File{}, err
 	}
-	return File{Name: name, Size: uint64(n), SHA256: hex.EncodeToString(h.Sum(nil))}, nil
+	return File{Name: name, Size: uint64(n), SHA256: hex.EncodeToString(h.Sum(nil))}, nil //nolint:gosec // G115: io.Copy never returns a negative count
 }

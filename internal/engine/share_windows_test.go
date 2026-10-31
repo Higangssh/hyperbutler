@@ -171,7 +171,7 @@ func TestShareLifetimePrunesAfterDestroy(t *testing.T) {
 	destroy := make(chan struct{})
 	mux := http.NewServeMux()
 	mux.HandleFunc("/events", func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(200)
+		w.WriteHeader(http.StatusOK)
 		w.(http.Flusher).Flush()
 		select {
 		case <-destroy:

@@ -11,6 +11,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"math"
 	"net"
 	"net/url"
 	"os"
@@ -113,7 +114,7 @@ func run() error {
 	b.report(os.Stdout)
 	if c.jsonOut != "" {
 		data, _ := json.MarshalIndent(b.runs, "", "  ")
-		if err := os.WriteFile(c.jsonOut, data, 0o644); err != nil {
+		if err := os.WriteFile(c.jsonOut, data, 0o600); err != nil {
 			return err
 		}
 	}
@@ -134,7 +135,7 @@ func (c *config) want(test string) bool {
 
 // prepare builds net-guest and an image that contains it.
 func (c *config) prepare() error {
-	if err := os.MkdirAll(filepath.Join(c.work, "bin"), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join(c.work, "bin"), 0o750); err != nil {
 		return err
 	}
 	bin := filepath.Join(c.work, "bin", "net-guest")
@@ -143,16 +144,16 @@ func (c *config) prepare() error {
 		if err != nil {
 			return err
 		}
-		if err := os.WriteFile(bin, data, 0o755); err != nil {
+		if err := os.WriteFile(bin, data, 0o755); err != nil { //nolint:gosec // G306: a Linux binary the container runs from the bind mount; it must stay executable
 			return err
 		}
 	} else {
 		_, self, _, _ := runtime.Caller(0)
-		cmd := exec.Command("go", "build", "-trimpath", "-o", bin, ".")
+		cmd := exec.Command("go", "build", "-trimpath", "-o", bin, ".") //nolint:gosec // G204: command and arguments come from the operator's own flags or this tool's work directory; exec passes argv, no shell
 		cmd.Dir = filepath.Join(filepath.Dir(self), "..", "net-guest")
 		cmd.Env = append(os.Environ(), "GOOS=linux", "GOARCH=amd64", "CGO_ENABLED=0")
 		if out, err := cmd.CombinedOutput(); err != nil {
-			return fmt.Errorf("build net-guest (or pass -guest): %v: %s", err, out)
+			return fmt.Errorf("build net-guest (or pass -guest): %w: %s", err, out)
 		}
 	}
 	if _, err := c.dockerCmd("image", "inspect", c.image); err != nil {
@@ -175,20 +176,23 @@ func (c *config) prepare() error {
 const benchImage = "hyperbutler-netperf:dev"
 
 func (c *config) dockerCmd(args ...string) ([]byte, error) {
-	cmd := exec.Command(c.docker, append([]string{"-H", c.host}, args...)...)
+	cmd := exec.Command(c.docker, append([]string{"-H", c.host}, args...)...) //nolint:gosec // G204: command and arguments come from the operator's own flags or this tool's work directory; exec passes argv, no shell
 	cmd.Env = append(os.Environ(), "DOCKER_CONFIG="+filepath.Join(c.work, "docker-config"))
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	out, err := cmd.Output()
 	if err != nil {
-		return out, fmt.Errorf("docker %s: %v: %s", strings.Join(args, " "), err, strings.TrimSpace(stderr.String()))
+		return out, fmt.Errorf("docker %s: %w: %s", strings.Join(args, " "), err, strings.TrimSpace(stderr.String()))
 	}
 	return out, nil
 }
 
 func (c *config) findEngine() (uint32, error) {
-	if c.enginePID != 0 {
-		return uint32(c.enginePID), nil
+	if pid := c.enginePID; pid != 0 {
+		if pid > math.MaxUint32 {
+			return 0, fmt.Errorf("-engine-pid %d is not a Windows process ID", pid)
+		}
+		return uint32(pid), nil
 	}
 	ps, err := hostmon.Snapshot()
 	if err != nil {
@@ -365,7 +369,7 @@ func (b *bench) inbound(ctx context.Context) error {
 			break
 		}
 		if time.Now().After(deadline) {
-			return fmt.Errorf("published port %s never answered: %v", b.pub(netbench.Echo), err)
+			return fmt.Errorf("published port %s never answered: %w", b.pub(netbench.Echo), err)
 		}
 		time.Sleep(200 * time.Millisecond)
 	}
@@ -494,8 +498,8 @@ func (m *monitor) start(prof string, secs float64) func() monSample {
 			}
 			data, err := dc.Get(context.Background(), path)
 			if err == nil {
-				_ = os.MkdirAll(filepath.Dir(prof), 0o755)
-				err = os.WriteFile(prof, data, 0o644)
+				_ = os.MkdirAll(filepath.Dir(prof), 0o750)
+				err = os.WriteFile(prof, data, 0o600)
 			}
 			if err != nil {
 				fmt.Fprintln(os.Stderr, "profile:", err)
@@ -534,7 +538,7 @@ func processCPU(pid uint32) (time.Duration, error) {
 	if err != nil {
 		return 0, err
 	}
-	defer windows.CloseHandle(h)
+	defer func() { _ = windows.CloseHandle(h) }()
 	var c, e, k, u windows.Filetime
 	if err := windows.GetProcessTimes(h, &c, &e, &k, &u); err != nil {
 		return 0, err
@@ -548,5 +552,5 @@ func processCPU(pid uint32) (time.Duration, error) {
 // --- report ---------------------------------------------------------------------------
 
 func (b *bench) report(w io.Writer) {
-	fmt.Fprint(w, Report(b.runs))
+	_, _ = fmt.Fprint(w, Report(b.runs))
 }

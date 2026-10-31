@@ -48,7 +48,7 @@ func (c *Config) Flags(fs *flag.FlagSet) {
 
 // Prepare makes the work directory and the guest binary (Work/bin/fs-guest).
 func (c *Config) Prepare() error {
-	if err := os.MkdirAll(filepath.Join(c.Work, "bin"), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join(c.Work, "bin"), 0o750); err != nil {
 		return err
 	}
 	dst := filepath.Join(c.Work, "bin", "fs-guest")
@@ -57,27 +57,27 @@ func (c *Config) Prepare() error {
 		if err != nil {
 			return err
 		}
-		return os.WriteFile(dst, b, 0o755)
+		return os.WriteFile(dst, b, 0o755) //nolint:gosec // G306: a Linux binary the container runs from the bind mount; it must stay executable
 	}
 	_, self, _, _ := runtime.Caller(0)
 	pkg := filepath.Join(filepath.Dir(self), "..", "..", "fs-guest")
-	cmd := exec.Command("go", "build", "-trimpath", "-o", dst, ".")
+	cmd := exec.Command("go", "build", "-trimpath", "-o", dst, ".") //nolint:gosec // G204: command and arguments come from the operator's own flags or this tool's work directory; exec passes argv, no shell
 	cmd.Dir = pkg
 	cmd.Env = append(os.Environ(), "GOOS=linux", "GOARCH=amd64", "CGO_ENABLED=0")
 	if out, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("build fs-guest (or pass -guest): %v: %s", err, out)
+		return fmt.Errorf("build fs-guest (or pass -guest): %w: %s", err, out)
 	}
 	return nil
 }
 
 // Docker runs one docker CLI command and returns its standard output.
 func (c *Config) DockerCmd(args ...string) ([]byte, error) {
-	cmd := exec.Command(c.Docker, append([]string{"-H", c.Host}, args...)...)
+	cmd := exec.Command(c.Docker, append([]string{"-H", c.Host}, args...)...) //nolint:gosec // G204: command and arguments come from the operator's own flags or this tool's work directory; exec passes argv, no shell
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	out, err := cmd.Output()
 	if err != nil {
-		return out, fmt.Errorf("docker %s: %v: %s", strings.Join(args, " "), err, strings.TrimSpace(stderr.String()))
+		return out, fmt.Errorf("docker %s: %w: %s", strings.Join(args, " "), err, strings.TrimSpace(stderr.String()))
 	}
 	return out, nil
 }
@@ -164,9 +164,9 @@ func (c *Config) WSLRun(winDir string, args ...string) (Results, error) {
 	for i, a := range full {
 		full[i] = strings.ReplaceAll(a, "{dir}", p)
 	}
-	out, err := exec.Command("wsl.exe", full...).Output()
+	out, err := exec.Command("wsl.exe", full...).Output() //nolint:gosec // G204: command and arguments come from the operator's own flags or this tool's work directory; exec passes argv, no shell
 	if err != nil {
-		return nil, fmt.Errorf("wsl %s: %v", strings.Join(full, " "), err)
+		return nil, fmt.Errorf("wsl %s: %w", strings.Join(full, " "), err)
 	}
 	return Parse(out)
 }
@@ -227,12 +227,12 @@ func Exit(cmd string, err error) {
 
 // Report prints rows as a table and returns whether every verdict passed.
 func Report(w io.Writer, title string, rows []Row) bool {
-	fmt.Fprintf(w, "\n%s\n\n", title)
-	fmt.Fprintln(w, "| Requirement | Measurement | Bind mount | Baseline | Ratio | Limit | Verdict |")
-	fmt.Fprintln(w, "|---|---|---|---|---|---|---|")
+	_, _ = fmt.Fprintf(w, "\n%s\n\n", title)
+	_, _ = fmt.Fprintln(w, "| Requirement | Measurement | Bind mount | Baseline | Ratio | Limit | Verdict |")
+	_, _ = fmt.Fprintln(w, "|---|---|---|---|---|---|---|")
 	ok := true
 	for _, r := range rows {
-		fmt.Fprintf(w, "| %s | %s | %s | %s | %s | %s | %s |\n", r.Req, r.What, r.Bind, r.Base, r.Ratio, r.Limit, r.Verdict)
+		_, _ = fmt.Fprintf(w, "| %s | %s | %s | %s | %s | %s | %s |\n", r.Req, r.What, r.Bind, r.Base, r.Ratio, r.Limit, r.Verdict)
 		if strings.HasPrefix(r.Verdict, "FAIL") {
 			ok = false
 		}
@@ -300,7 +300,7 @@ func (c *Config) Save(v any) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(c.JSON, b, 0o644)
+	return os.WriteFile(c.JSON, b, 0o600)
 }
 
 // Machine describes where the run happened, for the record.
@@ -331,13 +331,13 @@ type Line struct {
 
 // Start runs script in a named container and streams its standard output and error.
 func (c *Config) Start(name, image string, mounts []Mount, script string) (*Stream, error) {
-	c.DockerCmd("rm", "-f", name)
+	_, _ = c.DockerCmd("rm", "-f", name)
 	args := []string{"-H", c.Host, "run", "--rm", "--name", name, "-v", filepath.Join(c.Work, "bin") + ":/bench:ro"}
 	for _, m := range mounts {
 		args = append(args, m...)
 	}
 	args = append(args, "--entrypoint", "sh", image, "-c", script)
-	cmd := exec.Command(c.Docker, args...)
+	cmd := exec.Command(c.Docker, args...) //nolint:gosec // G204: command and arguments come from the operator's own flags or this tool's work directory; exec passes argv, no shell
 	pr, pw := io.Pipe()
 	cmd.Stdout, cmd.Stderr = pw, pw
 	if err := cmd.Start(); err != nil {
@@ -356,7 +356,12 @@ func (c *Config) Start(name, image string, mounts []Mount, script string) (*Stre
 		close(lines)
 	}()
 	done := make(chan struct{})
-	go func() { cmd.Wait(); pw.Close(); close(done) }()
+	go func() {
+		// The stream ends when the container does; its exit status is not the result.
+		_ = cmd.Wait()
+		_ = pw.Close()
+		close(done)
+	}()
 	return &Stream{Lines: lines, c: c, name: name, done: done}, nil
 }
 
@@ -395,6 +400,6 @@ func (s *Stream) Drain() {
 
 // Stop removes the container.
 func (s *Stream) Stop() {
-	s.c.DockerCmd("rm", "-f", s.name)
+	_, _ = s.c.DockerCmd("rm", "-f", s.name)
 	<-s.done
 }

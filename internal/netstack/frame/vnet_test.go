@@ -81,7 +81,7 @@ func TestChunkReader(t *testing.T) {
 			var got [][]byte
 			for {
 				chunk, err := cr.ReadChunk(buf)
-				if err == io.EOF {
+				if errors.Is(err, io.EOF) {
 					break
 				}
 				if err != nil {
@@ -161,7 +161,7 @@ func TestPump(t *testing.T) {
 		n++
 		return nil
 	}, func() {})
-	if err != io.EOF || n != 100 {
+	if !errors.Is(err, io.EOF) || n != 100 {
 		t.Fatalf("Pump: %v after %d frames", err, n)
 	}
 	// A failing handler stops the reader through stop.

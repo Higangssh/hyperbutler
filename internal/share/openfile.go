@@ -40,7 +40,7 @@ package share
 //     cache still read, anything else gets ESTALE (pinLocked says why);
 //   - CREATE answers fh 0 and caches the file it opened (keepCreated says why).
 //
-// Options.RealOpen, NoCache and Writeback keep the old behaviour (an OPEN and a host
+// Options.RealOpen, NoCache and Writeback keep the old behavior (an OPEN and a host
 // handle per guest open).
 
 import (
@@ -124,7 +124,7 @@ func (s *Server) nodeFileGet(id uint64, write bool) (File, func(), error) {
 	defer s.unlock()
 	if s.nodes[id] != n || n.orphan {
 		// Forgotten or removed meanwhile: serve this request, keep nothing.
-		return f, func() { f.Close() }, nil
+		return f, func() { _ = f.Close() }, nil
 	}
 	if e := s.files[id]; e != nil {
 		switch {
@@ -139,7 +139,7 @@ func (s *Server) nodeFileGet(id uint64, write bool) (File, func(), error) {
 		default:
 			// A write-only handle and a read-only one: serve this request, keep
 			// the cached one.
-			return f, func() { f.Close() }, nil
+			return f, func() { _ = f.Close() }, nil
 		}
 	}
 	e := s.cacheFileLocked(id, f, rd, wr, 1)
@@ -180,7 +180,7 @@ func (s *Server) nodeFileSync(id uint64) error {
 		}
 		return nil
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }() // Sync reported the result
 	return f.Sync()
 }
 
@@ -237,7 +237,7 @@ func (s *Server) unlock() {
 	s.closeq = nil
 	s.mu.Unlock()
 	for _, f := range q {
-		f.Close()
+		_ = f.Close() // FUSE RELEASE has no way to report it
 	}
 }
 

@@ -33,7 +33,7 @@ func main() {
 		fmt.Fprintln(os.Stderr, "usage: net-spike list|hns|relay|cleanup [flags]")
 		os.Exit(2)
 	}
-	if err := os.MkdirAll(workDir, 0o755); err != nil {
+	if err := os.MkdirAll(workDir, 0o750); err != nil {
 		fatal(err)
 	}
 	var err error
@@ -64,7 +64,7 @@ func fatal(err error) {
 func runList() error {
 	fs := flag.NewFlagSet("list", flag.ExitOnError)
 	raw := fs.Bool("raw", false, "print full property documents")
-	fs.Parse(os.Args[2:])
+	_ = fs.Parse(os.Args[2:])
 	if err := hcn.Load(); err != nil {
 		return fmt.Errorf("load computenetwork.dll: %w", err)
 	}
@@ -141,7 +141,7 @@ func saveState(s state) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(statePath(), b, 0o644)
+	return os.WriteFile(statePath(), b, 0o600)
 }
 
 func record(kind, id string) error {

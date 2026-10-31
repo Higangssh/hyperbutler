@@ -116,27 +116,27 @@ func NewClient(ctx context.Context, conn net.Conn, cfg ClientConfig) (*Client, e
 	f, _ := Encode(0, Hello{Min: Version, Max: Version})
 	_ = conn.SetDeadline(time.Now().Add(cfg.HelloTimeout))
 	if _, err := conn.Write(f); err != nil {
-		conn.Close()
+		_ = conn.Close()
 		return nil, fmt.Errorf("guestctl: send hello: %w", err)
 	}
 	var buf [MaxBody]byte
 	body, err := ReadFrame(conn, &buf)
 	if err != nil {
-		conn.Close()
+		_ = conn.Close()
 		return nil, fmt.Errorf("guestctl: read hello reply: %w", err)
 	}
 	seq, m, err := Decode(body, FromGuest)
 	if err != nil {
-		conn.Close()
+		_ = conn.Close()
 		return nil, fmt.Errorf("%w: %w", ErrViolation, err)
 	}
 	h, ok := m.(HelloReply)
 	if !ok || seq != 0 {
-		conn.Close()
+		_ = conn.Close()
 		return nil, fmt.Errorf("%w: expected hello reply, got %v seq %d", ErrViolation, m.Type(), seq)
 	}
 	if !stop() || ctx.Err() != nil {
-		conn.Close()
+		_ = conn.Close()
 		return nil, context.Cause(ctx)
 	}
 	_ = conn.SetDeadline(time.Time{})
@@ -270,7 +270,7 @@ func (c *Client) DaemonConfig(ctx context.Context, data []byte, restart bool) (D
 			return DaemonResult{}, err
 		}
 	}
-	commit := DaemonCommit{Size: uint32(len(data)), SHA256: sha256.Sum256(data)}
+	commit := DaemonCommit{Size: uint32(len(data)), SHA256: sha256.Sum256(data)} //nolint:gosec // G115: len(data) <= MaxDaemonConfig, checked on entry
 	if restart {
 		commit.Flags |= DaemonRestart
 	}

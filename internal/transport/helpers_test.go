@@ -222,6 +222,7 @@ func attachRoundTrip(t *testing.T, c net.Conn, stdin string) string {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusSwitchingProtocols {
 		t.Fatalf("status = %d, want 101", resp.StatusCode)
 	}

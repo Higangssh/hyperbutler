@@ -294,7 +294,7 @@ func (n *Stack) DeliverNetworkPacket(_ tcpip.NetworkProtocolNumber, pkt *stack.P
 		// As gVisor's fdbased endpoint does for a TAP with IFF_VNET_HDR: a TCP packet
 		// of a GSO endpoint carries only the pseudo-header checksum, and one larger
 		// than the MSS is a GSO segment.
-		vh.HdrLen = uint16(pkt.HeaderSize())
+		vh.HdrLen = uint16(pkt.HeaderSize()) //nolint:gosec // G115: link, network and transport headers total well under 64 KiB
 		if g.NeedsCsum {
 			vh.Flags = frame.VnetFlagNeedsCsum
 			vh.CsumStart = header.EthernetMinimumSize + g.L3HdrLen

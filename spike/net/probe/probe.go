@@ -160,7 +160,7 @@ func Run(ctx context.Context, c Config) error {
 		c.emit("step", "v2", "ok", false, "err", quote(err.Error()))
 		return err
 	}
-	io.Copy(io.Discard, resp.Body)
+	_, _ = io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
 	c.emit("step", "v2", "ok", resp.StatusCode == http.StatusUnauthorized, "status", resp.StatusCode, "ms", msf(time.Since(t)))
 
@@ -173,7 +173,7 @@ func Run(ctx context.Context, c Config) error {
 	}
 	if err := getJSON(client, tokURL, "", "", &tok); err != nil || tok.Token == "" {
 		c.emit("step", "token", "ok", false, "err", quote(fmt.Sprint(err)))
-		return fmt.Errorf("token: %v", err)
+		return fmt.Errorf("token: %w", err)
 	}
 	c.emit("step", "token", "ok", true, "ms", msf(time.Since(t)))
 
@@ -213,7 +213,7 @@ func Run(ctx context.Context, c Config) error {
 	accept = "application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.v2+json"
 	if err := getJSON(client, base+"/manifests/"+digest, tok.Token, accept, &man); err != nil || len(man.Layers) == 0 {
 		c.emit("step", "manifest", "ok", false, "err", quote(fmt.Sprint(err)))
-		return fmt.Errorf("manifest: %v", err)
+		return fmt.Errorf("manifest: %w", err)
 	}
 	sort.Slice(man.Layers, func(i, j int) bool { return man.Layers[i].Size > man.Layers[j].Size })
 	layer := man.Layers[0]
@@ -233,7 +233,7 @@ func Run(ctx context.Context, c Config) error {
 	el := time.Since(t)
 	if err != nil || resp.StatusCode != http.StatusOK {
 		c.emit("step", "blob", "ok", false, "status", resp.StatusCode, "err", quote(fmt.Sprint(err)))
-		return fmt.Errorf("blob: status %d: %v", resp.StatusCode, err)
+		return fmt.Errorf("blob: status %d: %w", resp.StatusCode, err)
 	}
 	c.emit("step", "blob", "ok", n == layer.Size, "bytes", n, "ms", msf(el),
 		"mbit_s", fmt.Sprintf("%.1f", float64(n)*8/el.Seconds()/1e6))

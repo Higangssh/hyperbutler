@@ -75,7 +75,7 @@ type nbdServer struct {
 }
 
 func serveNBD(path string) (*nbdServer, error) {
-	f, err := os.OpenFile(path, os.O_RDWR, 0)
+	f, err := os.OpenFile(path, os.O_RDWR, 0) //nolint:gosec // G304: the path comes from the operator's own flags or this tool's work directory
 	if err != nil {
 		return nil, err
 	}

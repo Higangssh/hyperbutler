@@ -53,7 +53,7 @@ func Serve(ln net.Listener, kind int) error {
 }
 
 func serveConn(c net.Conn, kind int) {
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 	switch kind {
 	case Source:
 		for {
@@ -154,7 +154,7 @@ func Download(ctx context.Context, addr string, d time.Duration) (Result, error)
 	if err != nil {
 		return Result{}, err
 	}
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 	return readFor(c, d, "download")
 }
 
@@ -184,7 +184,7 @@ func Upload(ctx context.Context, addr string, d time.Duration) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 	var sent int64
 	t0 := time.Now()
 	end := t0.Add(d)
@@ -222,7 +222,7 @@ func RoundTrips(ctx context.Context, addr string, n, size int, load string) (Res
 	if err != nil {
 		return Result{}, err
 	}
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 	name := "rr"
 	var stopLoad func() error
 	if load != "" {
@@ -348,7 +348,7 @@ func FetchURL(ctx context.Context, url string) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		return Result{}, fmt.Errorf("GET %s: %s", url, resp.Status)
 	}

@@ -135,7 +135,7 @@ func TestReadFrameLimits(t *testing.T) {
 	if _, err := ReadFrame(bytes.NewReader(append(hdr[:], 1, 2)), &buf); !errors.Is(err, io.ErrUnexpectedEOF) {
 		t.Errorf("truncated body: %v", err)
 	}
-	if _, err := ReadFrame(bytes.NewReader(nil), &buf); err != io.EOF {
+	if _, err := ReadFrame(bytes.NewReader(nil), &buf); !errors.Is(err, io.EOF) {
 		t.Errorf("empty: %v", err)
 	}
 }

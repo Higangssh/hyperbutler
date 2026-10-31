@@ -50,7 +50,7 @@ func runCmd(args []string) error {
 	if err != nil {
 		return err
 	}
-	defer dbg.Close()
+	defer func() { _ = dbg.Close() }()
 	guard := diag.StartWorkingSetGuard(func(rule string, private, commit uint64) {
 		fmt.Printf("working set emptied after an unexplained rise (rule %s, private working set %d, private bytes %d)\n", rule, private, commit)
 	})
@@ -84,7 +84,7 @@ func runCmd(args []string) error {
 		if err != nil {
 			return err
 		}
-		defer f.Close()
+		defer func() { _ = f.Close() }()
 		cfg.ConsoleLog = f
 	}
 	cfg.OnReady = func(ctx context.Context, r *engine.Running) error {

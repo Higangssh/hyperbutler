@@ -299,7 +299,7 @@ func (a *autoPublisher) follow(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("events: %s", resp.Status)
 	}
@@ -370,7 +370,7 @@ func (a *autoPublisher) get(ctx context.Context, path string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("%s: %s", path, resp.Status)
 	}

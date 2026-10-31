@@ -37,21 +37,6 @@ func readFrame(r io.Reader, buf []byte) ([]byte, error) {
 	return buf[:n], nil
 }
 
-// helloFrame is the first frame the relay sends: an opcode no kernel uses, carrying
-// the injector thread id and the connection's queue number.
-func helloFrame(tid, queue uint32) []byte {
-	b := make([]byte, 48)
-	le := binary.LittleEndian
-	le.PutUint32(b[0:], 48)
-	le.PutUint32(b[4:], 0x77620001)
-	le.PutUint32(b[40:], tid)
-	le.PutUint32(b[44:], queue)
-	return b
-}
-
-// notifyInject is the out-header error code of a replay request (share.notifyInject).
-const notifyInject = 0x7762
-
 // Replay kinds (share.injModify and friends).
 const (
 	injModify = 1

@@ -48,13 +48,13 @@ func run() error {
 	gap := fs.Duration("gap", 50*time.Millisecond, "pause between edits")
 	frameworks := fs.Bool("frameworks", false, "also run the Vite and webpack hot-reload check (needs network the first time)")
 	node := fs.String("node-image", "node:22-alpine", "image for the framework check")
-	fs.Parse(os.Args[1:])
+	_ = fs.Parse(os.Args[1:])
 	if err := c.Prepare(); err != nil {
 		return err
 	}
 	dir := filepath.Join(c.Work, "notify", "watched")
-	os.RemoveAll(dir)
-	if err := os.MkdirAll(filepath.Join(dir, "sub"), 0o755); err != nil {
+	_ = os.RemoveAll(dir)
+	if err := os.MkdirAll(filepath.Join(dir, "sub"), 0o750); err != nil {
 		return err
 	}
 	// One file per modify edit, made before the watcher starts: a single Windows write
@@ -62,7 +62,7 @@ func run() error {
 	// next edit's.
 	editFile := func(i int) string { return filepath.Join(dir, "sub", fmt.Sprintf("edit-%d.txt", i)) }
 	for i := 1; i <= *n; i++ {
-		if err := os.WriteFile(editFile(i), []byte("0\n"), 0o644); err != nil {
+		if err := os.WriteFile(editFile(i), []byte("0\n"), 0o600); err != nil {
 			return err
 		}
 	}
@@ -104,14 +104,14 @@ func run() error {
 		return lat, missed, nil
 	}
 	modLat, modMissed, err := measure("modify", func(i int) (string, uint32, error) {
-		return fmt.Sprintf("/w/sub/edit-%d.txt", i), inModify, os.WriteFile(editFile(i), []byte(fmt.Sprintf("%d\n", i)), 0o644)
+		return fmt.Sprintf("/w/sub/edit-%d.txt", i), inModify, os.WriteFile(editFile(i), []byte(fmt.Sprintf("%d\n", i)), 0o600)
 	})
 	if err != nil {
 		return err
 	}
 	createLat, createMissed, err := measure("create", func(i int) (string, uint32, error) {
 		name := fmt.Sprintf("new-%d.txt", i)
-		return "/w/sub/" + name, inCreate, os.WriteFile(filepath.Join(dir, "sub", name), nil, 0o644)
+		return "/w/sub/" + name, inCreate, os.WriteFile(filepath.Join(dir, "sub", name), nil, 0o600)
 	})
 	if err != nil {
 		return err
@@ -168,7 +168,7 @@ ws.onmessage = (m) => {
 
 func frameworkCheck(c *fsbench.Config, node string) ([]fsbench.Row, error) {
 	app := filepath.Join(c.Work, "notify", "app")
-	if err := os.MkdirAll(filepath.Join(app, "src"), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join(app, "src"), 0o750); err != nil {
 		return nil, err
 	}
 	pkg := fmt.Sprintf(`{"private":true,"devDependencies":{"vite":"%s","webpack":"%s","webpack-cli":"%s"}}`, viteVersion, webpackVersion, webpackCLIVersion)
@@ -180,7 +180,7 @@ func frameworkCheck(c *fsbench.Config, node string) ([]fsbench.Row, error) {
 		"vite-client.mjs": viteClient,
 	}
 	for name, body := range files {
-		if err := os.WriteFile(filepath.Join(app, name), []byte(body), 0o644); err != nil {
+		if err := os.WriteFile(filepath.Join(app, name), []byte(body), 0o600); err != nil {
 			return nil, err
 		}
 	}
@@ -203,7 +203,7 @@ func frameworkCheck(c *fsbench.Config, node string) ([]fsbench.Row, error) {
 		time.Sleep(500 * time.Millisecond)
 		st.Drain()
 		t0 := time.Now()
-		if err := os.WriteFile(filepath.Join(app, file), []byte(fmt.Sprintf("console.log('edited %d')\n", t0.UnixNano())), 0o644); err != nil {
+		if err := os.WriteFile(filepath.Join(app, file), []byte(fmt.Sprintf("console.log('edited %d')\n", t0.UnixNano())), 0o600); err != nil {
 			return err
 		}
 		r := fsbench.Row{Req: "REQ-FS-003", What: what, Limit: "rebuilds after a Windows edit"}

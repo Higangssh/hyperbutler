@@ -219,7 +219,7 @@ func runHCS(args []string) error {
 	stall := fs.Duration("stall", 30*time.Second, "host-full test: guest silence that counts as a stall")
 	gopts := guardFlags(fs)
 	copts := ctlFlags(fs)
-	fs.Parse(args)
+	_ = fs.Parse(args)
 	if gopts.on {
 		if *extraDir == "" {
 			return fmt.Errorf("-guard needs -extra (mke2fs, e2fsck)")
@@ -264,7 +264,7 @@ func runHCS(args []string) error {
 		}
 	}
 	if *sparse && !*keep {
-		f, err := os.OpenFile(vhdx, os.O_RDWR, 0)
+		f, err := os.OpenFile(vhdx, os.O_RDWR, 0) //nolint:gosec // G304: the path comes from the operator's own flags or this tool's work directory
 		if err != nil {
 			return err
 		}
@@ -327,7 +327,7 @@ func runHCS(args []string) error {
 		return err
 	}
 	defer func() {
-		hcsCall("HcsTerminateComputeSystem", 30*time.Second, func(op uintptr) uintptr {
+		_, _ = hcsCall("HcsTerminateComputeSystem", 30*time.Second, func(op uintptr) uintptr {
 			hr, _, _ := procHcsTerminateSystem.Call(system, op, 0)
 			return hr
 		})

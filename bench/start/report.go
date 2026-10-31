@@ -67,7 +67,7 @@ func Summarize(runs []Run, want int, lim Limits) Result {
 
 // Print writes the per-run table and the summary.
 func Print(w io.Writer, runs []Run, r Result) {
-	fmt.Fprintf(w, "\n| # | start → docker info | engine ready | stop | note |\n|---|---|---|---|---|\n")
+	_, _ = fmt.Fprintf(w, "\n| # | start → docker info | engine ready | stop | note |\n|---|---|---|---|---|\n")
 	for i, x := range runs {
 		note := ""
 		switch {
@@ -81,12 +81,12 @@ func Print(w io.Writer, runs []Run, r Result) {
 		if x.FirstBoot {
 			note += " first start since host boot"
 		}
-		fmt.Fprintf(w, "| %d | %.2f s | %d ms | %.2f s | %s |\n", i+1, x.Seconds, x.ReadyMs, x.StopSecs, note)
+		_, _ = fmt.Fprintf(w, "| %d | %.2f s | %d ms | %.2f s | %s |\n", i+1, x.Seconds, x.ReadyMs, x.StopSecs, note)
 	}
 	verdict := "PASS"
 	if !r.Pass {
 		verdict = "FAIL"
 	}
-	fmt.Fprintf(w, "\nREQ-START-001: n = %d valid runs (%d warm-up discarded, %d overlapped, %d failed): median %.2f s, p95 %.2f s (min %.2f, max %.2f); stop median %.2f s. Limits: median ≤ %s, p95 ≤ %s: %s\n",
+	_, _ = fmt.Fprintf(w, "\nREQ-START-001: n = %d valid runs (%d warm-up discarded, %d overlapped, %d failed): median %.2f s, p95 %.2f s (min %.2f, max %.2f); stop median %.2f s. Limits: median ≤ %s, p95 ≤ %s: %s\n",
 		r.N, r.Discarded, r.Overlapped, r.Failed, r.Median, r.P95, r.Min, r.Max, r.StopMedian, r.Limits.Median, r.Limits.P95, verdict)
 }

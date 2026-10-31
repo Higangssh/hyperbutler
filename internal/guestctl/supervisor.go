@@ -70,7 +70,7 @@ func (s *Supervisor) Run(ctx context.Context) error {
 			case <-c.Done():
 				s.logf("guestctl: connection lost: %v", c.Err())
 			case <-ctx.Done():
-				c.Close()
+				_ = c.Close()
 			}
 			s.mu.Lock()
 			s.client = nil

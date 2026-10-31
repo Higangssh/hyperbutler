@@ -6,6 +6,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -79,7 +80,7 @@ func TestServePipeACL(t *testing.T) {
 	var h windows.Handle
 	for deadline := time.Now().Add(5 * time.Second); ; {
 		h, err = windows.CreateFile(p, windows.READ_CONTROL, 0, nil, windows.OPEN_EXISTING, 0, 0)
-		if err != windows.ERROR_PIPE_BUSY || time.Now().After(deadline) {
+		if !errors.Is(err, windows.ERROR_PIPE_BUSY) || time.Now().After(deadline) {
 			break
 		}
 		time.Sleep(10 * time.Millisecond)
@@ -232,7 +233,8 @@ func TestConnLimit(t *testing.T) {
 		if _, err := fmt.Fprintf(extra, "GET %s HTTP/1.1\r\nHost: diag\r\n\r\n", StatsPath); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := http.ReadResponse(bufio.NewReader(extra), nil); err == nil {
+		if resp, err := http.ReadResponse(bufio.NewReader(extra), nil); err == nil {
+			_ = resp.Body.Close()
 			t.Fatal("connection beyond MaxConns was served")
 		}
 		extra.Close()

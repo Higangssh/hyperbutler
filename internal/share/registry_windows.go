@@ -79,7 +79,7 @@ func (r *Registry) resolve(winPath string, create bool) (string, error) {
 		return "", fmt.Errorf("bind source path does not exist: %s", p)
 	}
 	if os.IsNotExist(err) {
-		if err := os.MkdirAll(p, 0o755); err != nil {
+		if err := os.MkdirAll(p, 0o750); err != nil { // Windows keeps only the write bit; the ACL is inherited
 			return "", err
 		}
 		fi, err = os.Stat(p)
@@ -120,7 +120,7 @@ func (r *Registry) resolve(winPath string, create bool) (string, error) {
 		r.resolved = map[string]time.Time{}
 	}
 	if g, ok := r.names[name]; ok {
-		fs.Close()
+		_ = fs.Close()
 		r.resolved[name] = time.Now()
 		return g, nil
 	}
@@ -129,7 +129,7 @@ func (r *Registry) resolve(winPath string, create bool) (string, error) {
 		max = DefaultMaxShares
 	}
 	if len(r.names) >= max {
-		fs.Close()
+		_ = fs.Close()
 		return "", fmt.Errorf("share: %d bind-mount sources are in use, the limit; remove containers that no longer need theirs", max)
 	}
 	sh := &Share{Name: name, FS: fs}
@@ -137,7 +137,7 @@ func (r *Registry) resolve(winPath string, create bool) (string, error) {
 		sh.Only = []string{only}
 	}
 	if err := r.Server.AddShare(sh); err != nil {
-		fs.Close()
+		_ = fs.Close()
 		return "", err
 	}
 	r.names[name] = guest

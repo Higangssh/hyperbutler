@@ -207,7 +207,7 @@ func measure(path string) (usage, error) {
 	var high uint32
 	procSetLastE.Call(0)
 	low, _, callErr := procGetCFS.Call(uintptr(unsafe.Pointer(p)), uintptr(unsafe.Pointer(&high)))
-	if uint32(low) == 0xFFFFFFFF && callErr != nil && callErr != syscall.Errno(0) {
+	if uint32(low) == 0xFFFFFFFF && callErr != nil && !errors.Is(callErr, syscall.Errno(0)) {
 		return usage{}, fmt.Errorf("GetCompressedFileSizeW: %w", callErr)
 	}
 	attrs, err := syscall.GetFileAttributes(p)

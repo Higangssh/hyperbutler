@@ -27,12 +27,12 @@ func notifyTest(g *guest, guestDir, hostDir string, n int) map[string]float64 {
 	res := map[string]float64{}
 	gdir := guestDir + "/notify"
 	hdir := filepath.Join(hostDir, "notify")
-	os.RemoveAll(hdir)
-	if err := os.MkdirAll(hdir, 0o755); err != nil {
+	_ = os.RemoveAll(hdir)
+	if err := os.MkdirAll(hdir, 0o750); err != nil {
 		fmt.Println("notify:", err)
 		return res
 	}
-	if err := os.WriteFile(filepath.Join(hdir, "edit.txt"), []byte("v0"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(hdir, "edit.txt"), []byte("v0"), 0o600); err != nil {
 		fmt.Println("notify:", err)
 		return res
 	}
@@ -46,7 +46,7 @@ func notifyTest(g *guest, guestDir, hostDir string, n int) map[string]float64 {
 	var pings []time.Duration
 	for i := 0; i < 20; i++ {
 		t := time.Now()
-		g.call("ping", nil)
+		_, _ = g.call("ping", nil)
 		pings = append(pings, time.Since(t))
 	}
 	res["ctl_rtt_ms"] = ms(median(pings))
@@ -55,7 +55,7 @@ func notifyTest(g *guest, guestDir, hostDir string, n int) map[string]float64 {
 		fmt.Println("notify: watch:", err)
 		return res
 	}
-	defer g.call("unwatch", nil)
+	defer func() { _, _ = g.call("unwatch", nil) }()
 	drain(g)
 
 	type kind struct {
@@ -66,10 +66,10 @@ func notifyTest(g *guest, guestDir, hostDir string, n int) map[string]float64 {
 	}
 	kinds := []kind{
 		{"modify", func(i int) error {
-			return os.WriteFile(filepath.Join(hdir, "edit.txt"), []byte(fmt.Sprintf("v%d", i+1)), 0o644)
+			return os.WriteFile(filepath.Join(hdir, "edit.txt"), []byte(fmt.Sprintf("v%d", i+1)), 0o600)
 		}, inModify | inCloseW, func(int) string { return "edit.txt" }},
 		{"create", func(i int) error {
-			return os.WriteFile(filepath.Join(hdir, fmt.Sprintf("new%d.txt", i)), []byte("x"), 0o644)
+			return os.WriteFile(filepath.Join(hdir, fmt.Sprintf("new%d.txt", i)), []byte("x"), 0o600)
 		}, inCreate | inMovedTo, func(i int) string { return fmt.Sprintf("new%d.txt", i) }},
 		{"delete", func(i int) error {
 			return os.Remove(filepath.Join(hdir, fmt.Sprintf("new%d.txt", i)))
@@ -109,7 +109,9 @@ func notifyTest(g *guest, guestDir, hostDir string, n int) map[string]float64 {
 				missed++
 			}
 			if k.name == "rename" {
-				os.Rename(filepath.Join(hdir, "edit.txt.tmp"), filepath.Join(hdir, "edit.txt"))
+				if err := os.Rename(filepath.Join(hdir, "edit.txt.tmp"), filepath.Join(hdir, "edit.txt")); err != nil {
+					fmt.Println("  rename:", err)
+				}
 				time.Sleep(50 * time.Millisecond)
 			}
 			time.Sleep(20 * time.Millisecond)
@@ -123,7 +125,9 @@ func notifyTest(g *guest, guestDir, hostDir string, n int) map[string]float64 {
 		}
 	}
 	// Coherence: does a guest read right after the event see the new content?
-	os.WriteFile(filepath.Join(hdir, "edit.txt"), []byte("coherent-check"), 0o644)
+	if err := os.WriteFile(filepath.Join(hdir, "edit.txt"), []byte("coherent-check"), 0o600); err != nil {
+		fmt.Println("  coherence write:", err)
+	}
 	time.Sleep(200 * time.Millisecond)
 	out, _ := g.sh("cat " + gdir + "/edit.txt")
 	res["read_after_edit_ok"] = b2f(strings.TrimSpace(out) == "coherent-check")

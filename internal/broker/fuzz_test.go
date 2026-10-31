@@ -10,8 +10,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Higangssh/hyperbutler/internal/broker/proto"
 	"golang.org/x/sys/windows"
+
+	"github.com/Higangssh/hyperbutler/internal/broker/proto"
 )
 
 const fuzzSID = "S-1-5-21-1-2-3-1001"
@@ -163,7 +164,7 @@ func FuzzServeConn(f *testing.F) {
 		for {
 			b, err := proto.ReadFrame(in2, &buf)
 			switch {
-			case err == io.EOF:
+			case errors.Is(err, io.EOF):
 				cleanEOF = true
 				break parse
 			case errors.Is(err, proto.ErrFrameTooLarge), errors.Is(err, proto.ErrInvalid):
@@ -198,7 +199,7 @@ func FuzzServeConn(f *testing.F) {
 		or := bytes.NewReader(out)
 		for {
 			b, err := proto.ReadFrame(or, &buf)
-			if err == io.EOF {
+			if errors.Is(err, io.EOF) {
 				break
 			}
 			if err != nil {
