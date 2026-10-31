@@ -8,6 +8,8 @@
 //	hyperbutler status   show whether it runs, and where its data is
 //	hyperbutler logs     print the engine log (or the guest console with --console)
 //	hyperbutler delete   remove the VM state and the data disk
+//	hyperbutler config   read and change settings and daemon.json
+//	hyperbutler restart  stop and start again
 //
 // See docs/research/cli-engine.md.
 package main
@@ -17,7 +19,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"runtime/debug"
 )
 
 const usageText = `hyperbutler: a Docker engine for Windows in a small Hyper-V VM, without WSL
@@ -26,10 +27,12 @@ Usage:
   hyperbutler start   [--data DIR] [--image-dir DIR] [--memory SIZE] [--cpus N] [--disk-size SIZE]
                       [--memlimit LIMIT] [--debug-pipe PIPE]
   hyperbutler stop    [--timeout DURATION]
+  hyperbutler restart [--image-dir DIR] [--timeout DURATION]
   hyperbutler status  [--json]
   hyperbutler logs    [--console] [-n LINES] [-f]
+  hyperbutler config  list|get|set|unset|path|daemon ...   ("hyperbutler config help")
   hyperbutler delete  [--yes]
-  hyperbutler version
+  hyperbutler version [--json]
 
 State lives in %LOCALAPPDATA%\hyperbutler (override with HYPERBUTLER_HOME).
 Run "hyperbutler COMMAND -h" for a command's flags.
@@ -54,6 +57,10 @@ func run(args []string, stdout, stderr io.Writer) int {
 		err = cmdStart(args[1:], stdout, stderr)
 	case "stop":
 		err = cmdStop(args[1:], stdout, stderr)
+	case "restart":
+		err = cmdRestart(args[1:], stdout, stderr)
+	case "config":
+		err = cmdConfig(args[1:], stdout, stderr)
 	case "status":
 		code, err = cmdStatus(args[1:], stdout, stderr)
 	case "logs":
@@ -63,11 +70,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	case "engine":
 		code, err = cmdEngine(args[1:], stderr)
 	case "version", "--version":
-		v := "(devel)"
-		if bi, ok := debug.ReadBuildInfo(); ok && bi.Main.Version != "" {
-			v = bi.Main.Version
-		}
-		fmt.Fprintln(stdout, "hyperbutler", v)
+		err = cmdVersion(args[1:], stdout, stderr)
 	case "help", "-h", "--help":
 		fmt.Fprint(stdout, usageText)
 	default:

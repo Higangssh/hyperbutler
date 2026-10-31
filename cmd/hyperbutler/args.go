@@ -8,6 +8,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"github.com/Higangssh/hyperbutler/internal/config"
 	"github.com/Higangssh/hyperbutler/internal/diag"
 	"github.com/Higangssh/hyperbutler/internal/engine"
 	"github.com/Higangssh/hyperbutler/internal/transport"
@@ -35,32 +36,35 @@ func (s *sizeFlag) Set(v string) error {
 	return nil
 }
 
-// parseMemoryMB turns a --memory value into whole MiB. A bare number means MiB, as in
-// most VM tools; a unit is honoured ("4GiB", "4096MiB").
-func parseMemoryMB(v string) (int, error) {
-	t := strings.TrimSpace(v)
-	if t != "" && strings.Trim(t, "0123456789") == "" {
-		t += "MiB"
-	}
-	n, err := engine.ParseSize(t)
-	if err != nil {
-		return 0, err
-	}
-	if n%(1<<20) != 0 {
-		return 0, fmt.Errorf("memory %q is not a whole number of MiB", v)
-	}
-	mb := n >> 20
-	if mb < engine.MinMemoryMB || mb > engine.MaxMemoryMB {
-		return 0, fmt.Errorf("memory %q is outside %d MiB..%d MiB", v, engine.MinMemoryMB, engine.MaxMemoryMB)
-	}
-	return int(mb), nil
-}
+// parseMemoryMB turns a --memory value into whole MiB (config.ParseMemoryMB).
+func parseMemoryMB(v string) (int, error) { return config.ParseMemoryMB(v) }
 
 // newFlagSet is a flag set that reports errors instead of exiting, writing usage to w.
 func newFlagSet(name string, w io.Writer) *flag.FlagSet {
 	fs := flag.NewFlagSet("hyperbutler "+name, flag.ContinueOnError)
 	fs.SetOutput(w)
 	return fs
+}
+
+// parseInterspersed parses args into fs, allowing flags before, between and after
+// positional arguments, which it returns. "--" ends the flags.
+func parseInterspersed(fs *flag.FlagSet, args []string) ([]string, error) {
+	var pos []string
+	for {
+		if err := fs.Parse(args); err != nil {
+			return nil, err
+		}
+		rest := fs.Args()
+		if len(rest) == 0 {
+			return pos, nil
+		}
+		// flag stops at the first positional argument, or after "--".
+		if len(args) > len(rest) && args[len(args)-len(rest)-1] == "--" {
+			return append(pos, rest...), nil
+		}
+		pos = append(pos, rest[0])
+		args = rest[1:]
+	}
 }
 
 // parseArgs parses args into fs and rejects positional arguments, which no hyperbutler
