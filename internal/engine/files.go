@@ -196,8 +196,14 @@ const (
 )
 
 // DefaultCPUs is the CPU count of a VM whose settings name none: half the host's
-// logical CPUs, from 2 to 8.
-func DefaultCPUs(hostCPUs int) int { return min(max(hostCPUs/2, 2), 8) }
+// logical CPUs, from 2 to 8, and never more than the host has.
+func DefaultCPUs(hostCPUs int) int {
+	n := min(max(hostCPUs/2, 2), 8)
+	if hostCPUs > 0 {
+		n = min(n, hostCPUs)
+	}
+	return n
+}
 
 // Memory is the guest memory in MiB.
 func (s *Settings) Memory() int {

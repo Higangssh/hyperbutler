@@ -828,6 +828,7 @@ func cmdDelete(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	remove(in.l.DiskMetaPath())
 	remove(in.l.StatePath())
 	remove(in.l.SettingsPath())
+	remove(in.l.DaemonAppliedPath()) // the engine's copy; the user's daemon.json is kept
 	for _, p := range []string{in.l.EngineLogPath(), in.l.ConsoleLogPath()} {
 		remove(p)
 		remove(p + ".1")

@@ -100,6 +100,9 @@ type DaemonConfig struct {
 	once      sync.Once
 	delivered chan struct{} // closed when the first delivery is done
 
+	pubMu sync.Mutex
+	pub   DaemonState // st as last published, for State
+
 	mu       sync.Mutex
 	st       DaemonState
 	inEffect []byte // what the guest's dockerd runs with (or will start with)
@@ -133,6 +136,9 @@ func (d *DaemonConfig) result(src DaemonSource, data []byte, restarted bool, err
 		d.st.Error = d.st.Error[:maxErrorLen]
 	}
 	d.st.Updated = time.Now().UTC().Truncate(time.Millisecond)
+	d.pubMu.Lock()
+	d.pub = d.st
+	d.pubMu.Unlock()
 	if d.OnState != nil {
 		d.OnState(d.st)
 	}
@@ -154,11 +160,12 @@ func (d *DaemonConfig) WaitDelivered(ctx context.Context) error {
 	}
 }
 
-// State returns the current state.
+// State returns the state of the last finished delivery. It does not wait for one in
+// progress.
 func (d *DaemonConfig) State() DaemonState {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	return d.st
+	d.pubMu.Lock()
+	defer d.pubMu.Unlock()
+	return d.pub
 }
 
 func (d *DaemonConfig) log() *slog.Logger {
@@ -172,13 +179,19 @@ func (d *DaemonConfig) log() *slog.Logger {
 func guestText(s string) string {
 	var b strings.Builder
 	for _, r := range s {
-		if r < 0x20 || r == 0x7f || (r >= 0x80 && r < 0xa0) {
+		if r < 0x20 || r == 0x7f || (r >= 0x80 && r < 0xa0) || invisibleRune(r) {
 			fmt.Fprintf(&b, `\u%04x`, r)
 			continue
 		}
 		b.WriteRune(r)
 	}
 	return b.String()
+}
+
+// invisibleRune reports format characters that can reorder or hide text on a terminal:
+// bidi controls, zero-width characters and the byte order mark.
+func invisibleRune(r rune) bool {
+	return r >= 0x200b && r <= 0x200f || r >= 0x202a && r <= 0x202e || r >= 0x2066 && r <= 0x2069 || r == 0xfeff || r == 0x2028 || r == 0x2029
 }
 
 func describe(r guestctl.DaemonResult) string {

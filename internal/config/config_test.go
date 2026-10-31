@@ -131,7 +131,7 @@ func TestSetRefuses(t *testing.T) {
 	e, _ := testEnv(t)
 	for _, c := range [][2]string{
 		{"memory", "512MiB"}, {"memory", "4.5GiB"}, {"memory", "lots"}, {"memory", ""}, {"memory", "2000000MiB"},
-		{"cpus", "0"}, {"cpus", "257"}, {"cpus", "two"}, {"cpus", "1.5"},
+		{"cpus", "0"}, {"cpus", "257"}, {"cpus", "13"}, {"cpus", "two"}, {"cpus", "1.5"},
 		{"disk.size", "1GiB"}, {"disk.size", "65GiB1"}, {"disk.size", "17TiB"}, {"disk.size", "4294967297"},
 		{"data.dir", ""}, {"data.dir", `\\server\share`}, {"data.dir", "a\x00b"},
 		{"pipe", `C:\pipe`}, {"pipe", `\\.\pipe\`}, {"pipe", `\\server\pipe\x`},

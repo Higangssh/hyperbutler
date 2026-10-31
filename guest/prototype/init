@@ -264,11 +264,12 @@ if [ -d /sys/bus/vmbus ]; then
 	done
 	t hyperbutlerd-ready
 	# hyperbutler.daemoncfg=1: the host sends a daemon.json (or says there is none) right
-	# after it connects; start dockerd with it, not without. Bounded: a host that never
-	# sends one gets dockerd's defaults.
+	# after it connects; start dockerd with it, not without. Bounded (30 s): a host that
+	# never sends one gets dockerd's defaults, and a file that arrives later is applied
+	# with a dockerd restart.
 	if [ -n "$DAEMONCFG" ]; then
 		i=0
-		while [ ! -e "$RUNDIR/daemon.ready" ] && [ $i -lt 500 ]; do
+		while [ ! -e "$RUNDIR/daemon.ready" ] && [ $i -lt 1500 ]; do
 			sleep 0.02
 			i=$((i + 1))
 		done
@@ -304,24 +305,28 @@ fi
 DOCKERD=
 STOPPING=
 RESTART=
+STARTING=
 GEN=0
+# While STARTING, $DOCKERD may still name the previous (exited) dockerd: the handlers only
+# set the flag, and start_dockerd acts on it once the new PID is known.
 stop_dockerd() {
 	t shutdown-requested
 	STOPPING=1
-	[ -n "$DOCKERD" ] && kill -TERM "$DOCKERD" 2>/dev/null
+	[ -z "$STARTING" ] && [ -n "$DOCKERD" ] && kill -TERM "$DOCKERD" 2>/dev/null
 }
 # SIGHUP (from hyperbutlerd): restart dockerd, for a new daemon.json.
 restart_dockerd() {
 	[ -n "$STOPPING" ] && return
 	t dockerd-restart-requested
 	RESTART=1
-	[ -n "$DOCKERD" ] && kill -TERM "$DOCKERD" 2>/dev/null
+	[ -z "$STARTING" ] && [ -n "$DOCKERD" ] && kill -TERM "$DOCKERD" 2>/dev/null
 }
 trap stop_dockerd TERM USR2 INT
 trap restart_dockerd HUP
 # start_dockerd starts dockerd (with the installed daemon.json, if any) and records its
 # generation and PID for hyperbutlerd.
 start_dockerd() {
+	STARTING=1
 	set --
 	[ -f "$DAEMON_JSON" ] && set -- "--config-file=$DAEMON_JSON"
 	dockerd --host=unix:///run/docker.sock --iptables=false --ip6tables=false \
@@ -329,6 +334,10 @@ start_dockerd() {
 	DOCKERD=$!
 	GEN=$((GEN + 1))
 	echo "$GEN $DOCKERD" >"$RUNDIR/dockerd.gen.new" && mv -f "$RUNDIR/dockerd.gen.new" "$RUNDIR/dockerd.gen"
+	STARTING=
+	if [ -n "$STOPPING" ] || [ -n "$RESTART" ]; then
+		kill -TERM "$DOCKERD" 2>/dev/null
+	fi
 }
 
 # Readahead on the system disk. At idle dockerd and containerd fault code in at random,

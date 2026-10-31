@@ -136,7 +136,8 @@ func printable(b []byte) []byte {
 			} else {
 				out = append(out, `\r`...)
 			}
-		case r < 0x20 || r == 0x7f || (r >= 0x80 && r < 0xa0) || r == 0x2028 || r == 0x2029:
+		case r < 0x20 || r == 0x7f || (r >= 0x80 && r < 0xa0) || r == 0x2028 || r == 0x2029 ||
+			r >= 0x200b && r <= 0x200f || r >= 0x202a && r <= 0x202e || r >= 0x2066 && r <= 0x2069 || r == 0xfeff:
 			out = fmt.Appendf(out, `\u%04x`, r)
 		default:
 			out = append(out, b[:size]...)

@@ -208,6 +208,45 @@ func TestDaemonConfigRollback(t *testing.T) {
 	}
 }
 
+// Review finding 2: a changed file on a running dockerd is applied with a restart even
+// when the host did not ask for one.
+func TestDaemonConfigChangedWhileRunning(t *testing.T) {
+	f := newFakeInit(t, true)
+	r := f.d.apply(context.Background(), []byte(`{"debug":true}`), false)
+	if r.Code != guestctl.DaemonOK || r.Flags != guestctl.DaemonChanged|guestctl.DaemonRestarted || f.restarts != 1 {
+		t.Fatalf("%#v, %d restarts", r, f.restarts)
+	}
+	// Unchanged: nothing restarts.
+	if r := f.d.apply(context.Background(), []byte(`{"debug":true}`), false); r.Flags != 0 || f.restarts != 1 {
+		t.Fatalf("unchanged: %#v, %d restarts", r, f.restarts)
+	}
+}
+
+// Review finding 1: the connection ending during a restart does not roll back a dockerd
+// that comes up.
+func TestDaemonConfigConnectionLostDuringRestart(t *testing.T) {
+	f := newFakeInit(t, true)
+	ctx, cancel := context.WithCancel(context.Background())
+	slow := f.d.restart
+	f.d.restart = func() error {
+		f.mu.Lock()
+		f.restarts++
+		f.running = false
+		f.mu.Unlock()
+		cancel() // the host reconnects while dockerd restarts
+		go func() {
+			time.Sleep(20 * time.Millisecond)
+			f.start()
+		}()
+		return nil
+	}
+	_ = slow
+	r := f.d.apply(ctx, []byte(`{"debug":true}`), true)
+	if r.Code != guestctl.DaemonOK || f.restarts != 1 || installed(t, f.d) != `{"debug":true}` {
+		t.Fatalf("%#v, %d restarts, file %q", r, f.restarts, installed(t, f.d))
+	}
+}
+
 func TestReadGen(t *testing.T) {
 	p := filepath.Join(t.TempDir(), "gen")
 	for _, c := range []struct {

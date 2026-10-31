@@ -53,6 +53,7 @@ var Owned = []OwnedKey{
 	{"tlskey", "the API is reached through the Windows pipe, whose access is limited to you; TLS on the guest socket would break the relay"},
 	{"shutdown-timeout", "hyperbutler bounds the guest's orderly shutdown and passes --shutdown-timeout=10"},
 	{"log-level", `hyperbutler passes --log-level; use "debug": true for debug logs`},
+	{"live-restore", "the guest's orderly shutdown stops dockerd and then unmounts the data disk; containers left running would keep it busy and power the VM off with a dirty file system"},
 }
 
 // Error is a daemon.json that hyperbutler will not deliver.

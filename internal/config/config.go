@@ -120,10 +120,14 @@ var Keys = []*Key{
 		get: func(s *engine.Settings, e Env) (string, bool) {
 			return strconv.Itoa(s.CPUCount(e.HostCPUs)), s.CPUs != 0
 		},
-		set: func(s *engine.Settings, v string, _ Env) error {
+		set: func(s *engine.Settings, v string, e Env) error {
 			n, err := strconv.Atoi(strings.TrimSpace(v))
-			if err != nil || n < 1 || n > engine.MaxCPUs {
-				return fmt.Errorf("cpus %q: want a whole number from 1 to %d", v, engine.MaxCPUs)
+			limit := engine.MaxCPUs
+			if e.HostCPUs > 0 {
+				limit = min(limit, e.HostCPUs) // Hyper-V refuses more than the host has
+			}
+			if err != nil || n < 1 || n > limit {
+				return fmt.Errorf("%q: want a whole number from 1 to %d (this host's logical CPUs)", v, limit)
 			}
 			s.CPUs = n
 			return nil

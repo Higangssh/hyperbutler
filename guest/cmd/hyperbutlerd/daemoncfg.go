@@ -86,6 +86,15 @@ func (d *dockerdConfig) apply(ctx context.Context, data []byte, restart bool) (r
 	if err != nil && !boot {
 		return fail(guestctl.DaemonFailed, "%v", err)
 	}
+	// A changed file on a running dockerd takes effect only with a restart: never
+	// report it as installed while dockerd runs another (the init's boot wait timed out,
+	// or a reconnect re-sends what the host believes is in effect).
+	if changed && !boot {
+		restart = true
+	}
+	// The watch below must not end with the control connection: a reconnect during a
+	// restart is no reason to roll back. upTimeout bounds it.
+	ctx = context.WithoutCancel(ctx)
 	// At boot the init starts dockerd once the ready file exists. If it starts with a
 	// new file, watch it come up as after a restart: a file that dockerd --validate
 	// passes can still keep dockerd from starting, and that must not power the VM off.

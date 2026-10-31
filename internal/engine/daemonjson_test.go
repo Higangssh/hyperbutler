@@ -238,6 +238,12 @@ func TestDaemonConfigApply(t *testing.T) {
 	}
 }
 
+func TestGuestText(t *testing.T) {
+	if got := guestText("a\x1b[2Jb\u202ec\u200bd\ufeff"); got != `a\u001b[2Jb\u202ec\u200bd\ufeff` {
+		t.Fatalf("%q", got)
+	}
+}
+
 func TestDaemonStateValidate(t *testing.T) {
 	ok := DaemonState{Source: DaemonFile, SHA256: digest([]byte("{}")), Bytes: 2}
 	if err := ok.Validate(); err != nil {
