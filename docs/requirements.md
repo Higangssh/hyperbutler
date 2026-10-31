@@ -130,6 +130,12 @@ Status on the reference machine (2026-10-31, `hyperbutler-dev` with the user-mod
 - REQ-NET-002: **met for Tailscale** (manual): split DNS, public DNS and tailnet
   addresses from a container in one run. Other VPN clients are untested.
 - REQ-NET-003: not run (no second machine).
+- REQ-NET-004: **met** (`bench/host-gateway`, all checks pass): `host.docker.internal`,
+  `gateway.docker.internal` and `--add-host NAME:host-gateway` reach `127.0.0.1` (and
+  `[::1]`-only servers) on any port, TCP and UDP, from the default bridge and a user network;
+  other subnet and host addresses are refused; `hostGateway.enabled` and `hostGateway.ports`
+  apply live (0.2 s, same VM). The host's LAN address against a `0.0.0.0` server (`-wildcard`)
+  was not run.
 
 ## Docker API compatibility
 

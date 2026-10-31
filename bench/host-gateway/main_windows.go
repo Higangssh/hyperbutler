@@ -73,7 +73,7 @@ func run(exe string, args ...string) result {
 	return result{out: out.String(), err: err, took: time.Since(t)}
 }
 
-func (b *bench) dk(args ...string) result { return run(b.docker, args...) }
+func (b *bench) dk(args ...string) result  { return run(b.docker, args...) }
 func (b *bench) hbc(args ...string) result { return run(b.hb, args...) }
 
 // sh runs a shell command in a fresh container.
