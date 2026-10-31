@@ -4,7 +4,6 @@ package main
 
 import (
 	"bufio"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -21,10 +20,10 @@ import (
 	"golang.org/x/sys/windows"
 
 	"github.com/Higangssh/hyperbutler/guest/image"
+	"github.com/Higangssh/hyperbutler/internal/config"
 	"github.com/Higangssh/hyperbutler/internal/diag"
 	"github.com/Higangssh/hyperbutler/internal/engine"
 	"github.com/Higangssh/hyperbutler/internal/engine/dockerctx"
-	"github.com/Higangssh/hyperbutler/internal/transport"
 	"github.com/Higangssh/hyperbutler/internal/vm"
 )
 
@@ -32,9 +31,6 @@ const (
 	contextName = "hyperbutler"
 	kernelName  = "vmlinuz-virt"
 	initrdName  = "initramfs-hyperbutler.gz"
-
-	defaultDiskSize = 64 << 30
-	defaultMemoryMB = 4096
 
 	// engineLogMax is when engine.log is rotated, at the next start.
 	engineLogMax = 4 << 20
@@ -121,7 +117,7 @@ func cmdStart(args []string, stdout, stderr io.Writer) error {
 	var diskSize sizeFlag
 	fs.Var(&diskSize, "disk-size", "data disk size, such as 64GiB; first start only (the disk is sparse)")
 	timeout := fs.Duration("timeout", 2*time.Minute, "how long to wait for the Docker API")
-	noContext := fs.Bool("no-context", false, `do not create or select the "hyperbutler" docker context`)
+	noContext := fs.Bool("no-context", false, `do not create or select the "hyperbutler" docker context (this time; config set context.manage false for good)`)
 	pipe := fs.String("pipe", "", `Docker API pipe (default \\.\pipe\docker_engine_hyperbutler); kept for later starts`)
 	var dcfg diag.Config
 	fs.StringVar(&dcfg.MemoryLimit, "memlimit", "", "Go soft memory limit of the engine process, GOMEMLIMIT syntax (default "+engine.DefaultEngineMemoryLimit+`, "off" for none); kept for later starts. The GOMEMLIMIT variable wins`)
@@ -176,7 +172,7 @@ func cmdStart(args []string, stdout, stderr io.Writer) error {
 		if dcfg.DebugPipe != "" || memLimitSet {
 			fmt.Fprintln(stderr, "hyperbutler: --debug-pipe and --memlimit apply at the next start; the running engine is unchanged")
 		}
-		if !*noContext {
+		if !*noContext && in.settings.ContextManaged() {
 			selectContext(st.Pipe, stdout, stderr)
 		}
 		return nil
@@ -200,80 +196,61 @@ func cmdStart(args []string, stdout, stderr io.Writer) error {
 		return in.explainFailure(err, st, stderr)
 	}
 	fmt.Fprintf(stdout, "hyperbutler is running: the Docker API answered after %.1f s (engine pid %d).\n", time.Since(t0).Seconds(), st.PID)
-	if !*noContext {
+	if st.Daemon != nil && st.Daemon.Error != "" {
+		fmt.Fprintf(stderr, "hyperbutler: daemon.json: %s\n", printable([]byte(st.Daemon.Error)))
+	}
+	if !*noContext && in.settings.ContextManaged() {
 		selectContext(st.Pipe, stdout, stderr)
 	}
 	return nil
 }
 
-// applySettings creates settings.json on the first start and applies changes to later
-// ones. The data location is fixed once chosen (moving it is REQ-DISK-007's `hyperbutler
-// move`, not implemented yet).
+// applySettings creates settings.json on the first start and records start's flags,
+// through the same keys and validators as `hyperbutler config set`. The data location
+// and the disk size change only while there is no data disk (moving it is REQ-DISK-007's
+// `hyperbutler move`, not implemented yet).
 func (in *install) applySettings(dataDir, memory string, cpus int, diskSize sizeFlag, pipe, memLimit string) error {
-	first := in.settings == nil
-	var s *engine.Settings
-	if first {
-		s = &engine.Settings{Version: engine.SettingsVersion, DataDir: in.l.Home, DiskSize: defaultDiskSize, MemoryMB: defaultMemoryMB, CPUs: defaultCPUs()}
-	} else {
-		// A copy: changes are compared against the saved settings below.
-		cp := *in.settings
-		s = &cp
+	env := in.env()
+	s := in.settings
+	if s == nil {
+		s = config.NewSettings(env)
 	}
-	if dataDir != "" {
-		abs, err := filepath.Abs(dataDir)
+	set := func(flag, key, v string) error {
+		k, err := config.Lookup(key)
 		if err != nil {
 			return err
 		}
-		if strings.HasPrefix(abs, `\\`) {
-			return fmt.Errorf("--data %s: the data disk must be on a local volume", dataDir)
+		n, err := k.Set(s, v, env)
+		if err != nil {
+			return fmt.Errorf("--%s: %w", flag, err)
 		}
-		switch {
-		case first:
-			s.DataDir = abs
-		case !engine.SamePath(abs, s.DataDir):
-			return fmt.Errorf("the data location is already %s; moving it (hyperbutler move) is not supported yet. `hyperbutler delete` and a new start choose again", s.DataDir)
+		s = n
+		return nil
+	}
+	for _, f := range []struct{ flag, key, v string }{
+		{"data", "data.dir", dataDir},
+		{"memory", "memory", memory},
+		{"pipe", "pipe", pipe},
+		{"memlimit", "engine.memoryLimit", memLimit},
+	} {
+		if f.v == "" {
+			continue
+		}
+		if err := set(f.flag, f.key, f.v); err != nil {
+			return err
 		}
 	}
 	if diskSize.set {
-		if !first {
-			if _, err := engine.LoadDiskMeta(engine.Layout{Home: in.l.Home, Data: s.DataDir}); err == nil && diskSize.n != s.DiskSize {
-				return fmt.Errorf("--disk-size: the data disk already exists with %s; its size is fixed", engine.FormatSize(s.DiskSize))
-			}
+		if err := set("disk-size", "disk.size", engine.FormatSize(diskSize.n)); err != nil {
+			return err
 		}
-		s.DiskSize = diskSize.n
-	}
-	if memory != "" {
-		mb, err := parseMemoryMB(memory)
-		if err != nil {
-			return fmt.Errorf("--memory: %w", err)
-		}
-		s.MemoryMB = mb
 	}
 	if cpus > 0 {
-		s.CPUs = cpus
-	}
-	if pipe != "" {
-		if err := transport.ValidatePipeName(pipe); err != nil {
-			return fmt.Errorf("--pipe: %w", err)
-		}
-		s.Pipe = pipe
-		if pipe == transport.DefaultPipeName {
-			s.Pipe = ""
+		if err := set("cpus", "cpus", fmt.Sprint(cpus)); err != nil {
+			return err
 		}
 	}
-	if memLimit != "" {
-		if err := engine.ValidateMemoryLimit(memLimit); err != nil {
-			return fmt.Errorf("--memlimit: %w", err)
-		}
-		s.MemoryLimit = memLimit
-		if memLimit == engine.DefaultEngineMemoryLimit {
-			s.MemoryLimit = ""
-		}
-	}
-	if err := s.Validate(); err != nil {
-		return err
-	}
-	if !first && *s == *in.settings {
+	if in.settings != nil && config.Equal(s, in.settings) {
 		return nil
 	}
 	if err := engine.SaveSettings(in.l, s); err != nil {
@@ -282,8 +259,6 @@ func (in *install) applySettings(dataDir, memory string, cpus int, diskSize size
 	in.settings, in.l.Data = s, s.DataDir
 	return nil
 }
-
-func defaultCPUs() int { return min(max(runtime.NumCPU()/2, 2), 8) }
 
 // guestArtifacts finds the guest image in dir. A directory with an image.json (ADR
 // 0005: kernel, stage-1 initramfs and system disk) is used through that manifest, which
@@ -615,24 +590,9 @@ func (in *install) stop(timeout time.Duration, stderr io.Writer) (forced bool, t
 
 // --- status ---------------------------------------------------------------------------
 
-type statusReport struct {
-	Running    bool          `json:"running"`
-	State      *engine.State `json:"state,omitempty"`
-	Home       string        `json:"home"`
-	DataDir    string        `json:"dataDir,omitempty"`
-	Disk       string        `json:"disk,omitempty"`
-	DiskUsed   uint64        `json:"diskHostBytes,omitempty"`
-	DiskMax    uint64        `json:"diskSizeBytes,omitempty"`
-	HostFree   uint64        `json:"hostFreeBytes,omitempty"`
-	MemoryMB   int           `json:"memoryMB,omitempty"`
-	CPUs       int           `json:"cpus,omitempty"`
-	Context    string        `json:"dockerContext,omitempty"`
-	ContextSel bool          `json:"dockerContextSelected"`
-}
-
 func cmdStatus(args []string, stdout, stderr io.Writer) (int, error) {
 	fs := newFlagSet("status", stderr)
-	asJSON := fs.Bool("json", false, "print JSON")
+	asJSON := fs.Bool("json", false, fmt.Sprintf("print JSON (schema %d)", SchemaVersion))
 	if err := parseArgs(fs, args); err != nil {
 		return 2, err
 	}
@@ -640,7 +600,10 @@ func cmdStatus(args []string, stdout, stderr io.Writer) (int, error) {
 	if err != nil {
 		return 1, err
 	}
-	r := statusReport{Home: in.l.Home}
+	r := StatusJSON{Schema: SchemaVersion, Home: in.l.Home, SetUp: in.settings != nil, DaemonJSON: in.l.DaemonConfigPath()}
+	if _, err := os.Lstat(r.DaemonJSON); err == nil {
+		r.DaemonJSONExists = true
+	}
 	if r.Running, err = in.running(); err != nil {
 		return 1, err
 	}
@@ -648,7 +611,7 @@ func cmdStatus(args []string, stdout, stderr io.Writer) (int, error) {
 		r.State = st
 	}
 	if in.settings != nil {
-		r.DataDir, r.MemoryMB, r.CPUs, r.DiskMax = in.settings.DataDir, in.settings.MemoryMB, in.settings.CPUs, in.settings.DiskSize
+		r.DataDir, r.MemoryMB, r.CPUs, r.DiskMax = in.settings.DataDir, in.settings.Memory(), in.settings.CPUCount(runtime.NumCPU()), in.settings.DiskSize
 		if u, err := vm.Usage(in.l.DiskPath()); err == nil {
 			r.Disk, r.DiskUsed = in.l.DiskPath(), u.Allocated
 		}
@@ -668,11 +631,9 @@ func cmdStatus(args []string, stdout, stderr io.Writer) (int, error) {
 		code = exitNotRunning
 	}
 	if *asJSON {
-		b, err := json.MarshalIndent(r, "", "  ")
-		if err != nil {
+		if err := writeJSON(stdout, r); err != nil {
 			return 1, err
 		}
-		fmt.Fprintf(stdout, "%s\n", b)
 		return code, nil
 	}
 	st := r.State
@@ -712,6 +673,7 @@ func cmdStatus(args []string, stdout, stderr io.Writer) (int, error) {
 		}
 		fmt.Fprintf(stdout, "  context: %s (%s)\n", r.Context, sel)
 	}
+	fmt.Fprintf(stdout, "  daemon:  %s\n", daemonStatusLine(in.l, st))
 	fmt.Fprintf(stdout, "  state:   %s\n", in.l.Home)
 	return code, nil
 }
@@ -866,6 +828,7 @@ func cmdDelete(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	remove(in.l.DiskMetaPath())
 	remove(in.l.StatePath())
 	remove(in.l.SettingsPath())
+	remove(in.l.DaemonAppliedPath()) // the engine's copy; the user's daemon.json is kept
 	for _, p := range []string{in.l.EngineLogPath(), in.l.ConsoleLogPath()} {
 		remove(p)
 		remove(p + ".1")
@@ -962,7 +925,7 @@ func cmdEngine(args []string, stderr io.Writer) (int, error) {
 		log.Info("debug endpoint", "pipe", dcfg.DebugPipe)
 	}
 	log.Info("go memory limit", "bytes", debug.SetMemoryLimit(-1), "configured", dcfg.MemoryLimit, "env", os.Getenv("GOMEMLIMIT"))
-	log.Info("engine starting", "pid", os.Getpid(), "home", *home, "data", s.DataDir, "memoryMB", s.MemoryMB, "cpus", s.CPUs)
+	log.Info("engine starting", "pid", os.Getpid(), "home", *home, "data", s.DataDir, "memoryMB", s.Memory(), "cpus", s.CPUCount(runtime.NumCPU()))
 	err = engine.Serve(engine.ServeOptions{
 		Home: *home, Settings: s, KernelPath: *kernel, InitrdPath: *initrd, Image: *manifest,
 		Pipe: s.PipeName(), Net: engine.NetConfig{AutoPublish: true}, Logger: log,

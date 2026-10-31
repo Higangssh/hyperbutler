@@ -29,6 +29,7 @@ hyperbutler stop               # orderly guest power-off; killed after --timeout
 hyperbutler delete [--yes]     # removes the VM state and the data disk
 ```
 
+- Settings and daemon.json: `hyperbutler config`, see [settings.md](settings.md).
 - `start` takes `--data DIR` (first start only), `--image-dir`, `--memory`, `--cpus`,
   `--disk-size` (first start only), `--pipe`, `--timeout`, `--no-context`, and
   `--memlimit` / `--debug-pipe` (internal/diag, off by default).

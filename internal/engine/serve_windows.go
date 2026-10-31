@@ -9,6 +9,8 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"syscall"
@@ -16,6 +18,7 @@ import (
 
 	"github.com/Microsoft/go-winio/pkg/guid"
 
+	"github.com/Higangssh/hyperbutler/internal/netstack"
 	"github.com/Higangssh/hyperbutler/internal/transport"
 )
 
@@ -74,9 +77,19 @@ func Serve(opts ServeOptions) error {
 	}
 	defer func() { _ = lock.Unlock() }()
 
+	imageDir := opts.Image
+	if imageDir == "" {
+		imageDir = opts.KernelPath
+	}
+	if imageDir != "" {
+		if abs, err := filepath.Abs(imageDir); err == nil {
+			imageDir = filepath.Dir(abs)
+		}
+	}
 	pub := &publisher{l: l, log: log, st: State{
 		Phase: PhaseStarting, PID: os.Getpid(), PIDCreated: SelfCreated(),
 		Pipe: opts.Pipe, DataDir: l.Data, Started: time.Now().UTC().Truncate(time.Millisecond),
+		ImageDir: imageDir,
 	}}
 	if err := pub.save(); err != nil {
 		return err
@@ -96,7 +109,9 @@ func Serve(opts ServeOptions) error {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 	done := make(chan struct{})
-	defer close(done)
+	var doneOnce sync.Once
+	stopApply := func() { doneOnce.Do(func() { close(done) }) }
+	defer stopApply()
 	go func() {
 		if ev.Wait(done) {
 			log.Info("stop requested")
@@ -124,6 +139,40 @@ func Serve(opts ServeOptions) error {
 
 	CleanupOrphans(opts.Backend, l.VMPrefix(), log)
 
+	// daemon.json (REQ-UX-007): delivered on every control connection, and again on
+	// `hyperbutler config daemon apply`, which sets the daemon event.
+	subnet := opts.Net.Subnet
+	if !subnet.IsValid() {
+		subnet = netstack.DefaultSubnet
+	}
+	dc := &DaemonConfig{Layout: l, GuestSubnet: subnet, Log: log, OnState: func(d DaemonState) {
+		pub.update(func(s *State) { s.Daemon = &d })
+	}}
+	dev, err := CreateDaemonEvent()
+	if err != nil {
+		return fail(err)
+	}
+	var applyWG sync.WaitGroup
+	applyWG.Add(1)
+	go func() {
+		defer applyWG.Done()
+		for dev.Wait(done) {
+			log.Info("daemon.json apply requested")
+			actx, cancel := context.WithTimeout(ctx, 3*time.Minute)
+			if err := dc.Apply(actx); err != nil {
+				log.Warn("daemon.json not applied", "err", err)
+			}
+			cancel()
+		}
+	}()
+	defer func() {
+		// done is closed by an earlier defer's turn only at return, so stop the loop
+		// here first: it must not wait on a closed handle.
+		stopApply()
+		applyWG.Wait()
+		dev.Close()
+	}()
+
 	console, err := openCapped(l.ConsoleLogPath(), consoleLogMax)
 	if err != nil {
 		return fail(err)
@@ -132,10 +181,11 @@ func Serve(opts ServeOptions) error {
 
 	runErr := Run(ctx, Config{
 		KernelPath: opts.KernelPath, InitrdPath: opts.InitrdPath, Image: opts.Image,
-		MemoryMB: opts.Settings.MemoryMB, CPUs: opts.Settings.CPUs,
+		MemoryMB: opts.Settings.Memory(), CPUs: opts.Settings.CPUCount(runtime.NumCPU()),
 		Pipe: opts.Pipe, VMID: l.VMPrefix() + randomHex(6),
 		Disk: l, DiskSize: opts.Settings.DiskSize,
 		Net: opts.Net, ConsoleLog: console, Logger: log, Backend: opts.Backend,
+		DaemonConfig: dc,
 		OnCreated: func(id string, rid guid.GUID) {
 			pub.update(func(s *State) { s.VMID, s.RuntimeID = id, strings.ToLower(rid.String()) })
 		},

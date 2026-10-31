@@ -16,6 +16,11 @@
 # runs when the host asks through the Hyper-V shutdown integration component) stops
 # dockerd, which stops the containers; then the data disk is unmounted and the VM
 # powers off.
+#
+# daemon.json (REQ-UX-007): the host sends the user's file over the control channel and
+# hyperbutlerd installs it at /run/hyperbutler/daemon.json (the system disk is
+# read-only). SIGHUP restarts dockerd with whatever is installed then; see
+# guest/cmd/hyperbutlerd/daemoncfg.go for the rollback protocol (dockerd.gen, dockerd.hold).
 
 PATH=/usr/sbin:/usr/bin:/sbin:/bin
 export PATH
@@ -72,6 +77,7 @@ THP=
 CACHE=
 SYSRA=
 SHARE=
+DAEMONCFG=
 for arg in $(cat /proc/cmdline); do
 	case "$arg" in
 	hyperbutler.ip=*) ADDR=${arg#hyperbutler.ip=} ;;
@@ -89,6 +95,7 @@ for arg in $(cat /proc/cmdline); do
 	hyperbutler.cache=*) CACHE=${arg#hyperbutler.cache=} ;;
 	hyperbutler.sysra=*) SYSRA=${arg#hyperbutler.sysra=} ;;
 	hyperbutler.share=*) SHARE=${arg#hyperbutler.share=} ;;
+	hyperbutler.daemoncfg=1) DAEMONCFG=1 ;;
 	esac
 done
 # Transparent huge pages only where a program asks (madvise), not for every anonymous
@@ -236,11 +243,16 @@ fi
 # hyperbutlerd: the host control channel (vsock 2380), the free-space guard, automatic
 # fstrim, page-cache reclaim (docs/research/guest-services.md) and the bind-mount relay. The guard fails
 # closed until the host's first budget arrives, so dockerd waits for that (bounded).
+# hyperbutlerd installs the host's daemon.json here and the init starts dockerd with it.
+RUNDIR=/run/hyperbutler
+mkdir -p "$RUNDIR"
+DAEMON_JSON=$RUNDIR/daemon.json
+HYPERBUTLERD_DAEMON="-daemon-config $DAEMON_JSON"
 if [ -d /sys/bus/vmbus ]; then
 	rm -f /run/hyperbutlerd.ready
 	(while :; do
 		# shellcheck disable=SC2086
-		hyperbutlerd $HYPERBUTLERD_ARGS $HYPERBUTLERD_CACHE $HYPERBUTLERD_SHARE -ready /run/hyperbutlerd.ready >/dev/console 2>&1
+		hyperbutlerd $HYPERBUTLERD_ARGS $HYPERBUTLERD_CACHE $HYPERBUTLERD_SHARE $HYPERBUTLERD_DAEMON -ready /run/hyperbutlerd.ready >/dev/console 2>&1
 		t "hyperbutlerd-exit $?"
 		sleep 1
 	done) &
@@ -251,6 +263,22 @@ if [ -d /sys/bus/vmbus ]; then
 		i=$((i + 1))
 	done
 	t hyperbutlerd-ready
+	# hyperbutler.daemoncfg=1: the host sends a daemon.json (or says there is none) right
+	# after it connects; start dockerd with it, not without. Bounded (30 s): a host that
+	# never sends one gets dockerd's defaults, and a file that arrives later is applied
+	# with a dockerd restart.
+	if [ -n "$DAEMONCFG" ]; then
+		i=0
+		while [ ! -e "$RUNDIR/daemon.ready" ] && [ $i -lt 1500 ]; do
+			sleep 0.02
+			i=$((i + 1))
+		done
+		if [ -e "$RUNDIR/daemon.ready" ]; then
+			t daemon-config-ready
+		else
+			t daemon-config-timeout
+		fi
+	fi
 fi
 
 # The root is the erofs system disk, a real mount, so runc uses pivot_root(2): no
@@ -275,11 +303,42 @@ else
 	sockfwd -listen "${ADDR%/*}:2375" -unix /run/docker.sock >/dev/console 2>&1 &
 fi
 DOCKERD=
+STOPPING=
+RESTART=
+STARTING=
+GEN=0
+# While STARTING, $DOCKERD may still name the previous (exited) dockerd: the handlers only
+# set the flag, and start_dockerd acts on it once the new PID is known.
 stop_dockerd() {
 	t shutdown-requested
-	[ -n "$DOCKERD" ] && kill -TERM "$DOCKERD" 2>/dev/null
+	STOPPING=1
+	[ -z "$STARTING" ] && [ -n "$DOCKERD" ] && kill -TERM "$DOCKERD" 2>/dev/null
+}
+# SIGHUP (from hyperbutlerd): restart dockerd, for a new daemon.json.
+restart_dockerd() {
+	[ -n "$STOPPING" ] && return
+	t dockerd-restart-requested
+	RESTART=1
+	[ -z "$STARTING" ] && [ -n "$DOCKERD" ] && kill -TERM "$DOCKERD" 2>/dev/null
 }
 trap stop_dockerd TERM USR2 INT
+trap restart_dockerd HUP
+# start_dockerd starts dockerd (with the installed daemon.json, if any) and records its
+# generation and PID for hyperbutlerd.
+start_dockerd() {
+	STARTING=1
+	set --
+	[ -f "$DAEMON_JSON" ] && set -- "--config-file=$DAEMON_JSON"
+	dockerd --host=unix:///run/docker.sock --iptables=false --ip6tables=false \
+		--shutdown-timeout=10 --log-level="$LOGLEVEL" "$@" >/dev/console 2>&1 &
+	DOCKERD=$!
+	GEN=$((GEN + 1))
+	echo "$GEN $DOCKERD" >"$RUNDIR/dockerd.gen.new" && mv -f "$RUNDIR/dockerd.gen.new" "$RUNDIR/dockerd.gen"
+	STARTING=
+	if [ -n "$STOPPING" ] || [ -n "$RESTART" ]; then
+		kill -TERM "$DOCKERD" 2>/dev/null
+	fi
+}
 
 # Readahead on the system disk. At idle dockerd and containerd fault code in at random,
 # and with the kernel's 128 KiB each fault pulls 128 KiB around it back into the page
@@ -299,9 +358,7 @@ if [ -n "$SYSDEV" ] && [ -w "/sys/block/$SYSDEV/queue/read_ahead_kb" ]; then
 	t system-readahead
 fi
 t dockerd-exec
-dockerd --host=unix:///run/docker.sock --iptables=false --ip6tables=false \
-	--shutdown-timeout=10 --log-level="$LOGLEVEL" >/dev/console 2>&1 &
-DOCKERD=$!
+start_dockerd
 
 i=0
 while [ ! -S /run/docker.sock ] && [ $i -lt 600 ]; do
@@ -321,11 +378,27 @@ if [ -n "$MEMLOG" ]; then
 	) &
 fi
 
-# A trapped signal interrupts wait; keep waiting until dockerd is really gone.
-while kill -0 "$DOCKERD" 2>/dev/null; do
-	wait "$DOCKERD"
+# A trapped signal interrupts wait; keep waiting until dockerd is really gone. Then
+# restart it if hyperbutlerd asked for that; while hyperbutlerd holds dockerd.hold (it
+# is applying a daemon.json), a dockerd that exited on its own waits for hyperbutlerd's
+# next SIGHUP instead of powering the VM off. Otherwise dockerd's exit ends the VM.
+while :; do
+	while kill -0 "$DOCKERD" 2>/dev/null; do
+		wait "$DOCKERD"
+	done
+	t dockerd-exit
+	while [ -z "$STOPPING" ] && [ -z "$RESTART" ] && [ -e "$RUNDIR/dockerd.hold" ]; do
+		sleep 0.1
+	done
+	if [ -n "$RESTART" ] && [ -z "$STOPPING" ]; then
+		RESTART=
+		rm -f /run/docker.sock
+		t dockerd-restart
+		start_dockerd
+		continue
+	fi
+	break
 done
-t dockerd-exit
 for p in $HYPERBUTLERD_LOOP $AGENT_LOOP; do
 	kill "$p" 2>/dev/null
 done

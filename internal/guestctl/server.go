@@ -2,6 +2,7 @@ package guestctl
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"net"
@@ -34,6 +35,15 @@ type Handler interface {
 // The guest daemon advertises FeatureShutdown only with such a Handler.
 type Shutdowner interface {
 	Shutdown() error
+}
+
+// DaemonConfigurer is implemented by a Handler that can install a daemon.json. Server
+// calls ApplyDaemonConfig from a worker goroutine, one at a time per connection, with
+// a file whose size and SHA-256 matched the commit. data is empty to remove the
+// installed file. The guest daemon advertises FeatureDaemonConfig only with such a
+// Handler.
+type DaemonConfigurer interface {
+	ApplyDaemonConfig(ctx context.Context, data []byte, restart bool) DaemonResult
 }
 
 // Server serves one host connection at a time (the guest daemon closes the previous one
@@ -172,8 +182,10 @@ func (s *Server) ServeConn(ctx context.Context, conn net.Conn) error {
 		}
 	}()
 
-	var trimBusy, cacheBusy bool
+	var trimBusy, cacheBusy, daemonBusy bool
 	var busyMu sync.Mutex
+	// daemonBuf collects the chunks of the daemon.json transfer in progress.
+	var daemonBuf []byte
 	run := func(busy *bool, seq uint32, req Type, fn func() Msg) {
 		busyMu.Lock()
 		if *busy {
@@ -242,6 +254,31 @@ func (s *Server) ServeConn(ctx context.Context, conn net.Conn) error {
 				continue
 			}
 			send(seq, ShutdownAccepted{})
+		case DaemonChunk:
+			if v.Offset == 0 {
+				daemonBuf = daemonBuf[:0]
+			}
+			if int(v.Offset) != len(daemonBuf) {
+				return fmt.Errorf("%w: daemon chunk at %d, want %d", ErrMalformed, v.Offset, len(daemonBuf))
+			}
+			daemonBuf = append(daemonBuf, v.Data...) // validate bounds the total
+		case DaemonCommit:
+			data := daemonBuf
+			daemonBuf = nil
+			if v.Size == 0 { // a removal; chunks of an abandoned transfer are dropped
+				data = nil
+			}
+			dc, ok := s.Handler.(DaemonConfigurer)
+			if s.Features&FeatureDaemonConfig == 0 || !ok {
+				send(seq, ErrorReply{Code: ErrUnsupported, Request: TDaemonCommit})
+				continue
+			}
+			if len(data) != int(v.Size) || sha256.Sum256(data) != v.SHA256 {
+				send(seq, DaemonResult{Code: DaemonBadTransfer, Message: fmt.Sprintf("received %d bytes, the commit says %d or another hash", len(data), v.Size)})
+				continue
+			}
+			restart := v.Flags&DaemonRestart != 0
+			run(&daemonBusy, seq, TDaemonCommit, func() Msg { return dc.ApplyDaemonConfig(ctx, data, restart) })
 		default: // a second Hello
 			return fmt.Errorf("%w: unexpected %v", ErrMalformed, m.Type())
 		}

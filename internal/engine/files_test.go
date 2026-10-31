@@ -112,12 +112,22 @@ func TestSettings(t *testing.T) {
 	if got.PipeName() != `\\.\pipe\docker_engine_hyperbutler` {
 		t.Fatalf("default pipe %q", got.PipeName())
 	}
+	// Memory, CPUs and the context are optional and have defaults.
+	opt, err := ParseSettings([]byte(`{"version":1,"dataDir":"C:\\x","diskSizeBytes":68719476736}`))
+	if err != nil || opt.Memory() != DefaultMemoryMB || opt.CPUCount(16) != 8 || opt.CPUCount(2) != 2 || !opt.ContextManaged() {
+		t.Fatalf("optional fields: %+v %v", opt, err)
+	}
+	no, err := ParseSettings([]byte(`{"version":1,"dataDir":"C:\\x","diskSizeBytes":68719476736,"cpus":3,"manageContext":false}`))
+	if err != nil || no.CPUCount(16) != 3 || no.ContextManaged() {
+		t.Fatalf("set fields: %+v %v", no, err)
+	}
 	for name, mut := range map[string]func(*Settings){
 		"relative":   func(s *Settings) { s.DataDir = "hyperbutler" },
 		"disk small": func(s *Settings) { s.DiskSize = 1 << 30 },
 		"disk odd":   func(s *Settings) { s.DiskSize = 64<<30 + 1 },
 		"memory":     func(s *Settings) { s.MemoryMB = 512 },
-		"cpus":       func(s *Settings) { s.CPUs = 0 },
+		"cpus":       func(s *Settings) { s.CPUs = -1 },
+		"cpus big":   func(s *Settings) { s.CPUs = MaxCPUs + 1 },
 		"pipe":       func(s *Settings) { s.Pipe = `C:\pipe` },
 		"nul":        func(s *Settings) { s.DataDir += "\x00" },
 	} {

@@ -118,12 +118,28 @@ func stopEventName(pid int, created int64) string {
 	return fmt.Sprintf(`Local\hyperbutler-engine-stop-%d-%x`, pid, created)
 }
 
+// daemonEventName is the named event the CLI sets to ask the engine to apply
+// daemon.json again (`hyperbutler config daemon apply`).
+func daemonEventName(pid int, created int64) string {
+	return fmt.Sprintf(`Local\hyperbutler-engine-daemon-%d-%x`, pid, created)
+}
+
 // StopEvent is the engine's end of the stop request.
 type StopEvent struct{ h windows.Handle }
 
 // CreateStopEvent creates this process's stop event. Only the current user (and
 // SYSTEM) may set it. A name that already exists is refused: someone else made it.
 func CreateStopEvent() (*StopEvent, error) {
+	return createEvent(stopEventName(windowsPID(), SelfCreated()), true)
+}
+
+// CreateDaemonEvent creates this process's daemon.json apply event, with the stop
+// event's access rules. It resets when Wait returns, so each request is seen once.
+func CreateDaemonEvent() (*StopEvent, error) {
+	return createEvent(daemonEventName(windowsPID(), SelfCreated()), false)
+}
+
+func createEvent(eventName string, manualReset bool) (*StopEvent, error) {
 	tu, err := windows.GetCurrentProcessToken().GetTokenUser()
 	if err != nil {
 		return nil, err
@@ -133,17 +149,21 @@ func CreateStopEvent() (*StopEvent, error) {
 		return nil, err
 	}
 	sa := &windows.SecurityAttributes{Length: uint32(unsafe.Sizeof(windows.SecurityAttributes{})), SecurityDescriptor: sd}
-	name, err := windows.UTF16PtrFromString(stopEventName(windowsPID(), SelfCreated()))
+	name, err := windows.UTF16PtrFromString(eventName)
 	if err != nil {
 		return nil, err
 	}
-	h, err := windows.CreateEvent(sa, 1, 0, name)
+	var manual uint32
+	if manualReset {
+		manual = 1
+	}
+	h, err := windows.CreateEvent(sa, manual, 0, name)
 	if err != nil && !errors.Is(err, windows.ERROR_ALREADY_EXISTS) {
-		return nil, fmt.Errorf("engine: create stop event: %w", err)
+		return nil, fmt.Errorf("engine: create event %s: %w", eventName, err)
 	}
 	if errors.Is(err, windows.ERROR_ALREADY_EXISTS) {
 		_ = windows.CloseHandle(h)
-		return nil, errors.New("engine: the stop event already exists; another process created it")
+		return nil, fmt.Errorf("engine: the event %s already exists; another process created it", eventName)
 	}
 	return &StopEvent{h: h}, nil
 }
@@ -170,14 +190,22 @@ func (e *StopEvent) Wait(done <-chan struct{}) bool {
 func (e *StopEvent) Close() { _ = windows.CloseHandle(e.h) }
 
 // RequestStop sets the stop event of the engine process pid created at created.
-func RequestStop(pid int, created int64) error {
-	name, err := windows.UTF16PtrFromString(stopEventName(pid, created))
+func RequestStop(pid int, created int64) error { return setEvent(stopEventName(pid, created)) }
+
+// RequestDaemonApply asks the engine process pid created at created to apply
+// daemon.json again. The result shows in its state.json (State.Daemon.Generation).
+func RequestDaemonApply(pid int, created int64) error {
+	return setEvent(daemonEventName(pid, created))
+}
+
+func setEvent(eventName string) error {
+	name, err := windows.UTF16PtrFromString(eventName)
 	if err != nil {
 		return err
 	}
 	h, err := windows.OpenEvent(windows.EVENT_MODIFY_STATE, false, name)
 	if err != nil {
-		return fmt.Errorf("engine: open stop event: %w", err)
+		return fmt.Errorf("engine: open event %s: %w", eventName, err)
 	}
 	defer windows.CloseHandle(h)
 	return windows.SetEvent(h)

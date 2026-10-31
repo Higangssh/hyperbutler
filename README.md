@@ -142,6 +142,31 @@ To upgrade, run `hyperbutler stop`, repeat step 2 without the PATH line, and `hy
 data disk in `%LOCALAPPDATA%\hyperbutler` is kept. Upgrades across releases are not tested yet
 (there has been no release).
 
+### Settings
+
+```powershell
+hyperbutler config list                      # every setting: value, default, source, when it applies
+hyperbutler config set memory 8GiB           # says what restart it needs; --apply does it
+hyperbutler config set context.manage false  # do not create or select the docker context
+hyperbutler config path                      # settings.json and daemon.json
+hyperbutler restart
+
+# Docker Engine settings: put a daemon.json at the path above, then
+hyperbutler config daemon apply              # restarts dockerd only, not the VM
+```
+
+`daemon.json` reaches the guest's dockerd byte for byte. Keys hyperbutler owns (`hosts`,
+`iptables`, `data-root`, `live-restore` and a few more) are refused with the reason, and an
+invalid file leaves the previous one in effect. For example, a registry that speaks plain
+HTTP:
+
+```json
+{ "insecure-registries": ["192.168.1.20:5000"] }
+```
+
+`status`, `version` and `config list/get/path` take `--json`; every document carries
+`"schema": 1`. See [docs/research/settings.md](docs/research/settings.md).
+
 `hyperbutler delete` removes the VM state and the data disk, with all images, containers and
 volumes. To uninstall, run `hyperbutler delete`, remove the folder and its PATH entry, and
 `docker context rm hyperbutler`.

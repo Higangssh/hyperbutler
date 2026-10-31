@@ -142,6 +142,14 @@ func TestCLIDataLocationIsFixed(t *testing.T) {
 	if _, _, e := runCLI(t, "start", "--data", strings.ToUpper(data)+`\`, "--image-dir", nope); strings.Contains(e, "already") {
 		t.Fatalf("same location refused: %q", e)
 	}
+	// Before the data disk exists the location can still change; afterwards it is fixed.
+	l := engine.Layout{Home: home, Data: data}
+	if err := engine.MkdirPrivate(data); err != nil {
+		t.Fatal(err)
+	}
+	if err := engine.WriteFileAtomic(l.DiskMetaPath(), []byte(`{"version":1,"sizeBytes":68719476736,"blockSize":1048576,"metadataBytes":0,"created":"2026-10-30T00:00:00Z"}`)); err != nil {
+		t.Fatal(err)
+	}
 	code, _, e := runCLI(t, "start", "--data", filepath.Join(home, "elsewhere"), "--image-dir", nope)
 	if code != 1 || !strings.Contains(e, "hyperbutler move") {
 		t.Fatalf("moved data: %d %q", code, e)
@@ -150,13 +158,6 @@ func TestCLIDataLocationIsFixed(t *testing.T) {
 		t.Fatalf("UNC data: %d %q", code, e)
 	}
 	// The disk size is fixed once the disk exists.
-	l := engine.Layout{Home: home, Data: data}
-	if err := engine.MkdirPrivate(data); err != nil {
-		t.Fatal(err)
-	}
-	if err := engine.WriteFileAtomic(l.DiskMetaPath(), []byte(`{"version":1,"sizeBytes":68719476736,"blockSize":1048576,"metadataBytes":0,"created":"2026-10-30T00:00:00Z"}`)); err != nil {
-		t.Fatal(err)
-	}
 	if code, _, e := runCLI(t, "start", "--disk-size", "128GiB", "--image-dir", nope); code != 1 || !strings.Contains(e, "fixed") {
 		t.Fatalf("disk resize: %d %q", code, e)
 	}

@@ -3,8 +3,9 @@
 //
 // The host dials; the guest daemon (guest/cmd/hyperbutlerd) listens and accepts the host CID
 // only. The host sends the free-space guard budget (internal/spaceguard), trim and
-// cache-trim requests, pings, and the request for an orderly guest shutdown. The guest answers requests and pushes a periodic
-// status report.
+// cache-trim requests, pings, the request for an orderly guest shutdown, and the user's
+// daemon.json (REQ-UX-007, see DaemonChunk). The guest answers requests and pushes a
+// periodic status report.
 //
 // # Trust
 //
@@ -31,6 +32,7 @@
 package guestctl
 
 import (
+	"bytes"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -67,6 +69,10 @@ const (
 	TCacheTrim Type = 0x04 // run the page-cache policy's reclaim now
 	TPing      Type = 0x05 // liveness
 	TShutdown  Type = 0x06 // power the guest off in order (stop dockerd, unmount)
+	// TDaemonChunk carries part of a daemon.json; TDaemonCommit installs the chunks sent
+	// so far (and restarts dockerd if asked). Chunks get no reply.
+	TDaemonChunk  Type = 0x07
+	TDaemonCommit Type = 0x08
 )
 
 // Guest to host.
@@ -80,6 +86,7 @@ const (
 	// RShutdown accepts a TShutdown: the guest has started powering off. The VM stops
 	// when it is done; the host watches for that, not for another message.
 	RShutdown Type = 0x87
+	RDaemon   Type = 0x88 // reply to TDaemonCommit
 )
 
 func (t Type) String() string {
@@ -96,6 +103,10 @@ func (t Type) String() string {
 		return "ping"
 	case TShutdown:
 		return "shutdown"
+	case TDaemonChunk:
+		return "daemon-chunk"
+	case TDaemonCommit:
+		return "daemon-commit"
 	case RHello:
 		return "hello-reply"
 	case RStatus:
@@ -110,6 +121,8 @@ func (t Type) String() string {
 		return "error"
 	case RShutdown:
 		return "shutdown-accepted"
+	case RDaemon:
+		return "daemon-result"
 	}
 	return fmt.Sprintf("type(0x%02x)", uint8(t))
 }
@@ -163,12 +176,15 @@ type HelloReply struct {
 type Features uint32
 
 const (
-	FeatureGuard      Features = 1 << 0 // the free-space guard reservation
-	FeatureTrim       Features = 1 << 1 // periodic and delete-triggered fstrim
-	FeatureCacheTrim  Features = 1 << 2 // the page-cache policy
-	FeatureShutdown   Features = 1 << 3 // orderly shutdown on request
-	knownFeatures              = FeatureGuard | FeatureTrim | FeatureCacheTrim | FeatureShutdown
-	statusPayloadSize          = 8 + 17*8
+	FeatureGuard     Features = 1 << 0 // the free-space guard reservation
+	FeatureTrim      Features = 1 << 1 // periodic and delete-triggered fstrim
+	FeatureCacheTrim Features = 1 << 2 // the page-cache policy
+	FeatureShutdown  Features = 1 << 3 // orderly shutdown on request
+	// FeatureDaemonConfig: the guest installs a host-sent daemon.json and restarts
+	// dockerd on request.
+	FeatureDaemonConfig Features = 1 << 4
+	knownFeatures                = FeatureGuard | FeatureTrim | FeatureCacheTrim | FeatureShutdown | FeatureDaemonConfig
+	statusPayloadSize            = 8 + 17*8
 )
 
 // GuardState is the guest guard's view of its budget.
@@ -249,6 +265,79 @@ type ErrorReply struct {
 // Pong answers a Ping.
 type Pong struct{ Nonce uint64 }
 
+// The daemon.json transfer. The host sends the file in DaemonChunks, in order from offset
+// 0, then a DaemonCommit with its size and SHA-256. The guest checks both, validates the
+// file with `dockerd --validate`, installs it (or removes the installed one, for size 0)
+// and answers with a DaemonResult. A chunk that does not continue the previous one, or
+// that would grow the file past MaxDaemonConfig, breaks the protocol. A new transfer
+// starts with a chunk at offset 0 (or a commit of size 0); a commit consumes the chunks.
+const (
+	// MaxDaemonConfig bounds a daemon.json on the wire (internal/daemoncfg.MaxSize).
+	MaxDaemonConfig = 64 << 10
+	// DaemonChunkData is the data capacity of one chunk.
+	DaemonChunkData = 232
+	// MaxDaemonMessage bounds DaemonResult.Message.
+	MaxDaemonMessage = 192
+)
+
+// DaemonChunk is part of a daemon.json.
+type DaemonChunk struct {
+	Offset uint32
+	Data   []byte // 1..DaemonChunkData bytes
+}
+
+// DaemonCommitFlags modify a DaemonCommit.
+type DaemonCommitFlags uint8
+
+const (
+	// DaemonRestart restarts dockerd after installing the file (even if it did not
+	// change). Without it the file is used from dockerd's next start.
+	DaemonRestart    DaemonCommitFlags = 1 << 0
+	knownCommitFlags                   = DaemonRestart
+)
+
+// DaemonCommit installs the chunks sent since the last commit.
+type DaemonCommit struct {
+	Size   uint32
+	Flags  DaemonCommitFlags
+	SHA256 [32]byte
+}
+
+// DaemonCode is the outcome of a DaemonCommit.
+type DaemonCode uint32
+
+const (
+	DaemonOK DaemonCode = 0
+	// DaemonRejected: dockerd --validate refused the file; the installed one is unchanged.
+	DaemonRejected DaemonCode = 1
+	// DaemonBadTransfer: the chunks do not match the commit's size or hash.
+	DaemonBadTransfer DaemonCode = 2
+	// DaemonRolledBack: dockerd did not come up with the new file, so the previous one
+	// was put back and dockerd restarted with it.
+	DaemonRolledBack DaemonCode = 3
+	// DaemonFailed: the guest could not install the file or restart dockerd.
+	DaemonFailed  DaemonCode = 4
+	maxDaemonCode            = DaemonFailed
+)
+
+// DaemonResultFlags describe what a DaemonCommit did.
+type DaemonResultFlags uint8
+
+const (
+	DaemonChanged    DaemonResultFlags = 1 << 0 // the installed file changed
+	DaemonRestarted  DaemonResultFlags = 1 << 1 // dockerd was restarted and answers again
+	knownResultFlags                   = DaemonChanged | DaemonRestarted
+)
+
+// DaemonResult answers a DaemonCommit. Message is guest text (dockerd's complaint, for
+// example) and untrusted: the host shows it escaped.
+type DaemonResult struct {
+	Code     DaemonCode
+	Flags    DaemonResultFlags
+	Duration time.Duration
+	Message  string // at most MaxDaemonMessage bytes
+}
+
 func (Hello) Type() Type            { return THello }
 func (Budget) Type() Type           { return TBudget }
 func (TrimRequest) Type() Type      { return TTrim }
@@ -262,6 +351,9 @@ func (TrimResult) Type() Type       { return RTrim }
 func (CacheResult) Type() Type      { return RCache }
 func (Pong) Type() Type             { return RPong }
 func (ErrorReply) Type() Type       { return RError }
+func (DaemonChunk) Type() Type      { return TDaemonChunk }
+func (DaemonCommit) Type() Type     { return TDaemonCommit }
+func (DaemonResult) Type() Type     { return RDaemon }
 
 func (Hello) size() int            { return 4 }
 func (Budget) size() int           { return 24 }
@@ -276,6 +368,9 @@ func (TrimResult) size() int       { return 24 }
 func (CacheResult) size() int      { return 32 }
 func (Pong) size() int             { return 8 }
 func (ErrorReply) size() int       { return 8 }
+func (DaemonChunk) size() int      { return 8 + DaemonChunkData }
+func (DaemonCommit) size() int     { return 40 }
+func (DaemonResult) size() int     { return 16 + MaxDaemonMessage }
 
 var be = binary.BigEndian
 
@@ -338,6 +433,26 @@ func (m ErrorReply) put(b []byte) {
 	b[4] = byte(m.Request)
 }
 
+func (m DaemonChunk) put(b []byte) {
+	be.PutUint32(b, m.Offset)
+	be.PutUint16(b[4:], uint16(len(m.Data)))
+	copy(b[8:], m.Data)
+}
+
+func (m DaemonCommit) put(b []byte) {
+	be.PutUint32(b, m.Size)
+	b[4] = byte(m.Flags)
+	copy(b[8:], m.SHA256[:])
+}
+
+func (m DaemonResult) put(b []byte) {
+	be.PutUint32(b, uint32(m.Code))
+	b[4] = byte(m.Flags)
+	be.PutUint16(b[6:], uint16(len(m.Message)))
+	be.PutUint64(b[8:], durMS(m.Duration))
+	copy(b[16:], m.Message)
+}
+
 // maxDurationMS keeps durations representable as time.Duration after decoding.
 const maxDurationMS = uint64(1<<63-1) / uint64(time.Millisecond)
 
@@ -392,6 +507,18 @@ func validate(m Msg) error {
 		if v.Code == 0 || v.Code > maxErrorCode || !requestType(v.Request) {
 			return fmt.Errorf("%w: error reply", ErrMalformed)
 		}
+	case DaemonChunk:
+		if len(v.Data) == 0 || len(v.Data) > DaemonChunkData || uint64(v.Offset)+uint64(len(v.Data)) > MaxDaemonConfig {
+			return fmt.Errorf("%w: daemon chunk of %d bytes at %d", ErrMalformed, len(v.Data), v.Offset)
+		}
+	case DaemonCommit:
+		if v.Size > MaxDaemonConfig || v.Flags&^knownCommitFlags != 0 {
+			return fmt.Errorf("%w: daemon commit", ErrMalformed)
+		}
+	case DaemonResult:
+		if v.Code > maxDaemonCode || v.Flags&^knownResultFlags != 0 || len(v.Message) > MaxDaemonMessage || v.Duration < 0 {
+			return fmt.Errorf("%w: daemon result", ErrMalformed)
+		}
 	case TrimRequest, CacheTrimRequest, Ping, Pong, ShutdownRequest, ShutdownAccepted:
 	default:
 		return fmt.Errorf("%w: unknown message %T", ErrMalformed, m)
@@ -399,7 +526,9 @@ func validate(m Msg) error {
 	return nil
 }
 
-func requestType(t Type) bool { return t >= TBudget && t <= TShutdown }
+// requestType reports the host types an ErrorReply may refuse. Hello and daemon chunks
+// get no reply.
+func requestType(t Type) bool { return t >= TBudget && t <= TShutdown || t == TDaemonCommit }
 
 // Append appends the frame for m with sequence number seq to dst.
 func Append(dst []byte, seq uint32, m Msg) ([]byte, error) {
@@ -498,6 +627,12 @@ func decodePayload(t Type, p []byte, dir Direction) (Msg, error) {
 		m = ErrorReply{}
 	case dir == FromGuest && t == RShutdown:
 		m = ShutdownAccepted{}
+	case dir == FromHost && t == TDaemonChunk:
+		m = DaemonChunk{}
+	case dir == FromHost && t == TDaemonCommit:
+		m = DaemonCommit{}
+	case dir == FromGuest && t == RDaemon:
+		m = DaemonResult{}
 	default:
 		return nil, fmt.Errorf("%w: type %v not valid in this direction", ErrMalformed, t)
 	}
@@ -563,6 +698,26 @@ func decodePayload(t Type, p []byte, dir Direction) (Msg, error) {
 			return nil, bad
 		}
 		return ErrorReply{Code: ErrorCode(be.Uint32(p)), Request: Type(p[4])}, nil
+	case DaemonChunk:
+		n := int(be.Uint16(p[4:]))
+		if n > DaemonChunkData || !zero(p[6:8]) || !zero(p[8+n:]) {
+			return nil, bad
+		}
+		return DaemonChunk{Offset: be.Uint32(p), Data: bytes.Clone(p[8 : 8+n])}, nil
+	case DaemonCommit:
+		if !zero(p[5:8]) {
+			return nil, bad
+		}
+		c := DaemonCommit{Size: be.Uint32(p), Flags: DaemonCommitFlags(p[4])}
+		copy(c.SHA256[:], p[8:40])
+		return c, nil
+	case DaemonResult:
+		n := int(be.Uint16(p[6:]))
+		d, ok := dur(p[8:])
+		if n > MaxDaemonMessage || p[5] != 0 || !ok || !zero(p[16+n:]) {
+			return nil, bad
+		}
+		return DaemonResult{Code: DaemonCode(be.Uint32(p)), Flags: DaemonResultFlags(p[4]), Duration: d, Message: string(p[16 : 16+n])}, nil
 	}
 	return m, nil // TrimRequest, CacheTrimRequest, ShutdownRequest, ShutdownAccepted: no payload
 }
