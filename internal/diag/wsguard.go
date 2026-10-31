@@ -43,7 +43,13 @@ type WorkingSetGuard struct {
 	stop chan struct{}
 	done chan struct{}
 	once sync.Once
+	// partial reports whether the partial rule can fire (its data-section reader works).
+	partial bool
 }
+
+// PartialRule reports whether the guard's partial rule is on: it needs to read this
+// executable's data section, and is off where that fails. It is safe on nil.
+func (w *WorkingSetGuard) PartialRule() bool { return w != nil && w.partial }
 
 // Guard parameters.
 const (
@@ -148,18 +154,21 @@ func StartWorkingSetGuard(trimmed func(rule string, private, commit uint64)) *Wo
 
 func startGuard(tick <-chan time.Time, stopTick func(), os guardOS, trimmed func(rule string, private, commit uint64)) *WorkingSetGuard {
 	w := &WorkingSetGuard{stop: make(chan struct{}), done: make(chan struct{})}
+	// The reference level of the data section is read once, at start (in the engine,
+	// before the VM starts, so it is the cold level).
+	data := os.data
+	var ref uint64
+	if data != nil {
+		if d, ok := data(); ok {
+			ref, w.partial = d, true
+		} else {
+			data = nil
+		}
+	}
 	go func() {
 		defer close(w.done)
 		defer stopTick()
-		g := &guardState{window: GuardWindow, minGap: GuardMinGap, rise: GuardRise, slack: GuardSlack, bigRise: GuardBigRise, flat: GuardFlat}
-		data := os.data
-		if data != nil {
-			if d, ok := data(); ok {
-				g.dataRef = d
-			} else {
-				data = nil
-			}
-		}
+		g := &guardState{window: GuardWindow, minGap: GuardMinGap, rise: GuardRise, slack: GuardSlack, bigRise: GuardBigRise, flat: GuardFlat, dataRef: ref}
 		for {
 			select {
 			case <-w.stop:

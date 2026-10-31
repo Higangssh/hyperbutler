@@ -929,6 +929,7 @@ func cmdEngine(args []string, stderr io.Writer) (int, error) {
 		log.Info("working set emptied after an unexplained rise (likely an outside memory read)", "rule", rule, "privateWorkingSet", private, "privateBytes", commit)
 	})
 	defer guard.Stop()
+	log.Info("working-set guard started", "partialRule", guard.PartialRule())
 	log.Info("go memory limit", "bytes", debug.SetMemoryLimit(-1), "configured", dcfg.MemoryLimit, "env", os.Getenv("GOMEMLIMIT"))
 	log.Info("engine starting", "pid", os.Getpid(), "home", *home, "data", s.DataDir, "memoryMB", s.Memory(), "cpus", s.CPUCount(runtime.NumCPU()))
 	hg := s.HostGateway() // REQ-NET-004; changed later through the settings event

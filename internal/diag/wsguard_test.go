@@ -94,6 +94,9 @@ func TestGuardLoop(t *testing.T) {
 	for k := range readings {
 		tick <- t0.Add(time.Duration(5*k) * time.Second)
 	}
+	if !g.PartialRule() {
+		t.Error("partial rule off with a working data reader")
+	}
 	g.Stop()
 	g.Stop()
 	if !stopped || trims != 1 || len(called) != 1 || workingSetTrims.Load() != before+1 {

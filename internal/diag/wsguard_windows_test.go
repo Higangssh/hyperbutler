@@ -3,6 +3,8 @@
 package diag
 
 import (
+	"bytes"
+	"encoding/binary"
 	"testing"
 	"time"
 
@@ -113,9 +115,44 @@ func TestParseDataSectionRejects(t *testing.T) {
 		"bad e_lfanew":  append(append(append([]byte{}, h[:0x3c]...), 0xff, 0xff, 0xff, 0x7f), h[0x40:]...),
 		"no PE":         append(append(append([]byte{}, h[:nt]...), 'X', 'X'), h[nt+2:]...),
 		"sections past": h[:nt+24+240],
+		"no .data":      renamed(h[:], ".data", ".dat2"),
+		"no sections":   withCount(h[:], nt, 0),
 	} {
 		if _, _, ok := parseDataSection(b); ok {
 			t.Errorf("%s: accepted", name)
 		}
 	}
+}
+
+// renamed returns a copy of h with the first section called from renamed to.
+func renamed(h []byte, from, to string) []byte {
+	c := append([]byte{}, h...)
+	if i := bytes.Index(c, append([]byte(from), 0, 0, 0)); i >= 0 {
+		copy(c[i:], to)
+	}
+	return c
+}
+
+// withCount returns a copy of h with NumberOfSections set to n.
+func withCount(h []byte, nt int, n uint16) []byte {
+	c := append([]byte{}, h...)
+	binary.LittleEndian.PutUint16(c[nt+6:], n)
+	return c
+}
+
+// FuzzParseDataSection: no input panics, and an accepted section does not wrap.
+func FuzzParseDataSection(f *testing.F) {
+	base, _, _ := procGetModuleHandleW.Call(0)
+	var h [4096]byte
+	var n uintptr
+	if err := windows.ReadProcessMemory(windows.CurrentProcess(), base, &h[0], uintptr(len(h)), &n); err == nil {
+		f.Add(h[:])
+	}
+	f.Add([]byte("MZ"))
+	f.Fuzz(func(t *testing.T, b []byte) {
+		rva, size, ok := parseDataSection(b)
+		if ok && uint64(rva)+uint64(size) > 1<<32 {
+			t.Fatalf("rva %#x + size %#x wraps", rva, size)
+		}
+	})
 }

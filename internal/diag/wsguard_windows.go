@@ -107,19 +107,23 @@ func parseDataSection(h []byte) (rva, size uint32, ok bool) {
 		return 0, 0, false
 	}
 	nt := int(le.Uint32(h[0x3c:]))
-	if nt < 0 || nt+24 > len(h) || le.Uint32(h[nt:]) != 0x4550 {
+	if nt < 0 || nt > len(h)-24 || le.Uint32(h[nt:]) != 0x4550 {
 		return 0, 0, false
 	}
 	count := int(le.Uint16(h[nt+6:]))
 	sec := nt + 24 + int(le.Uint16(h[nt+20:]))
 	for i := 0; i < count; i++ {
 		o := sec + 40*i
-		if o+40 > len(h) {
+		if o < 0 || o > len(h)-40 {
 			return 0, 0, false
 		}
 		if string(h[o:o+8]) == ".data\x00\x00\x00" {
 			vs, raw := le.Uint32(h[o+8:]), le.Uint32(h[o+16:])
-			return le.Uint32(h[o+12:]), max(vs, raw), true
+			rva, size := le.Uint32(h[o+12:]), max(vs, raw)
+			if uint64(rva)+uint64(size) > 1<<32 {
+				return 0, 0, false
+			}
+			return rva, size, true
 		}
 	}
 	return 0, 0, false
