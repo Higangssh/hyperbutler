@@ -168,7 +168,10 @@ QEMU-WHPX stays a development and diagnostic tool. It is not a shipped backend.
   SCSI with `AlwaysAllowSparseFiles`. With the default 32 MiB blocks, free runs shorter than
   32 MiB are never returned (`docs/research/disk-reclaim.md`).
 - **Guest:** ext4 on the data disk, with a periodic and an event-driven `fstrim`. The guest
-  kernel needs `CONFIG_PAGE_REPORTING` and `hv_balloon` loaded.
+  kernel needs `CONFIG_PAGE_REPORTING` and `hv_balloon` loaded. Since 2026-10-31 it boots
+  with `page_reporting.page_reporting_order=0`: with the default 2 MiB reporting blocks,
+  50 to 90 MiB of free but fragmented guest memory stayed committed after each large
+  workload (`docs/research/mem-reclaim.md`, REQ-MEM-002).
 - **Access:** non-admin access goes through the broker in ADR 0004. Hyper-V Administrators
   membership is a developer mode only, not supported for end users. ADR 0004's
   virtual-account variant is still unverified, so the broker may have to run as SYSTEM.

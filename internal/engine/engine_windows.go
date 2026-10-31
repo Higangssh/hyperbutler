@@ -45,7 +45,21 @@ var GuardConfig = spaceguard.Config{
 // needs it: the Hyper-V synthetic devices (vmbus storage, network, hvsock) are not
 // DMA-limited, and this is not an isolated (confidential) VM, where Linux forces bounce
 // buffers regardless. See docs/research/idle-memory.md.
-const DefaultCmdLine = "console=ttyS0 quiet swiotlb=noforce"
+//
+// page_reporting.page_reporting_order=0: hv_balloon's free page reporting hands free
+// memory back to the host (the cold discard hint), by default only in free blocks of
+// 2 MiB (order 9) or more. After a workload has touched most of the guest's RAM, the
+// slab and kernel pages it left behind split many 2 MiB blocks, and the free pieces
+// around them stay committed on the host: 50 to 90 MiB after a 4 GiB + 4 GiB workload
+// in a 12 GiB guest, growing with each workload. Reporting single pages returns them.
+// Idle guest CPU did not change measurably. See docs/research/mem-reclaim.md
+// (REQ-MEM-002).
+//
+// dhash_entries, ihash_entries: the dentry and inode hash tables scale with guest RAM
+// (16 + 8 MiB at 12 GiB), are zeroed at boot and so stay committed. These are the sizes
+// a 4 GiB guest gets by default (4 + 2 MiB), so the default VM is unchanged and a
+// larger one no longer pays for them.
+const DefaultCmdLine = "console=ttyS0 quiet swiotlb=noforce page_reporting.page_reporting_order=0 dhash_entries=524288 ihash_entries=262144"
 
 // DockerPort is the AF_VSOCK port of the guest agent's Docker API relay.
 const DockerPort = 2375
