@@ -94,3 +94,28 @@ func TestDataSectionReader(t *testing.T) {
 	}
 	t.Logf("data section resident %d -> %d KiB", before>>10, after>>10)
 }
+
+func TestParseDataSectionRejects(t *testing.T) {
+	base, _, _ := procGetModuleHandleW.Call(0)
+	var h [4096]byte
+	var n uintptr
+	if err := windows.ReadProcessMemory(windows.CurrentProcess(), base, &h[0], uintptr(len(h)), &n); err != nil {
+		t.Fatal(err)
+	}
+	if _, size, ok := parseDataSection(h[:]); !ok || size == 0 {
+		t.Fatalf("own headers: size %d, ok %v", size, ok)
+	}
+	nt := int(h[0x3c]) | int(h[0x3d])<<8
+	for name, b := range map[string][]byte{
+		"empty":         nil,
+		"not MZ":        append([]byte("XX"), h[2:]...),
+		"truncated":     h[:nt+30],
+		"bad e_lfanew":  append(append(append([]byte{}, h[:0x3c]...), 0xff, 0xff, 0xff, 0x7f), h[0x40:]...),
+		"no PE":         append(append(append([]byte{}, h[:nt]...), 'X', 'X'), h[nt+2:]...),
+		"sections past": h[:nt+24+240],
+	} {
+		if _, _, ok := parseDataSection(b); ok {
+			t.Errorf("%s: accepted", name)
+		}
+	}
+}

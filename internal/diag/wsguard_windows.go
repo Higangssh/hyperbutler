@@ -3,8 +3,7 @@
 package diag
 
 import (
-	"debug/pe"
-	"os"
+	"encoding/binary"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
@@ -54,25 +53,15 @@ type wsExEntry struct {
 
 // dataSectionReader returns a function that counts the resident private bytes of this
 // executable's .data section (initialized data and BSS), or nil if the section cannot
-// be found. QueryWorkingSetEx reads the page tables and touches no page.
+// be found. The section table is read from the loaded image's own headers (no file
+// I/O, no symbol table). QueryWorkingSetEx reads the page tables and touches no page.
 func dataSectionReader() func() (uint64, bool) {
-	exe, err := os.Executable()
-	if err != nil {
-		return nil
-	}
-	f, err := pe.Open(exe)
-	if err != nil {
-		return nil
-	}
-	var rva, size uint32
-	for _, s := range f.Sections {
-		if s.Name == ".data" {
-			rva, size = s.VirtualAddress, max(s.VirtualSize, s.Size)
-		}
-	}
-	f.Close()
 	base, _, _ := procGetModuleHandleW.Call(0)
-	if base == 0 || size == 0 {
+	if base == 0 {
+		return nil
+	}
+	rva, size, ok := dataSection(base)
+	if !ok {
 		return nil
 	}
 	const page = 4096
@@ -99,4 +88,39 @@ func dataSectionReader() func() (uint64, bool) {
 		}
 		return n, true
 	}
+}
+
+// dataSection finds .data in the PE headers of the image loaded at base.
+func dataSection(base uintptr) (rva, size uint32, ok bool) {
+	var h [4096]byte
+	var n uintptr
+	if windows.ReadProcessMemory(windows.CurrentProcess(), base, &h[0], uintptr(len(h)), &n) != nil || n != uintptr(len(h)) {
+		return 0, 0, false
+	}
+	return parseDataSection(h[:])
+}
+
+// parseDataSection reads the .data section's RVA and size from PE headers.
+func parseDataSection(h []byte) (rva, size uint32, ok bool) {
+	le := binary.LittleEndian
+	if len(h) < 0x40 || h[0] != 'M' || h[1] != 'Z' {
+		return 0, 0, false
+	}
+	nt := int(le.Uint32(h[0x3c:]))
+	if nt < 0 || nt+24 > len(h) || le.Uint32(h[nt:]) != 0x4550 {
+		return 0, 0, false
+	}
+	count := int(le.Uint16(h[nt+6:]))
+	sec := nt + 24 + int(le.Uint16(h[nt+20:]))
+	for i := 0; i < count; i++ {
+		o := sec + 40*i
+		if o+40 > len(h) {
+			return 0, 0, false
+		}
+		if string(h[o:o+8]) == ".data\x00\x00\x00" {
+			vs, raw := le.Uint32(h[o+8:]), le.Uint32(h[o+16:])
+			return le.Uint32(h[o+12:]), max(vs, raw), true
+		}
+	}
+	return 0, 0, false
 }
