@@ -195,13 +195,14 @@ For 0.1 that trade favours Go. Two things would re-open it:
   - **Update, 2026-10-31 evening** ([research/mem-reclaim.md](../research/mem-reclaim.md),
     section 3): the outside read was provoked by the benches' hidden PowerShell per
     sample (12 of 13 runs, always 300 s after the engine started; 0 of 11 with in-process
-    sampling). Two changes decided there: release builds link Go's frozen FIPS 140-3
-    module `v1.0.0-c2097c7c` with FIPS mode off, which has no entropy buffer (commit 66 →
-    35 MiB), at the cost of crypto code that receives no fixes (acceptable while the host
-    process uses crypto only for SHA-256 digests and makes no TLS connection; revisit when
-    either changes or Go makes the buffer lazy); and the engine runs
-    `diag.WorkingSetGuard`, which empties its working set when an outside read makes it
-    equal to the commit. The 32 MiB "Go's to fix" above is therefore avoided, not fixed.
+    sampling). The engine now runs `diag.WorkingSetGuard`, which empties its working set
+    when an outside read makes it equal to the commit, or makes the FIPS buffer resident
+    (its partial rule); a read still leaves the engine at its commit for about 4 s. Linking Go's frozen FIPS 140-3
+    module `v1.0.0-c2097c7c` (FIPS mode off) would remove the 32 MiB buffer (commit 66 →
+    35 MiB) and was measured, but **not chosen**: that module receives no fixes, and an
+    HTTPS update check is planned for 0.2, whose TLS would run on it. The release build
+    keeps the toolchain's crypto; the 32 MiB stays Go's to fix, and the guard undoes a
+    scan that makes it resident. Revisit if Go allocates the buffer lazily.
 - REQ-MEM-001 was re-measured with `bench/mem-idle` as specified (every 10 s from minute 5
   to minute 10, 31 samples, `runtime.MemStats` from the diag endpoint per sample), on
   2026-10-31 with no other VM running: total **315 MiB (331 MB)**, under the 0.1 target of
@@ -244,7 +245,7 @@ The adversarial review on 2026-10-30, arguing the strongest case for Rust, raise
 
 ### Review of the measurement tooling (2026-10-31)
 
-A adversarial review of the diag wiring and of `bench/mem-idle`, `bench/start` and `bench/soak`
+An adversarial review of the diag wiring and of `bench/mem-idle`, `bench/start` and `bench/soak`
 raised ten findings. Fixed: `bench/start` stopped an installation it had not started; a
 start cut short left the detached engine running; foreign VMs were only looked for at the
 sample instants (now a background watcher from the start command on); `vmmemWSL` and

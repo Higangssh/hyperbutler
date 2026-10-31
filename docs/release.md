@@ -23,7 +23,7 @@ The zip has one top-level folder:
 
 | File | Notes |
 |---|---|
-| `hyperbutler.exe` | `CGO_ENABLED=0 GOFIPS140=v1.0.0-c2097c7c go build -trimpath -buildvcs=true -ldflags "-s -w -buildid="` (Go's frozen crypto module, FIPS mode off: no 32 MiB entropy buffer in the data section, `docs/research/mem-reclaim.md`). The version is the tag, taken from Git by the Go toolchain; `package.ps1` fails if `go version -m hyperbutler.exe` reports anything else |
+| `hyperbutler.exe` | `CGO_ENABLED=0 go build -trimpath -buildvcs=true -ldflags "-s -w -buildid="`. The version is the tag, taken from Git by the Go toolchain; `package.ps1` fails if `go version -m hyperbutler.exe` reports anything else |
 | `vmlinuz-virt`, `initramfs-stage1.gz`, `system.vhd`, `image.json` | The guest image (ADR 0005 A2b), from the guest-image job. `hyperbutler start` finds them next to `hyperbutler.exe` and checks them against `image.json`. `package.ps1 -ImageFiles` names them |
 | `LICENSE`, `NOTICE` | hyperbutler's own |
 | `THIRD-PARTY/` | License texts of every Go module linked into `hyperbutler.exe` or the guest binaries, of the Go standard library, and of every guest package (from the upstream sources), with an index in `README.txt` |
@@ -146,17 +146,14 @@ met blocks the release. Changing a gate needs an ADR change, not a waiver here.
   fields hyperbutler uses are undocumented.
 - [ ] REQ-MEM-002 (`bench/mem-reclaim`, 12 GB guest) is measured against the release
   candidate and recorded in `docs/research/mem-reclaim.md`, with the engine and VM split
-  the bench prints. 2026-10-31, release configuration (frozen crypto module and the
-  engine's working-set guard): 9 of 9 valid runs passed, 431.5 to 456.5 MiB at +60 s,
-  at most 465.5 MiB from +60 s on, against 476.8 MiB; 4 of them with `-sampler cim`,
-  which provokes the outside memory scan, and the guard trimmed it each time. Run it
+  the bench prints. 2026-10-31 to 11-01, release configuration (the engine's
+  working-set guard): 5 of 5 runs with `-sampler nt` passed (441.8 to 457.3 MiB at
+  +60 s, at most 461.5 MiB from +60 s on, against 476.8 MiB); 2 of 3 with `-sampler cim`,
+  which provokes an outside read of the engine's memory: the read puts the total over the
+  limit for about 4 s until the guard trims, and one trim landed at +60.1 s. Run it
   several times, with both samplers, and record every run, not the best one. Check the
-  engine log for `working set emptied` lines in a run with `-sampler nt` (none so far).
-- [ ] The packaged `hyperbutler.exe` reports `GOFIPS140=v1.0.0-c2097c7c` and
-  `DefaultGODEBUG=fips140=off` (`package.ps1` fails otherwise). Before each release,
-  check whether Go still allocates the FIPS entropy buffer statically (then the pin stays)
-  and run `govulncheck -mode=binary` on the exe: the frozen module receives no fixes
-  (`docs/research/mem-reclaim.md`, section 3 and "what is left").
+  engine log for `working set emptied` lines in the `-sampler nt` runs (none so far) and
+  that the engine logs `partialRule=true` at start.
 
 **ADR 0006 (guest networking)**
 - [ ] `bench/net-perf` against the release candidate: bulk paths not below the ADR's
