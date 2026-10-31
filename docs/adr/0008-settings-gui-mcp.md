@@ -48,6 +48,13 @@ Option 3.
 
 ### GUI shape
 
+- Visual direction (2026-11-01): the friendly, mascot-forward look ("B" of three mockups):
+  - a light blue ground with soft, round white cards and pill tabs;
+  - big numbers and plain, warm copy;
+  - the butler mascot greeting on the home screen.
+  The flat stacked-layers icon stays the app and taskbar icon. The mockups also cover
+  containers and logs, storage, settings with `daemon.json`, troubleshooting, first run and
+  a start failure.
 - Not Electron. The candidates are WebView2 (already part of Windows 11) driven from Go,
   or a native toolkit. A spike measures memory, process count, start time and binary size
   for both before 0.2; the result is added here.
