@@ -55,13 +55,18 @@ git --git-dir="$git_dir" remote add github https://github.com/alpinelinux/aports
 fetch_commit() { # commit
     # A full (not partial) shallow fetch of one commit: about 40 MB, and git archive then
     # needs no lazy blob fetches. Both servers allow fetching a reachable commit by hash.
-    for remote in alpine github; do
-        if git --git-dir="$git_dir" fetch -q --depth 1 "$remote" "$1" 2>/dev/null; then
-            # The object name is the commit hash, so the mirror cannot substitute content.
-            [ "$(git --git-dir="$git_dir" rev-parse FETCH_HEAD)" = "$1" ] || fail "fetched the wrong commit for $1"
-            return 0
-        fi
-        echo "fetch-sources: $remote did not serve $1, trying the next remote" >&2
+    # Both servers sometimes refuse or drop CI clients for a while, so make a few rounds
+    # with a pause before giving up.
+    for round in 1 2 3; do
+        for remote in alpine github; do
+            if git --git-dir="$git_dir" fetch -q --depth 1 "$remote" "$1" 2>"$work/fetch.err"; then
+                # The object name is the commit hash, so the mirror cannot substitute content.
+                [ "$(git --git-dir="$git_dir" rev-parse FETCH_HEAD)" = "$1" ] || fail "fetched the wrong commit for $1"
+                return 0
+            fi
+            echo "fetch-sources: $remote did not serve $1 (round $round): $(tail -n 1 "$work/fetch.err")" >&2
+        done
+        [ "$round" = 3 ] || sleep $((round * 30))
     done
     fail "cannot fetch aports commit $1"
 }
