@@ -10,8 +10,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Higangssh/hyperbutler/internal/broker/proto"
 	"golang.org/x/sys/windows"
+
+	"github.com/Higangssh/hyperbutler/internal/broker/proto"
 )
 
 func currentSID(t *testing.T) string {
@@ -42,14 +43,31 @@ func setDACL(t *testing.T, path, sddl string) {
 	}
 }
 
-// goodDir returns a new directory owned by the current user whose DACL grants only the
-// user, SYSTEM and Administrators.
-func goodDir(t *testing.T) string {
+// newDir creates a new directory owned by the current user. The owner is set explicitly:
+// an elevated administrator's token (as on CI runners) makes BUILTIN\Administrators the
+// default owner of new objects, and the broker requires the caller itself.
+func newDir(t *testing.T) string {
 	t.Helper()
 	dir := filepath.Join(t.TempDir(), "data")
 	if err := os.Mkdir(dir, 0o700); err != nil {
 		t.Fatal(err)
 	}
+	me, err := windows.StringToSid(currentSID(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := windows.SetNamedSecurityInfo(dir, windows.SE_FILE_OBJECT,
+		windows.OWNER_SECURITY_INFORMATION, me, nil, nil, nil); err != nil {
+		t.Fatalf("set owner of %s: %v", dir, err)
+	}
+	return dir
+}
+
+// goodDir returns a new directory owned by the current user whose DACL grants only the
+// user, SYSTEM and Administrators.
+func goodDir(t *testing.T) string {
+	t.Helper()
+	dir := newDir(t)
 	setDACL(t, dir, "D:P(A;OICI;FA;;;"+currentSID(t)+")(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICIIO;FA;;;CO)")
 	return dir
 }
@@ -131,10 +149,7 @@ func TestDataDirWideACL(t *testing.T) {
 		{"NULL DACL", "D:NO_ACCESS_CONTROL", "has a NULL DACL"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			dir := filepath.Join(t.TempDir(), "data")
-			if err := os.Mkdir(dir, 0o700); err != nil {
-				t.Fatal(err)
-			}
+			dir := newDir(t)
 			setDACL(t, dir, tt.dacl)
 			_, err := take(t, openDir(t, dir, false, 0))
 			wantReject(t, err, proto.CodeDataLocationRejected, tt.reason)
@@ -276,6 +291,13 @@ func TestDataDirSynchronousHandleWithPendingIO(t *testing.T) {
 	h := openDir(t, dir, false, 0) // synchronous: no FILE_FLAG_OVERLAPPED
 	started := make(chan struct{})
 	done := make(chan struct{})
+	// Cleanups run last-in first-out, so this one wakes the watcher before openDir's
+	// cleanup closes h: closing a synchronous handle blocks while I/O is pending on it,
+	// so a failing test would otherwise hang instead of reporting.
+	t.Cleanup(func() {
+		_ = os.WriteFile(filepath.Join(dir, "wake"), nil, 0o600)
+		<-done
+	})
 	go func() {
 		defer close(done)
 		buf := make([]byte, 4096)
@@ -300,7 +322,4 @@ func TestDataDirSynchronousHandleWithPendingIO(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("validation blocked behind the caller's pending synchronous I/O")
 	}
-	// Unblock the watcher.
-	_ = os.WriteFile(filepath.Join(dir, "wake"), nil, 0o600)
-	<-done
 }

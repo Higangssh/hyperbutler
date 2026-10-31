@@ -6,6 +6,8 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -68,13 +70,14 @@ func TestCLIFreshInstall(t *testing.T) {
 		t.Fatalf("delete: %d %q %q", code, out, e)
 	}
 	// Starting without guest artifacts fails before anything is spawned, but the first
-	// start's choices are recorded.
-	code, _, e := runCLI(t, "start", "--image-dir", filepath.Join(home, "nope"), "--memory", "2GiB", "--cpus", "3", "--disk-size", "8GiB")
+	// start's choices are recorded. --cpus may not exceed the host's logical CPUs.
+	cpus := min(3, runtime.NumCPU())
+	code, _, e := runCLI(t, "start", "--image-dir", filepath.Join(home, "nope"), "--memory", "2GiB", "--cpus", strconv.Itoa(cpus), "--disk-size", "8GiB")
 	if code != 1 || !strings.Contains(e, "vmlinuz-virt") {
 		t.Fatalf("start without images: %d %q", code, e)
 	}
 	s, err := engine.LoadSettings(engine.Layout{Home: home})
-	if err != nil || s.MemoryMB != 2048 || s.CPUs != 3 || s.DiskSize != 8<<30 || !engine.SamePath(s.DataDir, home) {
+	if err != nil || s.MemoryMB != 2048 || s.CPUs != cpus || s.DiskSize != 8<<30 || !engine.SamePath(s.DataDir, home) {
 		t.Fatalf("settings %+v %v", s, err)
 	}
 }
@@ -113,8 +116,9 @@ func TestCLIDiagSettings(t *testing.T) {
 	}
 	// Regression: a later start's changes were applied to the loaded settings in place,
 	// compared equal to themselves and never saved.
-	runCLI(t, "start", "--memory", "3GiB", "--cpus", "5", "--image-dir", nope)
-	if s := load(); s.MemoryMB != 3072 || s.CPUs != 5 {
+	cpus := min(5, runtime.NumCPU()) // at most the host's logical CPUs
+	runCLI(t, "start", "--memory", "3GiB", "--cpus", strconv.Itoa(cpus), "--image-dir", nope)
+	if s := load(); s.MemoryMB != 3072 || s.CPUs != cpus {
 		t.Fatalf("later --memory/--cpus not saved: %+v", s)
 	}
 	if code, _, e := runCLI(t, "start", "--debug-pipe", `C:\not-a-pipe`, "--memlimit", "off", "--image-dir", nope); code != 1 || !strings.Contains(e, "--debug-pipe") {

@@ -122,6 +122,11 @@ func fuzzReplySeeds() [][]byte {
 // so nothing should scale with an attacker-chosen length.
 func checkDecodeAllocs(t *testing.T, name string, b []byte, max float64, decode func([]byte)) {
 	t.Helper()
+	if raceEnabled {
+		// The race detector adds allocations of its own; the non-race runs (plain go test
+		// and the fuzz job) enforce the bound.
+		return
+	}
 	if n := testing.AllocsPerRun(2, func() { decode(b) }); n > max {
 		t.Fatalf("%s(%x) allocates %v times, want <= %v", name, b, n, max)
 	}
@@ -285,11 +290,11 @@ func FuzzReadFrame(f *testing.F) {
 				}
 				rest := len(in) - off
 				switch {
-				case err == io.EOF:
+				case err == io.EOF: //nolint:errorlint // ReadFrame's contract is to return io.EOF and io.ErrUnexpectedEOF themselves, unwrapped, like io.ReadFull
 					if rest != 0 || used != 0 {
 						t.Fatalf("frame %d: io.EOF with %d bytes left, %d consumed", i, rest, used)
 					}
-				case err == io.ErrUnexpectedEOF:
+				case err == io.ErrUnexpectedEOF: //nolint:errorlint // ReadFrame's contract is to return io.EOF and io.ErrUnexpectedEOF themselves, unwrapped, like io.ReadFull
 					if used != rest || rest == 0 {
 						t.Fatalf("frame %d: unexpected EOF after %d of %d remaining bytes", i, used, rest)
 					}
