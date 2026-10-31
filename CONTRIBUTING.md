@@ -55,10 +55,12 @@ under the project's license.
   - `go vet ./...` and a `gofmt -l` check, plus `go vet` cross-compiled for windows/arm64,
     linux/amd64, and linux/arm64 (platforms with no packages yet are skipped)
   - `go test -race ./...` (this also runs every fuzz seed corpus as a regular test)
-  - fuzz smoke: every `Fuzz*` target in every package is fuzzed for 30 seconds. Crashing
-    inputs are uploaded in the `fuzz-crashers` artifact (with the rest of `testdata/fuzz/`).
-    Commit the crasher under `testdata/fuzz/` with the fix. When you add a Fuzz target,
-    raise `FUZZ_MIN_TARGETS` in `ci.yml` so the job fails if a target goes missing.
+  - fuzz smoke: every `Fuzz*` target in every package is fuzzed for 10 seconds
+    (`scripts/ci/fuzz-all.ps1`). `fuzz-weekly.yml` runs the same script for 1 minute per
+    target once a week, or for any time you pass when started by hand. Crashing inputs are
+    uploaded in the `fuzz-crashers` artifact (with the rest of `testdata/fuzz/`). Commit
+    the crasher under `testdata/fuzz/` with the fix. When you add a Fuzz target, raise
+    `FUZZ_MIN_TARGETS` in both workflows so the job fails if a target goes missing.
   - `golangci-lint` with the v2 config in `.golangci.yml`, including its gofmt/goimports
     formatter check
   - `govulncheck ./...`

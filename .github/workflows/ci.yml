@@ -126,10 +126,12 @@ jobs:
       strict: true
       with-sources: ${{ github.event_name != 'pull_request' }}
 
+  # 76 targets at 10 s each keeps this under about 20 minutes. Longer runs happen once a
+  # week in fuzz-weekly.yml.
   fuzz:
-    name: fuzz smoke (30s per target)
+    name: fuzz smoke (10s per target)
     runs-on: windows-latest
-    timeout-minutes: 45
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -145,50 +147,10 @@ jobs:
 
       - name: Run every Fuzz target
         env:
-          FUZZTIME: 30s
-          # Fail if fewer targets than this are found, so a renamed or mis-tagged target
-          # can't make the job pass silently. Raise it whenever a Fuzz target is added.
-          FUZZ_MIN_TARGETS: "32"
-        # `go test -fuzz` accepts one target in one package per run, so discover them
-        # first. Seed corpora already run as plain tests in the test job.
-        run: |
-          $ErrorActionPreference = 'Stop'
-
-          $pkgs = @(go list ./...)
-          if ($LASTEXITCODE -ne 0) { throw "go list ./... failed (exit $LASTEXITCODE)" }
-          if ($pkgs.Count -eq 0) { throw 'go list ./... matched no packages' }
-
-          $ran = 0
-          $failed = @()
-          foreach ($pkg in $pkgs) {
-            # -list prints matching test names one per line, then an "ok" summary line.
-            # A build failure stops the job instead of looking like "no targets".
-            $out = @(go test -list '^Fuzz' $pkg)
-            if ($LASTEXITCODE -ne 0) { $out | Write-Host; throw "go test -list failed for $pkg" }
-            $targets = @($out | Where-Object { $_ -match '^Fuzz\w*$' })
-            foreach ($target in $targets) {
-              Write-Host "::group::$pkg $target"
-              go test -run '^$' -fuzz "^$target`$" -fuzztime $env:FUZZTIME $pkg
-              $rc = $LASTEXITCODE
-              Write-Host '::endgroup::'
-              $ran++
-              if ($rc -ne 0) {
-                Write-Host "::error title=fuzz smoke::$target in $pkg failed (exit $rc)"
-                $failed += "$pkg $target"
-              }
-            }
-          }
-
-          if ($ran -lt [int]$env:FUZZ_MIN_TARGETS) {
-            Write-Host "::error title=fuzz smoke::Found $ran Fuzz target(s), expected at least $env:FUZZ_MIN_TARGETS."
-            exit 1
-          }
-          if ($ran -eq 0) {
-            Write-Host "::warning title=fuzz smoke::No Fuzz targets found in $($pkgs.Count) package(s); nothing was fuzzed."
-            exit 0
-          }
-          Write-Host "Fuzzed $ran target(s) across $($pkgs.Count) package(s); $($failed.Count) failed."
-          if ($failed.Count -gt 0) { exit 1 }
+          FUZZTIME: 10s
+          # Raise it whenever a Fuzz target is added (also in fuzz-weekly.yml).
+          FUZZ_MIN_TARGETS: "76"
+        run: ./scripts/ci/fuzz-all.ps1
 
       - name: Upload crashing inputs
         if: failure()
