@@ -20,3 +20,11 @@ tun
 # Bind mounts from Windows paths (ADR 0007): hyperbutlerd's share relay mounts the host's
 # FUSE server at /mnt/hyperbutler.
 fuse
+# nf_tables and the NAT pieces iptables-nft uses for dockerd's embedded DNS rules (DNAT
+# and SNAT on udp/tcp 53 in each container's network namespace).
+nf_tables
+nft_compat
+nft_chain_nat
+nft_nat
+xt_nat
+xt_tcpudp

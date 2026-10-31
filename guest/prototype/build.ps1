@@ -130,7 +130,7 @@ foreach ($l in Get-Content (Join-Path $Out 'guest-inputs.tsv')) {
 if (@(Get-Content (Join-Path $Out 'guest-inputs.tsv')).Count -ne $src.Count) { throw 'guest-inputs.tsv does not list every input' }
 
 # --- 2. unpack ------------------------------------------------------------------------
-function Expand-Fresh([string]$archive, [string]$dest, [string[]]$skip = @()) {
+function Expand-Fresh([string]$archive, [string]$dest, [string[]]$skip = @(), [string[]]$only = @()) {
     # The cache is the user's own directory, but check the pin once more so the bytes
     # unpacked are the ones the container verified, not a later replacement.
     if ((Get-FileHash -Algorithm SHA256 $archive).Hash.ToLowerInvariant() -ne $pin[$archive]) {
@@ -144,6 +144,7 @@ function Expand-Fresh([string]$archive, [string]$dest, [string[]]$skip = @()) {
     # A new upstream symlink shows up as a tar error here; add it to the list.
     $targs = @('-xf', $archive, '-C', $dest)
     foreach ($s in $skip) { $targs += '--exclude', $s }
+    $targs += $only   # member names: extract just these
     $ErrorActionPreference = 'Continue'   # bsdtar warns on stderr about apk PAX headers
     & $tar @targs 2>&1 | ForEach-Object { "$_" } | Where-Object { $_ -notmatch 'Ignoring unknown extended header' } | ForEach-Object { Write-Host "tar: $_" }
     if ($LASTEXITCODE -ne 0) { throw "tar failed on $archive" }
@@ -158,6 +159,12 @@ Expand-Fresh $src['containerd'] "$x\containerd"
 Expand-Fresh $src['runc'] "$x\runc"
 Expand-Fresh $src['libseccomp'] "$x\libseccomp" 'usr/lib/libseccomp.so.2'
 Expand-Fresh $src['tini-static'] "$x\tini-static"
+# iptables: only the files system.spec names. The package's command names and extension
+# aliases are symlinks, and nine extension pairs differ only in case, which NTFS cannot hold.
+Expand-Fresh $src['iptables'] "$x\iptables" @() @('usr/sbin/xtables-nft-multi', 'usr/lib/xtables/libxt_standard.so', 'usr/lib/xtables/libxt_tcp.so', 'usr/lib/xtables/libxt_udp.so', 'usr/lib/xtables/libxt_NAT.so')
+Expand-Fresh $src['libxtables'] "$x\libxtables" 'usr/lib/libxtables.so.12'
+Expand-Fresh $src['libnftnl'] "$x\libnftnl" 'usr/lib/libnftnl.so.11'
+Expand-Fresh $src['libmnl'] "$x\libmnl" 'usr/lib/libmnl.so.0'
 Expand-Fresh $src['ca-certificates-bundle'] "$x\ca-certificates-bundle" 'etc/ssl/cert.pem', 'etc/ssl1.1'
 # e2fsprogs and its libraries share one tree. The skipped entries are the soname and
 # fsck/mkfs alias symlinks; the spec installs the real files under their sonames.
@@ -260,6 +267,7 @@ $cpio = Join-Path $Cache 'stage\system.cpio'
 & $mkinitramfs -spec (Join-Path $proto 'system.spec') -mtime 0 -level 0 -o $cpio `
     -D "PROTO=$proto" -D "BUSYBOX=$x\busybox-static" -D "MODULES=$sysStage" -D "GUESTBIN=$guestBin" `
     -D "DOCKERENGINE=$x\docker-engine" -D "CONTAINERD=$x\containerd" -D "RUNC=$x\runc" -D "TINI=$x\tini-static" -D "SECCOMP=$x\libseccomp" `
+    -D "IPTABLES=$x\iptables" -D "LIBXTABLES=$x\libxtables" -D "LIBNFTNL=$x\libnftnl" -D "LIBMNL=$x\libmnl" `
     -D "CACERTS=$x\ca-certificates-bundle" -D "E2FS=$e2fs" -D "MUSL=$x\musl"
 if ($LASTEXITCODE -ne 0) { throw 'mkinitramfs (system) failed' }
 $h = (Get-FileHash -Algorithm SHA256 $cpio).Hash.ToLowerInvariant()

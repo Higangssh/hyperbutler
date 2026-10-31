@@ -52,7 +52,7 @@ command -v mkfs.erofs >/dev/null || fail "mkfs.erofs not found (ci-entry.sh inst
 expand "$(input linux-virt)" "$x/linux-virt"
 expand "$(input busybox-static)" "$x/busybox-static"
 expand "$(input ca-certificates-bundle)" "$x/ca-certificates-bundle"
-for n in docker-engine containerd runc libseccomp tini-static; do
+for n in docker-engine containerd runc libseccomp tini-static iptables libxtables libnftnl libmnl; do
     expand "$(input "$n")" "$x/$n"
 done
 e2fs="$x/e2fsprogs"
@@ -151,6 +151,7 @@ cpio="$stage/system.cpio"
     -D "PROTO=$proto" -D "BUSYBOX=$x/busybox-static" -D "MODULES=$stage/modules" -D "GUESTBIN=$guestbin" \
     -D "DOCKERENGINE=$x/docker-engine" -D "CONTAINERD=$x/containerd" -D "RUNC=$x/runc" \
     -D "TINI=$x/tini-static" -D "SECCOMP=$x/libseccomp" \
+    -D "IPTABLES=$x/iptables" -D "LIBXTABLES=$x/libxtables" -D "LIBNFTNL=$x/libnftnl" -D "LIBMNL=$x/libmnl" \
     -D "CACERTS=$x/ca-certificates-bundle" -D "E2FS=$e2fs" -D "MUSL=$x/musl"
 # The erofs UUID comes from the cpio's SHA-256, formatted like build.ps1 does.
 h=$(sha256sum "$cpio" | cut -c1-64)
