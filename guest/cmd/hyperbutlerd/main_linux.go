@@ -13,6 +13,9 @@
 //     so free page reporting can give the memory back to the host
 //     (guest/internal/policy.Cache).
 //
+// With -daemon-config it installs the host's daemon.json there (REQ-UX-007) and restarts
+// dockerd on request, through the init (see dockerdConfig).
+//
 // With -share-port it also keeps the host's bind-mount file system (ADR 0007) mounted
 // at -share-mount: a FUSE relay over AF_VSOCK to the host's share server, redialled with
 // a bounded backoff while the host is not listening. SIGTERM unmounts it and exits.
@@ -31,7 +34,9 @@ import (
 	"log"
 	"math"
 	"os"
+	"os/exec"
 	"os/signal"
+	"path/filepath"
 	"strconv"
 	"sync"
 	"time"
@@ -65,6 +70,8 @@ type options struct {
 	sharePort              uint
 	shareMount             string
 	shareQueues            int
+	daemonConfig           string
+	dockerdBin             string
 }
 
 func main() {
@@ -101,12 +108,15 @@ func main() {
 	flag.UintVar(&o.sharePort, "share-port", 0, "AF_VSOCK port of the host's bind-mount share server (0 = no shares)")
 	flag.StringVar(&o.shareMount, "share-mount", "/mnt/hyperbutler", "where the host's shares are mounted")
 	flag.IntVar(&o.shareQueues, "share-queues", 4, "connections to the share server (1 to 8)")
+	flag.StringVar(&o.daemonConfig, "daemon-config", "", "install the host's daemon.json at this path and restart dockerd on request (the init must support it; empty = off)")
+	flag.StringVar(&o.dockerdBin, "dockerd", "/usr/bin/dockerd", "dockerd, for --validate")
 	flag.IntVar(&o.shutdownPID, "shutdown-pid", 1, "on a host shutdown request, send SIGTERM to this process (the init, which stops dockerd and powers off); 0 disables the feature")
 	flag.Parse()
 	if flag.NArg() != 0 || o.port > math.MaxUint32-1 || (o.file != "") != (o.dev != "") ||
 		((o.file != "" || !o.trimOff) && o.mount == "") || o.interval <= 0 ||
 		(o.cacheMethod != "reclaim" && o.cacheMethod != "drop") ||
-		o.sharePort > math.MaxUint32-1 || o.shareQueues < 1 || o.shareQueues > 8 || o.shareMount == "" || o.shareMount[0] != '/' {
+		o.sharePort > math.MaxUint32-1 || o.shareQueues < 1 || o.shareQueues > 8 || o.shareMount == "" || o.shareMount[0] != '/' ||
+		(o.daemonConfig != "" && (o.daemonConfig[0] != '/' || o.shutdownPID <= 0)) {
 		flag.Usage()
 		os.Exit(2)
 	}
@@ -143,6 +153,7 @@ type daemon struct {
 	trimmer  *fsguard.FSTrimmer
 	guard    *fsguard.Guard
 	box      *mailbox // budget and lost events for the guard loop
+	dcfg     *dockerdConfig
 
 	mu         sync.Mutex
 	snap       fsguard.Result
@@ -188,6 +199,36 @@ func newDaemon(o options) (*daemon, error) {
 	}
 	if !o.cacheOff {
 		d.features |= guestctl.FeatureCacheTrim
+	}
+	if o.daemonConfig != "" {
+		dir := filepath.Dir(o.daemonConfig)
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return nil, err
+		}
+		pid := o.shutdownPID
+		bin := o.dockerdBin
+		d.dcfg = &dockerdConfig{
+			path:  o.daemonConfig,
+			ready: filepath.Join(dir, "daemon.ready"),
+			gen:   filepath.Join(dir, "dockerd.gen"),
+			hold:  filepath.Join(dir, "dockerd.hold"),
+			sock:  "/run/docker.sock",
+			validate: func(ctx context.Context, path string) (string, error) {
+				out, err := exec.CommandContext(ctx, bin, "--validate", "--config-file="+path).CombinedOutput()
+				if err != nil {
+					return lastLine(out), err
+				}
+				return "", nil
+			},
+			restart:   func() error { return unix.Kill(pid, unix.SIGHUP) },
+			alive:     func(p int) bool { return unix.Kill(p, 0) == nil },
+			upTimeout: 90 * time.Second,
+			pollEvery: 200 * time.Millisecond,
+		}
+		// A hold left by an earlier hyperbutlerd that died mid-apply would keep the init
+		// waiting for a restart nobody asks for.
+		_ = os.Remove(d.dcfg.hold)
+		d.features |= guestctl.FeatureDaemonConfig
 	}
 	return d, nil
 }
@@ -478,6 +519,11 @@ func (h *connHandler) Status() guestctl.Status       { return h.d.status() }
 func (h *connHandler) Shutdown() error {
 	log.Printf("host requested shutdown; signalling pid %d", h.d.o.shutdownPID)
 	return unix.Kill(h.d.o.shutdownPID, unix.SIGTERM)
+}
+
+// ApplyDaemonConfig installs the host's daemon.json and, if asked, restarts dockerd.
+func (h *connHandler) ApplyDaemonConfig(ctx context.Context, data []byte, restart bool) guestctl.DaemonResult {
+	return h.d.dcfg.apply(ctx, data, restart)
 }
 
 func (h *connHandler) Trim(context.Context) guestctl.TrimResult {
