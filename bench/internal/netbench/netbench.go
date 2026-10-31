@@ -294,6 +294,11 @@ func ConnsPerSecond(ctx context.Context, addr string, d time.Duration, par int) 
 	var first atomic.Pointer[string]
 	ctx, cancel := context.WithTimeout(ctx, d)
 	defer cancel()
+	// The dialer times out on ctx's deadline by the clock, which can be before ctx's own
+	// timer marks it done (on a loaded machine, by tens of milliseconds). Check the clock
+	// too, or the loop spins on dials that fail at once and counts each as an error.
+	deadline, _ := ctx.Deadline()
+	over := func() bool { return ctx.Err() != nil || !time.Now().Before(deadline) }
 	var wg sync.WaitGroup
 	t0 := time.Now()
 	for i := 0; i < par; i++ {
@@ -301,10 +306,10 @@ func ConnsPerSecond(ctx context.Context, addr string, d time.Duration, par int) 
 		go func() {
 			defer wg.Done()
 			b := []byte{1}
-			for ctx.Err() == nil {
+			for !over() {
 				c, err := dial(ctx, addr)
 				if err != nil {
-					if ctx.Err() == nil {
+					if !over() {
 						bad.Add(1)
 						msg := err.Error()
 						first.CompareAndSwap(nil, &msg)
