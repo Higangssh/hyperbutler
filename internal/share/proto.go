@@ -97,6 +97,7 @@ const (
 	initReaddirplusAuto = 1 << 14
 	initAsyncDIO        = 1 << 15
 	initWritebackCache  = 1 << 16
+	initNoOpenSupport   = 1 << 17 // the kernel takes ENOSYS from OPEN as "no opens needed"
 	initParallelDirops  = 1 << 18
 	initMaxPages        = 1 << 22
 	initCacheSymlinks   = 1 << 23

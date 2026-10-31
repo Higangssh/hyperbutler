@@ -184,6 +184,13 @@ func FuzzDispatch(f *testing.F) {
 	seed(opSymlink, 2, (&wbuf{}).str("l").str("/etc/passwd").b)
 	seed(opHello, 0, (&wbuf{}).u32(7).u32(0).b)
 	seed(opMknod, 2, (&wbuf{}).u32(sIFREG|0o644).u32(0).u32(0).u32(0).str("m").b)
+	// Opens without OPEN (openfile.go): requests with fh 0.
+	seed(opRead, 3, (&wbuf{}).u64(0).u64(0).u32(4096).u32(0).u64(0).u32(0).u32(0).b)
+	seed(opWrite, 3, (&wbuf{}).u64(0).u64(2).u32(1).u32(0).u64(0).u32(0o2001).u32(0).raw([]byte("z")).b)
+	seed(opFsync, 3, (&wbuf{}).u64(0).u32(0).u32(0).b)
+	seed(opFlush, 3, (&wbuf{}).u64(0).u32(0).u32(0).u64(0).b)
+	seed(opUnlink, 2, (&wbuf{}).str("f").b)
+	seed(opOpen, 3, (&wbuf{}).u32(oWRONLY|oTRUNC).u32(0).b)
 	f.Fuzz(func(t *testing.T, frame []byte) {
 		s := NewServer(Options{MaxNodes: 256, MaxHandles: 16, NoWatch: true})
 		s.AddShare(&Share{Name: "src", FS: newMemFS()})
@@ -215,6 +222,10 @@ func FuzzDispatch(f *testing.F) {
 		}
 		s.HostChanged(HostEvent{Share: "src", Path: []string{"d", "f"}, Kind: Modified})
 		s.HostOverflow("src")
+		s.Close()
+		if n, p := s.CachedFiles(); n != 0 || p != 0 {
+			t.Fatalf("%d host files (%d pinned) left open after Close", n, p)
+		}
 	})
 }
 

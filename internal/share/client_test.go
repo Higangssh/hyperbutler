@@ -134,12 +134,35 @@ func (c *tclient) mkdir(parent uint64, name string) (int, entry) {
 	return 0, decodeEntry(b)
 }
 
+// open opens like the kernel: after OPEN answers ENOSYS (openfile.go) there is no
+// handle (fh 0) and O_TRUNC is a SETATTR of the size.
 func (c *tclient) open(node uint64, flags uint32) (int, uint64) {
+	c.t.Helper()
 	e, b := c.do(opOpen, node, (&wbuf{}).u32(flags).u32(0).b)
+	if e == int(ENOSYS) {
+		if flags&oTRUNC != 0 {
+			return c.truncate(node, 0), 0
+		}
+		return 0, 0
+	}
 	if e != 0 {
 		return e, 0
 	}
 	return 0, binary.LittleEndian.Uint64(b)
+}
+
+// truncate sends a path SETATTR of the size (no fh).
+func (c *tclient) truncate(node, size uint64) int {
+	c.t.Helper()
+	sa := (&wbuf{}).u32(fattrSize).u32(0).u64(0).u64(size).u64(0).u64(0).u64(0).u64(0).u32(0).u32(0).u32(0).u32(0).u32(0).u32(0).u32(0).u32(0).b
+	e, _ := c.do(opSetattr, node, sa)
+	return e
+}
+
+func (c *tclient) fsync(node, fh uint64) int {
+	c.t.Helper()
+	e, _ := c.do(opFsync, node, (&wbuf{}).u64(fh).u32(0).u32(0).b)
+	return e
 }
 
 func (c *tclient) write(node, fh, off uint64, data []byte) int {
@@ -154,6 +177,9 @@ func (c *tclient) read(node, fh, off uint64, size uint32) (int, []byte) {
 }
 
 func (c *tclient) release(node, fh uint64) {
+	if fh == 0 {
+		return // no OPEN, no RELEASE
+	}
 	c.do(opRelease, node, (&wbuf{}).u64(fh).u32(0).u32(0).u64(0).b)
 }
 

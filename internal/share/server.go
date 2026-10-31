@@ -37,6 +37,15 @@ type Options struct {
 	Trace func(opcode uint32, d time.Duration)
 	// NoWatch turns off host change notifications (for measuring without them).
 	NoWatch bool
+	// RealOpen answers OPEN with a host handle per guest open, as before
+	// FUSE_NO_OPEN_SUPPORT was used (openfile.go): a round trip per open(2). NoCache and
+	// Writeback imply it.
+	RealOpen bool
+	// FileIdle is how long a host file opened for a guest READ or WRITE without a
+	// handle stays open after its last use [100 ms]; MaxFiles bounds how many are kept
+	// [256] (openfile.go).
+	FileIdle time.Duration
+	MaxFiles int
 	// Logger receives protocol errors [discarded].
 	Logger *slog.Logger
 }
@@ -63,6 +72,12 @@ func (o *Options) defaults() {
 	}
 	if o.MaxNodes <= 0 {
 		o.MaxNodes = 1 << 20
+	}
+	if o.FileIdle <= 0 {
+		o.FileIdle = 100 * time.Millisecond
+	}
+	if o.MaxFiles <= 0 {
+		o.MaxFiles = 256
 	}
 	if o.Logger == nil {
 		o.Logger = slog.New(slog.DiscardHandler)
@@ -99,14 +114,16 @@ type node struct {
 	dir     bool
 	orphan  bool      // unlinked or replaced; its path is gone
 	touched time.Time // last change made by the guest itself (inject.go)
+	born    time.Time // made by a reply the guest kernel may not have applied yet (inject.go)
 	// inner is the last change the guest made inside this directory: the host then
 	// reports the directory itself as modified (its times changed), which is an echo
 	// too (inject.go).
 	inner time.Time
 	// list is a directory's listing from its last READDIR at offset 0, for the
 	// READDIRs that continue it (nodeListing). Counted in Server.dirEntries.
-	list   []DirEntry
-	listed bool
+	list    []DirEntry
+	listed  bool
+	listSeq uint64 // host change sequence before list was read (racedLocked)
 }
 
 type handle struct {
@@ -148,7 +165,7 @@ func (s *Server) closeLocked(hd *handle) {
 // acquire returns the file of fh with a reference held; call done when finished.
 func (s *Server) acquire(fh uint64) (*handle, func(), error) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	defer s.unlock()
 	hd := s.handles[fh]
 	if hd == nil || hd.isDir || (hd.f == nil && !hd.inject) {
 		return nil, nil, EBADF
@@ -160,7 +177,7 @@ func (s *Server) acquire(fh uint64) (*handle, func(), error) {
 		if hd.closed && hd.refs == 0 && hd.f != nil {
 			hd.f.Close()
 		}
-		s.mu.Unlock()
+		s.unlock()
 	}, nil
 }
 
@@ -178,6 +195,24 @@ type Server struct {
 	negative map[nodeKey]time.Time // names answered "missing" (for full invalidation)
 	recent   map[nodeKey]time.Time // names the guest itself changed (echo suppression)
 	watchers map[string]Closer
+
+	// Host files for guest opens without handles (openfile.go), by node.
+	files  map[uint64]*nodeFile
+	pins   int // entries of files that are pinned
+	sweep  *time.Timer
+	closeq []File // closed by unlock, after s.mu is released
+
+	// Invalidations sent again later (invalidateLater), one batch per delay.
+	lmu      sync.Mutex
+	later    [2]laterBatch
+	sweepGen uint64
+	noOpen   atomic.Bool // this session's kernel sends no OPEN for files
+
+	// Host changes by name, so a LOOKUP or listing that read the host before a change
+	// was reported does not hand the guest attributes to cache (see raced).
+	hostSeq      uint64
+	changed      map[nodeKey]change
+	changedFloor uint64 // changes up to this sequence were forgotten
 
 	// The live connection, for notifications.
 	cmu        sync.Mutex
@@ -200,12 +235,15 @@ func NewServer(opt Options) *Server {
 		recent:   map[nodeKey]time.Time{},
 		pending:  map[nodeKey]*injection{},
 		watchers: map[string]Closer{},
+		files:    map[uint64]*nodeFile{},
+		changed:  map[nodeKey]change{},
 	}
 	s.resetNodes()
 	return s
 }
 
 func (s *Server) resetNodes() {
+	s.dropAllFilesLocked(nil, true)
 	s.nodes = map[uint64]*node{rootNode: {id: rootNode, dir: true, nlookup: 1, ino: rootNode}}
 	s.index = map[nodeKey]uint64{}
 	for _, h := range s.handles {
@@ -227,11 +265,11 @@ func (s *Server) AddShare(sh *Share) error {
 	}
 	s.mu.Lock()
 	if _, ok := s.shares[sh.Name]; ok {
-		s.mu.Unlock()
+		s.unlock()
 		return fmt.Errorf("share: %q is already shared", sh.Name)
 	}
 	s.shares[sh.Name] = sh
-	s.mu.Unlock()
+	s.unlock()
 	if w, ok := sh.FS.(watchable); ok && !s.opt.NoWatch {
 		name := sh.Name
 		c, err := w.Watch(func(k EventKind, p, np []string) {
@@ -242,7 +280,7 @@ func (s *Server) AddShare(sh *Share) error {
 		} else {
 			s.mu.Lock()
 			s.watchers[name] = c
-			s.mu.Unlock()
+			s.unlock()
 		}
 	}
 	s.notify(notifyInvalEntryMsg(rootNode, sh.Name))
@@ -256,7 +294,7 @@ func (s *Server) RemoveShare(name string) error {
 	s.mu.Lock()
 	w := s.watchers[name]
 	delete(s.watchers, name)
-	s.mu.Unlock()
+	s.unlock()
 	if w != nil {
 		w.Close()
 	}
@@ -264,6 +302,7 @@ func (s *Server) RemoveShare(name string) error {
 	sh, ok := s.shares[name]
 	if ok {
 		delete(s.shares, name)
+		s.dropAllFilesLocked(sh, true)
 		for _, n := range s.nodes {
 			if n.share == sh {
 				n.orphan = true
@@ -279,7 +318,7 @@ func (s *Server) RemoveShare(name string) error {
 			}
 		}
 	}
-	s.mu.Unlock()
+	s.unlock()
 	if !ok {
 		return fmt.Errorf("share: %q is not shared", name)
 	}
@@ -315,7 +354,7 @@ func (s *Server) Mounted() bool {
 // Shares returns the registered share names.
 func (s *Server) Shares() []string {
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	defer s.unlock()
 	var out []string
 	for n := range s.shares {
 		out = append(out, n)
@@ -442,7 +481,7 @@ func (s *Server) Serve(rw io.ReadWriter) error {
 		// remount. Only the current session's end resets the table.
 		s.mu.Lock()
 		s.resetNodes()
-		s.mu.Unlock()
+		s.unlock()
 		c.notes = make(chan []byte, maxPendingNotes)
 		c.done = make(chan struct{})
 		go c.noteWriter()
@@ -462,7 +501,7 @@ func (s *Server) Serve(rw io.ReadWriter) error {
 			if current {
 				s.mu.Lock()
 				s.resetNodes()
-				s.mu.Unlock()
+				s.unlock()
 			}
 		}()
 	} else {
@@ -707,7 +746,7 @@ func (s *Server) dispatch(r *request) []byte {
 			// FuzzDispatch).
 			return fail(EINVAL)
 		}
-		f, done, err := s.file(in.Fh)
+		f, done, err := s.fileFor(h, in.Fh, false)
 		if err != nil {
 			return fail(err)
 		}
@@ -729,7 +768,7 @@ func (s *Server) dispatch(r *request) []byte {
 		if int64(in.Offset) < 0 {
 			return fail(EFBIG)
 		}
-		f, done, err := s.writableFile(in.Fh)
+		f, done, err := s.fileFor(h, in.Fh, true)
 		if err != nil {
 			return fail(err)
 		}
@@ -769,11 +808,25 @@ func (s *Server) dispatch(r *request) []byte {
 		s.release(fh)
 		return newReply(u, 0).finish()
 	case opFlush:
+		if s.noOpen.Load() {
+			// Without OPEN, files have no FOPEN_NOFLUSH, so every close(2) would wait
+			// for a FLUSH; ENOSYS turns them off for the connection.
+			return errReply(u, int(ENOSYS))
+		}
 		return newReply(u, 0).finish()
 	case opFsync:
 		fh, err := parseFh(r.body)
 		if err != nil {
 			return fail(EINVAL)
+		}
+		if fh == 0 && s.noOpen.Load() {
+			if s.isInjector(h) {
+				return newReply(u, 0).finish()
+			}
+			if err := s.nodeFileSync(h.NodeID); err != nil {
+				return fail(err)
+			}
+			return newReply(u, 0).finish()
 		}
 		f, done, err := s.file(fh)
 		if err != nil {
@@ -840,6 +893,13 @@ func (s *Server) doInit(r *request) []byte {
 	if s.opt.NoCache {
 		want &^= initCacheSymlinks
 	}
+	// No OPEN round trips (openfile.go). O_TRUNC then has to come as SETATTR: with
+	// FUSE_ATOMIC_O_TRUNC the kernel would leave truncating to an OPEN it never sends.
+	noOpen := !s.opt.RealOpen && !s.opt.NoCache && !s.opt.Writeback && in.Flags&initNoOpenSupport != 0
+	if noOpen {
+		want &^= initAtomicOTrunc
+	}
+	s.noOpen.Store(noOpen)
 	w := newReply(r.h.Unique, 0)
 	w.u32(kernelMajor)
 	w.u32(min(in.Minor, kernelMinor))
@@ -865,7 +925,7 @@ const EPROTO Errno = 71
 // pathOf returns the share-relative path of a node.
 func (s *Server) pathOf(id uint64) ([]string, *Share, error) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	defer s.unlock()
 	return s.pathLocked(id)
 }
 
@@ -907,11 +967,14 @@ func (s *Server) childLocked(parent uint64, name string, sh *Share, a *Attr) (*n
 		// Replaced on the host by a different file: the old node becomes an orphan.
 		n.orphan = true
 		delete(s.index, k)
+		if e := s.files[id]; e != nil && !e.pinned {
+			s.dropFileLocked(e)
+		}
 	}
 	if len(s.nodes) >= s.opt.MaxNodes {
 		return nil, ENFILE
 	}
-	n := &node{id: s.nextNode, parent: parent, name: name, share: sh, nlookup: 1, ino: a.Ino, dir: a.isDir()}
+	n := &node{id: s.nextNode, parent: parent, name: name, share: sh, nlookup: 1, ino: a.Ino, dir: a.isDir(), born: time.Now()}
 	s.nextNode++
 	s.nodes[n.id] = n
 	s.index[k] = n.id
@@ -921,13 +984,14 @@ func (s *Server) childLocked(parent uint64, name string, sh *Share, a *Attr) (*n
 
 func (s *Server) forget(id, n uint64) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	defer s.unlock()
 	nd := s.nodes[id]
 	if nd == nil || id == rootNode {
 		return
 	}
 	if n >= nd.nlookup {
 		s.dropListLocked(nd)
+		s.dropNodeFileLocked(id) // also ends a pin: no process has the file open
 		delete(s.nodes, id)
 		if !nd.orphan && s.index[nodeKey{nd.parent, nd.name}] == id {
 			delete(s.index, nodeKey{nd.parent, nd.name})
@@ -1009,7 +1073,7 @@ func (s *Server) doLookup(h *inHeader, name string) []byte {
 	if h.NodeID == rootNode {
 		s.mu.Lock()
 		sh := s.shares[name]
-		s.mu.Unlock()
+		s.unlock()
 		if sh == nil {
 			return errReply(u, int(ENOENT))
 		}
@@ -1026,7 +1090,7 @@ func (s *Server) doLookup(h *inHeader, name string) []byte {
 		s.fixAttr(&a)
 		s.mu.Lock()
 		n, err := s.childLocked(rootNode, name, sh, &a)
-		s.mu.Unlock()
+		s.unlock()
 		if err != nil {
 			return errReply(u, toErrno(err))
 		}
@@ -1047,24 +1111,31 @@ func (s *Server) lookupBody(h *inHeader, name string) []byte {
 		err = ENOTDIR
 	}
 	isShareRoot := err == nil && len(parent) == 0
-	s.mu.Unlock()
+	since := s.hostSeq
+	s.unlock()
 	if err != nil {
 		return errReply(u, toErrno(err))
 	}
 	if !allowed(sh, isShareRoot, name) {
 		return errReply(u, int(ENOENT))
 	}
+	k := nodeKey{h.NodeID, name}
 	path := append(parent, name)
 	a, err := sh.FS.Lstat(path)
 	if err != nil {
 		if errors.Is(err, ENOENT) && s.opt.NegTTL > 0 {
 			s.mu.Lock()
-			if len(s.negative) < s.opt.MaxNodes {
-				s.negative[nodeKey{h.NodeID, name}] = time.Now()
+			raced := s.racedLocked(k, since)
+			if len(s.negative) < s.opt.MaxNodes && !raced {
+				s.negative[k] = time.Now()
 			}
-			s.mu.Unlock()
+			s.unlock()
+			ttl := s.ttl(s.opt.NegTTL)
+			if raced {
+				ttl = 0 // created on the host meanwhile
+			}
 			w := newReply(u, 0)
-			w.entryOut(0, 0, s.ttl(s.opt.NegTTL), 0, &Attr{})
+			w.entryOut(0, 0, ttl, 0, &Attr{})
 			return w.finish()
 		}
 		return errReply(u, toErrno(err))
@@ -1075,9 +1146,16 @@ func (s *Server) lookupBody(h *inHeader, name string) []byte {
 	s.fixAttr(&a)
 	s.mu.Lock()
 	n, err := s.childLocked(h.NodeID, name, sh, &a)
-	s.mu.Unlock()
+	raced := s.racedLocked(k, since)
+	s.unlock()
 	if err != nil {
 		return errReply(u, toErrno(err))
+	}
+	if raced {
+		// Changed on the host while it was read: let the guest ask again.
+		w := newReply(u, 0)
+		w.entryOut(n.id, 0, 0, 0, &a)
+		return w.finish()
 	}
 	return s.entryReply(u, n, &a)
 }
@@ -1095,7 +1173,7 @@ func (s *Server) parentFor(id uint64, name string) ([]string, *Share, error) {
 		// through something that is not a directory to it (such as a junction).
 		err = ENOTDIR
 	}
-	s.mu.Unlock()
+	s.unlock()
 	if err != nil {
 		return nil, nil, err
 	}
@@ -1130,7 +1208,7 @@ func (s *Server) doCreateNode(h *inHeader, name string, mk func(*Share, []string
 	if n != nil {
 		n.touched = time.Now()
 	}
-	s.mu.Unlock()
+	s.unlock()
 	if err != nil {
 		return errReply(u, toErrno(err))
 	}
@@ -1147,22 +1225,28 @@ func (s *Server) doRemove(h *inHeader, name string, dir bool) []byte {
 		return errReply(u, toErrno(err))
 	}
 	s.markRecent(h.NodeID, name)
+	k := nodeKey{h.NodeID, name}
 	if dir {
 		err = sh.FS.Rmdir(path)
 	} else {
+		s.writableForPin(k, sh, path)
 		err = sh.FS.Unlink(path)
 	}
 	if err != nil {
 		return errReply(u, toErrno(err))
 	}
 	s.mu.Lock()
-	k := nodeKey{h.NodeID, name}
 	if id, ok := s.index[k]; ok {
 		s.nodes[id].orphan = true
 		delete(s.index, k)
+		if !dir {
+			// A process may still have it open, and the kernel no longer says
+			// (no RELEASE): a cached handle is kept for it (openfile.go).
+			s.pinLocked(id)
+		}
 	}
 	s.markRecentLocked(h.NodeID, name)
-	s.mu.Unlock()
+	s.unlock()
 	return newReply(u, 0).finish()
 }
 
@@ -1187,14 +1271,20 @@ func (s *Server) doRename(h *inHeader, in renameIn) []byte {
 	}
 	s.markRecent(h.NodeID, in.OldName)
 	s.markRecent(in.NewDir, in.NewName)
+	if nk := (nodeKey{in.NewDir, in.NewName}); in.Flags&renameNoreplace == 0 && nk != (nodeKey{h.NodeID, in.OldName}) {
+		s.writableForPin(nk, sh, newPath)
+	}
 	if err := sh.FS.Rename(oldPath, newPath, in.Flags&renameNoreplace != 0); err != nil {
 		return errReply(u, toErrno(err))
 	}
 	s.mu.Lock()
+	if id, ok := s.index[nodeKey{in.NewDir, in.NewName}]; ok && id != s.index[nodeKey{h.NodeID, in.OldName}] && !s.nodes[id].dir {
+		s.pinLocked(id) // the file this replaced may still be open (see doRemove)
+	}
 	s.moveLocked(h.NodeID, in.OldName, in.NewDir, in.NewName)
 	s.markRecentLocked(h.NodeID, in.OldName)
 	s.markRecentLocked(in.NewDir, in.NewName)
-	s.mu.Unlock()
+	s.unlock()
 	return newReply(u, 0).finish()
 }
 
@@ -1273,7 +1363,7 @@ func (s *Server) doSetattr(h *inHeader, in setattrIn) []byte {
 
 func (s *Server) addHandle(hd *handle) (uint64, error) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	defer s.unlock()
 	if len(s.handles) >= s.opt.MaxHandles {
 		return 0, EMFILE
 	}
@@ -1302,6 +1392,10 @@ func (s *Server) openReply(u, fh uint64, dir bool) []byte {
 
 func (s *Server) doOpen(h *inHeader, flags uint32, dir bool) []byte {
 	u := h.Unique
+	if !dir && s.noOpen.Load() {
+		// The kernel stops sending OPEN and RELEASE for files (openfile.go).
+		return errReply(u, int(ENOSYS))
+	}
 	if !dir && s.isInjector(h) {
 		fh, err := s.addHandle(&handle{node: h.NodeID, inject: true})
 		if err != nil {
@@ -1327,7 +1421,7 @@ func (s *Server) doOpen(h *inHeader, flags uint32, dir bool) []byte {
 			_ = sh
 			es = append(es, DirEntry{Name: name, Attr: Attr{Mode: sIFDIR | 0o755}})
 		}
-		s.mu.Unlock()
+		s.unlock()
 		sort.Slice(es, func(i, j int) bool { return es[i].Name < es[j].Name })
 		fh, err := s.addHandle(&handle{node: rootNode, isDir: true, dir: es, loaded: true})
 		if err != nil {
@@ -1342,14 +1436,14 @@ func (s *Server) doOpen(h *inHeader, flags uint32, dir bool) []byte {
 	}
 	s.mu.Lock()
 	path, sh, err := s.pathLocked(h.NodeID)
-	s.mu.Unlock()
+	s.unlock()
 	if err != nil {
 		return errReply(u, toErrno(err))
 	}
 	if dir {
 		s.mu.Lock()
 		isDir := s.nodes[h.NodeID] != nil && s.nodes[h.NodeID].dir
-		s.mu.Unlock()
+		s.unlock()
 		if !isDir {
 			return errReply(u, int(ENOTDIR))
 		}
@@ -1390,7 +1484,18 @@ func (s *Server) doCreate(h *inHeader, in createIn) []byte {
 		return errReply(u, toErrno(err))
 	}
 	s.markRecent(h.NodeID, in.Name)
-	f, a, err := sh.FS.Create(path, in.Flags|oCREAT, in.Mode&^in.Umask, owner(h))
+	noOpen := s.noOpen.Load()
+	flags := in.Flags | oCREAT
+	if noOpen {
+		// The handle is cached for every later open of the file (openfile.go), so it
+		// should read too.
+		flags = flags&^oACCMODE | oRDWR
+	}
+	f, a, err := sh.FS.Create(path, flags, in.Mode&^in.Umask, owner(h))
+	if noOpen && errors.Is(err, EACCES) {
+		flags = in.Flags | oCREAT
+		f, a, err = sh.FS.Create(path, flags, in.Mode&^in.Umask, owner(h))
+	}
 	if err != nil {
 		return errReply(u, toErrno(err))
 	}
@@ -1401,13 +1506,15 @@ func (s *Server) doCreate(h *inHeader, in createIn) []byte {
 		n.touched = time.Now()
 	}
 	s.markRecentLocked(h.NodeID, in.Name)
-	s.mu.Unlock()
+	s.unlock()
 	if err != nil {
 		f.Close()
 		return errReply(u, toErrno(err))
 	}
-	fh, err := s.addHandle(&handle{node: n.id, f: f})
-	if err != nil {
+	var fh uint64
+	if noOpen {
+		s.keepCreated(n.id, f, flags&oACCMODE != oWRONLY, flags&oACCMODE != oRDONLY)
+	} else if fh, err = s.addHandle(&handle{node: n.id, f: f}); err != nil {
 		f.Close()
 		s.forget(n.id, 1)
 		return errReply(u, toErrno(err))
@@ -1422,6 +1529,25 @@ func (s *Server) doCreate(h *inHeader, in createIn) []byte {
 	w.u32(fl)
 	w.u32(0)
 	return w.finish()
+}
+
+// fileFor returns the host file for a READ or WRITE, with a reference held: by handle,
+// or by node when the kernel sends none (fh 0 after OPEN answered ENOSYS, openfile.go).
+func (s *Server) fileFor(h *inHeader, fh uint64, write bool) (File, func(), error) {
+	if fh == 0 && s.noOpen.Load() {
+		if s.isInjector(h) {
+			// The replaying thread never touches host data (inject.go).
+			if write {
+				return nil, nil, EBADF
+			}
+			return nopFile{}, func() {}, nil
+		}
+		return s.nodeFileGet(h.NodeID, write)
+	}
+	if write {
+		return s.writableFile(fh)
+	}
+	return s.file(fh)
 }
 
 // file returns fh's file with a reference held (see acquire).
@@ -1455,7 +1581,7 @@ func (s *Server) release(fh uint64) {
 	if hd != nil {
 		s.closeLocked(hd)
 	}
-	s.mu.Unlock()
+	s.unlock()
 	if hd != nil && hd.inject {
 		s.injectDone(hd.node)
 	}
@@ -1494,7 +1620,7 @@ func (s *Server) rootListing() []DirEntry {
 	for name := range s.shares {
 		es = append(es, DirEntry{Name: name, Attr: Attr{Mode: sIFDIR | 0o755}})
 	}
-	s.mu.Unlock()
+	s.unlock()
 	sort.Slice(es, func(i, j int) bool { return es[i].Name < es[j].Name })
 	return es
 }
@@ -1504,9 +1630,11 @@ func (s *Server) rootListing() []DirEntry {
 // kept on the node for the READDIRs that continue it, as a directory handle would keep
 // it. (Whether the guest needs to ask at all is the guest's readdir cache's business:
 // it is kept coherent by host invalidations, like every other cache.)
-func (s *Server) nodeListing(id, off uint64) ([]DirEntry, *Share, error) {
+//
+// since is the host change sequence before the listing was read (racedLocked).
+func (s *Server) nodeListing(id, off uint64) (es []DirEntry, sh *Share, since uint64, err error) {
 	if id == rootNode {
-		return s.rootListing(), nil, nil
+		return s.rootListing(), nil, 0, nil
 	}
 	s.mu.Lock()
 	path, sh, err := s.pathLocked(id)
@@ -1515,23 +1643,24 @@ func (s *Server) nodeListing(id, off uint64) ([]DirEntry, *Share, error) {
 		err = ENOTDIR
 	}
 	if err != nil {
-		s.mu.Unlock()
-		return nil, nil, err
+		s.unlock()
+		return nil, nil, 0, err
 	}
 	if off != 0 && n.listed {
-		es := n.list
-		s.mu.Unlock()
-		return es, sh, nil
+		es, since = n.list, n.listSeq
+		s.unlock()
+		return es, sh, since, nil
 	}
-	s.mu.Unlock()
+	since = s.hostSeq
+	s.unlock()
 	list, err := loadDir(sh, path)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, 0, err
 	}
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	defer s.unlock()
 	if s.nodes[id] != n {
-		return list, sh, nil // forgotten meanwhile: answer, keep nothing
+		return list, sh, since, nil // forgotten meanwhile: answer, keep nothing
 	}
 	s.dropListLocked(n)
 	if s.dirEntries+len(list) > maxDirBudget {
@@ -1542,11 +1671,11 @@ func (s *Server) nodeListing(id, off uint64) ([]DirEntry, *Share, error) {
 		}
 	}
 	if s.dirEntries+len(list) > maxDirBudget {
-		return nil, nil, ENOMEM
+		return nil, nil, 0, ENOMEM
 	}
-	n.list, n.listed = list, true
+	n.list, n.listed, n.listSeq = list, true, since
 	s.dirEntries += len(list)
-	return list, sh, nil
+	return list, sh, since, nil
 }
 
 // dropListLocked forgets the listing snapshot of n (which may be nil).
@@ -1563,7 +1692,7 @@ func (s *Server) handleListing(id, fh uint64) ([]DirEntry, *Share, error) {
 	s.mu.Lock()
 	hd := s.handles[fh]
 	ok := hd != nil && hd.isDir && hd.node == id && !hd.closed
-	s.mu.Unlock()
+	s.unlock()
 	if !ok {
 		return nil, nil, EBADF
 	}
@@ -1580,12 +1709,12 @@ func (s *Server) handleListing(id, fh uint64) ([]DirEntry, *Share, error) {
 		}
 		s.mu.Lock()
 		if hd.closed || s.dirEntries+len(list) > maxDirBudget {
-			s.mu.Unlock()
+			s.unlock()
 			return nil, nil, ENOMEM
 		}
 		s.dirEntries += len(list)
 		hd.dir, hd.loaded = list, true
-		s.mu.Unlock()
+		s.unlock()
 	}
 	return hd.dir, sh, nil
 }
@@ -1594,10 +1723,11 @@ func (s *Server) doReaddir(h *inHeader, in readIn, plus bool) []byte {
 	u := h.Unique
 	var es []DirEntry
 	var sh *Share
+	since := ^uint64(0) // handle listings (NoCache) give the guest nothing to cache
 	if in.Fh == 0 {
 		// No directory handle (OPENDIR answers ENOSYS, see doOpen).
 		var err error
-		es, sh, err = s.nodeListing(h.NodeID, in.Offset)
+		es, sh, since, err = s.nodeListing(h.NodeID, in.Offset)
 		if err != nil {
 			return errReply(u, toErrno(err))
 		}
@@ -1606,7 +1736,7 @@ func (s *Server) doReaddir(h *inHeader, in readIn, plus bool) []byte {
 			// longer needed.
 			s.mu.Lock()
 			s.dropListLocked(s.nodes[h.NodeID])
-			s.mu.Unlock()
+			s.unlock()
 		}
 	} else {
 		var err error
@@ -1653,11 +1783,16 @@ func (s *Server) doReaddir(h *inHeader, in readIn, plus bool) []byte {
 				a.Mode &^= 0o222
 			}
 			s.mu.Lock()
-			n, err := s.childLocked(h.NodeID, name, sh, &a)
-			s.mu.Unlock()
-			if err == nil {
-				id = n.id
+			// A name that changed on the host after the listing was read gets no
+			// attributes (node 0): the kernel looks it up when it needs them. The
+			// kernel only guards an inode's attributes against replies older than its
+			// last invalidation, and a continued listing can be older than that.
+			if !s.racedLocked(nodeKey{h.NodeID, name}, since) {
+				if n, err := s.childLocked(h.NodeID, name, sh, &a); err == nil {
+					id = n.id
+				}
 			}
+			s.unlock()
 		}
 		if id != 0 {
 			w.entryOut(id, 0, s.ttl(s.opt.EntryTTL), s.ttl(s.opt.AttrTTL), &a)
@@ -1673,7 +1808,7 @@ func (s *Server) touch(id uint64) {
 	if n := s.nodes[id]; n != nil {
 		n.touched = time.Now()
 	}
-	s.mu.Unlock()
+	s.unlock()
 }
 
 // markRecent is markRecentLocked for callers without s.mu. Callers mark before the host
@@ -1681,7 +1816,7 @@ func (s *Server) touch(id uint64) {
 func (s *Server) markRecent(parent uint64, name string) {
 	s.mu.Lock()
 	s.markRecentLocked(parent, name)
-	s.mu.Unlock()
+	s.unlock()
 }
 
 // markRecentLocked records a name the guest changed, so its echo from the host

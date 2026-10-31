@@ -1,0 +1,386 @@
+package share
+
+// Opens without round trips (FUSE_NO_OPEN_SUPPORT, REQ-FS-002).
+//
+// An OPEN costs a guest-to-host round trip even when every page of the file is in the
+// guest's page cache: a warm `git status` paid 16 of them (and 17 RELEASEs) for .git
+// files it only reads from cache. When OPEN answers ENOSYS, the kernel stops sending
+// OPEN, RELEASE and (once FLUSH answers ENOSYS too) FLUSH for the whole connection,
+// opens every file with FOPEN_KEEP_CACHE, and sends READ, WRITE and FSYNC with fh 0.
+//
+// The server then finds a host file by node instead of by handle. Host handles are
+// opened on the first READ or WRITE that needs one and kept in a small cache (files),
+// because the guest no longer says when it closes a file:
+//   - every handle shares read, write and delete (shareAll), so Windows programs can
+//     edit, rename and delete the file while it is cached;
+//   - an idle handle is closed after Options.FileIdle (100 ms), and at most
+//     Options.MaxFiles are kept (least recently used first). An open handle, even with
+//     every share flag, still makes some Windows operations fail: MoveFileEx over the
+//     file (an atomic save: temp file, then rename over it) gets "access denied", and
+//     an exclusive open a sharing violation. That window was "while a guest process has
+//     the file open" with OPEN; now it also covers FileIdle after the guest's last READ
+//     or WRITE that reached the host. It is kept short because those are the only
+//     requests a cache hit saves: page-cache hits never reach the server, and reads or
+//     writes in a stream arrive back to back;
+//   - a host removal or replacement of the file closes its handle at once (inject.go);
+//   - a read never opens the file for writing: a cached read handle does not conflict
+//     with Windows programs that share reads only.
+//
+// What OPEN used to do moves elsewhere:
+//   - O_TRUNC: FUSE_ATOMIC_O_TRUNC is not negotiated, so the kernel truncates with a
+//     path SETATTR inside open(2);
+//   - O_APPEND: the kernel already wrote at its own idea of the end of the file;
+//   - permission and sharing errors of the host open (a read-only file opened for
+//     writing by root, a file a Windows program holds exclusively) surface at the first
+//     read or write instead of at open(2);
+//   - POSIX "unlinked but still open": the guest's own unlink or rename-over of a file
+//     keeps its cached host handle (pinned) until the kernel forgets the inode, which
+//     it does as soon as no process has it open. A file with no cached handle (not
+//     read or written for FileIdle) is not reopened for this: its pages in the guest
+//     cache still read, anything else gets ESTALE (pinLocked says why);
+//   - CREATE answers fh 0 and caches the file it opened (keepCreated says why).
+//
+// Options.RealOpen, NoCache and Writeback keep the old behaviour (an OPEN and a host
+// handle per guest open).
+
+import (
+	"errors"
+	"time"
+)
+
+// nodeFile is a host file kept for requests without a handle.
+type nodeFile struct {
+	node        uint64
+	f           File
+	read, write bool // what f was opened for
+	refs        int  // requests using f
+	used        time.Time
+	// pinned: the guest removed or replaced the name; kept until the kernel forgets
+	// the node, for processes that still have it open. Not subject to FileIdle.
+	pinned bool
+	gone   bool // out of Server.files; f is closed when refs drops to 0
+}
+
+// can reports whether e serves a read (or, with write, a write).
+func (e *nodeFile) can(write bool) bool {
+	if write {
+		return e.write
+	}
+	return e.read
+}
+
+// openNodeFile opens a host file for node requests: read-only for reads, read-write
+// (or write-only, if the host refuses reads) for writes.
+func openNodeFile(sh *Share, path []string, write bool) (f File, rd, wr bool, err error) {
+	if !write {
+		f, err = sh.FS.Open(path, oRDONLY)
+		return f, true, false, err
+	}
+	f, err = sh.FS.Open(path, oRDWR)
+	if errors.Is(err, EACCES) {
+		f, err = sh.FS.Open(path, oWRONLY)
+		return f, false, true, err
+	}
+	return f, true, true, err
+}
+
+// nodeFileGet returns a host file for a READ, WRITE or FSYNC of node id without a
+// handle, with a reference held: call done when finished.
+func (s *Server) nodeFileGet(id uint64, write bool) (File, func(), error) {
+	s.mu.Lock()
+	n := s.nodes[id]
+	if n == nil || id == rootNode {
+		s.unlock()
+		return nil, nil, ESTALE
+	}
+	if n.dir {
+		s.unlock()
+		return nil, nil, EISDIR
+	}
+	if e := s.files[id]; e != nil && e.can(write) {
+		e.refs++
+		e.used = time.Now()
+		s.unlock()
+		return e.f, func() { s.putFile(e) }, nil
+	}
+	path, sh, err := s.pathLocked(id)
+	s.unlock()
+	if err != nil {
+		if errors.Is(err, ENOENT) {
+			// Removed (by the guest without a pin, or on the host): this open file
+			// has nothing behind it any more.
+			err = ESTALE
+		}
+		return nil, nil, err
+	}
+	if write && sh.ReadOnly {
+		return nil, nil, EROFS
+	}
+	f, rd, wr, err := openNodeFile(sh, path, write)
+	if err != nil {
+		return nil, nil, err
+	}
+	s.mu.Lock()
+	defer s.unlock()
+	if s.nodes[id] != n || n.orphan {
+		// Forgotten or removed meanwhile: serve this request, keep nothing.
+		return f, func() { f.Close() }, nil
+	}
+	if e := s.files[id]; e != nil {
+		switch {
+		case e.can(write):
+			// Another request cached one good enough meanwhile.
+			s.closeLater(f)
+			e.refs++
+			e.used = time.Now()
+			return e.f, func() { s.putFile(e) }, nil
+		case (rd || !e.read) && (wr || !e.write) && !e.pinned:
+			s.dropFileLocked(e) // the new handle can do everything it could
+		default:
+			// A write-only handle and a read-only one: serve this request, keep
+			// the cached one.
+			return f, func() { f.Close() }, nil
+		}
+	}
+	e := s.cacheFileLocked(id, f, rd, wr, 1)
+	return f, func() { s.putFile(e) }, nil
+}
+
+// nodeFileSync is FSYNC without a handle. A cached handle that can write is flushed.
+// Otherwise the file is opened for writing just for the flush (FlushFileBuffers needs
+// write access; it flushes the file, not the handle, so writes through a handle closed
+// since are covered) and closed again, so a cached read handle is not replaced by one
+// that blocks Windows writers. If no write handle can be had (read-only file or share,
+// removed, held exclusively), nothing the guest wrote can be waiting: fsync of a
+// read-only descriptor succeeds on Linux too.
+func (s *Server) nodeFileSync(id uint64) error {
+	s.mu.Lock()
+	e := s.files[id]
+	if e != nil && e.write {
+		e.refs++
+		s.unlock()
+		defer s.putFile(e)
+		return e.f.Sync()
+	}
+	n := s.nodes[id]
+	var path []string
+	var sh *Share
+	var err error
+	if n != nil && !n.dir && id != rootNode {
+		path, sh, err = s.pathLocked(id)
+	}
+	s.unlock()
+	if n == nil || n.dir || id == rootNode || err != nil || sh.ReadOnly {
+		return nil
+	}
+	f, err := sh.FS.Open(path, oWRONLY)
+	if err != nil {
+		if errors.Is(err, EIO) {
+			return err
+		}
+		return nil
+	}
+	defer f.Close()
+	return f.Sync()
+}
+
+// cacheFileLocked caches f as the file of node id, which has none, with refs requests
+// using it already (so the trim below cannot close it).
+func (s *Server) cacheFileLocked(id uint64, f File, rd, wr bool, refs int) *nodeFile {
+	e := &nodeFile{node: id, f: f, read: rd, write: wr, refs: refs, used: time.Now()}
+	s.files[id] = e
+	s.trimFilesLocked()
+	s.armSweepLocked()
+	return e
+}
+
+// keepCreated caches the file a CREATE opened, answered with fh 0: the kernel sends
+// READ, WRITE and FSYNC for it with fh 0 like for any other file. With a real fh, the
+// guest (Alpine 6.18.58) sent no RELEASE for CREATE handles once OPEN had answered
+// ENOSYS (ftrace of fuse_request_send showed none, and 4096 creates filled the handle
+// table), although v6.18's fuse_create_open allocates release arguments; the cause was
+// not found. With fh 0 it does not matter: a RELEASE of fh 0, if one comes, is a no-op.
+func (s *Server) keepCreated(id uint64, f File, rd, wr bool) {
+	s.mu.Lock()
+	defer s.unlock()
+	n := s.nodes[id]
+	if n == nil || n.orphan || n.dir {
+		s.closeLater(f)
+		return
+	}
+	if e := s.files[id]; e != nil {
+		s.dropFileLocked(e)
+	}
+	s.cacheFileLocked(id, f, rd, wr, 0)
+}
+
+// putFile drops a request's reference.
+func (s *Server) putFile(e *nodeFile) {
+	s.mu.Lock()
+	e.refs--
+	e.used = time.Now()
+	if e.gone && e.refs == 0 {
+		s.closeLater(e.f)
+	}
+	s.unlock()
+}
+
+// closeLater closes f when s.mu is released (unlock): closing the last handle of a
+// file the guest deleted is when NTFS really deletes it (about 80 µs), and that must
+// not hold up every other request.
+func (s *Server) closeLater(f File) { s.closeq = append(s.closeq, f) }
+
+// unlock releases s.mu and then closes the files dropped under it. Every unlock of
+// s.mu in the server goes through here.
+func (s *Server) unlock() {
+	q := s.closeq
+	s.closeq = nil
+	s.mu.Unlock()
+	for _, f := range q {
+		f.Close()
+	}
+}
+
+// dropFileLocked takes e out of the cache; its file closes when no request uses it.
+func (s *Server) dropFileLocked(e *nodeFile) {
+	if e.gone {
+		return
+	}
+	e.gone = true
+	if s.files[e.node] == e {
+		delete(s.files, e.node)
+	}
+	if e.pinned {
+		s.pins--
+	}
+	if e.refs == 0 {
+		s.closeLater(e.f)
+	}
+	if len(s.files) == 0 && s.sweep != nil {
+		s.sweep.Stop()
+		s.sweep = nil
+	}
+}
+
+// dropNodeFileLocked drops the cached file of node id, if any.
+func (s *Server) dropNodeFileLocked(id uint64) {
+	if e := s.files[id]; e != nil {
+		s.dropFileLocked(e)
+	}
+}
+
+// dropAllFilesLocked drops every cached file (of share sh, or all if sh is nil), and
+// the pins too if pins.
+func (s *Server) dropAllFilesLocked(sh *Share, pins bool) {
+	for id, e := range s.files {
+		if e.pinned && !pins {
+			continue
+		}
+		if n := s.nodes[id]; sh == nil || n == nil || n.share == sh {
+			s.dropFileLocked(e)
+		}
+	}
+}
+
+// writableForPin is called before the guest removes or replaces name k (at path):
+// if the file has a cached handle that cannot write, it is reopened read-write, so the
+// pin serves a process that has it open O_RDWR (or mapped shared and writable: its
+// dirty pages are written back with fh 0 at close). Only files read within FileIdle
+// pay this host open, and their first-open antivirus scan is already done.
+func (s *Server) writableForPin(k nodeKey, sh *Share, path []string) {
+	if !s.noOpen.Load() {
+		return
+	}
+	s.mu.Lock()
+	id := s.index[k]
+	e := s.files[id]
+	s.unlock()
+	if e == nil || e.write {
+		return
+	}
+	f, err := sh.FS.Open(path, oRDWR)
+	if err != nil {
+		return // the pin stays read-only
+	}
+	s.mu.Lock()
+	defer s.unlock()
+	if s.files[id] != e || e.pinned {
+		s.closeLater(f)
+		return
+	}
+	s.dropFileLocked(e)
+	s.cacheFileLocked(id, f, true, true, 0)
+}
+
+// pinLocked keeps the cached handle of node id, which the guest just removed or
+// replaced, until the kernel forgets the node, for processes that still have it open.
+// Without a cached handle there is nothing to keep: opening one first would cost a
+// host open per delete, and the first open with read access of a file just written
+// costs about 0.5 ms under real-time antivirus scanning (measured; deletes went from
+// 0.5 to 1.3 ms each).
+func (s *Server) pinLocked(id uint64) {
+	if e := s.files[id]; e != nil && !e.pinned && s.pins < s.opt.MaxHandles {
+		// Past the bound it stays an ordinary cached handle and closes when idle.
+		e.pinned = true
+		s.pins++
+	}
+}
+
+// trimFilesLocked closes the least recently used idle handles past Options.MaxFiles.
+func (s *Server) trimFilesLocked() {
+	for len(s.files)-s.pins > s.opt.MaxFiles {
+		var old *nodeFile
+		for _, e := range s.files {
+			if !e.pinned && e.refs == 0 && (old == nil || e.used.Before(old.used)) {
+				old = e
+			}
+		}
+		if old == nil {
+			return // all in use; they are dropped as they go idle
+		}
+		s.dropFileLocked(old)
+	}
+}
+
+// armSweepLocked makes sure idle handles get closed.
+func (s *Server) armSweepLocked() {
+	if s.sweep == nil {
+		s.sweepGen++
+		g := s.sweepGen
+		s.sweep = time.AfterFunc(max(s.opt.FileIdle/4, time.Millisecond), func() { s.sweepFiles(g) })
+	}
+}
+
+// sweepFiles closes handles idle for Options.FileIdle. g tells a timer that was
+// stopped too late (it had already fired) from the current one.
+func (s *Server) sweepFiles(g uint64) {
+	s.mu.Lock()
+	defer s.unlock()
+	if g != s.sweepGen || s.sweep == nil {
+		return
+	}
+	s.sweep = nil
+	cut := time.Now().Add(-s.opt.FileIdle)
+	live := false
+	for _, e := range s.files {
+		if e.pinned {
+			continue
+		}
+		if e.refs == 0 && !e.used.After(cut) {
+			s.dropFileLocked(e)
+			continue
+		}
+		live = true
+	}
+	if live {
+		s.armSweepLocked()
+	}
+}
+
+// CachedFiles reports how many host files are held for guest opens without handles,
+// and how many of them are pinned (for tests and diagnostics).
+func (s *Server) CachedFiles() (open, pinned int) {
+	s.mu.Lock()
+	defer s.unlock()
+	return len(s.files), s.pins
+}
