@@ -834,9 +834,10 @@ These are owned by the guest track unless noted.
    erofs-utils `.apk`s (with SHA-256) in `sources.lock`. Today it is a version pin.
 9. Embed the image manifest's SHA-256 in release `hyperbutler.exe` builds, so `image.json` stops
    being self-certifying.
-10. Win back the ~15 MiB that Alpine's PIE dockerd and containerd cost at idle: build
-    those two non-PIE in CI from the aports commit and distfiles of the signed packages,
-    or show the cost is acceptable for 1.0's 250 MB target.
+10. **Required before 1.0.** Win back the ~15 MiB that Alpine's PIE dockerd and
+    containerd cost at idle: build those two non-PIE in CI from the aports commit and
+    distfiles of the signed packages. The maintainer accepted the regression for 0.1 only
+    (2026-10-31).
 11. Run `scripts/guest-image` negative tests (unsigned, foreign-signed, wrong branch,
     renamed, pin mismatch) in CI; today they were run by hand (see Verification).
 **What would make us revisit**
