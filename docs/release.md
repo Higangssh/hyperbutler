@@ -154,6 +154,13 @@ met blocks the release. Changing a gate needs an ADR change, not a waiver here.
   link is available): a large image from `registry:2` on that machine, through the stack
   and through HNS NAT, within 20% of each other (the gate ADR 0006 deferred to here).
   It blocks the release.
+  - Partial run (2026-10-31), not the gate: `registry:2` on a Raspberry Pi 5 (1 Gbit wired),
+    the Windows host on a 100 Mbit USB adapter. Three 100 MB blobs fetched in parallel over
+    HTTP, three runs each: host `curl.exe` 94.5 Mbit/s, a container through the stack
+    94.0 Mbit/s (99.5%). Both hit the 100 Mbit link, so this only shows the stack costs
+    nothing at that speed. Not a `docker pull`: there is no way yet to set
+    `insecure-registries` for the guest's dockerd. The gate still needs a 1 Gbit host link
+    and the HNS NAT comparison.
 
 **ADR 0005 (guest image)**
 - [ ] The image comes from the release run's guest-image job in strict mode, so every
