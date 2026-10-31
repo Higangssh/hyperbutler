@@ -236,15 +236,22 @@ func (g *benchEnv) benchLatency(ctx context.Context, vmid guid.GUID, load benchP
 			if loaded {
 				done := make(chan struct{})
 				lctx, cancel := context.WithCancel(ctx)
+				// One connection for the whole measurement: reconnecting (as 256 MiB
+				// runs did) adds a new connection's setup to the tail every 0.2 s.
+				lc, err := load.dial()
+				if err != nil {
+					cancel()
+					return fmt.Errorf("latency load: %w", err)
+				}
 				go func() {
 					defer close(done)
 					for lctx.Err() == nil {
-						if _, _, _, err := load.run(256 << 20); err != nil {
+						if _, err := lc.Write(benchZeros); err != nil {
 							return
 						}
 					}
 				}()
-				stopLoad = func() { cancel(); <-done }
+				stopLoad = func() { cancel(); _ = lc.Close(); <-done }
 				time.Sleep(200 * time.Millisecond)
 			}
 			lat, err := roundTrips(e.dial, latencyRounds)

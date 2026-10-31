@@ -183,9 +183,11 @@ func (g *guestNet) dialGuest(ctx context.Context, vmid guid.GUID, linkUp func())
 		if offload, known := g.st.Offloading(); known && !offload {
 			return
 		}
-		// A connect to a port nobody listens on yet can stay pending for about 30 s;
-		// bound each attempt so the guest's listener is found soon after it appears.
-		actx, cancel := context.WithTimeout(ctx, time.Second)
+		// A connect to a port nobody listens on yet can stay pending for about 30 s
+		// (the abandoned attempt finishes in the background); bound each attempt so the
+		// guest's listener is found soon after it appears. With 1 s the link came up
+		// 0.8 s later than one the guest dials.
+		actx, cancel := context.WithTimeout(ctx, 250*time.Millisecond)
 		c, err := d.DialContext(actx)
 		cancel()
 		if err != nil {
