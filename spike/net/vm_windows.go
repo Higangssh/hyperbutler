@@ -277,7 +277,7 @@ func buildInitrd(guestDir, probeBin, rootsPEM string, mods []string) (string, er
 		return "", err
 	}
 	out := filepath.Join(workDir, "initramfs-net")
-	return out, os.WriteFile(out, append(base, extra.Bytes()...), 0o600)
+	return out, os.WriteFile(out, append(base, extra.Bytes()...), 0o600) //nolint:gosec // G703: the path comes from the operator's own flags or this tool's work directory
 }
 
 func readModule(path string) ([]byte, error) {

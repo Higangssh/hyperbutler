@@ -177,14 +177,13 @@ func (d *dockerdConfig) install(ctx context.Context, data []byte) error {
 // installed file.
 func (d *dockerdConfig) put(data []byte) error {
 	if data == nil {
-		//nolint:gosec // G703: d.path is the -daemon-config flag value fixed at start, not guest or host input
 		if err := os.Remove(d.path); err != nil && !errors.Is(err, fs.ErrNotExist) {
 			return err
 		}
 		return nil
 	}
 	tmp := d.path + ".new"
-	if err := os.WriteFile(tmp, data, 0o600); err != nil {
+	if err := os.WriteFile(tmp, data, 0o600); err != nil { //nolint:gosec // G703: d.path is the -daemon-config flag value fixed at start, not guest or host input
 		return err
 	}
 	return os.Rename(tmp, d.path)

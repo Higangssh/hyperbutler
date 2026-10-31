@@ -517,7 +517,7 @@ func acceptOrExit(ln net.Listener, exited <-chan error) (net.Conn, error) {
 }
 
 func newSparseFile(path string, size int64) error {
-	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE|os.O_EXCL, 0o600)
+	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE|os.O_EXCL, 0o600) //nolint:gosec // G304: the path comes from the operator's own flags or this tool's work directory
 	if err != nil {
 		return err
 	}
@@ -584,7 +584,7 @@ func buildInitrdExtra(alpine string, modules []string, extraDir string) (string,
 		return "", err
 	}
 	out := filepath.Join(*dir, "initramfs-wb")
-	return out, os.WriteFile(out, append(base, extra.Bytes()...), 0o600)
+	return out, os.WriteFile(out, append(base, extra.Bytes()...), 0o600) //nolint:gosec // G703: the path comes from the operator's own flags or this tool's work directory
 }
 
 // cpioWriter writes the "newc" (070701) format the kernel's initramfs unpacker reads.

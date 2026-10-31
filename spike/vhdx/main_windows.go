@@ -226,7 +226,7 @@ func runVHDX() error {
 
 func runRaw() error {
 	p := fresh("sparse.raw")
-	f, err := os.OpenFile(p, os.O_RDWR|os.O_CREATE|os.O_EXCL, 0o600)
+	f, err := os.OpenFile(p, os.O_RDWR|os.O_CREATE|os.O_EXCL, 0o600) //nolint:gosec // G304: the path comes from the operator's own flags or this tool's work directory
 	if err != nil {
 		return err
 	}

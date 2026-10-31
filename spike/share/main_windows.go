@@ -331,7 +331,7 @@ func printResult(name string, res map[string]float64) {
 }
 
 func appendJSON(path, name string, res map[string]float64) {
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600) //nolint:gosec // G304: the path comes from the operator's own flags or this tool's work directory
 	if err != nil {
 		return
 	}
@@ -422,7 +422,7 @@ func buildInitrd(guestBin string) (string, error) {
 		return "", err
 	}
 	out := filepath.Join(*work, "initramfs-share")
-	return out, os.WriteFile(out, append(base, extra.Bytes()...), 0o600)
+	return out, os.WriteFile(out, append(base, extra.Bytes()...), 0o600) //nolint:gosec // G703: the path comes from the operator's own flags or this tool's work directory
 }
 
 func gunzipFile(p string) ([]byte, error) {

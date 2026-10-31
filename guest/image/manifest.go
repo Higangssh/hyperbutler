@@ -151,7 +151,7 @@ func (f File) Check(r io.Reader) error {
 		return fmt.Errorf("image: %s: size %d out of range", f.Name, f.Size)
 	}
 	h := sha256.New()
-	n, err := io.Copy(h, io.LimitReader(r, int64(f.Size)+1)) //nolint:gosec // G115: f.Size < MaxInt64 is checked above
+	n, err := io.Copy(h, io.LimitReader(r, int64(f.Size)+1))
 	if err != nil {
 		return fmt.Errorf("image: read %s: %w", f.Name, err)
 	}

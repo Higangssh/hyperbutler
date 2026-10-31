@@ -92,7 +92,7 @@ func (p *Process) Wait(timeout time.Duration) (bool, error) {
 		if d > windows.INFINITE-1 {
 			d = windows.INFINITE - 1
 		}
-		ms = uint32(d) //nolint:gosec // G115: d is 0..INFINITE-1 (timeout >= 0, clamped above)
+		ms = uint32(d)
 	}
 	ev, err := windows.WaitForSingleObject(p.h, ms)
 	switch {

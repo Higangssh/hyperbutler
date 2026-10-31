@@ -202,5 +202,5 @@ func buildDemoInitrd(guestBin string) (string, error) {
 		return "", err
 	}
 	out := filepath.Join(*work, "initramfs-demo")
-	return out, os.WriteFile(out, append(base, extra.Bytes()...), 0o600)
+	return out, os.WriteFile(out, append(base, extra.Bytes()...), 0o600) //nolint:gosec // G703: the path comes from the operator's own flags or this tool's work directory
 }
