@@ -64,8 +64,33 @@ func TestGuardNativeGrowth(t *testing.T) {
 	}
 	g := &guardState{window: GuardWindow, minGap: GuardMinGap, rise: GuardRise, slack: GuardSlack, bigRise: GuardBigRise, flat: GuardFlat}
 	t0 := time.Now()
-	g.observe(guardSample{at: t0, private: p0, commit: c0})
-	if g.observe(guardSample{at: t0.Add(GuardInterval), private: p1, commit: c1}) {
+	g.observe(guardSample{at: t0, private: p0, commit: c0}, nil)
+	if r := g.observe(guardSample{at: t0.Add(GuardInterval), private: p1, commit: c1}, func() (uint64, bool) { return 0, true }); r != "" {
 		t.Fatalf("native growth looks like a scan: working set %d -> %d, commit %d -> %d", p0, p1, c0, c1)
 	}
+}
+
+// untouchedData is demand-zero data for TestDataSectionReader only.
+var untouchedData [24 << 20]byte
+
+// TestDataSectionReader: reading 24 MiB of this executable's untouched BSS raises the
+// resident bytes the reader counts by that much.
+func TestDataSectionReader(t *testing.T) {
+	read := dataSectionReader()
+	if read == nil {
+		t.Fatal("no data section reader")
+	}
+	before, ok := read()
+	if !ok {
+		t.Fatal("read failed")
+	}
+	var sum byte
+	for i := 0; i < len(untouchedData); i += 4096 {
+		sum += untouchedData[i]
+	}
+	after, _ := read()
+	if after < before+23<<20 {
+		t.Fatalf("data section resident %d -> %d bytes after reading 24 MiB (sum %d)", before, after, sum)
+	}
+	t.Logf("data section resident %d -> %d KiB", before>>10, after>>10)
 }

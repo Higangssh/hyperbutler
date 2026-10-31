@@ -51,8 +51,8 @@ func runCmd(args []string) error {
 		return err
 	}
 	defer dbg.Close()
-	guard := diag.StartWorkingSetGuard(func(private, commit uint64) {
-		fmt.Printf("working set emptied: it rose to its commit (private working set %d, private bytes %d)\n", private, commit)
+	guard := diag.StartWorkingSetGuard(func(rule string, private, commit uint64) {
+		fmt.Printf("working set emptied after an unexplained rise (rule %s, private working set %d, private bytes %d)\n", rule, private, commit)
 	})
 	defer guard.Stop()
 	sddl, err := engine.CurrentUserSDDL()

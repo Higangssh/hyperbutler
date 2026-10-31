@@ -925,8 +925,8 @@ func cmdEngine(args []string, stderr io.Writer) (int, error) {
 		log.Info("debug endpoint", "pipe", dcfg.DebugPipe)
 	}
 	// REQ-MEM-002: undo an outside scan that makes the untouched commit resident.
-	guard := diag.StartWorkingSetGuard(func(private, commit uint64) {
-		log.Info("working set emptied: it rose to its commit (likely an outside memory scan)", "privateWorkingSet", private, "privateBytes", commit)
+	guard := diag.StartWorkingSetGuard(func(rule string, private, commit uint64) {
+		log.Info("working set emptied after an unexplained rise (likely an outside memory read)", "rule", rule, "privateWorkingSet", private, "privateBytes", commit)
 	})
 	defer guard.Stop()
 	log.Info("go memory limit", "bytes", debug.SetMemoryLimit(-1), "configured", dcfg.MemoryLimit, "env", os.Getenv("GOMEMLIMIT"))

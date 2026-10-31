@@ -3,6 +3,8 @@
 package diag
 
 import (
+	"debug/pe"
+	"os"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
@@ -10,7 +12,11 @@ import (
 
 const guardSupported = true
 
-var procSetProcessWorkingSetSizeEx = modkernel32.NewProc("SetProcessWorkingSetSizeEx")
+var (
+	procSetProcessWorkingSetSizeEx = modkernel32.NewProc("SetProcessWorkingSetSizeEx")
+	procGetModuleHandleW           = modkernel32.NewProc("GetModuleHandleW")
+	procQueryWorkingSetEx          = windows.NewLazySystemDLL("psapi.dll").NewProc("QueryWorkingSetEx")
+)
 
 // processMemoryCountersEx2 is PROCESS_MEMORY_COUNTERS_EX2 (Windows 10 1809 and later).
 type processMemoryCountersEx2 struct {
@@ -35,4 +41,62 @@ func emptyWorkingSet() bool {
 	all := ^uintptr(0) // (SIZE_T)-1 for both limits: trim
 	r, _, _ := procSetProcessWorkingSetSizeEx.Call(uintptr(windows.CurrentProcess()), all, all, 0)
 	return r != 0
+}
+
+// maxDataPages bounds the data section the reader walks (256 MiB).
+const maxDataPages = 1 << 16
+
+// wsExEntry is PSAPI_WORKING_SET_EX_INFORMATION with the address as a uintptr.
+type wsExEntry struct {
+	va   uintptr
+	attr uint64
+}
+
+// dataSectionReader returns a function that counts the resident private bytes of this
+// executable's .data section (initialized data and BSS), or nil if the section cannot
+// be found. QueryWorkingSetEx reads the page tables and touches no page.
+func dataSectionReader() func() (uint64, bool) {
+	exe, err := os.Executable()
+	if err != nil {
+		return nil
+	}
+	f, err := pe.Open(exe)
+	if err != nil {
+		return nil
+	}
+	var rva, size uint32
+	for _, s := range f.Sections {
+		if s.Name == ".data" {
+			rva, size = s.VirtualAddress, max(s.VirtualSize, s.Size)
+		}
+	}
+	f.Close()
+	base, _, _ := procGetModuleHandleW.Call(0)
+	if base == 0 || size == 0 {
+		return nil
+	}
+	const page = 4096
+	start := (base + uintptr(rva)) &^ (page - 1)
+	pages := (base + uintptr(rva) + uintptr(size) - start + page - 1) / page
+	if pages > maxDataPages {
+		return nil
+	}
+	buf := make([]wsExEntry, pages)
+	return func() (uint64, bool) {
+		for i := range buf {
+			buf[i] = wsExEntry{va: start + uintptr(i)*page}
+		}
+		r, _, _ := procQueryWorkingSetEx.Call(uintptr(windows.CurrentProcess()), uintptr(unsafe.Pointer(&buf[0])), uintptr(len(buf))*unsafe.Sizeof(buf[0]))
+		if r == 0 {
+			return 0, false
+		}
+		var n uint64
+		for _, e := range buf {
+			// Valid and not shared (bit 15): a private resident page.
+			if e.attr&1 == 1 && e.attr&(1<<15) == 0 {
+				n += page
+			}
+		}
+		return n, true
+	}
 }
