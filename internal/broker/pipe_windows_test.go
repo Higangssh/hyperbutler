@@ -13,6 +13,7 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+	"unsafe"
 
 	"github.com/Microsoft/go-winio"
 	"golang.org/x/sys/windows"
@@ -153,13 +154,31 @@ func TestPipeSecurityDescriptor(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	me := currentSID(t)
-	want := "O:" + me + "D:P(A;;FA;;;" + me + ")"
+	me, err := windows.StringToSid(currentSID(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Compare SIDs, not SDDL text: SDDL abbreviates some accounts (the built-in
+	// Administrator, RID 500, which CI runners use, is "LA").
 	// The server and client are the same user in this test, so the two ACEs are for the
 	// same SID; check that nobody else appears.
-	s := sd.String()
-	if !strings.HasPrefix(s, "O:"+me) || strings.Count(s, "(") != 2 || strings.Count(s, me) != 3 {
-		t.Fatalf("pipe SD %s, want owner and ACEs only for %s (like %s)", s, me, want)
+	owner, _, err := sd.Owner()
+	if err != nil || owner == nil || !owner.Equals(me) {
+		t.Fatalf("pipe SD %s: owner is not %s (%v)", sd, me, err)
+	}
+	dacl, _, err := sd.DACL()
+	if err != nil || dacl == nil || dacl.AceCount != 2 {
+		t.Fatalf("pipe SD %s: want a DACL with 2 ACEs (%v)", sd, err)
+	}
+	for i := range uint32(dacl.AceCount) {
+		var ace *windows.ACCESS_ALLOWED_ACE
+		if err := windows.GetAce(dacl, i, &ace); err != nil {
+			t.Fatal(err)
+		}
+		sid := (*windows.SID)(unsafe.Pointer(&ace.SidStart))
+		if ace.Header.AceType != windows.ACCESS_ALLOWED_ACE_TYPE || !sid.Equals(me) {
+			t.Fatalf("pipe SD %s: ACE %d is not an allow ACE for %s", sd, i, me)
+		}
 	}
 }
 
