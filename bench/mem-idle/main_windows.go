@@ -179,6 +179,8 @@ func measure(ctx context.Context, c *config, cfgDir string) (ss []Sample, err er
 		return nil, err
 	}
 	logf("%s", out)
+	// A --pipe in -start-args is only in settings.json once the start has run.
+	pipe = c.hb.DockerPipe()
 	st, err := c.hb.State()
 	if err != nil {
 		return nil, err

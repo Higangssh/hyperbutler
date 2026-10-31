@@ -164,7 +164,7 @@ Of the 304.5 MiB:
   counts while `Cached` is low.
 
 Free pages go back through hv_balloon's free page reporting in 2 MiB blocks
-(`page_reporting_order` 9). `buddyinfo` shows almost all free memory in order-9 and
+(`page_reporting_order` 9; since 2026-10-31 single pages, see mem-reclaim.md). `buddyinfo` shows almost all free memory in order-9 and
 order-10 blocks.
 
 ## Start time (REQ-START-001)
@@ -212,7 +212,9 @@ Smoke checks on the shipped image all passed:
   - dockerd's and containerd's idle heaps (`GOGC` or `GOMEMLIMIT` for the daemons);
   - zswap with proactive reclaim.
 - **Spread across runs** was not measured (one run per configuration).
-- **REQ-MEM-002** (the cache policy after a workload) was not re-run with the new threshold.
+- **REQ-MEM-002** was run on 2026-10-31 ([mem-reclaim.md](mem-reclaim.md)). It changed the
+  kernel command line: free pages are now reported in single pages, and above 4 GiB the
+  dentry and inode hash tables are capped at their 4 GiB sizes.
 - **The first start after a host reboot** was not measured. That start reads `system.vhd`
   and hashes 105 MB with a cold host cache, and it needs a reboot.
 - **`bench/mem-idle` and `bench/start`** do not exist yet. The scripts used here should

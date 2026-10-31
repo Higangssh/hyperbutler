@@ -144,7 +144,12 @@ met blocks the release. Changing a gate needs an ADR change, not a waiver here.
 - [ ] The integration tests (`go test -tags integration ./...`) pass on real hardware with
   the current Windows 11 build, on Home, and on Pro if available, because the HCS schema
   fields hyperbutler uses are undocumented.
-- [ ] REQ-MEM-002 (`bench/mem-reclaim`, 12 GB guest) is measured and recorded.
+- [ ] REQ-MEM-002 (`bench/mem-reclaim`, 12 GB guest) is measured against the release
+  candidate and recorded in `docs/research/mem-reclaim.md`, with the engine and VM split
+  the bench prints. First runs 2026-10-31: the VM side returns to its baseline
+  within 45 s; the total passed in 1 of 4 runs (443.9 MiB at +60 s against 476.8 MiB) and
+  failed whenever the engine's working set rose by 46 MiB to its commit. Run it several
+  times and record every run, not the best one.
 
 **ADR 0006 (guest networking)**
 - [ ] `bench/net-perf` against the release candidate: bulk paths not below the ADR's

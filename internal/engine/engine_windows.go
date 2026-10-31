@@ -45,7 +45,18 @@ var GuardConfig = spaceguard.Config{
 // needs it: the Hyper-V synthetic devices (vmbus storage, network, hvsock) are not
 // DMA-limited, and this is not an isolated (confidential) VM, where Linux forces bounce
 // buffers regardless. See docs/research/idle-memory.md.
-const DefaultCmdLine = "console=ttyS0 quiet swiotlb=noforce"
+//
+// page_reporting.page_reporting_order=0: hv_balloon's free page reporting hands free
+// memory back to the host (the cold discard hint), by default only in free blocks of
+// 2 MiB (order 9) or more. After a workload has touched most of the guest's RAM, the
+// slab and kernel pages it left behind split many 2 MiB blocks, and the free pieces
+// around them stay committed on the host: 50 to 90 MiB after a 4 GiB + 4 GiB workload
+// in a 12 GiB guest, growing with each workload. Reporting single pages returns them.
+// Idle guest CPU did not change measurably. See docs/research/mem-reclaim.md
+// (REQ-MEM-002).
+//
+// The dentry and inode hash table sizes are added per VM size (HashTableArgs).
+const DefaultCmdLine = "console=ttyS0 quiet swiotlb=noforce page_reporting.page_reporting_order=0"
 
 // DockerPort is the AF_VSOCK port of the guest agent's Docker API relay.
 const DockerPort = 2375
@@ -264,7 +275,7 @@ func Run(ctx context.Context, cfg Config) (err error) {
 	}
 
 	var disk *dataDisk
-	cmdline := cfg.CmdLine + netArgs + shareArgs + cfg.ExtraCmdLine
+	cmdline := cfg.CmdLine + HashTableArgs(cfg.MemoryMB) + netArgs + shareArgs + cfg.ExtraCmdLine
 	var disks []vm.Disk
 	if cfg.Disk.Data != "" {
 		if disk, err = prepareDisk(cfg.Disk, cfg.DiskSize); err != nil {
