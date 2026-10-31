@@ -38,6 +38,17 @@ rm -rf "$root" "$git_dir"
 mkdir -p "$dist" "$licenses"
 cp "$manifest" "$root/MANIFEST.tsv"
 
+# abuild tries $DISTFILES_MIRROR/<file> before a source's upstream URL. Alpine's builders
+# upload every distfile they used there, so the bundle stays buildable when an upstream
+# host is down or turns CI clients away (gitlab.alpinelinux.org has answered archive
+# downloads with HTTP 418). abuild still checks the bytes against the APKBUILD's
+# sha512sums, so the mirror cannot substitute content. The branch is the container's
+# Alpine release, which is bumped together with sources.lock.
+branch="v$(cut -d. -f1,2 /etc/alpine-release)"
+DISTFILES_MIRROR="${HYPERBUTLER_DISTFILES_MIRROR:-https://distfiles.alpinelinux.org/distfiles/$branch}"
+export DISTFILES_MIRROR
+echo "fetch-sources: distfiles mirror $DISTFILES_MIRROR"
+
 git init -q --bare "$git_dir"
 git --git-dir="$git_dir" remote add alpine https://gitlab.alpinelinux.org/alpine/aports.git
 git --git-dir="$git_dir" remote add github https://github.com/alpinelinux/aports.git
