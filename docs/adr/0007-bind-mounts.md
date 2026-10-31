@@ -354,7 +354,8 @@ missing:
 - guest side: `docker run ... ls -l; cat` in fresh containers, a container already
   listing or stat-ing the directory in a loop, and `docker exec`.
 
-Two windows were found in the code, though. Both are fixed, with regression tests:
+The same script run on this branch made 360 more checks, also clean. Two windows were
+found in the code, though. Both are fixed, with regression tests:
 - a LOOKUP (or READDIRPLUS, or replayed create) reads the host and then makes the node. A
   change reported in between finds no node to invalidate, and the guest cached the old
   attributes (or a negative entry) for an hour. Each host event now bumps a per-name
