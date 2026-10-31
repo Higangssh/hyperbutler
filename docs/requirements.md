@@ -107,6 +107,17 @@ a round trip (`FUSE_NO_OPEN_SUPPORT` with a host handle cache that closes idle h
 | REQ-NET-002 | VPN and corporate DNS work with zero configuration. | With at least one common VPN client connected (tested clients are listed in `docs/compat.md`), containers reach VPN routes. Split DNS works: VPN suffixes resolve through the VPN's resolver and everything else through the default one. Connecting or disconnecting the VPN needs no hyperbutler restart (`bench/net-vpn`, *manual*). | P1 | N2 |
 | REQ-NET-003 | Published ports can be exposed on the LAN, opt-in. | Behind a flag, published ports are reachable from another machine at the host's LAN IP. Off by default (`bench/net-lan`). | P2 | N1 |
 
+Status on the reference machine (2026-10-31, `hyperbutler-dev` with the user-mode stack of
+[ADR 0006](adr/0006-guest-networking.md#gate-results-2026-10-31), 2 GiB / 2 vCPU guest, and
+`hyperbutler start` for the checks):
+- REQ-NET-001: **works, the criterion is not run.** `-p` serves on `127.0.0.1` and `[::1]`.
+  `bench/net-perf` measured 5475 connections/s through `-p` for 5 s with no errors, and
+  7.5/11.6 Gbit/s down/up. The 1 h run at 10k connections/min (`bench/net-ports`) does
+  not exist yet.
+- REQ-NET-002: **met for Tailscale** (manual): split DNS, public DNS and tailnet
+  addresses from a container in one run. Other VPN clients are untested.
+- REQ-NET-003: not run (no second machine).
+
 ## Docker API compatibility
 
 | ID | Requirement | Acceptance criterion (how measured) | Pri | Pain |

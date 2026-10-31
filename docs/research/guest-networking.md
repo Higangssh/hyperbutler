@@ -305,6 +305,163 @@ docker -H npipe:////./pipe/docker_engine_hyperbutler run --rm alpine wget -qO- h
 & $env:TEMP\hyperbutler-dev.exe run ... -bench-bytes 1073741824 [-net-mtu 1500]   # throughput and latency
 ```
 
+## Throughput work (2026-10-31)
+
+The shipped stack missed the ADR 0006 gate (guest-to-host 36-38% of raw hvsock). This
+section finds out why and fixes it. Same machine (Windows 11 Home 26200, Core Ultra 7
+155H, AC power, non-elevated Hyper-V Administrators account), Wi-Fi uplink, Tailscale
+connected. `hyperbutler-dev run -image` with the erofs image, 2048 MB and 2 vCPU,
+`-memlimit 256MiB` (the product engine's default).
+
+### Benches
+
+- **`bench/net-perf`** (new) runs `bench/net-guest` in containers on the default bridge
+  and the same `internal/netbench` code on the host as the baseline:
+  - `dl`/`ul`: a container downloads from, or uploads to, a server on the host's
+    127.0.0.1, through `-host-forward`. This is the outbound path: a guest TCP
+    connection is terminated in gVisor and dialed again as a Windows socket.
+  - `pub-*`: the same through `docker run -p` (inbound).
+  - `rr`, `rr-load`, `pub-rr`: 64-byte round trips (n=20000 after 2000 warm-up), idle
+    and during a download.
+  - `cps`: connections per second, 8 connectors.
+  - `url`: a 100 MB HTTPS download from the internet.
+
+  Each container run records the engine's CPU, its private working set (CIM), its
+  private bytes and Go heap (`internal/diag`), and its GC count. 5 runs of 5 s per test
+  and side; medians.
+- **`hyperbutler-dev run -bench-bytes`** (the gate bench) compares the stack with raw
+  hvsock on the same boot. It now reads with 256 KiB buffers on both sides: `io.Discard`
+  read 8 KiB at a time, which had held raw guest-to-host at 4-7 Gbit/s. It reports
+  medians of 5 runs of 1 GiB.
+
+### What limited the stack
+
+Profiles (`-debug-pipe`, CPU and execution traces) and gVisor's TCP probe showed both
+the engine (1.1-1.7 cores) and the guest (about 30% of 2 vCPUs) mostly idle during bulk
+transfers. Four things were waiting:
+
+1. **MSS 1460 for every container.** `docker0` and the containers' veths have MTU 1500,
+   so a container's connection through the 9000-byte link used a 1460-byte MSS. A
+   container with `--network host` downloaded at 5.2 Gbit/s; the same on the bridge at
+   2.6. Fix: **segmentation offload** on the link. `netfwd -vnet` opens the TAP with
+   `IFF_VNET_HDR` and `TUN_F_CSUM | TUN_F_TSO4 | TUN_F_TSO_ECN`; every frame carries a
+   virtio_net_hdr. The guest kernel hands netfwd TCP segments of up to 64 KiB. gVisor
+   sends 64 KiB segments with only the pseudo-header checksum (its "host GSO", as its
+   `fdbased` endpoint does for a TAP), and the guest's TAP takes them as one packet. The
+   bridge MTU no longer matters for bulk TCP.
+2. **Windows sends slowly on an accepted hvsock connection.** With offload, host-to-guest
+   still ran at 2.0-2.6 Gbit/s. The host's writes of about 600 KB took 1.0-1.5 ms each,
+   while the guest's reader waited for data 95% of the time. Splitting the directions over
+   two connections changed nothing. A connection the **host dialed** took the same
+   writes in about 50 µs. Fix: in offload mode netfwd listens, and the host dials it
+   (`Stack.ServeOffload`). Guest-to-host also doubled on the dialed connection (ul
+   3.9 to 7.7 Gbit/s, in the same experiment).
+3. **Loopback Windows sockets with autotuned buffers.** The relay goroutine then spent
+   67% of its time waiting in `WSARecv` on the socket to the host-local server. Fix: 1 MiB
+   `SO_RCVBUF`/`SO_SNDBUF` on loopback sockets (published ports and explicit host
+   forwards). Connections to other machines keep autotuning, because a fixed size would
+   cap them on long paths. Effect on the same boot: dl 3.3 to 7.5 Gbit/s, ul 7.7 to 13.2.
+4. **gVisor's 256 KiB buffers.** With the other fixes, the gVisor TCP probe showed
+   SRTT of 1-5 ms under load: the queues in front of the guest, not the wire. At that RTT
+   a 256 KiB window caps a connection at 2-4 Gbit/s. Fix: buffers start at 128 KiB and are
+   tuned (receive moderation, send autotuning) up to 1 MiB, for at most 16 connections at
+   a time. Every other connection is pinned at 256 KiB. Relayed connections are bounded at
+   16 x 2 x 1 MiB + 496 x 2 x 256 KiB = 280 MiB (it was 256 MiB). Moving the send
+   limit alone from 256 KiB to 1 MiB took dl from 5.6 to 11.1 Gbit/s; moving the receive
+   limit took pub-dl from 2.9 to 7.8.
+
+Measured and **not** a cause:
+- The GC: 1-3 GCs per 5 s bulk run, pauses below the 0.5 ms clock resolution, 30-36 MB
+  of heap in use.
+- The frame relay's syscalls: reading the link ahead of the frame handler on both
+  sides (`frame.Pump`) changed nothing on its own. It is kept because it drops a copy and
+  drains the vsock while the TAP is written.
+- The copy buffer size: 32 KiB and 256 KiB measured the same.
+- RACK: it stays off.
+- Separate hvsock connections per direction: no change.
+
+Found on the way and fixed:
+- **Connections per second.** gVisor's 60 s TIME_WAIT held one endpoint per closed
+  connection (180 MB at 640 connections/s). Once the guest reused a port, gVisor answered
+  the SYN from the TIME_WAIT endpoint, because it hands SYNs over only to a listener, not
+  to a forwarder. Every later connection on that port failed: cps fell to 4-7
+  connections/s after the first 5 s run. TIME_WAIT is now 1 s; the guest reuses a port
+  only after 28k connections.
+- **Garbage.** Fresh 32 KiB copy buffers per connection meant 320 MB/s of garbage at
+  5000 published connections/s: Go heap 240 MB, private working set 260 MB. The buffers
+  are pooled now: heap 30 MB, working set 51 MB.
+- **Resets.** Resets are passed on as resets in both directions. A normal close of the
+  other side left a Windows socket in TIME_WAIT for minutes (ephemeral ports) or a
+  gVisor endpoint for 1 s.
+- **The p99.9 of 11.6 ms under load.** It came from the gate bench, which reconnected its
+  bulk load every 256 MiB, 20 times per latency measurement. The p99.9 of 20,000 samples
+  is the 20th worst. With one load connection the stack's p99.9 under load is 0.49 ms
+  (max 2.6 ms). The raw hvsock echo under the same reconnecting load had stayed at
+  0.5-0.7 ms, so the stall per new load connection lies in the stack path. Its exact
+  place was not found; it is an open item.
+
+### Before and after
+
+`bench/net-perf`, medians of 5 runs (url: 3). The host column is the same client
+against the host's own servers (loopback), on the same boot. Before: the shipped code
+and image (`6eceb97`). After: this branch.
+
+| Test | Host | Before | After | After / host | Engine cores, after | Engine private WS, after (before) |
+|---|---|---|---|---|---|---|
+| dl, container from host server, Gbit/s | 8.7-12.7 | 2.71 | **10.2** | 118% | 1.29 (0.13/Gbit/s) | 46 MB (34) |
+| ul, container to host server, Gbit/s | 8.9-12.8 | 3.34 | **8.29** | 93% | 1.40 | 48 MB (35) |
+| pub-dl, `-p`, host from container, Gbit/s | 8.5-11.8 | 3.19 | **7.54** | 88% | 1.50 | 55 MB (230, after cps) |
+| pub-ul, `-p`, host to container, Gbit/s | 9.2-11.3 | 4.45 | **11.6** | 127% | 1.40 | 53 MB (43) |
+| cps, container to host, connections/s | 8056 | 640 in run 1, then **4-7** (failing) | **6024**, 0 errors | 75% | 6.5 | 52 MB (180) |
+| pub-cps, `-p`, connections/s | 8086 | 4914 | 5475 | 68% | 2.9 | 51 MB (45) |
+| rr, p50 / p99 / p99.9 µs | 37 / 93 / 277 | 205 / 540 / 2692 | 187 / 392 / 1244 | | 0.57 | 48 MB |
+| rr-load (during dl) | 36 / 128 / 228 | 424 / 1698 / 4198 | 356 / 1418 / 3093 | | 1.53 | 48 MB |
+| pub-rr | 36 / 87 / 272 | 271 / 754 / 7063 | 233 / 421 / 1196 | | 0.47 | 53 MB |
+| url, internet HTTPS, Gbit/s | 0.08-0.09 | 0.09 | 0.09 | 99% | 0.15 | 51 MB |
+
+- Host loopback itself varied from 8 to 25 Gbit/s between runs, so a ratio above
+  100% means the stack was not the limit in that run, not that it is faster than
+  loopback.
+- The engine's private working set stayed at 46-55 MB in every after-run (Go heap
+  30-36 MB, private bytes about 100 MB).
+- The internet link was limited to about 90 Mbit/s that day, so `url` shows only that
+  the container matches the host.
+- The bulk CPU cost is 0.12-0.20 cores per Gbit/s, from 0.26-0.48.
+
+### The gate (stack against raw hvsock, same boot)
+
+`hyperbutler-dev run -bench-bytes 1073741824`, guest root namespace (netfwd's bench
+servers), medians of 5 runs per path and direction:
+
+| Build | Raw guest to host | Stack guest to host | Ratio | Raw host to guest | Stack host to guest | Ratio |
+|---|---|---|---|---|---|---|
+| Before (the ADR's gate run, n=3, 2 boots) | 7.75-13.29 | 3.60-3.79 | 36-38% | 23-27 | 4.2-5.4 | 17-23% |
+| After, boot 1 | 12.26 | 9.79 | **80%** | 26.80 | 10.86 | 41% |
+| After, boot 2 | 12.43 | 9.19 | **74%** | 24.69 | 11.80 | 48% |
+| After, offload off (`-net-offload=false`) | 13.11 | 4.75 | 36% | 23.05 | 6.20 | 27% |
+
+The offload-off row keeps the buffer, socket and TIME_WAIT fixes. Without offload (and
+so with the guest dialing), the container paths fall back to the old numbers: dl 3.0, ul
+3.5, pub-dl 3.9, pub-ul 5.3 Gbit/s. Raw hvsock guest-to-host varies 2x between boots,
+while the stack holds 9.2-10.0 Gbit/s.
+
+Latency in the gate bench, after the load fix (one boot): raw idle p50/p99/p99.9
+52/77/124 µs; stack idle 158/257/504 µs; raw under load 52/96/259 µs; stack under load
+147/244/**491** µs (max 2.6 ms).
+
+### Reproducing
+
+```powershell
+powershell -ExecutionPolicy Bypass -File guest\prototype\build.ps1 -Strict -Out OUT -DockerHost npipe:////./pipe/docker_engine_hyperbutler
+go build -o hb-dev.exe ./cmd/hyperbutler-dev ; go build -o net-perf.exe ./bench/net-perf
+hb-dev.exe run -image OUT\image.json -memlimit 256MiB -mem 2048 -debug-pipe \\.\pipe\hb-netperf-debug `
+    -host-forward 192.168.127.254:5301=127.0.0.1:5301 -host-forward 192.168.127.254:5302=127.0.0.1:5302 `
+    -host-forward 192.168.127.254:5303=127.0.0.1:5303 -host-forward 192.168.127.254:5304=127.0.0.1:5304
+net-perf.exe -docker docker.exe -debug-pipe \\.\pipe\hb-netperf-debug -rounds 5 -secs 5 [-profile DIR [-trace | -snapshot heap]]
+hb-dev.exe run -image OUT\image.json -bench-bytes 1073741824 [-net-offload=false]   # the gate
+hb-dev.exe run ... -net-stats 2s                                                     # gVisor's counters
+```
+
 ## Comparison
 
 | | HNS NAT (or ICS) | User-mode stack over hvsock |
@@ -325,9 +482,16 @@ docker -H npipe:////./pipe/docker_engine_hyperbutler run --rm alpine wget -qO- h
 
 ## Open items
 
-- The gVisor stack now runs in hyperbutler-dev; see "The user-mode stack" above. It misses the
-  50% gate under the 256 KiB buffer bound (medians 36–38% of raw hvsock), and the LAN registry
-  comparison against HNS NAT has not been run.
+- The stack now meets the 50% gate (74-80% of raw hvsock guest to host; see "Throughput
+  work"). The LAN registry comparison against HNS NAT has still not been run (no second
+  machine); ADR 0006 replaces it with a local comparison.
+- Host-to-guest through the stack is 41-48% of raw hvsock (raw is 25 Gbit/s), and the
+  cause of a 10-13 ms stall of other connections when a bulk connection is set up was
+  not found.
+- Many short connections from a guest to one host destination leave the engine's
+  Windows sockets in TIME_WAIT whenever the guest closes first (a reset is passed on and
+  leaves none). That is what any relay does; Windows' ephemeral range then bounds the
+  sustained rate to one destination.
 - Whether a non-member of Hyper-V Administrators can call HCN.
 - Full-tunnel VPN clients, and coexistence with WSL and Docker Desktop installed
   (`bench/net-vpn`, `bench/coexist`).
