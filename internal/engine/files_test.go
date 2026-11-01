@@ -32,6 +32,8 @@ func TestStateRoundTrip(t *testing.T) {
 	l := Layout{Home: testDir(t)}
 	s := validState(l.Home)
 	s.HostGateway = &HostGatewayState{Address: "192.168.127.254", Enabled: true, Ports: "80,8000-8100", Reloads: 2}
+	s.Executable, s.ExecutableVersion = filepath.Join(l.Home, "hyperbutler.exe"), "v0.1.0"
+	s.GuardPause = &GuardPauseState{Volume: "C:", FreeBytes: 900 << 20, ResumeAtBytes: 1280 << 20, Since: s.Started}
 	if err := SaveState(l, s); err != nil {
 		t.Fatal(err)
 	}
@@ -66,6 +68,9 @@ func TestStateRejects(t *testing.T) {
 		"ready":         func(s *State) { s.ReadyMillis = -1 },
 		"host gw addr":  func(s *State) { s.HostGateway = &HostGatewayState{Address: "::1", Ports: "all"} },
 		"host gw ports": func(s *State) { s.HostGateway = &HostGatewayState{Address: "192.168.127.254", Ports: "0"} },
+		"relative exe":  func(s *State) { s.Executable = "hyperbutler.exe" },
+		"exe version":   func(s *State) { s.ExecutableVersion = "v1\n" },
+		"pause volume":  func(s *State) { s.GuardPause = &GuardPauseState{} },
 	} {
 		s := validState(dir)
 		mut(s)

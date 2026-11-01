@@ -97,6 +97,12 @@ type State struct {
 	// the engine fails instead; this lists what a restart policy started, or what lost a
 	// race with a host program after the start was checked.
 	UnpublishedPorts []UnpublishedPort `json:"unpublishedPorts,omitempty"`
+	// Executable and ExecutableVersion are the engine's hyperbutler.exe and its version
+	// (REQ-PLAT-008), so a start from another folder or release can say which one runs.
+	Executable        string `json:"executable,omitempty"`
+	ExecutableVersion string `json:"executableVersion,omitempty"`
+	// GuardPause is set while the free-space guard keeps the VM paused (REQ-DISK-010).
+	GuardPause *GuardPauseState `json:"guardPause,omitempty"`
 }
 
 // UnpublishedPort is one port in State.UnpublishedPorts.
@@ -122,6 +128,18 @@ func (u *UnpublishedPort) Validate() error {
 		return errors.New("unpublished port: reason too long or not UTF-8")
 	}
 	return nil
+}
+
+// GuardPauseState is a pause by the free-space guard (REQ-DISK-004): the host volume
+// had less free space than the guard's floor.
+type GuardPauseState struct {
+	// Volume is the host volume that holds the data disk ("C:", or a mount folder).
+	Volume string `json:"volume"`
+	// FreeBytes is the volume's free space at the last update (the engine refreshes it
+	// while paused); ResumeAtBytes is the free space at which the VM resumes.
+	FreeBytes     uint64    `json:"freeBytes"`
+	ResumeAtBytes uint64    `json:"resumeAtBytes"`
+	Since         time.Time `json:"since"`
 }
 
 // HostGatewayState is the host gateway setting the running engine applies.
@@ -209,8 +227,14 @@ func (s *State) Validate() error {
 		return fmt.Errorf("state: %d past runtime ids, at most %d", len(s.PastRuntimeIDs), MaxPastRuntimeIDs)
 	case s.DataDir != "" && !filepath.IsAbs(s.DataDir):
 		return fmt.Errorf("state: data dir %q is not absolute", s.DataDir)
-	case s.ImageDir != "" && (!filepath.IsAbs(s.ImageDir) || len(s.ImageDir) > 1024 || !utf8.ValidString(s.ImageDir) || strings.ContainsRune(s.ImageDir, 0)):
+	case s.ImageDir != "" && badPath(s.ImageDir):
 		return fmt.Errorf("state: bad image dir %q", s.ImageDir)
+	case s.Executable != "" && badPath(s.Executable):
+		return fmt.Errorf("state: bad executable %q", s.Executable)
+	case len(s.ExecutableVersion) > 128 || !printableText(s.ExecutableVersion):
+		return fmt.Errorf("state: bad executable version %q", s.ExecutableVersion)
+	case s.GuardPause != nil && (s.GuardPause.Volume == "" || len(s.GuardPause.Volume) > 1024 || !printableText(s.GuardPause.Volume)):
+		return fmt.Errorf("state: bad paused volume %q", s.GuardPause.Volume)
 	}
 	for _, id := range s.PastRuntimeIDs {
 		if id == "" || !validToken(id, 40, true) {
@@ -244,6 +268,24 @@ func (s *State) Validate() error {
 		}
 	}
 	return nil
+}
+
+// badPath reports whether p is not an absolute path of at most 1024 bytes of UTF-8.
+func badPath(p string) bool {
+	return !filepath.IsAbs(p) || len(p) > 1024 || !utf8.ValidString(p) || strings.ContainsRune(p, 0)
+}
+
+// printableText reports whether s is UTF-8 without control characters.
+func printableText(s string) bool {
+	if !utf8.ValidString(s) {
+		return false
+	}
+	for _, r := range s {
+		if r < 0x20 || r == 0x7f || (r >= 0x80 && r < 0xa0) {
+			return false
+		}
+	}
+	return true
 }
 
 // validToken accepts lowercase letters, digits and '-', and with digitsFirst also a

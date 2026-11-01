@@ -18,6 +18,7 @@ func FuzzParseState(f *testing.F) {
 	f.Add([]byte(`{"version":1,"phase":"running","pid":4,"daemonConfig":{"generation":1,"applies":0,"source":"none","bytes":0,"error":"x","updated":"2026-10-30T08:00:01Z"}}`))
 	f.Add([]byte(`{"version":1,"phase":"running","pid":4,"hostGateway":{"address":"192.168.127.254","enabled":true,"ports":"80,8000-8100","reloads":3,"error":"x"}}`))
 	f.Add([]byte(`{"version":1,"phase":"running","pid":4,"hostGateway":{"address":"::1","enabled":false,"ports":"0","reloads":0}}`))
+	f.Add([]byte(`{"version":1,"phase":"running","pid":4,"executable":"C:\\hb\\hyperbutler.exe","executableVersion":"v0.1.0","guardPause":{"volume":"C:","freeBytes":943718400,"resumeAtBytes":1342177280,"since":"2026-10-30T08:00:00Z"}}`))
 	f.Add([]byte(`{"version":1,"phase":"running","pid":0}`))
 	f.Add([]byte(`{"version":1,"phase":"stopped","pid":1e3}`))
 	f.Fuzz(func(t *testing.T, b []byte) {

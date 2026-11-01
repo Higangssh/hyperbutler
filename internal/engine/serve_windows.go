@@ -36,6 +36,9 @@ type ServeOptions struct {
 	Net     NetConfig
 	Logger  *slog.Logger
 	Backend Backend
+	// Executable and Version are this engine's hyperbutler.exe and its version, recorded
+	// in state.json (REQ-PLAT-008).
+	Executable, Version string
 }
 
 // consoleLogMax bounds each console log file (there are two: current and previous).
@@ -90,7 +93,7 @@ func Serve(opts ServeOptions) error {
 	pub := &publisher{l: l, log: log, st: State{
 		Phase: PhaseStarting, PID: os.Getpid(), PIDCreated: SelfCreated(),
 		Pipe: opts.Pipe, DataDir: l.Data, Started: time.Now().UTC().Truncate(time.Millisecond),
-		ImageDir: imageDir,
+		ImageDir: imageDir, Executable: opts.Executable, ExecutableVersion: opts.Version,
 	}}
 	// The VMs of earlier runs, whose access entries uninstall may still find.
 	if prev, err := LoadState(l); err == nil {
@@ -267,6 +270,9 @@ func Serve(opts ServeOptions) error {
 			return nil
 		},
 		OnStopping: func() { pub.update(func(s *State) { s.Phase = PhaseStopping }) },
+		OnGuardPause: func(p *GuardPauseState) {
+			pub.update(func(s *State) { s.GuardPause = p })
+		},
 	})
 	live.attach(nil) // the stack is closed
 	if runErr != nil {

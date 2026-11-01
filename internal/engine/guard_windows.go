@@ -5,8 +5,11 @@ package engine
 import (
 	"log/slog"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"time"
+
+	"golang.org/x/sys/windows"
 
 	"github.com/Higangssh/hyperbutler/internal/guestctl"
 	"github.com/Higangssh/hyperbutler/internal/spaceguard"
@@ -51,6 +54,15 @@ type hostGuard struct {
 	lastLog time.Time
 	stop    chan struct{}
 	done    chan struct{}
+
+	// freeBytes measures the host volume (vm.FreeBytes; replaced in tests).
+	freeBytes func(dir string) (uint64, error)
+	// onPause, if set, is told of every pause (REQ-DISK-010), again while paused when
+	// the free space changes, and of the resume (nil). volume names the host volume.
+	onPause  func(*GuardPauseState)
+	volume   string
+	reported *GuardPauseState
+	pausedAt time.Time
 }
 
 func newHostGuard(cfg spaceguard.Config, m Machine, sup *guestctl.Supervisor, disk *dataDisk, log *slog.Logger) (*hostGuard, error) {
@@ -62,6 +74,7 @@ func newHostGuard(cfg spaceguard.Config, m Machine, sup *guestctl.Supervisor, di
 		vmax: disk.meta.SizeBytes + vhdxMaxOverhead, vmeta: disk.meta.MetadataBytes,
 		interval: 100 * time.Millisecond, dead: 5 * time.Second, log: log,
 		stop: make(chan struct{}), done: make(chan struct{}),
+		freeBytes: vm.FreeBytes, volume: volumeOf(filepath.Dir(disk.path)),
 	}
 	return g, nil
 }
@@ -90,6 +103,7 @@ func (g *hostGuard) close() {
 		g.paused = false
 		g.sup.SetPaused(false)
 	}
+	g.report(0)
 }
 
 func (g *hostGuard) loop() {
@@ -107,7 +121,7 @@ func (g *hostGuard) loop() {
 }
 
 func (g *hostGuard) tick() {
-	free, ferr := vm.FreeBytes(g.dir)
+	free, ferr := g.freeBytes(g.dir)
 	if ferr != nil {
 		g.logEvery("free-space guard: cannot read host free space; treating it as 0", "err", ferr)
 		free = 0
@@ -134,6 +148,7 @@ func (g *hostGuard) tick() {
 	if want := spaceguard.PauseWanted(free, g.paused, pcfg); want != g.paused {
 		g.setPaused(want, free)
 	}
+	g.report(free)
 	if b != g.lastB && time.Since(g.lastLog) >= 10*time.Second {
 		g.log.Debug("free-space guard", "hostFree", HumanSize(free), "vhdx", HumanSize(u.Allocated), "budget", b.String())
 		g.lastB, g.lastLog = b, time.Now()
@@ -168,8 +183,52 @@ func (g *hostGuard) setPaused(pause bool, free uint64) {
 	g.paused = pause
 	if pause {
 		g.pauses++
+		g.pausedAt = time.Now().UTC().Truncate(time.Millisecond)
 		g.log.Warn("the host volume is almost full: VM paused until space is freed", "hostFree", HumanSize(free), "volume", g.dir)
 	} else {
 		g.log.Warn("host volume has space again: VM resumed", "hostFree", HumanSize(free))
 	}
+}
+
+// pauseReportStep is how much the free space of a paused VM's volume must change before
+// the pause is reported again, so state.json is not rewritten on every tick.
+const pauseReportStep = 1 << 20
+
+// report tells onPause about a pause, a resume, or a paused VM's free space changing.
+func (g *hostGuard) report(free uint64) {
+	if g.onPause == nil {
+		return
+	}
+	if !g.paused {
+		if g.reported != nil {
+			g.reported = nil
+			g.onPause(nil)
+		}
+		return
+	}
+	if r := g.reported; r != nil && r.Since.Equal(g.pausedAt) && max(free, r.FreeBytes)-min(free, r.FreeBytes) < pauseReportStep {
+		return
+	}
+	g.reported = &GuardPauseState{Volume: g.volume, FreeBytes: free, ResumeAtBytes: g.cfg.ResumeAt(), Since: g.pausedAt}
+	p := *g.reported
+	g.onPause(&p)
+}
+
+// volumeOf names the volume that holds dir: its mount point without the trailing
+// backslash ("C:", or a folder for a volume mounted there), or dir itself if Windows
+// cannot say.
+func volumeOf(dir string) string {
+	p, err := windows.UTF16PtrFromString(dir)
+	if err == nil {
+		var buf [windows.MAX_PATH + 1]uint16
+		if err = windows.GetVolumePathName(p, &buf[0], uint32(len(buf))); err == nil {
+			if v := strings.TrimSuffix(windows.UTF16ToString(buf[:]), `\`); v != "" {
+				return v
+			}
+		}
+	}
+	if v := filepath.VolumeName(dir); v != "" {
+		return v
+	}
+	return dir
 }

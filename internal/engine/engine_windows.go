@@ -119,6 +119,9 @@ type Config struct {
 	OnReady func(ctx context.Context, r *Running) error
 	// OnStopping, if set, is called when the shutdown begins.
 	OnStopping func()
+	// OnGuardPause, if set, is called when the free-space guard pauses the VM, while it
+	// stays paused and the free space changes, and with nil when it resumes it.
+	OnGuardPause func(*GuardPauseState)
 }
 
 // ErrDone ends Run cleanly from OnReady.
@@ -475,6 +478,7 @@ func Run(ctx context.Context, cfg Config) (err error) {
 		if guard, err = newHostGuard(cfg.Guard, m, sup, disk, log); err != nil {
 			return err
 		}
+		guard.onPause = cfg.OnGuardPause
 	} else {
 		// No disk, no guard: hyperbutlerd runs with the cache policy only.
 		sup.SetBudget(spaceguard.Budget{Unlimited: true})

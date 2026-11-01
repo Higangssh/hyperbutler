@@ -238,8 +238,11 @@ func PauseWanted(hostFree uint64, paused bool, c Config) bool {
 	if hostFree < c.Floor {
 		return true
 	}
-	return paused && hostFree < satAdd(c.Floor, c.ResumeGap)
+	return paused && hostFree < c.ResumeAt()
 }
+
+// ResumeAt is the host free space at which a VM the guard paused is resumed.
+func (c Config) ResumeAt() uint64 { return satAdd(c.Floor, c.ResumeGap) }
 
 // Input is everything Plan needs.
 type Input struct {
