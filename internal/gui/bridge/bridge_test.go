@@ -136,6 +136,7 @@ type fakeHost struct {
 	written   []byte
 	revealed  string
 	copied    string
+	locked    bool // another operation holds the operations lock
 }
 
 func (h *fakeHost) Status(context.Context) (schema.Status, error) { return h.status, nil }
@@ -154,6 +155,9 @@ func (h *fakeHost) ConfigList(context.Context) (schema.ConfigList, error) {
 }
 
 func (h *fakeHost) ConfigSet(_ context.Context, k, v string) (string, error) {
+	if h.locked {
+		return "", Codedf(CodeEngineBusy, "another hyperbutler start, stop or delete is still running")
+	}
 	h.sets = append(h.sets, k+"="+v)
 	return "ok", nil
 }
@@ -167,7 +171,13 @@ func (h *fakeHost) DaemonCheck(b []byte) error {
 	}
 	return nil
 }
-func (h *fakeHost) DaemonWrite(_ context.Context, b []byte) error { h.written = b; return nil }
+func (h *fakeHost) DaemonWrite(_ context.Context, b []byte, check func([]byte, bool) error) error {
+	if err := check(h.daemon, h.daemon != nil); err != nil {
+		return err
+	}
+	h.written = b
+	return nil
+}
 func (h *fakeHost) Doctor(context.Context) (schema.Doctor, error) {
 	return schema.Doctor{OK: true, Checks: []schema.DoctorCheck{{ID: "pipe", Status: "weird", Summary: "a\u202eb"}}}, nil
 }
@@ -291,6 +301,24 @@ func TestDaemonJSON(t *testing.T) {
 	}
 	if r := call(t, d, `{"id":5,"op":"daemon.validate","args":{"text":"{"}}`); !r.OK || r.Data.(CheckView).OK {
 		t.Fatalf("validate: %+v", r)
+	}
+	// L3: the file is judged as it is when written (under the host's lock), not as the
+	// page loaded it: credentials added meanwhile are not overwritten.
+	h.daemon, h.written = []byte(`{}`), nil
+	tk := tokenFor(t, d, "daemon.save", "")
+	h.daemon = []byte(`{"proxies":{"https-proxy":"http://u:secretpw@p:3128"}}`)
+	if r := call(t, d, `{"id":6,"op":"daemon.save","args":{"text":"{}","token":"`+tk+`"}}`); r.OK || r.Error.Code != CodeDaemonReadOnly || h.written != nil {
+		t.Fatalf("saved over credentials added after the page read the file: %+v", r)
+	}
+}
+
+// TestBusyLock (L2): a setting while another operation holds the lock comes back at
+// once with the busy code, which the page explains.
+func TestBusyLock(t *testing.T) {
+	h := &fakeHost{locked: true}
+	d := New(Options{Host: h})
+	if r := call(t, d, `{"id":1,"op":"config.set","args":{"key":"cpus","value":"3"}}`); r.OK || r.Error.Code != CodeEngineBusy {
+		t.Fatalf("set while locked: %+v", r)
 	}
 }
 

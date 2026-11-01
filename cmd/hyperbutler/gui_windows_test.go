@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Higangssh/hyperbutler/internal/desktopimport"
 	"github.com/Higangssh/hyperbutler/internal/gui/bridge"
@@ -77,6 +78,65 @@ func TestGUIHost(t *testing.T) {
 	// Status needs no engine.
 	if _, err := h.Status(context.Background()); err != nil {
 		t.Fatalf("status: %v", err)
+	}
+}
+
+// TestGUIHostLock (L2, L3): while a start or stop holds the operations lock, a setting
+// or a daemon.json save from the window is busy within a few seconds, not a minute;
+// once free, the save reads the file again under the lock.
+func TestGUIHostLock(t *testing.T) {
+	testHome(t)
+	in, err := openInstall()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ops, err := in.opsLock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := &guiHost{}
+	t0 := time.Now()
+	_, err = h.ConfigSet(context.Background(), "cpus", "3")
+	var be *bridge.Error
+	if !errors.As(err, &be) || be.Code != bridge.CodeEngineBusy || time.Since(t0) > guiLockWait+3*time.Second {
+		t.Fatalf("config set while locked: %v after %v", err, time.Since(t0))
+	}
+	ok := func([]byte, bool) error { return nil }
+	if err := h.DaemonWrite(context.Background(), []byte("{}"), ok); !errors.As(err, &be) || be.Code != bridge.CodeEngineBusy {
+		t.Fatalf("daemon.json write while locked: %v", err)
+	}
+	_ = ops.Unlock()
+	var seen []byte
+	if err := h.DaemonWrite(context.Background(), []byte(`{"debug":true}`), func(cur []byte, exists bool) error { seen = cur; return nil }); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.DaemonWrite(context.Background(), []byte(`{}`), func(cur []byte, exists bool) error {
+		if !exists || string(cur) != `{"debug":true}` {
+			t.Errorf("check saw %q (exists %v)", cur, exists)
+		}
+		return errors.New("refused")
+	}); err == nil {
+		t.Fatal("a refused check still wrote")
+	}
+	if _, b, _, _ := h.DaemonRead(context.Background()); string(b) != `{"debug":true}` || seen != nil {
+		t.Fatalf("daemon.json %q, first check saw %q", b, seen)
+	}
+}
+
+// TestInstanceKey (L1): one window per browser profile as it resolves, whatever the
+// spelling; another profile (a --data of its own) is another instance.
+func TestInstanceKey(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+	a := instanceKey(filepath.Join(dir, "gui"))
+	if b := instanceKey(`gui\.\`); a != b {
+		t.Errorf("relative spelling: %q != %q", b, a)
+	}
+	if b := instanceKey(strings.ToUpper(filepath.Join(dir, "GUI") + `\`)); a != b {
+		t.Errorf("case and trailing separator: %q != %q", b, a)
+	}
+	if b := instanceKey(filepath.Join(dir, "other")); a == b {
+		t.Error("two profiles share an instance")
 	}
 }
 

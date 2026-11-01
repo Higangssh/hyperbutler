@@ -45,8 +45,12 @@ type Host interface {
 	DaemonRead(ctx context.Context) (path string, data []byte, exists bool, err error)
 	// DaemonCheck validates a daemon.json as `config daemon validate` does.
 	DaemonCheck(data []byte) error
-	// DaemonWrite replaces the user's daemon.json (already checked).
-	DaemonWrite(ctx context.Context, data []byte) error
+	// DaemonWrite replaces the user's daemon.json (already checked) under the lock the
+	// engine's operations take, after reading the file again under it: check gets what
+	// is there now and refuses the write with an error.
+	DaemonWrite(ctx context.Context, data []byte, check func(cur []byte, exists bool) error) error
+	// ConfigSet and DaemonWrite wait only briefly for that lock, and return an error
+	// with CodeEngineBusy when another operation holds it.
 	// Doctor runs `doctor`'s checks.
 	Doctor(ctx context.Context) (schema.Doctor, error)
 	// Diagnose writes a diagnose zip in the user's temporary directory.
@@ -775,15 +779,19 @@ func (d *Dispatcher) daemonSave(ctx context.Context, text string) (any, error) {
 	if r := redact.String(text); r != text {
 		return nil, Codedf(CodeDaemonReadOnly, "the text holds credentials; edit daemon.json in a text editor")
 	}
-	_, cur, exists, err := d.o.Host.DaemonRead(ctx)
-	if err == nil && exists && redact.String(string(cur)) != string(cur) {
-		return nil, Codedf(CodeDaemonReadOnly, "daemon.json holds credentials; edit it in a text editor")
-	}
 	if err := d.o.Host.DaemonCheck(b); err != nil {
 		return nil, Coded(CodeDaemonInvalid, err)
 	}
-	if err := d.o.Host.DaemonWrite(ctx, b); err != nil {
-		return nil, Coded(CodeDaemonInvalid, err)
+	// The file as it is now, read by the host under its lock, decides: one that holds
+	// credentials is never overwritten from the window.
+	err := d.o.Host.DaemonWrite(ctx, b, func(cur []byte, exists bool) error {
+		if exists && redact.String(string(cur)) != string(cur) {
+			return Codedf(CodeDaemonReadOnly, "daemon.json holds credentials; edit it in a text editor")
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, withCode(CodeDaemonInvalid, err)
 	}
 	return CheckView{OK: true}, nil
 }

@@ -71,8 +71,9 @@ type Options struct {
 	ReportPaint io.Writer
 	// Log receives diagnostic lines; nil for none.
 	Log func(string)
-	// InstanceKey names the one window allowed per state directory; a second Run with
-	// the same key brings the first window to the front and returns.
+	// InstanceKey names the one window allowed per browser profile (the resolved data
+	// directory); a second Run with the same key brings the first window to the front
+	// and returns, or says so when that window cannot be found.
 	InstanceKey string
 	// ImportRunningText asks, when the window is closed during an import, whether to
 	// stop it and close; StoppingText is shown while the import stops; NotRespondingText
@@ -127,8 +128,13 @@ func Run(o Options) int {
 	// One window per state directory: the browser profile is shared, and closing the
 	// first window would end the second one's browser processes with its job.
 	if o.InstanceKey != "" {
-		release, first := singleInstance(o.InstanceKey)
+		release, first, found := singleInstance(o.InstanceKey)
 		if !first {
+			if !found {
+				o.Log("another window holds this profile, but no window of it was found")
+				MessageBox(o.Title, o.NotRespondingText)
+				return ExitFailed
+			}
 			o.Log("another window is open; bringing it to the front")
 			return ExitOK
 		}
@@ -194,7 +200,7 @@ func Run(o Options) int {
 	s.d = bridge.New(bo)
 
 	const ground = 0xEEF4FC
-	hwnd, err := newWindow("hyperbutlerGUI", o.Title, 1120, 780, ground, windows.NewCallback(wndproc))
+	hwnd, err := newWindow(windowClass(o.InstanceKey), o.Title, 1120, 780, ground, windows.NewCallback(wndproc))
 	if err != nil {
 		return failed("create the window", err)
 	}

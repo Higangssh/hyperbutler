@@ -5,6 +5,7 @@ package app
 import (
 	"net/url"
 	"testing"
+	"time"
 
 	"github.com/Higangssh/hyperbutler/internal/leaktest"
 )
@@ -30,6 +31,31 @@ func TestServe(t *testing.T) {
 	u, _ := url.Parse("https://hb.localhost/app.js?x=1")
 	if r := serve("GET", u); r.Status != 405 {
 		t.Errorf("query: %d", r.Status)
+	}
+}
+
+// TestSingleInstance (L1): a second start of the same profile is not first; with no
+// window of that instance to bring forward it says found false (the window then shows a
+// message instead of exiting silently). Another profile is an instance of its own.
+func TestSingleInstance(t *testing.T) {
+	instanceWait = 200 * time.Millisecond
+	key := `c:\users\x\appdata\local\temp\` + t.Name()
+	release, first, _ := singleInstance(key)
+	defer release()
+	if !first {
+		t.Fatal("the first start was not first")
+	}
+	if r2, first, found := singleInstance(key); first || found {
+		r2()
+		t.Fatalf("second start: first %v found %v", first, found)
+	}
+	r3, first, _ := singleInstance(key + "-other")
+	defer r3()
+	if !first {
+		t.Fatal("another profile shares the instance")
+	}
+	if windowClass(key) == windowClass(key+"-other") || windowClass(key) == "hyperbutlerGUI" {
+		t.Fatal("window classes are not per instance")
 	}
 }
 

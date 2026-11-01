@@ -119,14 +119,24 @@ func (in *install) createDataDir() error {
 	return nil
 }
 
+// errOpsBusy is opsLock's error when another operation holds the lock.
+var errOpsBusy = errors.New("another hyperbutler start, stop or delete is still running")
+
+// opsLockWait is how long opsLock waits for the lock: a minute in the CLI; the window
+// waits a short time (guiLockWait) and says it is busy.
+const opsLockWait = 60 * time.Second
+
 // opsLock serializes start, stop and delete.
-func (in *install) opsLock() (*engine.FileLock, error) {
+func (in *install) opsLock() (*engine.FileLock, error) { return in.opsLockFor(opsLockWait) }
+
+// opsLockFor is opsLock waiting at most d.
+func (in *install) opsLockFor(d time.Duration) (*engine.FileLock, error) {
 	if err := engine.MkdirPrivate(in.l.Home); err != nil {
 		return nil, err
 	}
-	l, err := engine.Lock(in.l.OpsLockPath(), 60*time.Second)
+	l, err := engine.Lock(in.l.OpsLockPath(), d)
 	if errors.Is(err, engine.ErrLocked) {
-		return nil, errors.New("another hyperbutler start, stop or delete is still running")
+		return nil, errOpsBusy
 	}
 	return l, err
 }

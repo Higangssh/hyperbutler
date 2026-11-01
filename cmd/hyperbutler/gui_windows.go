@@ -159,9 +159,19 @@ func runGUI(o guiOptions, paint io.Writer, log func(string)) int {
 		},
 		Title: msgs["app.title"], DataDir: filepath.Join(data, "webview2"), Language: browserLang,
 		NoRuntimeTitle: title, NoRuntimeText: text,
-		CloseNote: h.closeNote, ReportPaint: paint, Log: log, InstanceKey: strings.ToLower(h.home),
-		ImportRunningText: msgs["gui.closeImport"], StoppingText: msgs["import.stopping"],
+		CloseNote: h.closeNote, ReportPaint: paint, Log: log, InstanceKey: instanceKey(data),
+		ImportRunningText: msgs["gui.closeImport"], StoppingText: msgs["import.stopping"], NotRespondingText: msgs["gui.notResponding"],
 	})
+}
+
+// instanceKey is what makes one window per browser profile: the profile's directory as
+// it resolves (absolute, cleaned, case folded as NTFS compares names), not the state
+// directory, which --data or a missing installation can make differ from it.
+func instanceKey(data string) string {
+	if abs, err := filepath.Abs(data); err == nil {
+		data = abs
+	}
+	return strings.ToLower(filepath.Clean(data))
 }
 
 // guiHost runs the CLI's own code for the window (bridge.Host). The engine operations
@@ -326,14 +336,26 @@ func (h *guiHost) ConfigList(context.Context) (schema.ConfigList, error) {
 	return l, nil
 }
 
+// guiLockWait is how long the window waits for the operations lock (a start, stop or
+// another change holds it) before it says it is busy, instead of the CLI's minute.
+const guiLockWait = 2 * time.Second
+
+// busyErr gives a held operations lock the window's busy code.
+func busyErr(err error) error {
+	if errors.Is(err, errOpsBusy) {
+		return bridge.Coded(bridge.CodeEngineBusy, err)
+	}
+	return err
+}
+
 func (h *guiHost) ConfigSet(_ context.Context, key, value string) (string, error) {
 	// "--" ends the flags: a value such as "--apply" is a value, never a flag, so the
 	// window never restarts anything through a setting (the page asks first, then
 	// runs the restart as its own operation).
 	b, err := captured(func(stdout, stderr io.Writer) error {
-		return configSet("set", []string{"--", key, value}, stdout, stdout)
+		return configSetWait("set", []string{"--", key, value}, guiLockWait, stdout, stdout)
 	})
-	return string(b), err
+	return string(b), busyErr(err)
 }
 
 func (h *guiHost) daemonPath() (string, error) {
@@ -362,9 +384,29 @@ func (h *guiHost) DaemonCheck(data []byte) error {
 	return daemoncfg.Check(data, guestSubnet())
 }
 
-func (h *guiHost) DaemonWrite(_ context.Context, data []byte) error {
+// DaemonWrite replaces daemon.json under the operations lock, which `config daemon
+// apply` holds while dockerd reads it: the file is read again under the lock and check
+// decides on what is there now (it may have changed since the page loaded it).
+func (h *guiHost) DaemonWrite(_ context.Context, data []byte, check func(cur []byte, exists bool) error) error {
+	in, err := openInstall()
+	if err != nil {
+		return err
+	}
+	ops, err := in.opsLockFor(guiLockWait)
+	if err != nil {
+		return busyErr(err)
+	}
+	defer func() { _ = ops.Unlock() }()
 	p, err := h.daemonPath()
 	if err != nil {
+		return err
+	}
+	cur, err := engine.ReadFileBounded(p)
+	exists := err == nil
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	if err := check(cur, exists); err != nil {
 		return err
 	}
 	if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {

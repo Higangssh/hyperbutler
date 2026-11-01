@@ -184,6 +184,12 @@ func configPath(args []string, stdout, stderr io.Writer) error {
 }
 
 func configSet(verb string, args []string, stdout, stderr io.Writer) error {
+	return configSetWait(verb, args, opsLockWait, stdout, stderr)
+}
+
+// configSetWait is configSet waiting at most lockWait for the operations lock (the
+// window waits briefly and says it is busy rather than hang).
+func configSetWait(verb string, args []string, lockWait time.Duration, stdout, stderr io.Writer) error {
 	fs := newFlagSet("config "+verb, stderr)
 	apply := fs.Bool("apply", false, "do the restart the change needs now (VM restart: stop and start)")
 	imageDir := fs.String("image-dir", "", "with --apply: the guest image for the new start (default: the running engine's)")
@@ -209,7 +215,7 @@ func configSet(verb string, args []string, stdout, stderr io.Writer) error {
 	if err != nil {
 		return err
 	}
-	ops, err := in.opsLock()
+	ops, err := in.opsLockFor(lockWait)
 	if err != nil {
 		return err
 	}
