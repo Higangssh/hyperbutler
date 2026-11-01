@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Higangssh/hyperbutler/internal/guestctl"
 	"github.com/Higangssh/hyperbutler/internal/spaceguard"
@@ -73,6 +74,8 @@ func TestHostGuardReportsPause(t *testing.T) {
 	g, m := newTestGuard(t, cfg)
 	free := uint64(10 << 30)
 	g.freeBytes = func(string) (uint64, error) { return free, nil }
+	clock := time.Date(2026, 11, 1, 12, 0, 0, 0, time.UTC)
+	g.now = func() time.Time { return clock }
 	var got []*GuardPauseState
 	g.onPause = func(p *GuardPauseState) { got = append(got, p) }
 	if g.volume == "" {
@@ -99,6 +102,11 @@ func TestHostGuardReportsPause(t *testing.T) {
 	}
 	free = 1<<30 + 100<<20 // above the floor, below the resume point: still paused
 	g.tick()
+	if len(got) != 1 {
+		t.Fatal("reported again less than pauseReportEvery after the last report")
+	}
+	clock = clock.Add(pauseReportEvery)
+	g.tick()
 	if p, r, _ := m.counts(); p != 1 || r != 0 || len(got) != 2 || got[1] == nil || got[1].FreeBytes != free || !got[1].Since.Equal(first.Since) {
 		t.Fatalf("update while paused: %v", got)
 	}
@@ -110,6 +118,57 @@ func TestHostGuardReportsPause(t *testing.T) {
 	g.tick()
 	if len(got) != 3 {
 		t.Fatalf("resume reported %d times", len(got)-2)
+	}
+}
+
+// Review M3: while paused, a free space that swings by more than a MiB on every tick
+// (100 ms) is reported at most every pauseReportEvery, not on every tick; the pause and
+// the resume are still reported on the tick they happen.
+func TestHostGuardPauseReportRate(t *testing.T) {
+	cfg := spaceguard.Config{Margin: 4 << 30, Floor: 1 << 30, ResumeGap: 256 << 20, Hysteresis: 1 << 20, Quantum: 1 << 20}
+	g, m := newTestGuard(t, cfg)
+	ticks := 0
+	g.freeBytes = func(string) (uint64, error) {
+		if ticks%2 == 0 {
+			return 500 << 20, nil
+		}
+		return 700 << 20, nil // 200 MiB more: well above pauseReportStep
+	}
+	clock := time.Date(2026, 11, 1, 12, 0, 0, 0, time.UTC)
+	g.now = func() time.Time { return clock }
+	var got []*GuardPauseState
+	g.onPause = func(p *GuardPauseState) { got = append(got, p) }
+	step := func() {
+		g.tick()
+		ticks++
+		clock = clock.Add(g.interval)
+	}
+
+	step()
+	if p, _, _ := m.counts(); p != 1 || len(got) != 1 || got[0] == nil {
+		t.Fatalf("the pause was not reported on its tick: pauses %d, reports %d", p, len(got))
+	}
+	const n = 100 // 10 s of ticks
+	for i := 0; i < n; i++ {
+		step()
+	}
+	// At most one report per pauseReportEvery (20 ticks): 4 or 5 in 10 s (a tick
+	// whose free space equals the last report's is skipped), not 100.
+	most := n / int(pauseReportEvery/g.interval)
+	if updates := len(got) - 1; updates > most || updates < most-1 {
+		t.Fatalf("%d updates in %d ticks of a swinging free space, want %d or %d", updates, n, most-1, most)
+	}
+	for _, r := range got {
+		if r == nil {
+			t.Fatal("a resume was reported while paused")
+		}
+	}
+
+	g.freeBytes = func(string) (uint64, error) { return cfg.Floor + cfg.ResumeGap, nil }
+	before := len(got)
+	step()
+	if _, r, _ := m.counts(); r != 1 || len(got) != before+1 || got[before] != nil {
+		t.Fatalf("the resume was not reported on its tick: resumes %d, reports %v", r, got[before:])
 	}
 }
 

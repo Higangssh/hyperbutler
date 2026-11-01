@@ -59,10 +59,13 @@ type hostGuard struct {
 	freeBytes func(dir string) (uint64, error)
 	// onPause, if set, is told of every pause (REQ-DISK-010), again while paused when
 	// the free space changes, and of the resume (nil). volume names the host volume.
-	onPause  func(*GuardPauseState)
-	volume   string
-	reported *GuardPauseState
-	pausedAt time.Time
+	onPause    func(*GuardPauseState)
+	volume     string
+	reported   *GuardPauseState
+	reportedAt time.Time
+	pausedAt   time.Time
+	// now is the clock of the pause reports (time.Now; replaced in tests).
+	now func() time.Time
 }
 
 func newHostGuard(cfg spaceguard.Config, m Machine, sup *guestctl.Supervisor, disk *dataDisk, log *slog.Logger) (*hostGuard, error) {
@@ -74,7 +77,7 @@ func newHostGuard(cfg spaceguard.Config, m Machine, sup *guestctl.Supervisor, di
 		vmax: disk.meta.SizeBytes + vhdxMaxOverhead, vmeta: disk.meta.MetadataBytes,
 		interval: 100 * time.Millisecond, dead: 5 * time.Second, log: log,
 		stop: make(chan struct{}), done: make(chan struct{}),
-		freeBytes: vm.FreeBytes, volume: volumeOf(filepath.Dir(disk.path)),
+		freeBytes: vm.FreeBytes, volume: volumeOf(filepath.Dir(disk.path)), now: time.Now,
 	}
 	return g, nil
 }
@@ -190,11 +193,18 @@ func (g *hostGuard) setPaused(pause bool, free uint64) {
 	}
 }
 
-// pauseReportStep is how much the free space of a paused VM's volume must change before
-// the pause is reported again, so state.json is not rewritten on every tick.
-const pauseReportStep = 1 << 20
+// pauseReportStep is how much the free space of a paused VM's volume must change, and
+// pauseReportEvery how long after the last report, before the pause is reported again.
+// Both must hold, so state.json is not rewritten on every tick (every 100 ms) while the
+// free space of a busy volume swings by a MiB or more.
+const (
+	pauseReportStep  = 1 << 20
+	pauseReportEvery = 2 * time.Second
+)
 
 // report tells onPause about a pause, a resume, or a paused VM's free space changing.
+// A pause and a resume are reported at once; a change while paused at most every
+// pauseReportEvery.
 func (g *hostGuard) report(free uint64) {
 	if g.onPause == nil {
 		return
@@ -206,10 +216,13 @@ func (g *hostGuard) report(free uint64) {
 		}
 		return
 	}
-	if r := g.reported; r != nil && r.Since.Equal(g.pausedAt) && max(free, r.FreeBytes)-min(free, r.FreeBytes) < pauseReportStep {
+	now := g.now()
+	if r := g.reported; r != nil && r.Since.Equal(g.pausedAt) &&
+		(max(free, r.FreeBytes)-min(free, r.FreeBytes) < pauseReportStep || now.Sub(g.reportedAt) < pauseReportEvery) {
 		return
 	}
 	g.reported = &GuardPauseState{Volume: g.volume, FreeBytes: free, ResumeAtBytes: g.cfg.ResumeAt(), Since: g.pausedAt}
+	g.reportedAt = now
 	p := *g.reported
 	g.onPause(&p)
 }
