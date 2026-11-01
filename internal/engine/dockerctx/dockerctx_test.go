@@ -42,8 +42,15 @@ func TestEnsureCreatesManagedContext(t *testing.T) {
 	if err := s.Ensure("hyperbutler", "npipe:////./pipe/other", "hyperbutler"); err != nil {
 		t.Fatal(err)
 	}
-	if c, _ := s.Get("hyperbutler"); c.Host != "npipe:////./pipe/other" {
+	if c, _ := s.Get("hyperbutler"); c.Host != "npipe:////./pipe/other" || c.Description != "hyperbutler" {
 		t.Fatalf("not updated: %+v", c)
+	}
+	// A new description alone is written too (REQ-UX-014: older contexts get the hint).
+	if err := s.Ensure("hyperbutler", "npipe:////./pipe/other", "new text"); err != nil {
+		t.Fatal(err)
+	}
+	if c, _ := s.Get("hyperbutler"); c.Description != "new text" || !c.Managed {
+		t.Fatalf("description not updated: %+v", c)
 	}
 }
 

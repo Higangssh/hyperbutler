@@ -56,9 +56,10 @@ func DefaultStore() (Store, error) {
 
 // Context is the subset of a context's meta.json that hyperbutler reads.
 type Context struct {
-	Name    string
-	Host    string
-	Managed bool
+	Name        string
+	Host        string
+	Description string
+	Managed     bool
 }
 
 // metaDir is where the docker CLI keeps a context's metadata.
@@ -116,6 +117,9 @@ func ParseMeta(b []byte) (*Context, error) {
 		}
 		c.Host = ep.Host
 	}
+	if raw, ok := m.Metadata["Description"]; ok {
+		_ = json.Unmarshal(raw, &c.Description) // not a string: shown as none
+	}
 	if raw, ok := m.Metadata[ManagedKey]; ok {
 		var v bool
 		c.Managed = json.Unmarshal(raw, &v) == nil && v
@@ -132,7 +136,8 @@ func encodeMeta(name, host, description string) ([]byte, error) {
 	})
 }
 
-// Ensure creates context name pointing at host, or updates it if it is hyperbutler's own.
+// Ensure creates context name pointing at host with description, or updates it if it is
+// hyperbutler's own.
 // It returns ErrNotOurs, and changes nothing, if a context of that name exists that
 // hyperbutler did not create, or that cannot be read.
 func (s Store) Ensure(name, host, description string) error {
@@ -143,7 +148,7 @@ func (s Store) Ensure(name, host, description string) error {
 	switch {
 	case err == nil && !c.Managed:
 		return ErrNotOurs
-	case err == nil && c.Host == host:
+	case err == nil && c.Host == host && c.Description == description:
 		return nil
 	case err != nil && !errors.Is(err, os.ErrNotExist):
 		return fmt.Errorf("%w (%w)", ErrNotOurs, err)
