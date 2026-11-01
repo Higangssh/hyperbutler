@@ -13,6 +13,7 @@
 //	hyperbutler diagnose  write a local zip for bug reports, with secrets redacted
 //	hyperbutler doctor    check what hyperbutler needs, read-only, with the fixes
 //	hyperbutler uninstall remove everything hyperbutler created (--dry-run lists it)
+//	hyperbutler import    copy images and volumes from Docker Desktop (--from-desktop)
 //	hyperbutler mcp      serve the Model Context Protocol on stdio for AI clients
 //
 // See docs/research/cli-engine.md.
@@ -44,6 +45,7 @@ Usage:
   hyperbutler doctor  [--json]
   hyperbutler uninstall [--dry-run] [--keep-data] [--yes] [--json]
   hyperbutler version [--json]
+  hyperbutler import  --from-desktop [--image NAME,...|--all-images] [--volume NAME,...|--all-volumes] [--dry-run] [--json]
   hyperbutler mcp     [--allow-write [--allow-delete]]   (MCP server on stdio, docs/mcp.md)
 
 State lives in %LOCALAPPDATA%\hyperbutler (override with HYPERBUTLER_HOME).
@@ -93,6 +95,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		err = cmdDiagnose(args[1:], stdout, stderr)
 	case "uninstall":
 		err = cmdUninstall(args[1:], os.Stdin, stdout, stderr)
+	case "import":
+		err = cmdImport(args[1:], os.Stdin, stdout, stderr)
 	case "mcp":
 		err = cmdMCP(args[1:], os.Stdin, stdout, stderr)
 	case "engine":
