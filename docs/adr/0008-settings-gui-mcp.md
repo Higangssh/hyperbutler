@@ -1,7 +1,8 @@
 # 0008. Settings, an on-demand GUI, and an MCP server
 
-- Status: accepted (direction); the GUI toolkit spike ran on 2026-11-01 and recommends
-  WebView2 (see "Toolkit spike results")
+- Status: accepted. Toolkit decided on 2026-11-01: WebView2 with software compositing,
+  under the budgets in "Toolkit spike results"; native Win32 stays the fallback if they
+  are not met
 - Date: 2026-10-31
 - Requirements: REQ-UX-002, REQ-UX-004 to REQ-UX-012
 
