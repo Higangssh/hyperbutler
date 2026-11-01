@@ -19,6 +19,7 @@ import (
 	"github.com/Microsoft/go-winio"
 
 	"github.com/Higangssh/hyperbutler/internal/engine"
+	"github.com/Higangssh/hyperbutler/internal/mcpenv"
 	"github.com/Higangssh/hyperbutler/internal/mcpserver"
 )
 
@@ -33,6 +34,9 @@ func cmdMCP(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	}
 	if *allowDelete && !*allowWrite {
 		return usagef("mcp: %v", mcpserver.ErrDeleteNeedsWrite)
+	}
+	if mcpenv.Dropped != "" {
+		_, _ = fmt.Fprintf(stderr, "hyperbutler: mcp: ignoring %s=%q: not a list of key=value pairs\n", mcpenv.Key, mcpenv.Dropped)
 	}
 	// stdout carries the protocol: anything else printed there would corrupt it, so
 	// stray writes to os.Stdout go to stderr while the server runs.

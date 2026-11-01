@@ -26,6 +26,8 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
+	// A malformed MCPGODEBUG is removed before the SDK's init panics on it.
+	_ "github.com/Higangssh/hyperbutler/internal/mcpenv"
 	"github.com/Higangssh/hyperbutler/internal/redact"
 )
 
