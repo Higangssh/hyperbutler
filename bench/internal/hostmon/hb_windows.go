@@ -38,6 +38,11 @@ func (h *Hyperbutler) Start(ctx context.Context, extra ...string) (string, error
 	return h.run(ctx, append(args, extra...)...)
 }
 
+// Config runs `hyperbutler config` with args (such as "set", "updateCheck", "false").
+func (h *Hyperbutler) Config(ctx context.Context, args ...string) (string, error) {
+	return h.run(ctx, append([]string{"config"}, args...)...)
+}
+
 // Stop runs `hyperbutler stop`.
 func (h *Hyperbutler) Stop(ctx context.Context) (string, error) { return h.run(ctx, "stop") }
 

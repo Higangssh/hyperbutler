@@ -129,7 +129,7 @@ func TestSchemaFields(t *testing.T) {
 // TestUninstallKinds pins the values of uninstall's item kinds, which scripts match on,
 // and checks that settings.md lists every one.
 func TestUninstallKinds(t *testing.T) {
-	want := []string{"engine", "vm", "acl", "docker-context", "docker-plugins", "file", "dir"}
+	want := []string{"engine", "vm", "acl", "docker-context", "docker-plugins", "scheduled-task", "file", "dir"}
 	if !reflect.DeepEqual(uninstallKinds, want) {
 		t.Fatalf("uninstall kinds %q, want %q: a kind is part of schema %d", uninstallKinds, want, SchemaVersion)
 	}

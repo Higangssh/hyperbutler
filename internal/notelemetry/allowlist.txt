@@ -7,7 +7,8 @@
 # until it is reviewed and the count raised), and REASON says why these uses make no
 # request of hyperbutler's own: they reach only this machine (a pipe, an hvsock,
 # loopback, a Unix socket in the guest), or they carry the guest's traffic, which is
-# the user's.
+# the user's. The single exception is the update check (REQ-UX-022, at the end), which
+# REQ-UX-005 allows because it can be turned off.
 
 # The engine talks to the guest's dockerd (the Docker API) over hvsock. The Transport
 # literals have no Proxy (only http.DefaultTransport reads HTTP_PROXY) and their
@@ -50,3 +51,20 @@ guest/cmd/hyperbutlerd/daemoncfg.go net.Dialer 1 dials /run/docker.sock ("unix")
 cmd/hyperbutler/commands_windows.go exec:computed 1 starts the engine: this executable (os.Executable)
 cmd/hyperbutler/dockercli_windows.go exec:computed 1 runs the docker CLI on PATH (third-party code) with only --version, to warn when it is too old
 guest/cmd/hyperbutlerd/main_linux.go exec:computed 1 dockerd --validate on a new daemon.json; dockerd validates and exits
+
+# The update check (REQ-UX-022) is the one request hyperbutler makes of its own, and it is
+# not local: at most once a day `start` and `status` send one HTTPS GET to GitHub's
+# release API, with only a User-Agent header, and print a line when a newer release
+# exists. It is on by default (REQ-UX-005 allows it with an off switch) and
+# `config set updateCheck false` turns it off; bench/no-telemetry runs with it off.
+internal/updatecheck/updatecheck.go url:api.github.com 1 REQ-UX-022 update check: one GET to api.github.com, off with updateCheck=false
+internal/updatecheck/updatecheck.go url:github.com 1 REQ-UX-022 update check: the release page it prints (never requested), off with updateCheck=false
+internal/updatecheck/updatecheck.go net/http.Client 3 REQ-UX-022 update check: one GET to api.github.com, off with updateCheck=false (the Checker field, New and NewClient)
+internal/updatecheck/updatecheck.go net/http.Transport 2 REQ-UX-022 update check: one GET to api.github.com, off with updateCheck=false (its transport: no cookies, no compression, system CAs)
+cmd/hyperbutler/update_windows.go net/http.ProxyURL 1 REQ-UX-022 update check: one GET to api.github.com, off with updateCheck=false (through proxy.https)
+cmd/hyperbutler/update_windows.go net/http.ProxyFromEnvironment 1 REQ-UX-022 update check: one GET to api.github.com, off with updateCheck=false (through HTTPS_PROXY)
+
+# Autostart (REQ-UX-015) runs the system's own schtasks.exe (GetSystemDirectory) to
+# create, read and delete the user's sign-in task; it only talks to the local Task
+# Scheduler service.
+cmd/hyperbutler/autostart_windows.go exec:computed 1 %SystemRoot%\System32\schtasks.exe /Create, /Query or /Delete of the autostart task (local Task Scheduler)

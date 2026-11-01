@@ -101,14 +101,16 @@ func configList(args []string, stdout, stderr io.Writer) error {
 	env := in.env()
 	env.ShowSecrets = *showSecrets
 	items := config.List(in.settings, env)
+	auto := autostartState()
 	if *asJSON {
-		return writeJSON(stdout, ConfigListJSON{Schema: SchemaVersion, SettingsFile: in.l.SettingsPath(), Keys: items})
+		return writeJSON(stdout, ConfigListJSON{Schema: SchemaVersion, SettingsFile: in.l.SettingsPath(), Keys: items, Autostart: &auto})
 	}
 	w := newTable(stdout, "KEY", "VALUE", "DEFAULT", "SOURCE", "APPLIES")
 	for _, it := range items {
 		w.row(it.Key, it.Value, it.Default, string(it.Source), applyText(it.Apply))
 	}
 	w.flush()
+	_, _ = fmt.Fprintln(stdout, "\n"+describeAutostart(auto, in.settings != nil && in.settings.Autostart))
 	if in.settings == nil {
 		_, _ = fmt.Fprintf(stdout, "\nNo settings file yet (%s): every value is a default.\n", in.l.SettingsPath())
 	}
@@ -235,6 +237,15 @@ func configSet(verb string, args []string, stdout, stderr io.Writer) error {
 		return err
 	}
 	after := k.Get(next, env)
+	switch k.Name {
+	case "autostart":
+		// The task first: settings.json records the change only once it is made.
+		if err := applyAutostart(in, next.Autostart, stdout); err != nil {
+			return err
+		}
+	case "pipe":
+		warnDefaultPipe(stdout, next.PipeName())
+	}
 	if in.settings != nil && config.Equal(next, in.settings) {
 		_, _ = fmt.Fprintf(stdout, "%s is already %s; nothing changed.\n", k.Name, after.Value)
 		return nil

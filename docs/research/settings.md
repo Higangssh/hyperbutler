@@ -39,10 +39,41 @@ hyperbutler restart
 | `ca.extraFile` | a PEM file on a local drive, or empty | empty | dockerd restart |
 | `proxy.http`, `proxy.https` | `http://`, `https://` or `socks5://` URL, credentials allowed | none | dockerd restart |
 | `proxy.noProxy` | comma-separated hosts, `.domains`, IPs, CIDRs | empty | dockerd restart |
+| `autostart` | bool | false | at once: `set` creates or removes the sign-in task |
+| `updateCheck` | bool | true | at once (the next `start` or `status`) |
 
 - **Reserved names** (refused with "reserved for a later release"): `proxy.mode` (the
-  Windows system proxy, 0.2), `updates.check`, `autostart`, `tray`, `ports.lan`,
-  `buildkit.gcKeepStorage`.
+  Windows system proxy, 0.2), `tray`, `ports.lan`, `buildkit.gcKeepStorage`.
+  (`updates.check` and `autostart` were reserved in 0.1; the update check's key is
+  `updateCheck`, as REQ-UX-022 names it.)
+- **autostart** (REQ-UX-015, 0.2): `config set autostart true` creates one Task Scheduler
+  task of this user, `\hyperbutler autostart (<account>)` in the library's root folder,
+  which a standard user may write: a logon trigger for this user only, 30 s after
+  sign-in, `LeastPrivilege` with the interactive token, no run time limit, also on
+  battery. It runs `%SystemRoot%\System32\conhost.exe --headless "<hyperbutler.exe>"
+  start`: `hyperbutler.exe` is a console program, and conhost's headless mode gives it a
+  console that is never shown, so nothing flashes at sign-in. The task is made with
+  `schtasks.exe /Create /XML` (a UTF-16 task XML written to %TEMP% and removed again),
+  not the Task Scheduler COM API, which Go has no binding for without a new dependency;
+  `schtasks /Query /XML` reads it back, `/Delete` removes it. The task is made before
+  settings.json records the change, so a task that could not be created leaves the
+  setting as it was. `config list` shows whether the task exists and whether it starts
+  this `hyperbutler.exe` (after a move, `set autostart true` again points it here).
+  `false` and `uninstall` remove it. It starts the installation in
+  `%LOCALAPPDATA%\hyperbutler` only: with `HYPERBUTLER_HOME` set to another directory,
+  `set autostart true` is refused. The first start of an installation mentions the
+  setting once.
+- **updateCheck** (REQ-UX-022, 0.2): on by default, as REQ-UX-005 allows (the one request
+  hyperbutler makes of its own, with an off switch). At most once a day `start` and
+  `status` send one HTTPS GET to
+  `https://api.github.com/repos/Higangssh/hyperbutler/releases/latest` with the header
+  `User-Agent: hyperbutler/<version>` and nothing else (no cookie, no Accept-Encoding,
+  no identifier), a 3 s timeout, `proxy.https` or else this shell's `HTTPS_PROXY` and
+  `NO_PROXY`, and the Windows certificate store. A newer release prints one line with its
+  page; a development build (no tag, a pseudo-version or `+dirty`) never does. Nothing
+  is downloaded. The result is kept in `update-check.json` in the state directory; a
+  failure (offline, 404 for no release, a proxy refusing) is silent and waits for the
+  next day too, and shows only with `HYPERBUTLER_DEBUG=1`.
 - **Source** is `default`, `file` (settings.json) or `env`. `engine.memoryLimit` shows `env`
   when this shell has `GOMEMLIMIT`; the running engine has the environment of the shell
   that started it, which may differ. `data.dir` and `disk.size` always show `file` once
@@ -368,9 +399,19 @@ fields are only added; removing or renaming one means a new version.
   while the free-space guard has the VM paused (REQ-DISK-010), and `guardPause` with the
   same fields, whose `freeBytes` is the free space `status` measured itself (only while
   the engine runs and is paused). Both are absent when they do not apply.
+  Added for 0.2, within schema 1: `dockerContextCurrent`, the context config.json
+  selects (`default` for docker's own; REQ-UX-018); `state.guestFs` (`sizeBytes`,
+  `freeBytes`, `updated`) as the guest last reported its data file system, and
+  `guestDisk` (`sizeBytes`, `usedBytes`, `freeBytes`, `usedPercent`, `updated`) while the
+  engine runs (REQ-DISK-009; guest-reported numbers, for display only); `update`
+  (`checked`, and `latest` and `url` when the last check that got an answer found a
+  release) while `updateCheck` is on (REQ-UX-022).
   The container lists of REQ-UX-017 are text only: `stop`, `restart`, `config set
   --apply` and `config daemon apply` have no `--json`.
-- `config list`: `schema`, `settingsFile`, `keys` (a list of the items below).
+- `config list`: `schema`, `settingsFile`, `keys` (a list of the items below), and
+  `autostart` (0.2): the task's `task` name, `exists`, `command` (what it runs),
+  `thisExe` (it starts this `hyperbutler.exe`) and `error` when Task Scheduler could not
+  be asked.
 - `config get KEY`: `schema` and one item: `key`, `value`, `default`, `source`, `type`,
   `apply` (`live`, `restart-dockerd`, `restart-vm`, `first-start`), `description`.
 - `config path`: `schema`, `home`, `settingsFile`, `daemonJson`, `dataDir`.
@@ -395,7 +436,18 @@ fields are only added; removing or renaming one means a new version.
   says the zip is not private.
 - `uninstall`: `schema`, `home`, `dryRun`, `keepData`, `items` (`kind`, `path`, `detail`;
   `[]` when no trace is left), and when there are any `kept`, `failed` and `notes`. Kinds:
-  `engine`, `vm`, `acl`, `docker-context`, `docker-plugins`, `file`, `dir`.
+  `engine`, `vm`, `acl`, `docker-context`, `docker-plugins`, `scheduled-task`, `file`, `dir`.
+  `scheduled-task` (added 2026-11-01, within schema 1) is the autostart task, by its Task
+  Scheduler path; uninstall lists it only for the installation in
+  `%LOCALAPPDATA%\hyperbutler`, the one the task starts.
+- `doctor` (added 2026-11-01, REQ-UX-019): `schema`, `home`, `ok` (false when a check
+  failed; the exit code is then 1) and `checks`, each with `id`, `status` (`ok`, `info`,
+  `warn`, `fail`), `summary` and, when there is one, `fix`. The ids: `vm-platform`,
+  `hcs-service`, `hypervisor` (only when it is off), `hcs`, `hyperv-admins`, `pipe`,
+  `docker-cli`, `docker-context`, `credential-helper`, `other-engines`, `host-disk`,
+  `guest-disk`, `autostart`. doctor reads only: the registry, `computecore.dll`, HCS's
+  list of compute systems, the pipe file system's listing (no pipe is opened), PATH,
+  `docker --version`, the docker CLI's config.json and Task Scheduler (`schtasks /Query`).
 
 ## Tests and fuzzing
 

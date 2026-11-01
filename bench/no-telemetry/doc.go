@@ -1,6 +1,13 @@
 // Command no-telemetry checks REQ-UX-005 (docs/requirements.md) at run time: with
-// default settings, hyperbutler makes no network requests of its own. Image pulls and
-// container traffic are the user's.
+// default settings, hyperbutler makes no network requests of its own except the update
+// check (REQ-UX-022), which REQ-UX-005 allows because it can be turned off. Image pulls
+// and container traffic are the user's.
+//
+// The run turns the update check off first (`hyperbutler config set updateCheck false`
+// in -home, said in its output), so any connection to api.github.com, like any other,
+// fails it. The check itself, one HTTPS GET with a User-Agent and nothing else, is
+// covered by internal/updatecheck's tests and listed in internal/notelemetry's
+// allowlist.
 //
 //	no-telemetry -hyperbutler hyperbutler.exe -home %TEMP%\hb-dev\notelemetry\home
 //	    -image-dir DIR -docker docker.exe [-docker-config DIR] [-idle 5m]

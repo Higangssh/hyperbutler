@@ -24,7 +24,7 @@ import (
 
 // uninstallNotes say what uninstall never touches, in every output.
 var uninstallNotes = []string{
-	"hyperbutler creates no scheduled tasks, services, registry keys, firewall rules or HNS networks, so there are none to remove.",
+	"hyperbutler creates no services, registry keys, firewall rules or HNS networks, so there are none to remove; its only scheduled task is the autostart task (config set autostart true), listed above when it exists.",
 	"Only files hyperbutler names are removed, never a directory's other contents; a directory goes only when it is empty afterwards.",
 	"hyperbutler.exe, its folder and its PATH entry are not removed: delete the folder and the PATH entry yourself.",
 }
@@ -139,6 +139,7 @@ func (in *install) planUninstall(keepData, up bool) *uninstallPlan {
 	in.planACLs(p, st, keepData, up, dataDirs)
 	in.planContext(p, st)
 	in.planPlugins(p)
+	planAutostart(in, p)
 
 	// Files, by name, in the order they are removed: the data disk first, settings.json
 	// last (and only if everything before it went), so a failed uninstall still knows
@@ -167,6 +168,7 @@ func (in *install) planUninstall(keepData, up bool) *uninstallPlan {
 			addFile(f, "data disk: all images, containers and volumes")
 		}
 	}
+	addFile(updateRecordPath(l), "the last update check")
 	for _, f := range append([]string{l.StatePath(), l.DaemonAppliedPath(), l.CAExtraPath()}, append(append(tmpSiblings(l.StatePath()), tmpSiblings(l.DaemonAppliedPath())...), tmpSiblings(l.CAExtraPath())...)...) {
 		addFile(f, "")
 	}
@@ -642,6 +644,8 @@ func cmdUninstall(args []string, stdin io.Reader, stdout, stderr io.Writer) erro
 			err = removeContext(p.restoreCtx, p.restore)
 		case it.Kind == uninstallPlugins:
 			err = removePluginDir(it.Path)
+		case it.Kind == uninstallTask:
+			err = scheduler.Delete(it.Path)
 		case it.Kind == uninstallFile && it.last:
 			deferred = append(deferred, it)
 			continue

@@ -228,8 +228,10 @@ func cmdStart(args []string, stdout, stderr io.Writer) error {
 		if !*noContext && in.settings.ContextManaged() {
 			in.selectContext(st.Pipe, stdout, stderr)
 		}
+		in.startNotes(st, stdout, stderr)
 		return nil
 	}
+	firstStart := !diskExists(in.l)
 	in.noteCrash(stderr)
 	if err := in.createDataDir(); err != nil {
 		return err
@@ -259,6 +261,10 @@ func cmdStart(args []string, stdout, stderr io.Writer) error {
 		in.selectContext(st.Pipe, stdout, stderr)
 	}
 	checkDockerCLI(findDockerCLI(), stdout, stderr)
+	in.startNotes(st, stdout, stderr)
+	if firstStart && !in.settings.Autostart {
+		_, _ = fmt.Fprintln(stdout, autostartTip)
+	}
 	return nil
 }
 
@@ -764,13 +770,25 @@ func cmdStatus(args []string, stdout, stderr io.Writer) (int, error) {
 		}
 	}
 	if store, err := dockerctx.DefaultStore(); err == nil {
+		cur, cerr := store.Current()
+		if cerr == nil {
+			r.ContextCurrent = cur
+			if cur == "" {
+				r.ContextCurrent = "default"
+			}
+		}
 		if c, err := store.Get(contextName); err == nil && c.Managed {
 			r.Context = contextName
-			cur, _ := store.Current()
-			r.ContextSel = cur == contextName
+			r.ContextSel = cerr == nil && cur == contextName
 		}
 	}
 	r.GuardPause = guardPauseStatus(r.State, r.Running, r.HostFree)
+	if r.Running && r.State != nil && r.State.Phase.Live() && r.State.GuestFS != nil {
+		g := r.State.GuestFS
+		r.GuestDisk = &GuestDiskJSON{SizeBytes: g.SizeBytes, UsedBytes: g.UsedBytes(), FreeBytes: g.FreeBytes, UsedPercent: g.UsedPercent(), Updated: g.Updated}
+	}
+	upd := in.checkUpdate(stderr)
+	r.Update = updateJSON(upd)
 	cli := findDockerCLI()
 	r.DockerCLI, r.DockerCLIBundled = cli.Path, cli.Bundled
 	code := 0
@@ -810,16 +828,33 @@ func cmdStatus(args []string, stdout, stderr io.Writer) (int, error) {
 		_, _ = fmt.Fprintf(stdout, "  guest:   %d MiB, %d CPUs\n", r.MemoryMB, r.CPUs)
 		if r.Disk != "" {
 			_, _ = fmt.Fprintf(stdout, "  data:    %s (%s on the host, %s maximum; %s free on the volume)\n", r.Disk, engine.HumanSize(r.DiskUsed), engine.FormatSize(r.DiskMax), engine.HumanSize(r.HostFree))
+			if r.GuestDisk != nil {
+				full := ""
+				if r.GuestDisk.UsedPercent > guestFullPercent {
+					full = "; nearly full: docker system prune frees space"
+				}
+				_, _ = fmt.Fprintf(stdout, "           %s%s\n", guestFSLine(r.State.GuestFS), full)
+			}
 		} else {
 			_, _ = fmt.Fprintf(stdout, "  data:    %s (no data disk yet)\n", r.DataDir)
 		}
 	}
 	if r.Context != "" {
 		sel := "not selected"
-		if r.ContextSel {
+		switch {
+		case r.ContextSel:
 			sel = "selected"
+		case r.ContextCurrent != "":
+			// REQ-UX-018: say which one is, so Docker Desktop's containers are not
+			// mistaken for hyperbutler's.
+			sel = fmt.Sprintf("not selected; docker uses %q", r.ContextCurrent)
 		}
 		_, _ = fmt.Fprintf(stdout, "  context: %s (%s)\n", r.Context, sel)
+	}
+	if h := os.Getenv("DOCKER_HOST"); h != "" {
+		_, _ = fmt.Fprintf(stdout, "           DOCKER_HOST=%s overrides the context in this shell\n", h)
+	} else if c := os.Getenv("DOCKER_CONTEXT"); c != "" && c != contextName {
+		_, _ = fmt.Fprintf(stdout, "           DOCKER_CONTEXT=%s overrides the selection in this shell\n", c)
 	}
 	switch {
 	case cli.usesBundled():
@@ -843,6 +878,7 @@ func cmdStatus(args []string, stdout, stderr io.Writer) (int, error) {
 		}
 	}
 	_, _ = fmt.Fprintf(stdout, "  state:   %s\n", in.l.Home)
+	noteUpdate(stdout, upd)
 	return code, nil
 }
 

@@ -100,6 +100,18 @@ func cliTooOld(major, minor int) bool {
 	return major < minCLIMajor || major == minCLIMajor && minor < minCLIMinor
 }
 
+// cliVersion runs `docker --version` (which contacts no engine) and parses it; ok is
+// false when it fails or prints something else (a wrapper, an unusual build).
+func cliVersion(path string) (major, minor int, ok bool) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, path, "--version").Output()
+	if err != nil {
+		return 0, 0, false
+	}
+	return parseCLIVersion(string(out))
+}
+
 // pathAdvice is the PowerShell line that puts dir first on this shell's PATH.
 func pathAdvice(dir string) string { return fmt.Sprintf(`$env:Path = "%s;$env:Path"`, dir) }
 
@@ -116,15 +128,12 @@ func checkDockerCLI(c dockerCLI, stdout, stderr io.Writer) {
 		}
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	out, err := exec.CommandContext(ctx, c.Path, "--version").Output() //nolint:gosec // G204: the docker CLI on the user's own PATH
-	major, minor, ok := parseCLIVersion(string(out))
+	major, minor, ok := cliVersion(c.Path)
 	which := "on PATH"
 	if c.usesBundled() {
 		which = "bundled"
 	}
-	if err != nil || !ok {
+	if !ok {
 		_, _ = fmt.Fprintf(stdout, "docker CLI: %s (%s).\n", c.Path, which)
 		return // a wrapper or an unusual build: nothing more to say
 	}

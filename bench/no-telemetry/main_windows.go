@@ -169,6 +169,15 @@ func run() (err error) {
 		return err
 	}
 
+	// The update check (REQ-UX-022) is the one request hyperbutler makes of its own, and
+	// REQ-UX-005 allows it because it can be turned off: the run checks everything else,
+	// with it off.
+	cfgOut, err := c.hb.Config(ctx, "set", "updateCheck", "false")
+	if err != nil {
+		return err
+	}
+	logf("update check off for the run (it is the one allowed request, REQ-UX-022): %s", cfgOut)
+
 	before, err := hostmon.Snapshot()
 	if err != nil {
 		return err

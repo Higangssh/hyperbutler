@@ -116,9 +116,8 @@ var (
 // Reserved are names kept for settings that are planned but not implemented
 // (docs/research/settings-and-gui.md). Set and Get refuse them with ErrReserved.
 var Reserved = []string{
-	"proxy.mode",        // REQ-UX-009: the Windows system proxy (WinINET/WinHTTP), 0.2
-	"updates.check",     // REQ-UX-005
-	"autostart", "tray", // ADR 0008
+	"proxy.mode",             // REQ-UX-009: the Windows system proxy (WinINET/WinHTTP), 0.2
+	"tray",                   // ADR 0008
 	"ports.lan",              // REQ-NET
 	"buildkit.gcKeepStorage", // REQ-DISK-006
 }
@@ -249,6 +248,40 @@ var Keys = []*Key{
 			return nil
 		},
 		unset: func(s *engine.Settings, _ Env) error { s.ManageContext = nil; return nil },
+	},
+	{
+		Name: "autostart", Type: "bool", Apply: ApplyLive,
+		Description: "whether hyperbutler starts when you sign in to Windows: config set creates (or removes) one Task Scheduler task of yours, no admin needed",
+		def:         func(Env) string { return "false" },
+		get: func(s *engine.Settings, _ Env) (string, bool) {
+			return strconv.FormatBool(s.Autostart), s.Autostart
+		},
+		set: func(s *engine.Settings, v string, _ Env) error {
+			b, err := ParseBool(v)
+			if err != nil {
+				return err
+			}
+			s.Autostart = b
+			return nil
+		},
+		unset: func(s *engine.Settings, _ Env) error { s.Autostart = false; return nil },
+	},
+	{
+		Name: "updateCheck", Type: "bool", Apply: ApplyLive,
+		Description: "whether start and status ask GitHub at most once a day whether a newer release exists; it only prints a note, never downloads",
+		def:         func(Env) string { return "true" },
+		get: func(s *engine.Settings, _ Env) (string, bool) {
+			return strconv.FormatBool(s.UpdateChecked()), s.UpdateCheck != nil
+		},
+		set: func(s *engine.Settings, v string, _ Env) error {
+			b, err := ParseBool(v)
+			if err != nil {
+				return err
+			}
+			s.UpdateCheck = &b
+			return nil
+		},
+		unset: func(s *engine.Settings, _ Env) error { s.UpdateCheck = nil; return nil },
 	},
 	{
 		Name: "hostGateway.enabled", Type: "bool", Apply: ApplyLive, Engine: true,
@@ -543,6 +576,7 @@ func copySettings(s *engine.Settings, e Env) *engine.Settings {
 	cp.ManageContext = copyBool(s.ManageContext)
 	cp.HostGatewayEnabled = copyBool(s.HostGatewayEnabled)
 	cp.CAImport = copyBool(s.CAImport)
+	cp.UpdateCheck = copyBool(s.UpdateCheck)
 	cp.Version = engine.SettingsVersion
 	return &cp
 }
@@ -566,8 +600,9 @@ func Equal(a, b *engine.Settings) bool {
 	ac.ManageContext, bc.ManageContext = nil, nil
 	ac.HostGatewayEnabled, bc.HostGatewayEnabled = nil, nil
 	ac.CAImport, bc.CAImport = nil, nil
+	ac.UpdateCheck, bc.UpdateCheck = nil, nil
 	return ac == bc && sameBool(a.ManageContext, b.ManageContext) && sameBool(a.HostGatewayEnabled, b.HostGatewayEnabled) &&
-		sameBool(a.CAImport, b.CAImport)
+		sameBool(a.CAImport, b.CAImport) && sameBool(a.UpdateCheck, b.UpdateCheck)
 }
 
 // Names returns the key names, sorted, for usage text.

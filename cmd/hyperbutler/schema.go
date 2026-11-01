@@ -60,6 +60,59 @@ type StatusJSON struct {
 	DockerCLIBundled string `json:"dockerCliBundled,omitempty"`
 	// GuardPause is set while the free-space guard keeps the VM paused (REQ-DISK-010).
 	GuardPause *GuardPauseJSON `json:"guardPause,omitempty"`
+	// ContextCurrent is the docker context config.json selects ("default" for docker's
+	// default), when it can be read (REQ-UX-018).
+	ContextCurrent string `json:"dockerContextCurrent,omitempty"`
+	// GuestDisk is the guest file system on the data disk, as the guest last reported
+	// it while running (REQ-DISK-009).
+	GuestDisk *GuestDiskJSON `json:"guestDisk,omitempty"`
+	// Update is the last update check, when the check is on (REQ-UX-022).
+	Update *UpdateJSON `json:"update,omitempty"`
+}
+
+// GuestDiskJSON is the guest data file system's use; the numbers are guest-reported.
+type GuestDiskJSON struct {
+	SizeBytes   uint64    `json:"sizeBytes"`
+	UsedBytes   uint64    `json:"usedBytes"`
+	FreeBytes   uint64    `json:"freeBytes"`
+	UsedPercent float64   `json:"usedPercent"`
+	Updated     time.Time `json:"updated"`
+}
+
+// UpdateJSON is the last update check: when it was made, and the newest release and its
+// page from the last check that got an answer (empty: none, or no release).
+type UpdateJSON struct {
+	Checked time.Time `json:"checked"`
+	Latest  string    `json:"latest,omitempty"`
+	URL     string    `json:"url,omitempty"`
+}
+
+// AutostartJSON is the autostart task (REQ-UX-015) in `config list --json`.
+type AutostartJSON struct {
+	Task    string `json:"task"`
+	Exists  bool   `json:"exists"`
+	Command string `json:"command,omitempty"` // the program and arguments it runs
+	// ThisExe says whether it starts this hyperbutler.exe.
+	ThisExe bool   `json:"thisExe"`
+	Error   string `json:"error,omitempty"`
+}
+
+// DoctorJSON is `hyperbutler doctor --json` (REQ-UX-019): every check, in order. OK is
+// false when a check failed, and the command then exits 1.
+type DoctorJSON struct {
+	Schema int           `json:"schema"`
+	Home   string        `json:"home"`
+	OK     bool          `json:"ok"`
+	Checks []DoctorCheck `json:"checks"`
+}
+
+// DoctorCheck is one check: ID names it ("pipe", "credential-helper", ...), Status is
+// ok, info, warn or fail, and Fix says what to do when it is not ok.
+type DoctorCheck struct {
+	ID      string `json:"id"`
+	Status  string `json:"status"`
+	Summary string `json:"summary"`
+	Fix     string `json:"fix,omitempty"`
 }
 
 // GuardPauseJSON is a pause by the free-space guard: the host volume, its free space as
@@ -76,6 +129,8 @@ type ConfigListJSON struct {
 	Schema       int           `json:"schema"`
 	SettingsFile string        `json:"settingsFile"`
 	Keys         []config.Item `json:"keys"`
+	// Autostart is the autostart task as Task Scheduler has it.
+	Autostart *AutostartJSON `json:"autostart,omitempty"`
 }
 
 // ConfigGetJSON is `hyperbutler config get KEY --json`: one key, as in list.
@@ -132,12 +187,13 @@ const (
 	uninstallACL     = "acl"            // a VM account's access entry on a disk file
 	uninstallContext = "docker-context" // the "hyperbutler" docker context
 	uninstallPlugins = "docker-plugins" // the bundled cli-plugins entry in the docker CLI's config.json
+	uninstallTask    = "scheduled-task" // the autostart task in Task Scheduler (REQ-UX-015)
 	uninstallFile    = "file"
 	uninstallDir     = "dir" // removed only when empty
 )
 
 // uninstallKinds are every Kind, in the order docs/research/settings.md lists them.
-var uninstallKinds = []string{uninstallEngine, uninstallVM, uninstallACL, uninstallContext, uninstallPlugins, uninstallFile, uninstallDir}
+var uninstallKinds = []string{uninstallEngine, uninstallVM, uninstallACL, uninstallContext, uninstallPlugins, uninstallTask, uninstallFile, uninstallDir}
 
 // UninstallItem is one thing hyperbutler created. Kind is one of uninstallKinds; Path
 // is the file, directory, compute system id, context name or plugin directory.
