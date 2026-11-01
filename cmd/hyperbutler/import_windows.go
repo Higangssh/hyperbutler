@@ -12,6 +12,7 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -19,6 +20,7 @@ import (
 	"github.com/Microsoft/go-winio"
 
 	"github.com/Higangssh/hyperbutler/internal/desktopimport"
+	"github.com/Higangssh/hyperbutler/internal/engine"
 	"github.com/Higangssh/hyperbutler/internal/mcpserver"
 	"github.com/Higangssh/hyperbutler/internal/redact"
 )
@@ -56,7 +58,7 @@ func cmdImport(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	}
 	sel := desktopimport.Selection{
 		Images: splitList(*images), AllImages: *allImages, Volumes: splitList(*volumes), AllVolumes: *allVolumes,
-		OverwriteVolumes: *overwrite, AllowLiveVolumes: *allowLive,
+		OverwriteVolumes: *overwrite, AllowLiveVolumes: *allowLive, ForceSpace: *forceSpace,
 	}
 	picked := len(sel.Images) > 0 || sel.AllImages || len(sel.Volumes) > 0 || sel.AllVolumes
 	interactive := !picked && !*dryRun && !*asJSON && isConsole(stdin)
@@ -64,17 +66,12 @@ func cmdImport(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 		return usagef("import: say what to import: --image, --all-images, --volume or --all-volumes (--dry-run lists what there is)")
 	}
 
-	in, err := openInstall()
+	// Run takes the installation's import lock and checks the free space itself (so a
+	// GUI import gets both too); a plan, a dry run's too, removes nothing.
+	home, err := engine.DefaultHome()
 	if err != nil {
 		return err
 	}
-	// A dry run takes it too: its plan removes left-over helpers, and compares volumes
-	// with helpers of its own.
-	lock, err := in.importLock()
-	if err != nil {
-		return err
-	}
-	defer func() { _ = lock.Unlock() }()
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -92,6 +89,7 @@ func cmdImport(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 		Dial:       func(ctx context.Context, pipe string) (net.Conn, error) { return winio.DialPipeContext(ctx, pipe) },
 		SourcePipe: *fromPipe,
 		TargetPipe: target,
+		Home:       home,
 	})
 	if err != nil {
 		return errors.New(redact.String(err.Error()))
@@ -108,7 +106,10 @@ func cmdImport(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 		Source: ImportSourceJSON{Pipe: plan.Source.Pipe, Via: plan.Source.Via, Version: plan.Source.Version}}
 	if *dryRun {
 		if picked {
-			plan = narrowPlan(plan, sel)
+			// The names resolve as the import resolves them; an unknown one is an error.
+			if plan, err = plan.Select(sel); err != nil {
+				return err
+			}
 		}
 		for _, ip := range plan.Images {
 			out.Items = append(out.Items, imagePlanJSON(ip))
@@ -117,6 +118,7 @@ func cmdImport(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 			out.Items = append(out.Items, volumePlanJSON(vp))
 		}
 		out.OK = true
+		out.Notes = append(out.Notes, plan.Recovery...)
 		if *asJSON {
 			return writeJSON(stdout, out)
 		}
@@ -133,19 +135,6 @@ func cmdImport(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 			_, _ = fmt.Fprintln(stdout, "Nothing picked; nothing was copied.")
 			return nil
 		}
-	}
-
-	space, err := in.importSpaceFor(plan, sel)
-	if err != nil {
-		return err
-	}
-	if err := space.check(); err != nil && !*forceSpace {
-		return err
-	} else if err != nil {
-		_, _ = fmt.Fprintf(stderr, "hyperbutler: warning: %v (going on: --force-space)\n", err)
-	}
-	if space.unknown > 0 && !*asJSON {
-		_, _ = fmt.Fprintf(stderr, "hyperbutler: note: Docker Desktop gave no size for %s, which the space check does not count\n", countText(space.unknown, "volume"))
 	}
 
 	res, err := im.Run(ctx, plan, sel, pr.event)
@@ -232,42 +221,6 @@ func splitList(s string) []string {
 	return out
 }
 
-// narrowPlan keeps the plan's items a selection names (for a dry run with names).
-func narrowPlan(p *desktopimport.Plan, sel desktopimport.Selection) *desktopimport.Plan {
-	n := *p
-	if !sel.AllImages {
-		n.Images = nil
-		for _, ip := range p.Images {
-			for _, name := range sel.Images {
-				if ip.ID == name || strings.TrimPrefix(ip.ID, "sha256:") == name || containsRef(ip.Tags, name) {
-					n.Images = append(n.Images, ip)
-					break
-				}
-			}
-		}
-	}
-	if !sel.AllVolumes {
-		n.Volumes = nil
-		for _, vp := range p.Volumes {
-			for _, name := range sel.Volumes {
-				if vp.Name == name {
-					n.Volumes = append(n.Volumes, vp)
-				}
-			}
-		}
-	}
-	return &n
-}
-
-func containsRef(tags []string, name string) bool {
-	for _, t := range tags {
-		if t == name || t == name+":latest" {
-			return true
-		}
-	}
-	return false
-}
-
 func imagePlanJSON(ip desktopimport.ImagePlan) ImportItemJSON {
 	return ImportItemJSON{Kind: desktopimport.KindImage, Name: ip.Name(), ID: ip.ID, Tags: ip.Tags, SizeBytes: ip.Size,
 		Status: string(ip.Status), Reason: ip.Reason, MissingTags: ip.MissingTags}
@@ -315,6 +268,8 @@ func statusText(s desktopimport.Status) string {
 		return "partly present (tags)"
 	case desktopimport.StatusConflict:
 		return "conflict"
+	case desktopimport.StatusDifferentLabels:
+		return "same content, different labels"
 	case desktopimport.StatusExists:
 		return "name exists in hyperbutler"
 	}
@@ -349,7 +304,7 @@ func writePlan(w io.Writer, p *desktopimport.Plan, numbered bool) {
 		tw.row(cols(i, vp.Name, sizeText(vp.Size), statusText(vp.Status), why)...)
 	}
 	tw.flush()
-	for _, n := range p.Notes {
+	for _, n := range append(slices.Clone(p.Notes), p.Recovery...) {
 		_, _ = fmt.Fprintln(w, "Note:", redact.String(n))
 	}
 	_, _ = fmt.Fprintln(w)

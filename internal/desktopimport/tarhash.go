@@ -89,6 +89,9 @@ func (s *tarSum) header(h *tar.Header) {
 	s.num(h.Devminor)
 }
 
+// empty reports whether the archive held the volume root only.
+func (s *tarSum) empty() bool { return s.entries <= 1 }
+
 // Sum is "sha256:" and the hex digest.
 func (s *tarSum) Sum() string { return "sha256:" + hex.EncodeToString(s.h.Sum(nil)) }
 

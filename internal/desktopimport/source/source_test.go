@@ -17,9 +17,10 @@ import (
 
 // recorder answers every request with {} (201 for a create) and records it.
 type recorder struct {
-	mu   sync.Mutex
-	reqs []string
-	body map[string]any
+	mu       sync.Mutex
+	reqs     []string
+	body     map[string]any
+	delQuery string
 }
 
 func newClient(t *testing.T) (*Client, *recorder) {
@@ -27,6 +28,9 @@ func newClient(t *testing.T) (*Client, *recorder) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		rec.mu.Lock()
 		rec.reqs = append(rec.reqs, r.Method+" "+r.URL.Path)
+		if r.Method == http.MethodDelete {
+			rec.delQuery = r.URL.Query().Encode()
+		}
 		if r.URL.Path == "/containers/create" {
 			_ = json.NewDecoder(r.Body).Decode(&rec.body)
 		}
@@ -94,19 +98,23 @@ func TestSourceClientRejectsWrites(t *testing.T) {
 		t.Fatalf("refused calls reached the engine: %v", rec.list())
 	}
 	// A stale "helper" whose inspect does not show the label is left alone.
-	if err := c.RemoveStaleHelper(ctx, "abc"); !errors.Is(err, ErrNotAllowed) {
+	if err := c.RemoveStaleHelper(ctx, "abc", func(string) bool { return false }); !errors.Is(err, ErrNotAllowed) {
 		t.Errorf("stale: %v", err)
 	}
+	run := NewRunID()
 	for _, bad := range []string{"../x", "a/b", "-v"} {
-		if _, err := c.CreateHelper(ctx, "busybox", bad); err == nil {
+		if _, err := c.CreateHelper(ctx, "busybox", bad, run); err == nil {
 			t.Errorf("volume %q accepted", bad)
 		}
 	}
-	if _, err := c.CreateHelper(ctx, "../busybox", "pg"); err == nil {
+	if _, err := c.CreateHelper(ctx, "../busybox", "pg", run); err == nil {
 		t.Error("bad image accepted")
 	}
+	if _, err := c.CreateHelper(ctx, "busybox", "pg", "x"); err == nil {
+		t.Error("bad run id accepted")
+	}
 
-	id, err := c.CreateHelper(ctx, "busybox", "pg")
+	id, err := c.CreateHelper(ctx, "busybox", "pg", run)
 	if err != nil || id != "abc123" {
 		t.Fatalf("create: %q %v", id, err)
 	}
@@ -115,7 +123,8 @@ func TestSourceClientRejectsWrites(t *testing.T) {
 	if m["ReadOnly"] != true || m["Source"] != "pg" || m["VolumeOptions"].(map[string]any)["NoCopy"] != true {
 		t.Errorf("mount %v", m)
 	}
-	if rec.body["Labels"].(map[string]any)[HelperLabel] != HelperLabelValue || rec.body["NetworkDisabled"] != true {
+	labels := rec.body["Labels"].(map[string]any)
+	if labels[HelperLabel] != HelperLabelValue || labels[RunLabel] != run || rec.body["NetworkDisabled"] != true {
 		t.Errorf("body %v", rec.body)
 	}
 	if !reflect.DeepEqual(c.Helpers(), []string{"abc123"}) {
@@ -126,6 +135,13 @@ func TestSourceClientRejectsWrites(t *testing.T) {
 	}
 	if err := c.RemoveHelper(ctx, id); !errors.Is(err, ErrNotAllowed) {
 		t.Errorf("removed twice: %v", err)
+	}
+	// A helper goes with any anonymous volume its image would have made, and unforced.
+	rec.mu.Lock()
+	q := rec.delQuery
+	rec.mu.Unlock()
+	if q != "force=0&v=1" {
+		t.Errorf("remove query %q", q)
 	}
 	for _, r := range rec.list() {
 		method, path, _ := strings.Cut(r, " ")

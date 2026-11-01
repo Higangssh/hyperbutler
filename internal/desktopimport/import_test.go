@@ -463,12 +463,12 @@ func TestInterruptedCopyIsCleanedUp(t *testing.T) {
 	p.src.addVolume("data", files("full")...)
 	p.src.addVolume("mine", files("src")...)
 	p.dst.addImage("busybox:latest")
+	dead := source.NewRunID() // a killed run: no process holds it
 	half := p.dst.addVolume("data", files("fu")...)
-	half.Labels = map[string]string{importLabel: "docker-desktop"}
+	half.Labels = map[string]string{importLabel: "docker-desktop", source.RunLabel: dead}
 	own := p.dst.addVolume("mine", files("dst")...)
 	for _, v := range []string{"data", "mine"} {
-		h := p.dst.addContainer("hyperbutler-import-x"+v, "created", v)
-		h.Labels = map[string]string{source.HelperLabel: source.HelperLabelValue, copyingLabel: v}
+		p.dst.addHelper(v, dead, true)
 	}
 	im := p.open(t)
 	plan, res := run(t, im, Selection{AllVolumes: true})
@@ -510,7 +510,9 @@ func TestSourceChangeIsReported(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res.Source.Unchanged || res.OK() || !strings.Contains(strings.Join(res.Source.Differences, ";"), "is now") {
+	// The import never stops a container: the user's change is a warning, and every item
+	// being OK, so is the import (L1).
+	if !res.Source.Unchanged || !res.OK() || !strings.Contains(strings.Join(res.Source.Warnings, ";"), "is now") {
 		t.Errorf("source %+v", res.Source)
 	}
 }
@@ -611,14 +613,23 @@ func TestEndpointFromContext(t *testing.T) {
 func TestCompareSnapshots(t *testing.T) {
 	b := &snapshot{images: map[string]string{"i1": "a:1", "i2": "b:1"}, volumes: map[string]bool{"v1": true, "v2": true},
 		hashes: map[string]string{"v1": "h1", "v2": "h2"}, containers: map[string]string{"c1": "web running i1"}}
-	same := compareSnapshots(b, b, nil)
+	same := compareSnapshots(b, b, nil, "r1")
 	if !same.Unchanged || same.Images != 2 || same.Volumes != 2 || same.Containers != 1 {
 		t.Fatalf("same %+v", same)
 	}
+	// Images, tags, a volume's content and this run's helper are differences; another
+	// run's helper is not this run's; a container's state and a live volume's content
+	// are warnings only.
 	a := &snapshot{images: map[string]string{"i1": "a:1,a:2", "i3": "c:1"}, volumes: map[string]bool{"v1": true, "v2": true},
-		hashes: map[string]string{"v1": "x", "v2": "y"}, containers: map[string]string{"c1": "web exited i1"}, helpers: []string{"h"}}
-	c := compareSnapshots(b, a, map[string]bool{"v2": true})
-	if c.Unchanged || len(c.Differences) != 6 || len(c.Warnings) != 1 {
+		hashes: map[string]string{"v1": "x", "v2": "y"}, containers: map[string]string{"c1": "web exited i1"},
+		helpers: []apiContainer{{ID: "h", Labels: map[string]string{source.RunLabel: "r1"}}, {ID: "o", Labels: map[string]string{source.RunLabel: "r2"}}}}
+	c := compareSnapshots(b, a, map[string]bool{"v2": true}, "r1")
+	if c.Unchanged || len(c.Differences) != 5 || len(c.Warnings) != 2 {
 		t.Fatalf("%+v", c)
+	}
+	// Only a container changed: unchanged, with a warning.
+	a = &snapshot{images: b.images, volumes: b.volumes, hashes: b.hashes, containers: map[string]string{"c1": "web exited i1", "c2": "new running i1"}}
+	if c := compareSnapshots(b, a, nil, "r1"); !c.Unchanged || len(c.Warnings) != 2 {
+		t.Fatalf("containers only: %+v", c)
 	}
 }

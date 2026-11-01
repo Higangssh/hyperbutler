@@ -15,6 +15,11 @@ const (
 	// StatusConflict: hyperbutler has something else under that name (a tag of another
 	// image, a volume with other content). It is refused.
 	StatusConflict Status = "conflict"
+	// StatusDifferentLabels: a volume of that name in hyperbutler has the same content
+	// but other labels or driver options (labels docker compose relies on, say). It is
+	// refused unless Selection.OverwriteVolumes, except that an empty, unused volume
+	// without compose labels is created again with Docker Desktop's labels.
+	StatusDifferentLabels Status = "different-labels"
 	// StatusExists: a volume of that name exists in hyperbutler and its content was not
 	// compared (Plan without CompareVolumes, or no image to compare it with).
 	StatusExists Status = "exists"
@@ -78,6 +83,9 @@ type Plan struct {
 	// created from; empty when there is none (volumes cannot be copied then).
 	HelperImage string   `json:"helperImage,omitempty"`
 	Notes       []string `json:"notes,omitempty"`
+	// Recovery is what an interrupted import left behind and Run removes first (or
+	// keeps, and why). Plan removes none of it.
+	Recovery []string `json:"recovery,omitempty"`
 }
 
 // Selection is what Run imports. Names are image tags (busybox means busybox:latest),
@@ -88,12 +96,16 @@ type Selection struct {
 	AllImages  bool
 	Volumes    []string
 	AllVolumes bool
-	// OverwriteVolumes replaces a hyperbutler volume of the same name whose content
-	// differs (its old content is deleted first).
+	// OverwriteVolumes replaces a hyperbutler volume of the same name whose content or
+	// labels differ. Docker Desktop's content is first copied into a temporary volume
+	// and verified; only then is hyperbutler's deleted, and the new one filled from the
+	// temporary one and verified again. It needs twice the volume's size while it runs.
 	OverwriteVolumes bool
 	// AllowLiveVolumes copies a volume a running Docker Desktop container mounts; the
 	// copy may then be inconsistent.
 	AllowLiveVolumes bool
+	// ForceSpace starts the copy even when Importer.Space says it does not fit.
+	ForceSpace bool
 }
 
 // Outcome is what Run did with an item.
@@ -132,9 +144,13 @@ type SourceCheck struct {
 	Volumes    int  `json:"volumes"`
 	Containers int  `json:"containers"`
 	// HashedVolumes is how many volumes' content hashes were compared.
-	HashedVolumes int      `json:"hashedVolumes"`
-	Differences   []string `json:"differences,omitempty"`
-	// Warnings are changes expected from running containers (a live volume's content).
+	HashedVolumes int `json:"hashedVolumes"`
+	// Differences are changes the import could have caused: images, tags, volumes, the
+	// content of a volume it read, a helper container left. Any makes Unchanged false.
+	Differences []string `json:"differences,omitempty"`
+	// Warnings are changes the import cannot cause: a container's state (the user's own
+	// actions in Docker Desktop, or its restart policy), a container added or removed,
+	// and the content of a volume running containers write.
 	Warnings []string `json:"warnings,omitempty"`
 }
 

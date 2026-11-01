@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -37,15 +38,27 @@ type fakeDocker struct {
 	volumes    map[string]*fVolume
 	containers map[string]*fContainer
 
+	created []fContainer // every container create, as made
+
+	// Engine.
+	classic bool   // the classic image store, not containerd's
+	arch    string // /info's Architecture; "" is x86_64
+
 	// Hooks.
-	failLoad    string                // the load answer reports this error (after tagging)
-	corruptPut  bool                  // PUT archive flips a byte of the first file
-	onArchive   func(f *fakeDocker)   // runs (unlocked) before a GET archive answers
-	onLoadRead  func()                // runs after the load body is read
-	exportBytes int                   // padding of an image export
-	mutateRead  func(v *fVolume) bool // runs before each GET archive, under the lock
-	blockPut    chan struct{}         // PUT archive waits for it to close
-	otherLoadID bool                  // a load stores the image under another id
+	failLoad    string                   // the load answer reports this error (after tagging)
+	corruptPut  bool                     // PUT archive flips a byte of the first file
+	corruptNth  int                      // only the n-th PUT archive (1-based) is corrupted
+	puts        int                      // PUT archives so far
+	onArchive   func(f *fakeDocker)      // runs (unlocked) before a GET archive answers
+	onLoadRead  func()                   // runs after the load body is read
+	exportBytes int                      // padding of an image export
+	mutateRead  func(v *fVolume) bool    // runs before each GET archive, under the lock
+	blockPut    chan struct{}            // PUT archive waits for it to close
+	blockPutVol string                   // with blockPut: only PUTs into this volume wait
+	onPut       func(volume string)      // runs (unlocked) when a PUT archive starts
+	otherLoadID bool                     // a load stores the image under another id
+	failArchive string                   // GET archive of this volume fails
+	failRemove  func(c *fContainer) bool // under the lock: true fails a container's removal
 }
 
 type fImage struct {
@@ -54,6 +67,20 @@ type fImage struct {
 	Size    int64    `json:"Size"`
 	Created string   `json:"Created"`
 	Layers  []string `json:"Layers"`
+	Arch    string   `json:"-"` // "" is amd64
+	Config  fConfig  `json:"-"`
+}
+
+// fExport is an image in the fake's export, which a load reads back.
+type fExport struct {
+	fImage
+	Arch   string  `json:"Arch"`
+	Config fConfig `json:"Config"`
+}
+
+type fConfig struct {
+	Cmd     []string            `json:"Cmd"`
+	Volumes map[string]struct{} `json:"Volumes"`
 }
 
 type fFile struct {
@@ -79,6 +106,7 @@ type fContainer struct {
 	ReadOnly               bool
 	Entrypoint             []string
 	Started                bool
+	Anon                   []string // anonymous volumes its create made
 }
 
 func newFake(t *testing.T, id string) *fakeDocker {
@@ -111,6 +139,32 @@ func (f *fakeDocker) addContainer(name, state, volume string) *fContainer {
 	c := &fContainer{ID: randID(), Name: name, State: state, Volume: volume, Image: "sha256:x", Labels: map[string]string{}}
 	f.containers[c.ID] = c
 	return c
+}
+
+// addHelper adds a never-started import helper of run that mounts volume, labeled as
+// filling it when copying.
+func (f *fakeDocker) addHelper(volume, run string, copying bool) *fContainer {
+	c := f.addContainer("hyperbutler-import-"+randID()[:12], "created", volume)
+	c.Labels = map[string]string{source.HelperLabel: source.HelperLabelValue, source.RunLabel: run}
+	if copying {
+		c.Labels[copyingLabel] = volume
+	}
+	c.Entrypoint = []string{source.HelperEntrypoint}
+	return c
+}
+
+// addVolumeImage adds an image that declares VOLUME paths (as redis or postgres do).
+func (f *fakeDocker) addVolumeImage(size int64, tags ...string) *fImage {
+	im := f.addImage(tags...)
+	im.Size = size
+	im.Config.Volumes = map[string]struct{}{"/data": {}}
+	return im
+}
+
+func (f *fakeDocker) volumeNames() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return slices.Sorted(maps.Keys(f.volumes))
 }
 
 func (f *fakeDocker) reqs() []string {
@@ -196,7 +250,15 @@ func (f *fakeDocker) serve(w http.ResponseWriter, r *http.Request) {
 	case r.Method == http.MethodGet && path == "/version":
 		writeJSON(w, 200, map[string]string{"Version": "29.0.0"})
 	case r.Method == http.MethodGet && path == "/info":
-		writeJSON(w, 200, map[string]any{"ID": f.id, "DriverStatus": [][2]string{{"driver-type", "io.containerd.snapshotter.v1"}}})
+		ds := [][2]string{{"driver-type", "io.containerd.snapshotter.v1"}}
+		if f.classic {
+			ds = [][2]string{{"Backing Filesystem", "extfs"}}
+		}
+		arch := f.arch
+		if arch == "" {
+			arch = "x86_64"
+		}
+		writeJSON(w, 200, map[string]any{"ID": f.id, "DriverStatus": ds, "OSType": "linux", "Architecture": arch})
 	case r.Method == http.MethodGet && path == "/images/json":
 		f.mu.Lock()
 		list := []fImage{}
@@ -210,7 +272,12 @@ func (f *fakeDocker) serve(w http.ResponseWriter, r *http.Request) {
 		im := f.findImage(strings.Join(segs[1:len(segs)-1], "/"))
 		var out map[string]any
 		if im != nil {
-			out = map[string]any{"Id": im.ID, "RepoTags": im.Tags, "Created": im.Created, "Architecture": "amd64", "Os": "linux", "RootFS": map[string]any{"Layers": im.Layers}}
+			arch := im.Arch
+			if arch == "" {
+				arch = "amd64"
+			}
+			out = map[string]any{"Id": im.ID, "RepoTags": im.Tags, "Created": im.Created, "Architecture": arch, "Os": "linux",
+				"Config": im.Config, "RootFS": map[string]any{"Layers": im.Layers}}
 		}
 		f.mu.Unlock()
 		if out == nil {
@@ -220,12 +287,12 @@ func (f *fakeDocker) serve(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 200, out)
 	case r.Method == http.MethodGet && path == "/images/get":
 		f.mu.Lock()
-		var ims []fImage
+		var ims []fExport
 		for _, n := range q["names"] {
 			if im := f.findImage(n); im != nil {
 				c := *im
 				c.Tags = []string{n}
-				ims = append(ims, c)
+				ims = append(ims, fExport{c, im.Arch, im.Config})
 			}
 		}
 		pad := f.exportBytes
@@ -238,13 +305,17 @@ func (f *fakeDocker) serve(w http.ResponseWriter, r *http.Request) {
 		if f.onLoadRead != nil {
 			f.onLoadRead()
 		}
-		var ims []fImage
-		if err != nil || json.Unmarshal(line, &ims) != nil {
+		var exp []fExport
+		if err != nil || json.Unmarshal(line, &exp) != nil {
 			msg(w, 400, "bad archive")
 			return
 		}
+		ims := make([]fImage, 0, len(exp))
 		f.mu.Lock()
-		for _, in := range ims {
+		for _, e := range exp {
+			in := e.fImage
+			in.Arch, in.Config = e.Arch, e.Config
+			ims = append(ims, in)
 			for _, t := range in.Tags {
 				f.removeTag(t)
 			}
@@ -321,7 +392,7 @@ func (f *fakeDocker) serve(w http.ResponseWriter, r *http.Request) {
 			msg(w, 404, "no such volume")
 			return
 		}
-		writeJSON(w, 200, map[string]any{"Name": v.Name, "Labels": v.Labels})
+		writeJSON(w, 200, map[string]any{"Name": v.Name, "Labels": v.Labels, "Driver": v.Driver, "Options": v.Opts})
 	case r.Method == http.MethodPost && path == "/volumes/create":
 		var in struct {
 			Name   string
@@ -329,8 +400,12 @@ func (f *fakeDocker) serve(w http.ResponseWriter, r *http.Request) {
 		}
 		_ = json.NewDecoder(r.Body).Decode(&in)
 		f.mu.Lock()
+		defer f.mu.Unlock()
+		if f.volumes[in.Name] != nil {
+			// dockerd answers with the existing volume; a test must not rely on that.
+			f.t.Errorf("volume %s created while it exists", in.Name)
+		}
 		f.volumes[in.Name] = &fVolume{Name: in.Name, Driver: "local", Labels: in.Labels}
-		f.mu.Unlock()
 		writeJSON(w, 201, map[string]string{"Name": in.Name})
 	case r.Method == http.MethodDelete && len(segs) == 2 && segs[0] == "volumes":
 		f.mu.Lock()
@@ -379,7 +454,8 @@ func (f *fakeDocker) serve(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewDecoder(r.Body).Decode(&in)
 		f.mu.Lock()
 		defer f.mu.Unlock()
-		if f.findImage(in.Image) == nil {
+		img := f.findImage(in.Image)
+		if img == nil {
 			msg(w, 404, "No such image: "+in.Image)
 			return
 		}
@@ -390,7 +466,14 @@ func (f *fakeDocker) serve(w http.ResponseWriter, r *http.Request) {
 				f.volumes[m.Source] = &fVolume{Name: m.Source, Driver: "local"} // as dockerd does
 			}
 		}
+		// As dockerd does: each VOLUME of the image gets an anonymous volume.
+		for range img.Config.Volumes {
+			n := randID()
+			f.volumes[n] = &fVolume{Name: n, Driver: "local", Labels: map[string]string{"com.docker.volume.anonymous": ""}}
+			c.Anon = append(c.Anon, n)
+		}
 		f.containers[c.ID] = c
+		f.created = append(f.created, *c)
 		writeJSON(w, 201, map[string]string{"Id": c.ID})
 	case r.Method == http.MethodGet && len(segs) == 3 && segs[0] == "containers" && segs[2] == "json":
 		f.mu.Lock()
@@ -412,6 +495,11 @@ func (f *fakeDocker) serve(w http.ResponseWriter, r *http.Request) {
 		f.mu.Lock()
 		c := f.containers[segs[1]]
 		var b []byte
+		if c != nil && f.failArchive != "" && c.Volume == f.failArchive {
+			f.mu.Unlock()
+			msg(w, 500, "archive failed")
+			return
+		}
 		if c != nil && f.volumes[c.Volume] != nil {
 			v := f.volumes[c.Volume]
 			if f.mutateRead != nil && f.mutateRead(v) {
@@ -427,9 +515,22 @@ func (f *fakeDocker) serve(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/x-tar")
 		_, _ = w.Write(b)
 	case r.Method == http.MethodPut && len(segs) == 3 && segs[0] == "containers" && segs[2] == "archive":
-		if f.blockPut != nil {
+		f.mu.Lock()
+		var into string
+		if c := f.containers[segs[1]]; c != nil {
+			into = c.Volume
+		}
+		block, onPut := f.blockPut, f.onPut
+		if f.blockPutVol != "" && f.blockPutVol != into {
+			block = nil
+		}
+		f.mu.Unlock()
+		if onPut != nil {
+			onPut(into)
+		}
+		if block != nil {
 			select {
-			case <-f.blockPut:
+			case <-block:
 			case <-r.Context().Done():
 				return
 			}
@@ -463,7 +564,8 @@ func (f *fakeDocker) serve(w http.ResponseWriter, r *http.Request) {
 			msg(w, 403, "read-only")
 			return
 		}
-		if f.corruptPut {
+		f.puts++
+		if f.corruptPut && (f.corruptNth == 0 || f.corruptNth == f.puts) {
 			for i := range files {
 				if !files[i].Dir && files[i].Content != "" {
 					files[i].Content = "X" + files[i].Content[1:]
@@ -476,11 +578,21 @@ func (f *fakeDocker) serve(w http.ResponseWriter, r *http.Request) {
 	case r.Method == http.MethodDelete && len(segs) == 2 && segs[0] == "containers":
 		f.mu.Lock()
 		defer f.mu.Unlock()
-		if f.containers[segs[1]] == nil {
+		c := f.containers[segs[1]]
+		if c == nil {
 			msg(w, 404, "No such container")
 			return
 		}
+		if f.failRemove != nil && f.failRemove(c) {
+			msg(w, 500, "removal failed")
+			return
+		}
 		delete(f.containers, segs[1])
+		if q.Get("v") == "1" {
+			for _, n := range c.Anon {
+				delete(f.volumes, n)
+			}
+		}
 		w.WriteHeader(http.StatusNoContent)
 	default:
 		msg(w, 404, "page not found")
@@ -501,7 +613,7 @@ const (
 func newPair(t *testing.T) *pair {
 	p := &pair{src: newFake(t, "desktop"), dst: newFake(t, "hyperbutler")}
 	p.o = Options{
-		SourcePipe: srcPipe, TargetPipe: dstPipe,
+		SourcePipe: srcPipe, TargetPipe: dstPipe, Home: t.TempDir(),
 		Dial: func(ctx context.Context, pipe string) (net.Conn, error) {
 			var d net.Dialer
 			switch pipe {

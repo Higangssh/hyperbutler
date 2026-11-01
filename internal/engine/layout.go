@@ -59,10 +59,14 @@ func (l Layout) ConsoleLogPath() string {
 	return filepath.Join(l.LogDir(), "console.log")
 }
 
-// ImportLockPath is held by `import --from-desktop` for its whole run: each import
-// removes the helper containers it finds left over, so two at once would remove each
-// other's.
+// ImportLockPath is held by an import from Docker Desktop (internal/desktopimport) for
+// its whole run, so one installation runs one import at a time.
 func (l Layout) ImportLockPath() string { return filepath.Join(l.Home, "import.lock") }
+
+// ImportsCompletePath records the volumes an import copied and verified, by name and
+// the import run's id: an interrupted import's leftovers are removed by the next one,
+// and a volume recorded here never is.
+func (l Layout) ImportsCompletePath() string { return filepath.Join(l.Home, "imports-complete.json") }
 
 // DaemonConfigPath is the user's daemon.json for the guest's dockerd (REQ-UX-007).
 // hyperbutler reads it and never writes it.

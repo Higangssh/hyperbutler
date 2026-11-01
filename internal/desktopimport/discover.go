@@ -36,6 +36,9 @@ var (
 	ErrTargetNotRunning = errors.New("hyperbutler's engine is not running: start it with `hyperbutler start`")
 	// ErrSameEngine means the source and the target are one engine.
 	ErrSameEngine = errors.New("the Docker Desktop endpoint reaches hyperbutler's own engine: there is nothing to import")
+	// ErrImportRunning is Run's refusal while another import (a CLI's or a GUI's) runs in
+	// the same installation.
+	ErrImportRunning = errors.New("another import is running in this hyperbutler installation; wait for it to finish")
 )
 
 // Options say where the two engines are.
@@ -49,6 +52,11 @@ type Options struct {
 	SourcePipe string
 	// TargetPipe is hyperbutler's Docker API pipe (Open only).
 	TargetPipe string
+	// Home is the hyperbutler installation's state directory (Open only); empty: the
+	// default one (engine.DefaultHome, %HYPERBUTLER_HOME% or %LOCALAPPDATA%\hyperbutler).
+	// Run takes its import lock (import.lock), records verified volumes in it
+	// (imports-complete.json) and checks the free space of its VM and data disk.
+	Home string
 }
 
 // Endpoint is Docker Desktop's engine as Discover found it.
@@ -147,6 +155,30 @@ type engineInfo struct {
 	ID           string      `json:"ID"`
 	Name         string      `json:"Name"`
 	DriverStatus [][2]string `json:"DriverStatus"`
+	OSType       string      `json:"OSType"`
+	Architecture string      `json:"Architecture"` // uname's: x86_64, aarch64
+}
+
+// platform is the engine's OS and architecture as image configs name them (linux,
+// amd64); empty parts when the engine did not say.
+func (i engineInfo) platform() (string, string) {
+	return i.OSType, imageArch(i.Architecture)
+}
+
+// imageArch turns a kernel's machine name (GET /info's Architecture) into an image
+// config's architecture (GOARCH).
+func imageArch(a string) string {
+	switch a {
+	case "x86_64", "x86-64", "amd64":
+		return "amd64"
+	case "aarch64", "arm64":
+		return "arm64"
+	case "armv7l", "armv6l", "armhf", "arm":
+		return "arm"
+	case "i386", "i486", "i586", "i686", "386":
+		return "386"
+	}
+	return a
 }
 
 // containerdStore reports whether the engine keeps images in containerd's store (image

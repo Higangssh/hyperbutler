@@ -95,6 +95,7 @@ func TestUninstall(t *testing.T) {
 	dataDir := filepath.Join(filepath.Dir(home), "data")
 	l := fakeInstall(t, home, dataDir, dockerCfg)
 	writeFile(t, filepath.Join(dataDir, "mine.txt"), "the user's")
+	writeFile(t, l.ImportsCompletePath(), `{"schema":1,"volumes":{}}`)
 	// Another docker context and its config.json keys stay.
 	writeFile(t, filepath.Join(dockerCfg, "config.json"), `{"auths":{"r":{"auth":"eA=="}},"currentContext":"hyperbutler"}`)
 
@@ -127,7 +128,7 @@ func TestUninstall(t *testing.T) {
 	if len(r.Failed) != 0 {
 		t.Fatalf("failed: %+v", r.Failed)
 	}
-	for _, p := range []string{l.DiskPath(), l.DiskMetaPath(), l.SettingsPath(), l.EngineLogPath(), home} {
+	for _, p := range []string{l.DiskPath(), l.DiskMetaPath(), l.SettingsPath(), l.EngineLogPath(), l.ImportsCompletePath(), home} {
 		if exists(p) {
 			t.Errorf("%s is still there", p)
 		}
@@ -158,12 +159,13 @@ func TestUninstall(t *testing.T) {
 func TestUninstallKeepData(t *testing.T) {
 	home, dockerCfg := testHome(t)
 	l := fakeInstall(t, home, home, dockerCfg)
+	writeFile(t, l.ImportsCompletePath(), `{"schema":1,"volumes":{}}`)
 	r := uninstallJSON(t, "--yes", "--keep-data")
 	if len(r.Failed) != 0 {
 		t.Fatalf("failed: %+v", r.Failed)
 	}
-	if !exists(l.DiskPath()) || !exists(l.DiskMetaPath()) {
-		t.Fatal("--keep-data removed the disk")
+	if !exists(l.DiskPath()) || !exists(l.DiskMetaPath()) || !exists(l.ImportsCompletePath()) {
+		t.Fatal("--keep-data removed the disk or the record of its imported volumes")
 	}
 	if exists(l.SettingsPath()) || exists(l.LogDir()) {
 		t.Fatal("settings or logs are still there")
@@ -173,7 +175,7 @@ func TestUninstallKeepData(t *testing.T) {
 	}
 	// Without --keep-data the disk and daemon.json are what is left.
 	r = uninstallJSON(t, "--dry-run")
-	if k := kinds(r.Items); k[uninstallFile] != 3 || k[uninstallDir] != 1 { // disk, disk.json, daemon.json
+	if k := kinds(r.Items); k[uninstallFile] != 4 || k[uninstallDir] != 1 { // disk, disk.json, daemon.json, imports-complete.json
 		t.Fatalf("dry run: %+v", r.Items)
 	}
 }

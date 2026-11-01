@@ -6,6 +6,8 @@ import (
 	"net/url"
 	"sort"
 	"strings"
+
+	"github.com/Higangssh/hyperbutler/internal/desktopimport/source"
 )
 
 // snapshot is Docker Desktop's state as the import checks it: images with their tags,
@@ -15,13 +17,16 @@ type snapshot struct {
 	images     map[string]string // id -> its tags, sorted and joined
 	volumes    map[string]bool
 	hashes     map[string]string // volume -> content hash
+	hashErr    map[string]error  // volume -> why it could not be hashed
 	containers map[string]string // id -> "name state image"
-	helpers    []string          // import helper containers present
+	helpers    []apiContainer    // import helper containers present
 }
 
-// snapshot records Docker Desktop's state, hashing the volumes in hash.
-func (im *Importer) snapshot(ctx context.Context, helperImage string, hash []VolumePlan, progress func(Event)) (*snapshot, error) {
-	s := &snapshot{images: map[string]string{}, volumes: map[string]bool{}, hashes: map[string]string{}, containers: map[string]string{}}
+// snapshot records Docker Desktop's state, hashing the volumes in hash (through helpers
+// of run). A volume that cannot be hashed is recorded in hashErr: the import of that
+// one fails, the rest go on.
+func (im *Importer) snapshot(ctx context.Context, run, helperImage string, hash []VolumePlan, progress func(Event)) (*snapshot, error) {
+	s := &snapshot{images: map[string]string{}, volumes: map[string]bool{}, hashes: map[string]string{}, hashErr: map[string]error{}, containers: map[string]string{}}
 	var imgs []apiImage
 	if err := im.src.GetJSON(ctx, "/images/json", nil, &imgs); err != nil {
 		return nil, fmt.Errorf("list images: %w", err)
@@ -42,7 +47,7 @@ func (im *Importer) snapshot(ctx context.Context, helperImage string, hash []Vol
 	}
 	for _, c := range cs {
 		if c.helper() {
-			s.helpers = append(s.helpers, c.ID)
+			s.helpers = append(s.helpers, c)
 			continue
 		}
 		s.containers[c.ID] = c.name() + " " + c.State + " " + shortID(c.ImageID)
@@ -51,20 +56,26 @@ func (im *Importer) snapshot(ctx context.Context, helperImage string, hash []Vol
 		if !s.volumes[vp.Name] {
 			continue // gone: the comparison says so
 		}
-		sum, err := im.hashSource(ctx, helperImage, vp.Name, vp.Size, PhaseSnapshot, progress)
+		sum, err := im.hashSource(ctx, run, helperImage, vp.Name, vp.Size, PhaseSnapshot, progress)
 		if err != nil {
-			return nil, err
+			s.hashErr[vp.Name] = err
+			continue
 		}
 		s.hashes[vp.Name] = sum.Sum()
 	}
 	return s, nil
 }
 
-// compareSnapshots lists what differs. A volume in live (mounted by running containers)
-// whose content changed is a warning, not a difference: its containers wrote it.
-func compareSnapshots(b, a *snapshot, live map[string]bool) SourceCheck {
+// compareSnapshots lists what differs. Differences are what the import could have
+// caused: images, tags, volumes, the content of a volume it read, its own helper
+// containers (run) still there. Container changes are Warnings: the import never
+// starts, stops, creates or removes a container of the user's, so they are the user's
+// (or Docker Desktop's) doing. A volume in live (mounted by running containers) whose
+// content changed is a warning too: its containers wrote it.
+func compareSnapshots(b, a *snapshot, live map[string]bool, run string) SourceCheck {
 	c := SourceCheck{Images: len(a.images), Volumes: len(a.volumes), Containers: len(a.containers), HashedVolumes: len(b.hashes)}
 	diff := func(format string, x ...any) { c.Differences = append(c.Differences, fmt.Sprintf(format, x...)) }
+	warn := func(format string, x ...any) { c.Warnings = append(c.Warnings, fmt.Sprintf(format, x...)) }
 	for _, id := range sortedKeys(b.images) {
 		tags, ok := a.images[id]
 		switch {
@@ -92,10 +103,12 @@ func compareSnapshots(b, a *snapshot, live map[string]bool) SourceCheck {
 	for _, n := range sortedKeys(b.hashes) {
 		h, ok := a.hashes[n]
 		switch {
+		case !ok && a.volumes[n] && a.hashErr[n] != nil:
+			diff("volume %s could not be hashed after the import: %v", n, a.hashErr[n])
 		case !ok:
 			// gone: said above
 		case h != b.hashes[n] && live[n]:
-			c.Warnings = append(c.Warnings, "volume "+n+"'s content changed during the import: running containers in Docker Desktop write to it")
+			warn("volume %s's content changed during the import: running containers in Docker Desktop write to it", n)
 		case h != b.hashes[n]:
 			diff("volume %s's content changed", n)
 		}
@@ -104,18 +117,20 @@ func compareSnapshots(b, a *snapshot, live map[string]bool) SourceCheck {
 		s, ok := a.containers[id]
 		switch {
 		case !ok:
-			diff("container %s is gone", b.containers[id])
+			warn("container %s was removed during the import (not by the import)", b.containers[id])
 		case s != b.containers[id]:
-			diff("container %q is now %q", b.containers[id], s)
+			warn("container %q is now %q (not the import's doing: it never starts or stops a container)", b.containers[id], s)
 		}
 	}
 	for _, id := range sortedKeys(a.containers) {
 		if _, ok := b.containers[id]; !ok {
-			diff("container %s is new", a.containers[id])
+			warn("container %s was created during the import (not by the import)", a.containers[id])
 		}
 	}
-	for _, id := range a.helpers {
-		diff("an import helper container is still there: %s (remove it with docker --context desktop-linux rm %s)", shortID(id), id)
+	for _, h := range a.helpers {
+		if h.Labels[source.RunLabel] == run {
+			diff("an import helper container is still there: %s (remove it with docker --context desktop-linux rm -v %s)", shortID(h.ID), h.ID)
+		}
 	}
 	c.Unchanged = len(c.Differences) == 0
 	return c

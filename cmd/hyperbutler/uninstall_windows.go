@@ -182,6 +182,15 @@ func (in *install) planUninstall(keepData, up bool) *uninstallPlan {
 			addFile(l.DaemonConfigPath(), "your daemon.json (Docker Engine settings)")
 		}
 	}
+	// The record of the volumes imports verified is about the data disk's volumes: it
+	// stays with the disk.
+	if keepData && exists(l.ImportsCompletePath()) {
+		p.keep(uninstallFile, l.ImportsCompletePath(), "the record of imported volumes on the kept data disk; kept with --keep-data")
+	} else {
+		for _, f := range append([]string{l.ImportsCompletePath()}, tmpSiblings(l.ImportsCompletePath())...) {
+			addFile(f, "")
+		}
+	}
 	addFile(l.LockPath(), "")
 	addFile(l.OpsLockPath(), "")
 	addFile(l.ImportLockPath(), "")

@@ -33,7 +33,8 @@ type ImportSourceJSON struct {
 }
 
 // ImportItemJSON is one image or volume. Status is the comparison with hyperbutler
-// before the run (new, already, partial, conflict, exists, unsupported); Outcome what
+// before the run (new, already, partial, conflict, different-labels, exists,
+// unsupported); Outcome what
 // the run did (imported, tagged, already, refused, failed, canceled; empty in a dry
 // run).
 type ImportItemJSON struct {
