@@ -258,6 +258,33 @@ SDK's command transport:
 - After the client closed stdin the server exited in 4 to 309 ms with status 0. The same
   requests piped from PowerShell 5.1 (which adds a byte order mark) were answered.
 
+## VM check of the second review (2026-11-01)
+
+The same machine, a development build of 66232ce in `%TEMP%\hb-dev\mcpfix\bin`, a test
+home with its own pipe (`config set pipe \\.\pipe\hb-dev-mcpfix`), `context.manage false`,
+`--no-context`, a test `DOCKER_CONFIG` and a 2 GiB guest. A small Go client spoke
+JSON-RPC to `hyperbutler mcp --allow-write` on its stdin and stdout:
+
+- `pull nginx:alpine`: done in 4.2 s, the progress in `untrustedText`.
+- `run nginx:alpine` with `ports ["18080:80"]`: the create request had
+  `{"80/tcp":[{"HostIp":"","HostPort":"18080"}]}`, a memory limit of 987 MiB (half of
+  dockerd's `MemTotal`, which is below 1 GiB on a 2 GiB guest), `NanoCpus` 8e9 (the VM's
+  8 CPUs), `PidsLimit` 512, restart `no` and the label. dockerd's warning (no swap limit
+  in the guest kernel) came back in `untrustedText`. **From Windows, `curl
+  http://127.0.0.1:18080` returned the nginx welcome page, and `http://[::1]:18080`
+  answered 200**; the only listeners on port 18080 were the engine's, on 127.0.0.1 and
+  ::1. This is the H1 proof: with the old `HostIp: 127.0.0.1` the port was not mirrored.
+- `run` with `restart: always`: refused, naming `--allow-persistent`.
+- `pull 192.168.0.4:5000/lanbench:1`: refused ("is an IP address") without reaching
+  dockerd; `host.docker.internal:5000/x` and `ghcr.io/o/n` were refused too.
+- `config_set` refused `hostGateway.enabled`, `hostGateway.ports`, `pipe` (with
+  `\\.\pipe\docker_engine`), `ca.import`, `proxy.noProxy`, `autostart`, `updateCheck`,
+  `proxy.http`, `ca.extraFile` and `data.dir`; `cpus 2` was set.
+- `status` listed `state.daemonConfig.env.error` (the test guest image takes no proxy
+  settings) under `untrustedFields`, not in its place.
+- Afterwards the container was removed, the engine stopped, and the test directories
+  deleted.
+
 ## Adversarial review (2026-11-01)
 
 | # | Attack or failure | Finding | Fix or status |

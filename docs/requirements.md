@@ -325,6 +325,8 @@ Status of the 0.2 usage requirements (2026-11-01; checked on one machine, Window
   a pseudo-version, `+dirty`) never prints; nothing is downloaded. The last check is
   `update-check.json` in the state directory (`status --json`: `update`); a failure is
   silent (a debug line with `HYPERBUTLER_DEBUG=1`) and waits for the next day too.
+  `diagnose` and the MCP server's tools never make it: their `status` shows the last
+  check's record ([mcp.md](mcp.md)).
   **On by default**, as REQ-UX-005 allows; `config set updateCheck false` turns it off.
   Unit tests against a TLS test server through the check's real client (only the
   User-Agent header, once a day, failures not retried, 404, untrusted certificate,

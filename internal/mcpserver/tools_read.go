@@ -34,7 +34,8 @@ func (t *toolset) addRead(s *mcp.Server) {
 	})
 	add(s, &mcp.Tool{Name: "containers", Annotations: readOnly,
 		Description: fmt.Sprintf("The containers of the hyperbutler engine, running and stopped: name, short id, image, state, "+
-			"published ports, restart policy and Compose project. At most %d; truncated: true when there are more. "+
+			"published ports (as dockerd reports them in the guest: 0.0.0.0:P means every guest address; the engine mirrors such TCP ports on Windows' 127.0.0.1 and [::1] only), "+
+			"restart policy and Compose project. At most %d; truncated: true when there are more. "+
 			"The restart policy takes one inspect per container: it is shown for the first %d, and unknown after them.", maxItems, maxInspects),
 	}, readTimeout, t.containers)
 	add(s, &mcp.Tool{Name: "logs", Annotations: readOnly,
