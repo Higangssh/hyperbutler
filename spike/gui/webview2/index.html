@@ -1,0 +1,105 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="color-scheme" content="light">
+<style>
+  :root {
+    --ground: #e6f1fd;
+    --card: #ffffff;
+    --ink: #1d2a3a;
+    --soft: #5b6b80;
+    --accent: #2f7cf6;
+    --accent-ink: #ffffff;
+    --live: #1f9d63;
+    --off: #8a96a8;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; }
+  body {
+    background: var(--ground);
+    color: var(--ink);
+    /* The stack covers Latin, Korean, Japanese and Chinese (ADR 0008 "Languages"). */
+    font-family: "Segoe UI Variable Text", "Segoe UI", "Malgun Gothic", "Yu Gothic UI", "Microsoft YaHei UI", sans-serif;
+    padding: 20px 28px;
+    user-select: none;
+  }
+  nav { display: flex; gap: 8px; margin-bottom: 20px; }
+  nav button {
+    border: 0; border-radius: 999px; padding: 8px 18px; font: inherit; font-size: 15px;
+    background: transparent; color: var(--soft); cursor: pointer;
+  }
+  nav button[aria-selected="true"] { background: var(--card); color: var(--ink); font-weight: 600; box-shadow: 0 2px 8px rgba(30,70,140,.08); }
+  .card { background: var(--card); border-radius: 24px; box-shadow: 0 6px 24px rgba(30,70,140,.08); padding: 22px 26px; }
+  .hello { display: flex; align-items: center; gap: 24px; margin-bottom: 18px; }
+  .hello img { width: 148px; height: 130px; object-fit: contain; flex: none; }
+  .hello h1 { margin: 0 0 6px; font-size: 26px; }
+  .hello p { margin: 0; color: var(--soft); font-size: 15px; line-height: 1.5; }
+  .grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; }
+  .stat .label { color: var(--soft); font-size: 14px; }
+  .stat .big { font-size: 34px; font-weight: 700; margin-top: 6px; white-space: nowrap; }
+  .stat .big.live { color: var(--live); }
+  .stat .big.off { color: var(--off); }
+  .row { display: flex; align-items: center; gap: 16px; margin-top: 18px; }
+  .start {
+    border: 0; border-radius: 999px; padding: 12px 30px; font: inherit; font-size: 16px; font-weight: 600;
+    background: var(--accent); color: var(--accent-ink); cursor: pointer;
+  }
+  .start:focus-visible, nav button:focus-visible { outline: 3px solid #9cc2ff; outline-offset: 2px; }
+  .start[disabled] { opacity: .6; cursor: default; }
+  .note { color: var(--soft); font-size: 13px; }
+</style>
+</head>
+<body>
+  <nav role="tablist">
+    <button role="tab" aria-selected="true" data-k="tab.home"></button>
+    <button role="tab" aria-selected="false" data-k="tab.containers"></button>
+    <button role="tab" aria-selected="false" data-k="tab.storage"></button>
+    <button role="tab" aria-selected="false" data-k="tab.settings"></button>
+  </nav>
+  <main>
+    <section class="card hello">
+      <img id="mascot" src="https://hb.localhost/mascot.png" alt="">
+      <div>
+        <h1 data-k="greeting"></h1>
+        <p data-k="greeting.sub"></p>
+      </div>
+    </section>
+    <section class="grid" aria-live="polite">
+      <div class="card stat"><div class="label" data-k="card.engine"></div><div class="big" id="engine"></div></div>
+      <div class="card stat"><div class="label" data-k="card.memory"></div><div class="big" id="memory"></div></div>
+      <div class="card stat"><div class="label" data-k="card.cpus"></div><div class="big" id="cpus"></div></div>
+      <div class="card stat"><div class="label" data-k="card.disk"></div><div class="big" id="disk"></div></div>
+    </section>
+    <div class="row">
+      <button class="start" id="start"></button>
+      <span class="note" id="note"></span>
+    </div>
+  </main>
+<script>
+  "use strict";
+  const M = window.HB_MSG;
+  document.documentElement.lang = window.HB_LANG;
+  document.title = M["title"];
+  for (const el of document.querySelectorAll("[data-k]")) el.textContent = M[el.dataset.k];
+  const $ = (id) => document.getElementById(id);
+  window.hb = {
+    render(v) {
+      $("engine").textContent = v.engine;
+      $("engine").className = "big " + (v.live ? "live" : "off");
+      $("memory").textContent = v.memory;
+      $("cpus").textContent = v.cpus;
+      $("disk").textContent = v.disk;
+      $("note").textContent = v.note;
+      $("start").textContent = v.start;
+      $("start").disabled = v.busy || v.live || v.loading;
+    },
+  };
+  hb.render(window.HB_VIEW);
+  $("start").addEventListener("click", () => window.chrome.webview.postMessage("start"));
+  // First paint with content: the mascot decoded, then two frames.
+  $("mascot").decode().catch(() => {}).then(() =>
+    requestAnimationFrame(() => requestAnimationFrame(() => window.chrome.webview.postMessage("painted"))));
+</script>
+</body>
+</html>
