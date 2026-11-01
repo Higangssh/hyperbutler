@@ -29,6 +29,11 @@ type run struct {
 	Gone       time.Duration // close to the last process gone
 	LeftAt2s   int           // processes left 2 s after the close
 	Left       []string
+	PerProc    []string // each process's figures (-detail)
+	// Probe is the WebRTC probe's report and ProbeSockets the sockets seen while it ran
+	// (-check-webrtc).
+	Probe        string
+	ProbeSockets []string
 }
 
 // verdict judges runs against the budgets and returns the failures.

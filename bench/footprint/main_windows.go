@@ -30,7 +30,9 @@ func main() {
 	runs := flag.Int("runs", 50, "launches")
 	idle := flag.Duration("idle", 5*time.Second, "how long after the first paint to sample")
 	lang := flag.String("lang", "", "--lang for the window (en, ko, pseudo)")
-	checkLayout := flag.Bool("check-layout", false, "run the window's layout check and fail on overflow (use with -lang pseudo)")
+	checkLayout := flag.Bool("check-layout", false, "run the window's layout check and fail on overflow (use with -lang pseudo); it shows every screen, so it is also the after-every-screen memory check")
+	checkWebRTC := flag.Bool("check-webrtc", false, "have the page try a WebRTC connection (a STUN server on 127.0.0.1:3478) and fail if any process of the window opens a socket meanwhile")
+	detail := flag.Bool("detail", false, "print each process's private working set")
 	shot := flag.String("shot", "", "save a PNG of the window at the first run's sample")
 	shotPID := flag.Int("shot-pid", 0, "only save a PNG of this process's window to -out, and exit")
 	out := flag.String("out", "", "with -shot-pid: the PNG to write")
@@ -60,11 +62,22 @@ func main() {
 		args = append(args, "--check-layout")
 		*idle = max(*idle, 20*time.Second) // every screen is shown in turn
 	}
+	if *checkWebRTC {
+		args = append(args, "--probe-webrtc")
+		*idle = max(*idle, 25*time.Second) // the probe gathers for 5 s in the page and in a frame
+	}
 	fi, err := os.Stat(*hb)
 	if err != nil {
 		fail("%v", err)
 	}
 	fmt.Printf("hyperbutler %s (%.1f MiB), HYPERBUTLER_HOME=%s\n", *hb, mib(uint64(fi.Size())), os.Getenv("HYPERBUTLER_HOME")) //nolint:gosec // G115: a file size
+	// The very first start of a new executable holds about 30 MiB more private working
+	// set in hyperbutler.exe (Windows loading the new image, not the window: the Go heap
+	// is the same), which would make run 1 of every fresh build an outlier. One CLI
+	// command first takes that.
+	if err := exec.Command(*hb, "version").Run(); err != nil { //nolint:gosec // G204: the program the user asked to measure
+		fail("%s version: %v", *hb, err)
+	}
 	fmt.Printf("%-4s %8s %7s %6s %8s %9s %7s %8s %7s  %s\n", "run", "paint_ms", "self_ms", "procs", "ws_MiB", "priv_MiB", "socks", "gone_ms", "left@2s", "processes")
 	var all []run
 	var layoutFail []string
@@ -73,9 +86,26 @@ func main() {
 		if i == 1 {
 			s = *shot
 		}
-		r, layout, err := once(*hb, args, *idle, s)
+		r, layout, err := once(*hb, args, *idle, s, *checkWebRTC)
 		if err != nil {
 			fail("run %d: %v", i, err)
+		}
+		if *detail {
+			for _, p := range r.PerProc {
+				fmt.Printf("     %s\n", p)
+			}
+		}
+		if *checkWebRTC {
+			fmt.Println("     webrtc:", r.Probe)
+			for _, s := range r.ProbeSockets {
+				fmt.Printf("     socket during the probe: %s\n", s)
+			}
+			if r.Probe == "" {
+				layoutFail = append(layoutFail, fmt.Sprintf("run %d: the WebRTC probe did not report", i))
+			}
+			if len(r.ProbeSockets) > 0 {
+				layoutFail = append(layoutFail, fmt.Sprintf("run %d: %d sockets opened during the WebRTC probe", i, len(r.ProbeSockets)))
+			}
 		}
 		all = append(all, r)
 		fmt.Printf("%-4d %8d %7d %6d %8.1f %9.1f %7d %8d %7d  %s\n", i, r.Paint.Milliseconds(), r.SelfMs, r.Procs, mib(r.WS), mib(r.Commit),
@@ -112,8 +142,65 @@ func fail(format string, a ...any) {
 	os.Exit(1)
 }
 
+// windowSockets returns the sockets the processes of root hold, by "name proto
+// local->remote state".
+func windowSockets(root uint32) ([]string, error) {
+	ps, err := hostmon.Snapshot()
+	if err != nil {
+		return nil, err
+	}
+	desc := hostmon.Descendants(ps, root)
+	name := map[uint32]string{}
+	for _, p := range ps {
+		name[p.PID] = p.Name
+	}
+	var tr socktable.Reader
+	socks, err := tr.All()
+	if err != nil {
+		return nil, err
+	}
+	var out []string
+	for _, s := range socks {
+		if desc[s.PID] {
+			out = append(out, fmt.Sprintf("%s(%d) %s %s->%s %s", name[s.PID], s.PID, s.Proto, s.Local, s.Remote, s.State))
+		}
+	}
+	return out, nil
+}
+
+// watchProbe polls the socket table of root's processes every 50 ms until the probe
+// reports (or timeout), and returns its report and every socket seen meanwhile.
+func watchProbe(root uint32, layout <-chan string, timeout time.Duration) (string, []string) {
+	seen := map[string]bool{}
+	var list []string
+	end := time.After(timeout)
+	tick := time.NewTicker(50 * time.Millisecond)
+	defer tick.Stop()
+	for {
+		select {
+		case l := <-layout:
+			if rest, ok := strings.CutPrefix(l, "webrtc "); ok {
+				return rest, list
+			}
+		case <-end:
+			return "", list
+		case <-tick.C:
+			socks, err := windowSockets(root)
+			if err != nil {
+				continue
+			}
+			for _, s := range socks {
+				if !seen[s] {
+					seen[s] = true
+					list = append(list, s)
+				}
+			}
+		}
+	}
+}
+
 // once launches the window, samples it and closes it.
-func once(hb string, args []string, idle time.Duration, shot string) (run, string, error) {
+func once(hb string, args []string, idle time.Duration, shot string, probe bool) (run, string, error) {
 	r := run{Names: map[string]int{}}
 	cmd := exec.Command(hb, args...) //nolint:gosec // G204: the program the user asked to measure
 	stdout, err := cmd.StdoutPipe()
@@ -153,7 +240,9 @@ func once(hb string, args []string, idle time.Duration, shot string) (run, strin
 	}
 	lay := ""
 	deadline := time.After(idle)
-	if strings.Contains(strings.Join(args, " "), "--check-layout") {
+	if probe {
+		r.Probe, r.ProbeSockets = watchProbe(pid, layout, idle)
+	} else if strings.Contains(strings.Join(args, " "), "--check-layout") {
 		select {
 		case lay = <-layout:
 		case <-time.After(idle):
@@ -185,6 +274,7 @@ func once(hb string, args []string, idle time.Duration, shot string) (run, strin
 	for _, s := range samples {
 		r.WS += s.WorkingSetPriv
 		r.Commit += s.PrivateBytes
+		r.PerProc = append(r.PerProc, fmt.Sprintf("%s(%d) ws %.1f MiB, private %.1f MiB", byPID[s.PID], s.PID, mib(s.WorkingSetPriv), mib(s.PrivateBytes)))
 	}
 	var tr socktable.Reader
 	if socks, err := tr.All(); err == nil {

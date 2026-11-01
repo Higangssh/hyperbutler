@@ -160,15 +160,18 @@ type handler struct {
 // have the same shape, so one set of callbacks serves them (windows.NewCallback has a
 // fixed budget of callbacks per process, so they are made once).
 var (
-	handlerVtbl [4]uintptr
-	optionsVtbl [11]uintptr
-	vtblOnce    sync.Once
+	handlerVtbl  [4]uintptr
+	optionsVtbl  [11]uintptr
+	options3Vtbl [5]uintptr
+	vtblOnce     sync.Once
 
 	// registry maps the address of each live object of ours to it, so the callbacks
-	// find it without turning a uintptr into a pointer.
+	// find it without turning a uintptr into a pointer (options3: by the address of its
+	// Options3 interface).
 	regMu    sync.Mutex
 	handlers = map[uintptr]*handler{}
 	options  = map[uintptr]*envOptions{}
+	options3 = map[uintptr]*envOptions{}
 )
 
 func initVtables() {
@@ -190,6 +193,13 @@ func initVtables() {
 			windows.NewCallback(optionsGetTargetVersion),
 			windows.NewCallback(optionsPutString),
 			windows.NewCallback(optionsGetSSO),
+			windows.NewCallback(optionsPutBool),
+		}
+		options3Vtbl = [5]uintptr{
+			windows.NewCallback(options3QueryInterface),
+			windows.NewCallback(optionsAddRef),
+			windows.NewCallback(optionsRelease),
+			windows.NewCallback(options3GetCrashReporting),
 			windows.NewCallback(optionsPutBool),
 		}
 	})
@@ -250,24 +260,66 @@ func handlerInvoke(this, a, b uintptr) uintptr {
 	return h.invoke(a, b)
 }
 
-// envOptions is our ICoreWebView2EnvironmentOptions.
+// envOptions is our ICoreWebView2EnvironmentOptions. It also answers for
+// ICoreWebView2EnvironmentOptions3 with opt3, a second interface of the same object.
 type envOptions struct {
 	vtbl     *[11]uintptr
 	refs     int32
 	args     string
 	language string
+	opt3     envOptions3
+	// crashAsked records that the loader read IsCustomCrashReportingEnabled.
+	crashAsked atomic.Bool
+}
+
+// envOptions3 is the object's ICoreWebView2EnvironmentOptions3: IUnknown (the object's,
+// so QueryInterface and the reference count are the same) and
+// IsCustomCrashReportingEnabled, which is true: crash dumps of the runtime's processes
+// stay in the user data folder and are not sent to Microsoft (REQ-UX-005).
+type envOptions3 struct {
+	vtbl  *[5]uintptr
+	outer *envOptions
 }
 
 // targetVersion is the oldest runtime whose interfaces this package uses (the
 // DownloadStarting event of ICoreWebView2_4 came with 1.0.902).
 const targetVersion = "92.0.902.49"
 
-var iidEnvOptions = mustGUID("{2FDE08A8-1E9A-4766-8C05-95A9CEB9D1C5}")
+var (
+	iidEnvOptions  = mustGUID("{2FDE08A8-1E9A-4766-8C05-95A9CEB9D1C5}")
+	iidEnvOptions3 = mustGUID("{4A5C436E-A9E3-4A2E-89C3-910D3513F5CC}")
+)
 
+// lookupOptions finds the options object of this, which is the object's first
+// interface or its Options3 interface.
 func lookupOptions(this uintptr) *envOptions {
 	regMu.Lock()
 	defer regMu.Unlock()
-	return options[this]
+	if o := options[this]; o != nil {
+		return o
+	}
+	return options3[this]
+}
+
+// options3Addr is the address native code gets for the object's Options3 interface.
+func (o *envOptions) options3Addr() uintptr { return uintptr(unsafe.Pointer(&o.opt3)) }
+
+func options3QueryInterface(this, iid, out uintptr) uintptr {
+	o := lookupOptions(this)
+	if o == nil {
+		return ePointer
+	}
+	return optionsQueryInterface(uintptr(unsafe.Pointer(o)), iid, out)
+}
+
+func options3GetCrashReporting(this, out uintptr) uintptr {
+	o := lookupOptions(this)
+	if o == nil || out == 0 {
+		return ePointer
+	}
+	o.crashAsked.Store(true)
+	*(*int32)(ptrFrom(out)) = 1
+	return sOK
 }
 
 func optionsQueryInterface(this, iid, out uintptr) uintptr {
@@ -277,12 +329,18 @@ func optionsQueryInterface(this, iid, out uintptr) uintptr {
 	}
 	if iid != 0 {
 		g := *(*windows.GUID)(ptrFrom(iid))
-		// Only the first options interface: the loader asks for newer ones
-		// (ICoreWebView2EnvironmentOptions2...) and must hear that there are none,
-		// or it would call methods this vtable does not have.
-		if g == *iidIUnknown || g == *iidEnvOptions {
+		// The first options interface, and Options3 through its own vtable. The loader
+		// asks for every newer one (ICoreWebView2EnvironmentOptions2, 4, ...) and must
+		// hear that there are none, or it would call methods no vtable here has.
+		self := uintptr(unsafe.Pointer(o))
+		switch g {
+		case *iidIUnknown, *iidEnvOptions:
 			atomic.AddInt32(&o.refs, 1)
-			writeOut(out, this)
+			writeOut(out, self)
+			return sOK
+		case *iidEnvOptions3:
+			atomic.AddInt32(&o.refs, 1)
+			writeOut(out, o.options3Addr())
 			return sOK
 		}
 	}

@@ -21,7 +21,7 @@ func TestLookup(t *testing.T) {
 			t.Errorf("%s: not served", p)
 		}
 	}
-	for _, p := range []string{"", "app.js", "/../go.mod", "/icons/../web.go", "/web.go", "/icons", "/icons/", "/x.html", "/%2e%2e/web.go", "/app.js\\..\\web.go"} {
+	for _, p := range []string{"", "app.js", "/guard.js", "/probe.js", "/../go.mod", "/icons/../web.go", "/web.go", "/icons", "/icons/", "/x.html", "/%2e%2e/web.go", "/app.js\\..\\web.go"} {
 		if _, _, ok := Lookup(p); ok {
 			t.Errorf("%s: served", p)
 		}
@@ -40,6 +40,20 @@ func TestNoNetworkOrHTML(t *testing.T) {
 			if bytes.Contains(b, []byte(bad)) {
 				t.Errorf("%s uses %q", f, bad)
 			}
+		}
+	}
+	// The page never uses WebRTC (guard.js removes it) or frames (guard.js refuses them).
+	for _, f := range []string{"index.html", "app.js"} {
+		b, _ := files.ReadFile(f)
+		for _, bad := range []string{"RTC", "iframe", "<frame", "<object", "<embed"} {
+			if bytes.Contains(b, []byte(bad)) {
+				t.Errorf("%s uses %q", f, bad)
+			}
+		}
+	}
+	for _, want := range []string{"RTCPeerConnection", "configurable: false", "createElement", "iframe"} {
+		if !strings.Contains(Guard, want) {
+			t.Errorf("guard.js lacks %q", want)
 		}
 	}
 	// Text the user reads is whole catalog sentences with placeholders, and lists are

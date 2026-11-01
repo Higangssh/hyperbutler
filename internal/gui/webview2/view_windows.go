@@ -24,7 +24,9 @@ func syscallN(fn uintptr, args ...uintptr) (uintptr, uintptr, error) {
 // Interface ids beyond the base interfaces (WebView2.h).
 var (
 	iidController2 = mustGUID("{C979903E-D4CA-4228-92EB-47EE3FA96EAB}")
+	iidWebView2_3  = mustGUID("{A0D6DF20-3B92-416D-AA0C-437A9C727857}")
 	iidWebView2_4  = mustGUID("{20D02D59-6DF2-42DC-BD06-F98A694B1302}")
+	iidWebView2_19 = mustGUID("{6921F954-79B0-437F-A997-C85811897C68}")
 	iidSettings3   = mustGUID("{FDB5AB74-AF33-4854-84F0-0A631DEB5EBA}")
 	iidSettings4   = mustGUID("{CB56846C-4168-4D53-B04F-03B6D6796FF2}")
 	iidSettings5   = mustGUID("{183E7052-1D03-43A0-AB99-98E043B66B39}")
@@ -50,6 +52,7 @@ const (
 	// ICoreWebView2
 	wvGetSettings                = 3
 	wvNavigate                   = 5
+	wvAddScriptOnCreated         = 27
 	wvAddNavigationStarting      = 7
 	wvRemoveNavigationStarting   = 8
 	wvAddNavigationCompleted     = 15
@@ -68,8 +71,14 @@ const (
 	wvAddWebResourceRequested    = 55
 	wvRemoveWebResourceRequested = 56
 	wvAddWebResourceFilter       = 57
+	wv3TrySuspend                = 68 // ICoreWebView2_3
+	wv3Resume                    = 69
 	wv4AddDownloadStarting       = 75
 	wv4RemoveDownloadStarting    = 76
+	wv19PutMemoryTarget          = 120 // ICoreWebView2_19::put_MemoryUsageTargetLevel
+
+	memoryTargetNormal = 0 // COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_NORMAL
+	memoryTargetLow    = 1
 
 	// ICoreWebView2Settings and its successors
 	setPutIsScriptEnabled         = 4
@@ -148,6 +157,10 @@ type Config struct {
 	Debug func(string)
 	// MaxMessage bounds a web message in UTF-16 units; longer ones are dropped.
 	MaxMessage int
+	// Scripts run at the creation of every document (and frame) of the page, before
+	// the page's own scripts (AddScriptToExecuteOnDocumentCreated); the page is loaded
+	// only once they are in place.
+	Scripts []string
 }
 
 // View is a WebView2 control in a window. Every method runs on the window's thread.
@@ -164,6 +177,7 @@ type View struct {
 	tokens                 []token
 	closed                 bool
 	visible                bool
+	suspended              bool // TrySuspend succeeded and nothing resumed it yet
 	err                    error
 }
 
@@ -191,9 +205,11 @@ func New(hwnd uintptr, cfg Config) (*View, error) {
 	initVtables()
 	v := &View{cfg: cfg, hwnd: hwnd, origin: o, visible: true}
 	v.opts = &envOptions{vtbl: &optionsVtbl, refs: 1, args: cfg.BrowserArgs, language: cfg.Language}
-	v.pin.Pin(v.opts)
+	v.opts.opt3 = envOptions3{vtbl: &options3Vtbl, outer: v.opts}
+	v.pin.Pin(v.opts) // the whole object, its Options3 interface too
 	regMu.Lock()
 	options[uintptr(unsafe.Pointer(v.opts))] = v.opts
+	options3[v.opts.options3Addr()] = v.opts
 	regMu.Unlock()
 
 	envDone := v.newHandler(func(hr, env uintptr) uintptr {
@@ -248,6 +264,7 @@ func (v *View) environmentCreated(hr uintptr, env obj) {
 	}
 	env.call(1) // AddRef: the argument is only borrowed
 	v.env = env
+	v.debug("custom crash reporting (dumps kept local) read by the loader: %v", v.opts.crashAsked.Load())
 	done := v.newHandler(func(hr, ctl uintptr) uintptr {
 		v.controllerCreated(hr, obj(ctl))
 		return sOK
@@ -290,6 +307,42 @@ func (v *View) controllerCreated(hr uintptr, ctl obj) {
 		return
 	}
 	v.Resize()
+	v.addScripts(v.cfg.Scripts, v.navigate)
+}
+
+// addScripts adds each script to run at every document's creation, before its own
+// scripts, one after the other (each call completes asynchronously), then calls done.
+func (v *View) addScripts(scripts []string, done func()) {
+	if v.closed {
+		return
+	}
+	if len(scripts) == 0 {
+		done()
+		return
+	}
+	src, err := windows.UTF16PtrFromString(scripts[0])
+	if err != nil {
+		v.fail(err)
+		return
+	}
+	h := v.newHandler(func(hr, _ uintptr) uintptr {
+		if err := check("AddScriptToExecuteOnDocumentCreated", hr); err != nil {
+			v.fail(err)
+			return sOK
+		}
+		v.addScripts(scripts[1:], done)
+		return sOK
+	})
+	if err := check("AddScriptToExecuteOnDocumentCreated", v.wv.call(wvAddScriptOnCreated, uintptr(unsafe.Pointer(src)), uintptr(unsafe.Pointer(h)))); err != nil {
+		v.fail(err)
+	}
+}
+
+// navigate loads the start page, once the scripts are in place.
+func (v *View) navigate() {
+	if v.closed {
+		return
+	}
 	start, err := windows.UTF16PtrFromString(v.cfg.Start)
 	if err != nil {
 		v.fail(err)
@@ -534,6 +587,10 @@ func (v *View) PostJSON(s string) error {
 	if v.wv == 0 || v.closed {
 		return errors.New("webview2: not ready")
 	}
+	if v.suspended {
+		// An answer for a suspended page: resume it so its script gets the message.
+		v.Background(false, false)
+	}
 	p, err := windows.UTF16PtrFromString(s)
 	if err != nil {
 		return err
@@ -563,6 +620,53 @@ func (v *View) SetVisible(on bool) {
 		b = 1
 	}
 	v.ctl.call(ctlPutIsVisible, b)
+}
+
+// Background is for a minimized window: on, it asks the runtime to use as little memory
+// as it can (ICoreWebView2_19's memory usage target LOW) and, when allowed, suspends the
+// page's renderer (ICoreWebView2_3's TrySuspend: timers and script stop, and the
+// renderer gives back what it can); off, it resumes the page and sets the target back
+// to normal. A runtime without these interfaces is left as it is. The control must be
+// hidden first (SetVisible(false)); suspend is not used when suspend is false (work
+// the page waits for is still running).
+func (v *View) Background(on, suspend bool) {
+	if v.wv == 0 || v.closed {
+		return
+	}
+	level := uintptr(memoryTargetNormal)
+	if on {
+		level = memoryTargetLow
+	}
+	if w19 := v.wv.query(iidWebView2_19); w19 != 0 {
+		if err := check("put_MemoryUsageTargetLevel", w19.call(wv19PutMemoryTarget, level)); err != nil {
+			v.debug("%v", err)
+		}
+		w19.release()
+	}
+	w3 := v.wv.query(iidWebView2_3)
+	if w3 == 0 {
+		return
+	}
+	defer w3.release()
+	switch {
+	case on && suspend:
+		h := v.newHandler(func(hr, ok uintptr) uintptr {
+			if failed(hr) || ok == 0 {
+				v.debug("TrySuspend: HRESULT 0x%08X, suspended %v", hr32(hr), ok != 0)
+			} else {
+				v.suspended = true
+			}
+			return sOK
+		})
+		if err := check("TrySuspend", w3.call(wv3TrySuspend, uintptr(unsafe.Pointer(h)))); err != nil {
+			v.debug("%v", err)
+		}
+	case !on && v.suspended:
+		if err := check("Resume", w3.call(wv3Resume)); err != nil {
+			v.debug("%v", err)
+		}
+		v.suspended = false
+	}
 }
 
 // Focus moves the keyboard focus into the page.
@@ -608,6 +712,7 @@ func (v *View) Close() {
 		delete(handlers, uintptr(unsafe.Pointer(h)))
 	}
 	delete(options, uintptr(unsafe.Pointer(v.opts)))
+	delete(options3, v.opts.options3Addr())
 	// WebView2 may still release a handler after this; the objects stay reachable (but
 	// unregistered, so their callbacks do nothing) for the life of the process, which
 	// is what follows a Close, so native code never reads freed memory.

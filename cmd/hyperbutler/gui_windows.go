@@ -47,6 +47,7 @@ type guiOptions struct {
 	data        string
 	reportPaint bool
 	checkLayout bool
+	probeWebRTC bool
 	verbose     bool
 	// importFrom stands in for Docker Desktop's pipe in the import (tests).
 	importFrom string
@@ -61,6 +62,7 @@ func cmdGUI(args []string, stdout, stderr io.Writer) error {
 	fs.StringVar(&o.data, "data", "", `the window's browser profile (default: "gui" in the state directory)`)
 	fs.BoolVar(&o.reportPaint, "report-paint", false, "print a line at the first paint (bench/footprint)")
 	fs.BoolVar(&o.checkLayout, "check-layout", false, "with --report-paint: check every screen for text that overflows its box and print the result (the pseudo-locale layout check)")
+	fs.BoolVar(&o.probeWebRTC, "probe-webrtc", false, "with --report-paint: try to open a WebRTC connection from the page and print what happened (bench/footprint -check-webrtc)")
 	fs.BoolVar(&o.verbose, "verbose", false, "print diagnostic lines on stderr")
 	// For tests: another engine's pipe stands in for Docker Desktop's, as import --from-pipe.
 	fs.StringVar(&o.importFrom, "import-from-pipe", "", "")
@@ -155,7 +157,7 @@ func runGUI(o guiOptions, paint io.Writer, log func(string)) int {
 	return app.Run(app.Options{
 		Bridge: bridge.Options{
 			Host: h, Lang: lang, Messages: msgs, Version: buildVersion(), HostCPUs: runtime.NumCPU(),
-			StartOnOpen: startOnOpen, CheckLayout: o.checkLayout, Importer: imp,
+			StartOnOpen: startOnOpen, CheckLayout: o.checkLayout, Probe: o.probeWebRTC, Importer: imp,
 		},
 		Title: msgs["app.title"], DataDir: filepath.Join(data, "webview2"), Language: browserLang,
 		NoRuntimeTitle: title, NoRuntimeText: text,

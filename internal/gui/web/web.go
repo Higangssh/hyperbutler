@@ -15,6 +15,19 @@ import (
 //go:embed index.html app.css app.js icons/*.svg
 var files embed.FS
 
+// Guard is the script the host adds to every document before the page's own (guard.js):
+// it removes WebRTC, the one network API the CSP does not govern, and frames, which
+// would bring it back in a fresh realm. It is not a file the page can load.
+//
+//go:embed guard.js
+var Guard string
+
+// Probe is bench/footprint's WebRTC check (probe.js), added only by `hyperbutler gui
+// --probe-webrtc`.
+//
+//go:embed probe.js
+var Probe string
+
 // CSP is the page's Content-Security-Policy. Only this origin's own script, style and
 // images load; no inline script or style, no eval, no frames, forms, workers, fonts,
 // or connections (the bridge is window.chrome.webview, which CSP does not govern);
@@ -35,6 +48,19 @@ var Headers = map[string]string{
 	"Cross-Origin-Opener-Policy":   "same-origin",
 	"Cross-Origin-Resource-Policy": "same-origin",
 	"Permissions-Policy":           "camera=(), microphone=(), geolocation=(), clipboard-read=(), usb=(), serial=(), hid=(), bluetooth=()",
+}
+
+// CacheControl is the Cache-Control of an image (the mascot, the icons), "" for the
+// rest (Headers' no-store): an image that may be kept is fetched and decoded once for
+// all the places the page shows it (the mascot is on five screens). They are part of
+// the executable, so they never change under a running window; the page and its script
+// stay no-store, so a new build is never served an old one.
+func CacheControl(p string) string {
+	switch path.Ext(p) {
+	case ".png", ".svg":
+		return "public, max-age=31536000, immutable"
+	}
+	return ""
 }
 
 var types = map[string]string{

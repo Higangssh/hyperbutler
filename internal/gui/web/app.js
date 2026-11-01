@@ -822,6 +822,13 @@
   // --- tabs (keyboard: arrows, Home, End) -------------------------------------------------
   const tabs = ["home", "containers", "storage", "settings", "help"];
   function showTab(name, focus) {
+    if (tab === "containers" && name !== "containers") {
+      // A log of up to 256 KiB stays in the document otherwise; it is fetched again
+      // when a container is picked.
+      selected = "";
+      $("log").textContent = "";
+      $("log-note").textContent = "";
+    }
     tab = name;
     for (const n of tabs) {
       const b = $("tab-" + n);

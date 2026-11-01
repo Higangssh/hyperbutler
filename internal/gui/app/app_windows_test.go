@@ -4,6 +4,7 @@ package app
 
 import (
 	"net/url"
+	"strings"
 	"testing"
 	"time"
 
@@ -31,6 +32,21 @@ func TestServe(t *testing.T) {
 	u, _ := url.Parse("https://hb.localhost/app.js?x=1")
 	if r := serve("GET", u); r.Status != 405 {
 		t.Errorf("query: %d", r.Status)
+	}
+	// L6: images may be kept (the mascot is decoded once for its five places); the page
+	// and its script never are.
+	for p, want := range map[string]string{"/mascot.png": "immutable", "/icons/mem.svg": "immutable", "/": "no-store", "/app.js": "no-store"} {
+		u, _ := url.Parse("https://hb.localhost" + p)
+		if c := serve("GET", u).Headers["Cache-Control"]; !strings.Contains(c, want) {
+			t.Errorf("%s: Cache-Control %q, want %s", p, c, want)
+		}
+	}
+	// The guard is in every document; the probe only with --probe-webrtc.
+	if s := scripts(false); len(s) != 1 || !strings.Contains(s[0], "RTCPeerConnection") {
+		t.Errorf("scripts: %d", len(s))
+	}
+	if len(scripts(true)) != 2 || strings.Contains(BrowserArgs, "force-webrtc") {
+		t.Error("probe scripts or browser arguments")
 	}
 }
 

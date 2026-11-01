@@ -46,9 +46,29 @@ const (
 // requests, and the resolver rule makes every name lookup of Chromium's network stack fail,
 // so even a request the page could not make would go nowhere. The page itself loads
 // nothing from the network: every request is answered in process.
-const BrowserArgs = "--disable-gpu --disable-background-networking --disable-component-update " +
+//
+// WebRTC (docs/gui.md, measured with bench/footprint -check-webrtc): with
+// --webrtc-ip-handling-policy=disable_non_proxied_udp an RTCPeerConnection gathered no
+// candidate (one without it), but the runtime's network process still opened UDP
+// sockets for it (mDNS on 5353 and a pair of ephemeral ports), and the CSP has no
+// directive that stops it (webrtc 'block' changed nothing). What keeps the socket table
+// empty is web.Guard, which removes RTCPeerConnection before the page runs; the policy
+// stays as a second line. --force-webrtc-ip-handling-policy is not in the runtime and
+// was dropped.
+//
+// Memory (REQ-MEM-001's 100 MiB, docs/gui.md): the compositor (with --disable-gpu, the
+// software "GPU" process) and the network service run in the browser process
+// (--in-process-gpu, NetworkServiceInProcess2), as Android's WebView runs them. That is
+// two processes fewer and about 10 MiB less private working set, measured after every
+// screen was shown. The page loads nothing from the network and draws in software, so
+// what that isolation protects is not there; a crash of either ends the browser
+// process, which closes the window (OnProcessFailed) as a crash of the browser always
+// did. --renderer-process-limit=1 and --disable-extensions were measured too and
+// changed nothing (there is one renderer and no extension).
+const BrowserArgs = "--in-process-gpu --enable-features=NetworkServiceInProcess2 " +
+	"--disable-gpu --disable-background-networking --disable-component-update " +
 	"--disable-domain-reliability --no-pings --disable-sync " +
-	"--force-webrtc-ip-handling-policy --webrtc-ip-handling-policy=disable_non_proxied_udp " +
+	"--webrtc-ip-handling-policy=disable_non_proxied_udp " +
 	"\"--host-resolver-rules=MAP * ~NOTFOUND\""
 
 // Options configure the window.
@@ -175,7 +195,7 @@ func Run(o Options) int {
 			painted()
 		}
 	}
-	if bo.CheckLayout {
+	if bo.CheckLayout || bo.Probe {
 		bo.Layout = func(s string) {
 			if o.ReportPaint != nil {
 				_, _ = fmt.Fprintf(o.ReportPaint, "HB-GUI layout %s\n", s)
@@ -218,6 +238,7 @@ func Run(o Options) int {
 		Start:          Origin + "/",
 		Background:     ground,
 		MaxMessage:     bridge.MaxMessage,
+		Scripts:        scripts(bo.Probe),
 		Debug:          o.Log,
 		Serve: func(method string, u *url.URL) webview2.Response {
 			r := serve(method, u)
@@ -310,6 +331,16 @@ func (s *state) showCloseNote(hwnd uintptr) {
 	}
 }
 
+// scripts are what runs in every document before the page's own scripts: the guard
+// (no WebRTC, no frames), and with probe the WebRTC probe of bench/footprint.
+func scripts(probe bool) []string {
+	s := []string{web.Guard}
+	if probe {
+		s = append(s, web.Probe)
+	}
+	return s
+}
+
 // serve answers the page's requests from memory: GET of a known file, else 404.
 func serve(method string, u *url.URL) webview2.Response {
 	h := map[string]string{}
@@ -324,6 +355,9 @@ func serve(method string, u *url.URL) webview2.Response {
 		return webview2.Response{Status: 404, Reason: "Not Found", Headers: h}
 	}
 	h["Content-Type"] = ct
+	if c := web.CacheControl(u.Path); c != "" {
+		h["Cache-Control"] = c
+	}
 	return webview2.Response{Status: 200, Reason: "OK", Headers: h, Body: body}
 }
 
@@ -390,7 +424,13 @@ func wndproc(hwnd, m, wp, lp uintptr) uintptr {
 			if wp == sizeMinimized {
 				s.visible.Store(false)
 				s.view.SetVisible(false)
+				// Minimized: as little memory as the runtime can, and the page suspended
+				// unless it waits for an answer or an import's progress.
+				s.view.Background(true, !s.d.Busy())
 			} else {
+				if !s.visible.Load() {
+					s.view.Background(false, false) // restored: resume, normal memory
+				}
 				s.view.SetVisible(true)
 				s.view.Resize()
 				if !s.visible.Swap(true) {

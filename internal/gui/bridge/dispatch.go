@@ -81,7 +81,10 @@ type Options struct {
 	// CheckLayout asks the page to check its layout for overflow (the pseudo-locale
 	// check) and report it to Layout; off in normal use.
 	CheckLayout bool
-	Layout      func(string)
+	// Probe accepts the WebRTC probe's report (bench/footprint -check-webrtc) through
+	// the same operation, to Layout.
+	Probe  bool
+	Layout func(string)
 	// Importer is the Docker Desktop import; nil until it is in the build (the page
 	// then says it is not available yet).
 	Importer Importer
@@ -187,6 +190,10 @@ func (t *tracker) wait(timeout time.Duration) bool {
 		return false
 	}
 }
+
+// Busy reports whether a request is being answered or an import runs: the page is
+// waiting for something, so the window does not suspend it.
+func (d *Dispatcher) Busy() bool { return d.inflight.Load() > 0 || d.ImportRunning() }
 
 // Wait waits up to timeout for the requests being answered and the background work (an
 // import's Run, its cleanup included) to end, and reports whether they did. The window
@@ -324,7 +331,7 @@ func (d *Dispatcher) serve(ctx context.Context, op string, args any) (any, error
 		})
 		return struct{}{}, nil
 	case OpLayout:
-		if d.o.CheckLayout && d.o.Layout != nil {
+		if (d.o.CheckLayout || d.o.Probe) && d.o.Layout != nil {
 			d.o.Layout(dockerapi.CleanText(args.(*LogArgs).Text, false))
 		}
 		return struct{}{}, nil
