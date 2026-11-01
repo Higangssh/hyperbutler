@@ -67,3 +67,7 @@ cmd/hyperbutler/update_windows.go net/http.ProxyFromEnvironment 1 REQ-UX-022 upd
 # create, read and delete the user's sign-in task; it only talks to the local Task
 # Scheduler service.
 cmd/hyperbutler/autostart_windows.go exec:computed 1 %SystemRoot%\System32\schtasks.exe /Create, /Query or /Delete of the autostart task (local Task Scheduler)
+
+# The WebView2 binding (internal/gui/webview2) names the WebView2 Runtime's download page,
+# shown as text in a message box when the runtime is missing; it is never requested.
+internal/gui/webview2/loader_windows.go url:go.microsoft.com 1 the WebView2 Runtime's download page, shown as text when the runtime is missing; never requested
