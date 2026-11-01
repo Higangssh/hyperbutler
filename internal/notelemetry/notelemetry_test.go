@@ -43,6 +43,16 @@ var reviewedModules = map[string]string{
 	"github.com/sirupsen/logrus":             "logging to a local writer (gvisor-tap-vsock)",
 	"golang.org/x/exp":                       "generic helpers",
 	"golang.org/x/time":                      "rate limiting (gvisor)",
+	// hyperbutler mcp (REQ-UX-012). internal/mcpserver builds only an mcp.IOTransport on
+	// stdin and stdout; the SDK's HTTP transports and OAuth client (with x/oauth2) are
+	// linked but run only when constructed, and none of these packages dials in init.
+	"github.com/modelcontextprotocol/go-sdk": "the MCP SDK: JSON-RPC over the stdio transport hyperbutler constructs; its HTTP client and server transports are never constructed",
+	"golang.org/x/oauth2":                    "token types for the MCP SDK's auth package; hyperbutler runs no OAuth flow",
+	"github.com/google/jsonschema-go":        "JSON Schema inference and validation of tool arguments (MCP SDK)",
+	"github.com/segmentio/encoding":          "JSON decoding (MCP SDK)",
+	"github.com/segmentio/asm":               "SIMD helpers for segmentio/encoding",
+	"github.com/yosida95/uritemplate/v3":     "URI templates for MCP resources (MCP SDK); hyperbutler serves none",
+	"golang.org/x/sync":                      "errgroup (MCP SDK)",
 }
 
 func repoRoot(t *testing.T) string {

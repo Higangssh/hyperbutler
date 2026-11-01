@@ -25,6 +25,12 @@ internal/engine/share_windows.go net/http.Transport 1 DialContext is transport.H
 cmd/hyperbutler/containers_windows.go net/http.Client 2 GET /containers/json and inspect over the engine's local named pipe: the client and getJSON's parameter
 cmd/hyperbutler/containers_windows.go net/http.Transport 1 DialContext is winio.DialPipeContext (a local named pipe)
 
+# hyperbutler mcp (REQ-UX-012) reads and drives the engine through the same local pipe.
+# The Transport has no Proxy and its DialContext ignores the address: it calls
+# Options.Dial, which cmd/hyperbutler/mcp_windows.go sets to winio.DialPipeContext.
+internal/mcpserver/docker.go net/http.Client 2 Docker API calls over the engine's local named pipe: the dockerClient field and the literal
+internal/mcpserver/docker.go net/http.Transport 1 DialContext is Options.Dial (winio.DialPipeContext, a local named pipe)
+
 # The guest network (ADR 0006): the host side of connections and DNS queries the guest
 # makes. Only the guest's (the user's containers' and pulls') traffic goes this way;
 # bench/no-telemetry checks that the guest makes none of its own at idle.

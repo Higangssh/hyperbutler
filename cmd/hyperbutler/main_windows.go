@@ -12,6 +12,7 @@
 //	hyperbutler restart  stop and start again
 //	hyperbutler diagnose  write a local zip for bug reports, with secrets redacted
 //	hyperbutler uninstall remove everything hyperbutler created (--dry-run lists it)
+//	hyperbutler mcp      serve the Model Context Protocol on stdio for AI clients
 //
 // See docs/research/cli-engine.md.
 package main
@@ -41,6 +42,7 @@ Usage:
   hyperbutler diagnose [--out FILE] [--json]
   hyperbutler uninstall [--dry-run] [--keep-data] [--yes] [--json]
   hyperbutler version [--json]
+  hyperbutler mcp     [--allow-write [--allow-delete]]   (MCP server on stdio, docs/mcp.md)
 
 State lives in %LOCALAPPDATA%\hyperbutler (override with HYPERBUTLER_HOME).
 Run "hyperbutler COMMAND -h" for a command's flags.
@@ -87,6 +89,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		err = cmdDiagnose(args[1:], stdout, stderr)
 	case "uninstall":
 		err = cmdUninstall(args[1:], os.Stdin, stdout, stderr)
+	case "mcp":
+		err = cmdMCP(args[1:], os.Stdin, stdout, stderr)
 	case "engine":
 		code, err = cmdEngine(args[1:], stderr)
 	case "version", "--version":
