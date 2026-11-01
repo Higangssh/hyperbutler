@@ -43,6 +43,7 @@ wanted is marked *withdrawn*, not deleted.
 | REQ-DISK-007 | The data location can be chosen at first run and moved safely later, without admin. | `hyperbutler start --data D:\hyperbutler` works. `hyperbutler move` runs as a standard user. Killed at any point (once every 1 s across a run), it leaves either the old or the new location fully usable (`bench/disk-move`). | P1 | D6 |
 | REQ-DISK-008 | Upgrades don't leak disk. | After upgrading hyperbutler, host disk usage grows by no more than the size of the new guest image. Old guest images are removed (`bench/upgrade`). | P1 | D2 |
 | REQ-DISK-010 | A paused VM says why. | A VM paused by the free-space guard (REQ-DISK-004) is shown in `state.json` and `status`, with the volume and the free space needed to resume ([usage-scenarios.md](research/usage-scenarios.md) S7.2). | P0 | S7.2 |
+| REQ-DISK-009 | Guest disk use is visible. | `status` shows how full the guest file system is and `start` warns above 90% (0.2). Growing the data disk without losing data is later ([usage-scenarios.md](research/usage-scenarios.md) S7.1). | P1 | S7.1 |
 
 ## Start-up and memory
 
@@ -98,6 +99,7 @@ Status on the reference machine (2026-10-31, `hyperbutler start`, 4 GiB / 8 vCPU
 | REQ-FS-003 | File changes made on Windows reach containers as inotify events. | When a Windows process edits a bind-mounted file, the container gets an `IN_MODIFY` event within 200 ms p95, without polling. A scripted check confirms that pinned versions of Vite and webpack hot-reload with default config (`bench/fs-notify`). | P1 | F2 |
 | REQ-FS-004 | Mounts behave correctly on Windows paths. | The `bench/fs-compat` suite passes. It covers case-sensitivity rules, symlinks, permission mapping, paths longer than 260 characters, and paths with spaces or non-ASCII characters. | P1 | F1 |
 | REQ-FS-005 | Creates and deletes on bind mounts beat 9P. | On the REQ-FS-002 checkout, `npm ci` and creating, stat-ing and deleting 10k files are each at least 3× as fast as on WSL 2's 9P mount of the same directory on the same machine (`bench/fs-meta`). The docs point write-heavy trees (`node_modules`) at a named volume, or at the sync mode once it exists. *Added 2026-10-31 (ADR 0007): the write half of the old REQ-FS-002.* | P1 | F1 |
+| REQ-FS-006 | Unsharable bind sources are explained. | Bind sources hyperbutler cannot share (UNC, `\\wsl$`, device paths) are refused with a message that says why and what to do. | P1 | S10.3 |
 
 Status of the bind-mount requirements, measured with `bench/fs-*` through `hyperbutler start`
 on the reference machine (2026-10-31, [ADR 0007](adr/0007-bind-mounts.md#performance-pass-and-benchfs--2026-10-31)):
@@ -156,6 +158,7 @@ Status on the reference machine (2026-10-31, `hyperbutler-dev` with the user-mod
 |---|---|---|---|---|
 | REQ-API-001 | The stock Docker CLI and Compose work unchanged. | Through the auto-registered `hyperbutler` context, the stock `docker` and `docker compose` CLIs pass `bench/compat`. **0.1** covers run, exec, logs, pull, build (BuildKit), volumes, and compose up/down. **1.0** adds attach, push, networks, and compose watch. Known gaps are listed in `docs/compat.md`. | P0 | U3 |
 | REQ-API-002 | Common tools that talk to the Docker API work. | VS Code Dev Containers, Testcontainers (Java/Go/Node), and the Docker SDK for Python and Go pass their own basic samples against the `npipe` endpoint (`bench/compat-tools`). | P1 | U3 |
+| REQ-API-003 | Tools that ignore contexts are covered. | Tools that ignore docker contexts are documented: `DOCKER_HOST`, `~/.testcontainers.properties`, IDE settings. `config set pipe \\.\pipe\docker_engine` is the documented opt-in for tools that hard-code the default pipe, and warns when Docker Desktop is installed. | P1 | S4.3 S4.5 |
 
 ## Platform
 
@@ -176,6 +179,7 @@ Status on the reference machine (2026-10-31, `hyperbutler-dev` with the user-mod
 |---|---|---|---|---|
 | REQ-PWR-001 | The guest clock stays correct across sleep. | Within 2 s of the host resuming from sleep or hibernate, the guest clock is within 1 s of the host (`bench/resume`, *manual*). | P1 | S1 |
 | REQ-PWR-002 | No hangs or CPU spikes after resume. | Over 50 sleep/resume cycles, the `docker` CLI responds within 3 s after each resume, and VM CPU drops below 2% within 10 s (`bench/resume`, *manual*). | P1 | S2 |
+| REQ-PWR-003 | Shutdowns are orderly. | Sign-out, reboot, fast-startup shutdown and hibernate with containers running end in an orderly guest shutdown, or, for hibernate, keep the VM. Either way `status` says what happened. A manual bench repeats each 10 times. | P1 | S2.4 S2.5 S2.6 |
 
 ## User experience
 
@@ -198,6 +202,11 @@ Status on the reference machine (2026-10-31, `hyperbutler-dev` with the user-mod
 | REQ-UX-016 | Launching the exe does something useful. | Launched with a console of its own (a new console window, as from Explorer or a shortcut), `hyperbutler.exe` shows the status, offers to start a stopped engine on Enter, says the engine outlives the window, and waits before closing, for a bounded time. Usage without arguments exits 0. From 0.2 it opens the GUI; the GUI never starts the engine unless asked (a Start button, or an opt-in setting), and closing it never stops the engine. | P0 (console), P1 (GUI) | S0.1 S0.2 S0.3 |
 | REQ-UX-017 | No surprise container stops. | Before any stop or restart of the VM or dockerd (`stop`, `restart`, `--apply`, `config daemon apply`), hyperbutler lists the running containers that will stop and which will come back (restart policy). | P0 | S2.7 S6.1 S6.2 |
 | REQ-UX-020 | A taken pipe is explained. | When the Docker API pipe is taken, the error names the configured pipe, says another user's or installation's engine may hold it, and gives the `config set pipe` fix. The README says each Windows user has their own engine and that published ports are shared. | P0 | S5.1 S5.2 S5.3 |
+| REQ-UX-015 | Autostart is opt-in. | `config set autostart true` creates one per-user logon task that starts the engine without a window and needs no admin. `config set` names the task; it is off by default; `uninstall` lists and removes it. | P1 | S2.3 |
+| REQ-UX-018 | Another engine is named. | `start` says when another Docker engine's pipe (`docker_engine`, `dockerDesktopLinuxEngine`) exists and which engine plain `docker` now reaches. `status` names the selected context when it is not `hyperbutler`. It never changes the selection outside `start`. | P1 | S3.2 S3.3 |
+| REQ-UX-019 | Broken credential helpers are named. | `start` and `doctor` warn when `config.json`'s `credsStore` or `credHelpers` names a helper that is not on PATH, with the fix. hyperbutler never edits those keys. | P1 | S3.6 |
+| REQ-UX-021 | Moving from Docker Desktop is documented. | `save`/`load` and a volume `tar` between contexts, with the PowerShell 5.1 pipe caveat. | P1 | S3.7 |
+| REQ-UX-022 | The update check only tells. | At most once a day, `start` and `status` ask GitHub's release API over HTTPS whether a newer release exists, sending no identifier beyond what any HTTPS request carries (no install ID, no usage data). It only prints a note with the release URL: it never downloads or installs anything. `config set updateCheck false` turns it off, and `bench/no-telemetry` shows nothing else leaves (REQ-UX-005). | P1 | A2 A12 |
 
 Status of the settings requirements (2026-10-31, `hyperbutler start`; details in
 [settings.md](research/settings.md)):
