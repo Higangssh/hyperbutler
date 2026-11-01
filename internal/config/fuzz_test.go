@@ -2,6 +2,8 @@ package config
 
 import (
 	"encoding/json"
+	"net/url"
+	"strings"
 	"testing"
 
 	"github.com/Higangssh/hyperbutler/internal/engine"
@@ -12,13 +14,13 @@ import (
 // and read back the same through Get.
 func FuzzSet(f *testing.F) {
 	for i, k := range Keys {
-		for _, v := range []string{"", "0", "1", "4GiB", "4096", "true", "off", `\\.\pipe\x`, `C:\data`, "64GiB", "\x00", "-1", "99999999999999999999", "all", "80,443", "8000-8100, 22", "1-65535"} {
+		for _, v := range []string{"", "0", "1", "4GiB", "4096", "true", "off", `\\.\pipe\x`, `C:\data`, "64GiB", "\x00", "-1", "99999999999999999999", "all", "80,443", "8000-8100, 22", "1-65535", "http://u:p@proxy:3128", "http://127.0.0.1:3128", "socks5://[::1]:1080", ".corp, 10.0.0.0/8", "localhost"} {
 			f.Add(uint8(i), v, uint8(0))
 		}
 		f.Add(uint8(i), k.def(Env{Home: `C:\h`, HostCPUs: 4}), uint8(1))
 	}
 	f.Fuzz(func(t *testing.T, ki uint8, v string, flags uint8) {
-		e := Env{Home: `C:\h`, HostCPUs: int(flags>>2) + 1, DiskExists: func(string) bool { return flags&1 != 0 }}
+		e := Env{Home: `C:\h`, HostCPUs: int(flags>>2) + 1, DiskExists: func(string) bool { return flags&1 != 0 }, ShowSecrets: true}
 		k := Keys[int(ki)%len(Keys)]
 		var base *engine.Settings
 		if flags&2 != 0 {
@@ -55,6 +57,18 @@ func FuzzSet(f *testing.F) {
 		again, err := k.Set(n, it.Value, e)
 		if err != nil || !Equal(again, n) {
 			t.Fatalf("%s: value %q read back as %q does not set again: %v", k.Name, v, it.Value, err)
+		}
+		// Shown without --show-secrets, a secret has no password in it.
+		if k.Secret {
+			e.ShowSecrets = false
+			shown := k.Get(n, e).Value
+			if u, err := url.Parse(v); err == nil && u.User != nil {
+				pw, ok := u.User.Password()
+				other := u.Scheme + u.Host + u.User.Username() + u.Path + "***"
+				if ok && len(pw) >= 4 && strings.Contains(shown, pw) && !strings.Contains(other, pw) {
+					t.Fatalf("%s: %q shown as %q", k.Name, v, shown)
+				}
+			}
 		}
 	})
 }

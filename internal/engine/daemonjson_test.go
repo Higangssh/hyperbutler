@@ -20,6 +20,14 @@ type fakeGuest struct {
 	restarts []bool
 	rollback bool // the next restart rolls back
 	err      error
+
+	// The environment side (DockerdEnv).
+	order      []string
+	env        []byte
+	envSet     bool
+	envs       [][]byte
+	running    bool // dockerd runs (after the first daemon.json delivery)
+	dockerdPID int
 }
 
 func (g *fakeGuest) Hello() guestctl.HelloReply { return guestctl.HelloReply{Features: g.features} }
@@ -30,6 +38,11 @@ func (g *fakeGuest) DaemonConfig(_ context.Context, data []byte, restart bool) (
 	}
 	g.got = append(g.got, bytes.Clone(data))
 	g.restarts = append(g.restarts, restart)
+	g.order = append(g.order, "daemon")
+	if restart && g.running {
+		g.dockerdPID++
+	}
+	g.running = true
 	if !restart && bytes.Contains(data, []byte("dockerd-exits")) {
 		// At boot: dockerd exits with the file, so the guest starts it without one.
 		return guestctl.DaemonResult{Code: guestctl.DaemonRolledBack, Flags: guestctl.DaemonChanged | guestctl.DaemonRestarted, Message: "dockerd did not start"}, nil
@@ -43,6 +56,29 @@ func (g *fakeGuest) DaemonConfig(_ context.Context, data []byte, restart bool) (
 	}
 	r := guestctl.DaemonResult{Flags: guestctl.DaemonChanged}
 	if restart {
+		r.Flags |= guestctl.DaemonRestarted
+	}
+	return r, nil
+}
+
+// DockerdEnv plays a guest whose dockerd restarts when the environment changes (the
+// guest forces that while dockerd runs). It records the order of calls in g.order.
+func (g *fakeGuest) DockerdEnv(_ context.Context, data []byte, restart bool) (guestctl.EnvResult, error) {
+	if g.err != nil {
+		return guestctl.EnvResult{}, g.err
+	}
+	g.order = append(g.order, "env")
+	var r guestctl.EnvResult
+	if !bytes.Equal(data, g.env) || g.envSet != (data != nil) {
+		r.Flags |= guestctl.DaemonChanged
+		if g.running {
+			restart = true
+		}
+	}
+	g.env, g.envSet = bytes.Clone(data), data != nil
+	g.envs = append(g.envs, bytes.Clone(data))
+	if restart && g.running {
+		g.dockerdPID++
 		r.Flags |= guestctl.DaemonRestarted
 	}
 	return r, nil

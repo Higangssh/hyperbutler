@@ -16,6 +16,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/Higangssh/hyperbutler/internal/diag"
+	"github.com/Higangssh/hyperbutler/internal/dockerenv"
 	"github.com/Higangssh/hyperbutler/internal/netstack"
 	"github.com/Higangssh/hyperbutler/internal/transport"
 )
@@ -234,7 +235,21 @@ type Settings struct {
 	// first selected its own ("default" for docker's default), so `hyperbutler
 	// uninstall` can select it again (REQ-UX-010). Not a user setting.
 	PreviousContext string `json:"previousDockerContext,omitempty"`
+	// CAImport says whether the guest's dockerd trusts the CA certificates of the
+	// Windows root stores too (REQ-UX-009); nil means yes.
+	CAImport *bool `json:"caImport,omitempty"`
+	// CAExtraFile is a PEM file of more CA certificates for dockerd to trust.
+	CAExtraFile string `json:"caExtraFile,omitempty"`
+	// HTTPProxy, HTTPSProxy and NoProxy are dockerd's proxy settings (HTTP_PROXY,
+	// HTTPS_PROXY, NO_PROXY). The URLs may carry credentials: they are shown only
+	// through dockerenv.Redact.
+	HTTPProxy  string `json:"httpProxy,omitempty"`
+	HTTPSProxy string `json:"httpsProxy,omitempty"`
+	NoProxy    string `json:"noProxy,omitempty"`
 }
+
+// CAImported reports whether the Windows root stores are imported.
+func (s *Settings) CAImported() bool { return s.CAImport == nil || *s.CAImport }
 
 // HostGateway is the host gateway setting of s. The ports were checked by Validate.
 func (s *Settings) HostGateway() netstack.HostGateway {
@@ -344,6 +359,28 @@ func (s *Settings) Validate() error {
 	}
 	if len(s.PreviousContext) > 256 || !utf8.ValidString(s.PreviousContext) || strings.ContainsRune(s.PreviousContext, 0) {
 		return errors.New("settings: previous docker context name too long or not UTF-8")
+	}
+	if s.CAExtraFile != "" && (!filepath.IsAbs(s.CAExtraFile) || len(s.CAExtraFile) > 1024 || !utf8.ValidString(s.CAExtraFile) || strings.ContainsRune(s.CAExtraFile, 0)) {
+		return fmt.Errorf("settings: CA file %q must be an absolute path", s.CAExtraFile)
+	}
+	// The proxy errors never quote the URL, which may hold a password.
+	if s.HTTPProxy != "" {
+		if err := dockerenv.ValidateProxyURL(s.HTTPProxy); err != nil {
+			return fmt.Errorf("settings: http proxy: %w", err)
+		}
+	}
+	if s.HTTPSProxy != "" {
+		if err := dockerenv.ValidateProxyURL(s.HTTPSProxy); err != nil {
+			return fmt.Errorf("settings: https proxy: %w", err)
+		}
+	}
+	if s.NoProxy != "" {
+		if err := dockerenv.ValidateNoProxy(s.NoProxy); err != nil {
+			return fmt.Errorf("settings: %w", err)
+		}
+		if dockerenv.NormalizeNoProxy(s.NoProxy) != s.NoProxy {
+			return errors.New("settings: the no-proxy list has spaces around an entry")
+		}
 	}
 	return nil
 }
@@ -466,7 +503,10 @@ func WriteFileAtomic(path string, data []byte) error {
 
 // ReadFileBounded reads at most maxFileSize bytes of path, retrying sharing
 // violations (an atomic rename in progress).
-func ReadFileBounded(path string) ([]byte, error) {
+func ReadFileBounded(path string) ([]byte, error) { return readFileLimit(path, maxFileSize) }
+
+// readFileLimit is ReadFileBounded with another limit.
+func readFileLimit(path string, limit int) ([]byte, error) {
 	var b []byte
 	err := retrySharing(func() error {
 		f, err := os.Open(path) //nolint:gosec // G304: reading the caller's file is this function's job; size is bounded below
@@ -474,9 +514,9 @@ func ReadFileBounded(path string) ([]byte, error) {
 			return err
 		}
 		defer func() { _ = f.Close() }() // read-only
-		b, err = io.ReadAll(io.LimitReader(f, maxFileSize+1))
-		if err == nil && len(b) > maxFileSize {
-			err = fmt.Errorf("%s is larger than %d bytes", path, maxFileSize)
+		b, err = io.ReadAll(io.LimitReader(f, int64(limit)+1))
+		if err == nil && len(b) > limit {
+			err = fmt.Errorf("%s is larger than %d bytes", path, limit)
 		}
 		return err
 	})

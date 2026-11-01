@@ -62,7 +62,8 @@ func TestConfigListGetSet(t *testing.T) {
 	for _, args := range [][]string{
 		{"config", "set", "memory", "12"},
 		{"config", "set", "cpus", "0"},
-		{"config", "set", "proxy.http", "http://x"},
+		{"config", "set", "proxy.mode", "system"},
+		{"config", "set", "proxy.http", "ftp://user:s3cret@x"},
 		{"config", "set", "nope", "1"},
 		{"config", "set", "memory"},
 		{"config", "get"},
@@ -72,11 +73,39 @@ func TestConfigListGetSet(t *testing.T) {
 			t.Errorf("%q: exit %d %q", args, code, e)
 		}
 	}
-	if code, _, e := runCLI(t, "config", "get", "proxy.http"); code != 1 || !strings.Contains(e, "reserved") {
+	if code, _, e := runCLI(t, "config", "get", "proxy.mode"); code != 1 || !strings.Contains(e, "reserved") {
 		t.Errorf("reserved: %d %q", code, e)
 	}
 	if after, _ := os.ReadFile(l.SettingsPath()); string(after) != string(before) {
 		t.Fatalf("a refused set changed settings.json:\n%s\n%s", before, after)
+	}
+}
+
+// TestConfigProxySecret: REQ-UX-009, a proxy password is stored but never printed,
+// except with --show-secrets.
+func TestConfigProxySecret(t *testing.T) {
+	testHome(t)
+	url := "http://user:s3cret@proxy.corp:3128"
+	var all strings.Builder
+	for _, args := range [][]string{
+		{"config", "set", "proxy.https", url},
+		{"config", "set", "proxy.http", url},
+		{"config", "list"}, {"config", "list", "--json"},
+		{"config", "get", "proxy.https"}, {"config", "get", "--json", "proxy.https"},
+		{"config", "set", "proxy.http", "http://user:s3cret@other:3128"},
+		{"config", "unset", "proxy.http"},
+	} {
+		code, out, e := runCLI(t, args...)
+		if code != 0 {
+			t.Fatalf("%q: %d %q", args, code, e)
+		}
+		all.WriteString(out + e)
+	}
+	if strings.Contains(all.String(), "s3cret") || !strings.Contains(all.String(), "user:***@proxy.corp:3128") {
+		t.Fatalf("output:\n%s", all.String())
+	}
+	if code, out, _ := runCLI(t, "config", "get", "--show-secrets", "proxy.https"); code != 0 || out != url+"\n" {
+		t.Fatalf("--show-secrets: %d %q", code, out)
 	}
 }
 

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/Higangssh/hyperbutler/internal/config"
+	"github.com/Higangssh/hyperbutler/internal/dockerenv"
 	"github.com/Higangssh/hyperbutler/internal/engine"
 )
 
@@ -79,7 +80,10 @@ func TestSchemaFields(t *testing.T) {
 	st := &engine.State{
 		Version: 1, Phase: engine.PhaseRunning, PID: 1, PIDCreated: 2, VMID: "hyperbutler-x", RuntimeID: "r", Pipe: "p", DataDir: "d",
 		Started: now, ReadyMillis: 1, Updated: now, Error: "e", ErrorCode: "c", ImageDir: "i",
-		Daemon:      &engine.DaemonState{Generation: 1, Applies: 1, Source: engine.DaemonFile, SHA256: "h", Bytes: 2, Restarted: true, Error: "e", Updated: now},
+		Daemon: &engine.DaemonState{Generation: 1, Applies: 1, Source: engine.DaemonFile, SHA256: "h", Bytes: 2, Restarted: true, Error: "e", Updated: now,
+			Env: &engine.EnvState{HTTPProxy: "http://u:***@p:1", HTTPSProxy: "http://p:1", NoProxy: "localhost", CAImport: true, CACerts: 3, CASkipped: 7,
+				CAStats: dockerenv.Stats{Added: 3, Duplicate: 1, NotCA: 1, Expired: 1, NotYetValid: 1, Invalid: 1, Disallowed: 1, OverLimit: 1},
+				SHA256:  "h", Restarted: true, Error: "e"}},
 		HostGateway: &engine.HostGatewayState{Address: "192.168.127.254", Enabled: true, Ports: "all", Reloads: 1, Error: "e"},
 	}
 	checkKeys(t, "status", StatusJSON{
@@ -93,6 +97,12 @@ func TestSchemaFields(t *testing.T) {
 		"state.daemonConfig", "state.daemonConfig.generation", "state.daemonConfig.applies", "state.daemonConfig.source",
 		"state.daemonConfig.sha256", "state.daemonConfig.bytes", "state.daemonConfig.restarted", "state.daemonConfig.error",
 		"state.daemonConfig.updated",
+		"state.daemonConfig.env", "state.daemonConfig.env.httpProxy", "state.daemonConfig.env.httpsProxy", "state.daemonConfig.env.noProxy",
+		"state.daemonConfig.env.caImport", "state.daemonConfig.env.caCerts", "state.daemonConfig.env.caSkipped", "state.daemonConfig.env.caStats",
+		"state.daemonConfig.env.caStats.added", "state.daemonConfig.env.caStats.duplicate", "state.daemonConfig.env.caStats.notCA",
+		"state.daemonConfig.env.caStats.expired", "state.daemonConfig.env.caStats.notYetValid", "state.daemonConfig.env.caStats.invalid",
+		"state.daemonConfig.env.caStats.disallowed", "state.daemonConfig.env.caStats.overLimit",
+		"state.daemonConfig.env.sha256", "state.daemonConfig.env.restarted", "state.daemonConfig.env.error",
 		"state.hostGateway", "state.hostGateway.address", "state.hostGateway.enabled", "state.hostGateway.ports",
 		"state.hostGateway.reloads", "state.hostGateway.error",
 	})

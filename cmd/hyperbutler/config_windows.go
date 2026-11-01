@@ -23,8 +23,8 @@ import (
 )
 
 const configUsage = `Usage:
-  hyperbutler config list   [--json]
-  hyperbutler config get    KEY [--json]
+  hyperbutler config list   [--json] [--show-secrets]
+  hyperbutler config get    KEY [--json] [--show-secrets]
   hyperbutler config set    KEY VALUE [--apply] [--image-dir DIR]
   hyperbutler config unset  KEY [--apply] [--image-dir DIR]
   hyperbutler config path   [--json]
@@ -35,8 +35,11 @@ Keys: %s
 set and unset write settings.json and say what restart, if any, the change needs.
 They never restart anything unless --apply is given.
 
+Proxy URLs are shown with their password replaced by *** unless --show-secrets.
+
 daemon.json (%s) is passed to the guest's dockerd byte for byte;
-"config daemon apply" restarts dockerd (not the VM) with it.
+"config daemon apply" restarts dockerd (not the VM) with it and with the
+proxy and CA settings (proxy.*, ca.*).
 `
 
 func configUsageText() string {
@@ -86,6 +89,7 @@ func cmdConfig(args []string, stdout, stderr io.Writer) error {
 func configList(args []string, stdout, stderr io.Writer) error {
 	fs := newFlagSet("config list", stderr)
 	asJSON := fs.Bool("json", false, "print JSON")
+	showSecrets := fs.Bool("show-secrets", false, "show proxy passwords instead of ***")
 	if err := parseArgs(fs, args); err != nil {
 		return err
 	}
@@ -93,7 +97,9 @@ func configList(args []string, stdout, stderr io.Writer) error {
 	if err != nil {
 		return err
 	}
-	items := config.List(in.settings, in.env())
+	env := in.env()
+	env.ShowSecrets = *showSecrets
+	items := config.List(in.settings, env)
 	if *asJSON {
 		return writeJSON(stdout, ConfigListJSON{Schema: SchemaVersion, SettingsFile: in.l.SettingsPath(), Keys: items})
 	}
@@ -125,6 +131,7 @@ func applyText(a config.ApplyTime) string {
 func configGet(args []string, stdout, stderr io.Writer) error {
 	fs := newFlagSet("config get", stderr)
 	asJSON := fs.Bool("json", false, "print JSON")
+	showSecrets := fs.Bool("show-secrets", false, "show proxy passwords instead of ***")
 	pos, err := parseInterspersed(fs, args)
 	if err != nil {
 		return err
@@ -140,7 +147,9 @@ func configGet(args []string, stdout, stderr io.Writer) error {
 	if err != nil {
 		return err
 	}
-	it := k.Get(in.settings, in.env())
+	env := in.env()
+	env.ShowSecrets = *showSecrets
+	it := k.Get(in.settings, env)
 	if *asJSON {
 		return writeJSON(stdout, ConfigGetJSON{Schema: SchemaVersion, Item: it})
 	}
@@ -251,8 +260,17 @@ func configSet(verb string, args []string, stdout, stderr io.Writer) error {
 		_, _ = fmt.Fprintln(stdout, "Used when the data disk is created, at the first start.")
 		return nil
 	case config.ApplyDockerd:
-		_, _ = fmt.Fprintln(stdout, "Applies when dockerd restarts: hyperbutler config daemon apply.")
-		return nil
+		if !up {
+			_, _ = fmt.Fprintln(stdout, "Applies at the next hyperbutler start.")
+			return nil
+		}
+		if !*apply {
+			_, _ = fmt.Fprintln(stdout, "Applies when dockerd restarts: run `hyperbutler config daemon apply`, or repeat this with --apply. Nothing was restarted.")
+			return nil
+		}
+		unlock()
+		_, _ = fmt.Fprintln(stdout, "Restarting dockerd (--apply; the VM keeps running).")
+		return daemonApply(nil, stdout, stderr)
 	}
 	if !up {
 		_, _ = fmt.Fprintln(stdout, "Applies at the next hyperbutler start.")
@@ -418,11 +436,18 @@ func daemonApply(args []string, stdout, stderr io.Writer) error {
 		}
 		if err == nil && cur.Daemon != nil && cur.Daemon.Applies > gen {
 			d := cur.Daemon
+			var envErr error
+			if d.Env != nil && d.Env.Error != "" {
+				envErr = fmt.Errorf("proxy and CA settings: %s", printable([]byte(d.Env.Error)))
+			}
 			if d.Error != "" {
-				return fmt.Errorf("daemon.json not applied: %s", printable([]byte(d.Error)))
+				return errors.Join(fmt.Errorf("daemon.json not applied: %s", printable([]byte(d.Error))), envErr)
 			}
 			_, _ = fmt.Fprintf(stdout, "dockerd restarted with %s in %.1f s.\n", describeState(d), time.Since(t0).Seconds())
-			return nil
+			if d.Env != nil {
+				_, _ = fmt.Fprintf(stdout, "Proxy and CA: %s.\n", describeEnv(d.Env))
+			}
+			return envErr
 		}
 		if time.Now().After(deadline) {
 			return fmt.Errorf("no result after %v; see `hyperbutler logs`", *timeout)
@@ -447,6 +472,28 @@ func describeState(d *engine.DaemonState) string {
 		return fmt.Sprintf("the previous daemon.json (%d bytes)", d.Bytes)
 	}
 	return fmt.Sprintf("daemon.json (%d bytes, sha256 %s)", d.Bytes, d.SHA256[:12])
+}
+
+// describeEnv summarizes dockerd's environment; the proxies in it are redacted.
+func describeEnv(e *engine.EnvState) string {
+	var parts []string
+	if e.HTTPProxy != "" {
+		parts = append(parts, "HTTP_PROXY "+string(printable([]byte(e.HTTPProxy))))
+	}
+	if e.HTTPSProxy != "" {
+		parts = append(parts, "HTTPS_PROXY "+string(printable([]byte(e.HTTPSProxy))))
+	}
+	if len(parts) == 0 {
+		parts = append(parts, "no proxy")
+	}
+	ca := fmt.Sprintf("%d extra CA certificates", e.CACerts)
+	if !e.CAImport {
+		ca += " (ca.import off)"
+	}
+	if e.CASkipped > 0 {
+		ca += fmt.Sprintf(", %d left out", e.CASkipped)
+	}
+	return strings.Join(append(parts, ca), ", ")
 }
 
 // daemonStatusLine summarizes the daemon.json delivery for `hyperbutler status`.

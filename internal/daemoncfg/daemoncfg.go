@@ -56,6 +56,7 @@ var Owned = []OwnedKey{
 	{"log-level", `hyperbutler passes --log-level; use "debug": true for debug logs`},
 	{"host-gateway-ip", "hyperbutler passes --host-gateway-ip: host-gateway (--add-host NAME:host-gateway) is the host stack's host.docker.internal address, which forwards to the Windows host's loopback; turn it off or limit it with `hyperbutler config set hostGateway.enabled` and `hostGateway.ports`"},
 	{"host-gateway-ips", "hyperbutler passes --host-gateway-ip: host-gateway (--add-host NAME:host-gateway) is the host stack's host.docker.internal address, which forwards to the Windows host's loopback; turn it off or limit it with `hyperbutler config set hostGateway.enabled` and `hostGateway.ports`"},
+	{"proxies", "dockerd's proxies are hyperbutler settings, and a daemon.json value would silently override them; use `hyperbutler config set proxy.http`, `proxy.https` and `proxy.noProxy`"},
 	{"live-restore", "the guest's orderly shutdown stops dockerd and then unmounts the data disk; containers left running would keep it busy and power the VM off with a dirty file system"},
 }
 

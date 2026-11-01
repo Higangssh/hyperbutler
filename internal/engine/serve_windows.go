@@ -18,6 +18,7 @@ import (
 
 	"github.com/Microsoft/go-winio/pkg/guid"
 
+	"github.com/Higangssh/hyperbutler/internal/dockerenv"
 	"github.com/Higangssh/hyperbutler/internal/netstack"
 	"github.com/Higangssh/hyperbutler/internal/transport"
 )
@@ -148,6 +149,25 @@ func Serve(opts ServeOptions) error {
 	dc := &DaemonConfig{Layout: l, GuestSubnet: subnet, Log: log, OnState: func(d DaemonState) {
 		pub.update(func(s *State) { s.Daemon = &d })
 	}}
+	// dockerd's environment (REQ-UX-009): proxies and CA certificates, built from
+	// settings.json as it is at boot and at each apply.
+	envNet := EnvNet{Subnet: subnet}
+	if opts.Net.HostGateway != nil {
+		envNet.HostGW = netstack.Config{Subnet: subnet}.HostGatewayAddr()
+	}
+	dc.Env = func() (*dockerenv.Doc, EnvState) {
+		s, err := LoadSettings(l)
+		if err != nil {
+			s = opts.Settings
+			log.Warn("dockerd environment: settings.json unreadable; using the settings of the start", "err", err)
+		}
+		dj, _ := ReadDaemonJSON(l, subnet) // only for NO_PROXY; an invalid file adds nothing
+		t0 := time.Now()
+		doc, st := BuildDockerdEnv(s, envNet, dj)
+		log.Info("dockerd environment built", "caImport", st.CAImport, "caCerts", st.CACerts, "caSkipped", st.CASkipped,
+			"caStats", fmt.Sprintf("%+v", st.CAStats), "took", time.Since(t0).Round(time.Millisecond))
+		return doc, st
+	}
 	dev, err := CreateDaemonEvent()
 	if err != nil {
 		return fail(err)

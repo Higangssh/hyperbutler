@@ -689,6 +689,13 @@ func cmdStatus(args []string, stdout, stderr io.Writer) (int, error) {
 		_, _ = fmt.Fprintf(stdout, "  cli:     none on PATH; bundled: %s\n", cli.Bundled)
 	}
 	_, _ = fmt.Fprintf(stdout, "  daemon:  %s\n", daemonStatusLine(in.l, st))
+	if st != nil && st.Phase.Live() && st.Daemon != nil && st.Daemon.Env != nil {
+		env := describeEnv(st.Daemon.Env)
+		if e := st.Daemon.Env.Error; e != "" {
+			env += "; last problem: " + string(printable([]byte(e)))
+		}
+		_, _ = fmt.Fprintf(stdout, "  proxy:   %s\n", env)
+	}
 	_, _ = fmt.Fprintf(stdout, "  state:   %s\n", in.l.Home)
 	return code, nil
 }

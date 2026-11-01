@@ -56,6 +56,7 @@ func TestCheckRefuses(t *testing.T) {
 		"data-root":     {`{"data-root":"/mnt"}`, "data-root", "data disk"},
 		"log-level":     {`{"log-level":"debug"}`, "log-level", `"debug": true`},
 		"live-restore":  {`{"live-restore":true}`, "live-restore", "dirty"},
+		"proxies":       {`{"proxies":{"http-proxy":"http://p:3128"}}`, "proxies", "config set proxy.http"},
 		"duplicate":     {`{"debug":true,"debug":false}`, "debug", "twice"},
 		"dup folded":    {`{"debug":true,"DEBUG":false}`, "DEBUG", "same key"},
 		"bip overlap":   {`{"bip":"192.168.127.1/24"}`, "bip", "overlaps"},

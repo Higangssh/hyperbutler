@@ -17,6 +17,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"github.com/Higangssh/hyperbutler/internal/dockerenv"
 	"github.com/Higangssh/hyperbutler/internal/engine"
 	"github.com/Higangssh/hyperbutler/internal/netstack"
 	"github.com/Higangssh/hyperbutler/internal/transport"
@@ -55,6 +56,9 @@ type Env struct {
 	Getenv func(string) string
 	// DiskExists reports whether a data disk exists in dir (nil: none).
 	DiskExists func(dir string) bool
+	// ShowSecrets makes Get show secret values (proxy credentials) as they are;
+	// otherwise they are redacted (`config list/get --show-secrets`).
+	ShowSecrets bool
 }
 
 func (e Env) getenv(k string) string {
@@ -77,6 +81,9 @@ type Key struct {
 	// Engine marks an ApplyLive key the running engine uses: `config set` asks it to
 	// read settings.json again (engine.RequestSettingsReload).
 	Engine bool
+	// Secret marks a value that can hold credentials (a proxy URL): Get shows it
+	// redacted unless Env.ShowSecrets, and errors never quote it.
+	Secret bool
 
 	def   func(Env) string
 	get   func(*engine.Settings, Env) (value string, inFile bool)
@@ -94,8 +101,7 @@ var (
 // Reserved are names kept for settings that are planned but not implemented
 // (docs/research/settings-and-gui.md). Set and Get refuse them with ErrReserved.
 var Reserved = []string{
-	"proxy.mode", "proxy.http", "proxy.https", "proxy.noProxy", // REQ-UX-009
-	"ca.import",         // REQ-UX-009
+	"proxy.mode",        // REQ-UX-009: the Windows system proxy (WinINET/WinHTTP), 0.2
 	"updates.check",     // REQ-UX-005
 	"autostart", "tray", // ADR 0008
 	"ports.lan",              // REQ-NET
@@ -268,6 +274,105 @@ var Keys = []*Key{
 		unset: func(s *engine.Settings, _ Env) error { s.HostGatewayPorts = ""; return nil },
 	},
 	{
+		Name: "ca.import", Type: "bool", Apply: ApplyDockerd,
+		Description: "whether dockerd also trusts the CA certificates of the Windows root stores (a corporate TLS-inspecting proxy's, for example)",
+		def:         func(Env) string { return "true" },
+		get: func(s *engine.Settings, _ Env) (string, bool) {
+			return strconv.FormatBool(s.CAImported()), s.CAImport != nil
+		},
+		set: func(s *engine.Settings, v string, _ Env) error {
+			b, err := ParseBool(v)
+			if err != nil {
+				return err
+			}
+			s.CAImport = &b
+			return nil
+		},
+		unset: func(s *engine.Settings, _ Env) error { s.CAImport = nil; return nil },
+	},
+	{
+		Name: "ca.extraFile", Type: "path", Apply: ApplyDockerd,
+		Description: "a PEM file of more CA certificates for dockerd to trust, or empty",
+		def:         func(Env) string { return "" },
+		get: func(s *engine.Settings, _ Env) (string, bool) {
+			return s.CAExtraFile, s.CAExtraFile != ""
+		},
+		set: func(s *engine.Settings, v string, _ Env) error {
+			if v == "" {
+				s.CAExtraFile = ""
+				return nil
+			}
+			if len(v) > 1024 || !utf8.ValidString(v) || strings.ContainsRune(v, 0) {
+				return fmt.Errorf("ca.extraFile %q: want a PEM file", v)
+			}
+			abs, err := filepath.Abs(v)
+			if err != nil {
+				return err
+			}
+			// A network path would be read at every engine start and apply, and could
+			// hang it or send credentials to another machine.
+			if strings.HasPrefix(abs, `\\`) || runtime.GOOS == "windows" && !drivePath(abs) {
+				return fmt.Errorf("ca.extraFile %s: want a file on a local drive", v)
+			}
+			if _, err := engine.ReadCAFile(abs); err != nil {
+				return err
+			}
+			s.CAExtraFile = abs
+			return nil
+		},
+		unset: func(s *engine.Settings, _ Env) error { s.CAExtraFile = ""; return nil },
+	},
+	{
+		Name: "proxy.http", Type: "url", Apply: ApplyDockerd, Secret: true,
+		Description: "dockerd's proxy for http:// (HTTP_PROXY), such as http://proxy.corp:3128; a proxy on this host's 127.0.0.1 (px, cntlm) works too",
+		def:         func(Env) string { return "" },
+		get:         func(s *engine.Settings, _ Env) (string, bool) { return s.HTTPProxy, s.HTTPProxy != "" },
+		set: func(s *engine.Settings, v string, _ Env) error {
+			if v != "" {
+				if err := dockerenv.ValidateProxyURL(v); err != nil {
+					return err
+				}
+			}
+			s.HTTPProxy = v
+			return nil
+		},
+		unset: func(s *engine.Settings, _ Env) error { s.HTTPProxy = ""; return nil },
+	},
+	{
+		Name: "proxy.https", Type: "url", Apply: ApplyDockerd, Secret: true,
+		Description: "dockerd's proxy for https:// (HTTPS_PROXY): registries and image pulls; usually the same URL as proxy.http",
+		def:         func(Env) string { return "" },
+		get:         func(s *engine.Settings, _ Env) (string, bool) { return s.HTTPSProxy, s.HTTPSProxy != "" },
+		set: func(s *engine.Settings, v string, _ Env) error {
+			if v != "" {
+				if err := dockerenv.ValidateProxyURL(v); err != nil {
+					return err
+				}
+			}
+			s.HTTPSProxy = v
+			return nil
+		},
+		unset: func(s *engine.Settings, _ Env) error { s.HTTPSProxy = ""; return nil },
+	},
+	{
+		Name: "proxy.noProxy", Type: "hosts", Apply: ApplyDockerd,
+		Description: "hosts dockerd reaches without the proxy (NO_PROXY), such as .corp.example,10.0.0.0/8; localhost and the guest network are always added",
+		def:         func(Env) string { return "" },
+		get:         func(s *engine.Settings, _ Env) (string, bool) { return s.NoProxy, s.NoProxy != "" },
+		set: func(s *engine.Settings, v string, _ Env) error {
+			if v == "" {
+				s.NoProxy = ""
+				return nil
+			}
+			if err := dockerenv.ValidateNoProxy(v); err != nil {
+				return err
+			}
+			s.NoProxy = dockerenv.NormalizeNoProxy(v)
+			return nil
+		},
+		unset: func(s *engine.Settings, _ Env) error { s.NoProxy = ""; return nil },
+	},
+	{
 		Name: "engine.memoryLimit", Type: "memlimit", Apply: ApplyVM,
 		Description: `Go soft memory limit of the engine process, such as 256MiB or "off" (GOMEMLIMIT wins)`,
 		env:         "GOMEMLIMIT",
@@ -340,6 +445,9 @@ func (k *Key) Get(s *engine.Settings, e Env) Item {
 	it := Item{Key: k.Name, Default: k.def(e), Source: SourceDefault, Type: k.Type, Apply: k.Apply, Description: k.Description}
 	v, inFile := k.get(s, e)
 	it.Value = v
+	if k.Secret && !e.ShowSecrets {
+		it.Value = dockerenv.Redact(v)
+	}
 	if inFile && haveFile {
 		it.Source = SourceFile
 	}
@@ -366,7 +474,7 @@ func (k *Key) Set(s *engine.Settings, v string, e Env) (*engine.Settings, error)
 	if err := k.set(cp, v, e); err != nil {
 		return nil, fmt.Errorf("%s: %w", k.Name, err)
 	}
-	if err := cp.Validate(); err != nil {
+	if err := k.check(cp); err != nil {
 		return nil, fmt.Errorf("%s: %w", k.Name, err)
 	}
 	return cp, nil
@@ -378,10 +486,23 @@ func (k *Key) Unset(s *engine.Settings, e Env) (*engine.Settings, error) {
 	if err := k.unset(cp, e); err != nil {
 		return nil, fmt.Errorf("%s: %w", k.Name, err)
 	}
-	if err := cp.Validate(); err != nil {
+	if err := k.check(cp); err != nil {
 		return nil, fmt.Errorf("%s: %w", k.Name, err)
 	}
 	return cp, nil
+}
+
+// check validates settings that k changed: as a whole, and a loopback proxy against the
+// host gateway it needs (only for the keys that affect that, so an unrelated change is
+// never refused for it).
+func (k *Key) check(s *engine.Settings) error {
+	if err := s.Validate(); err != nil {
+		return err
+	}
+	if strings.HasPrefix(k.Name, "proxy.") || strings.HasPrefix(k.Name, "hostGateway.") {
+		return s.CheckProxyReach()
+	}
+	return nil
 }
 
 func copySettings(s *engine.Settings, e Env) *engine.Settings {
@@ -391,6 +512,7 @@ func copySettings(s *engine.Settings, e Env) *engine.Settings {
 	cp := *s
 	cp.ManageContext = copyBool(s.ManageContext)
 	cp.HostGatewayEnabled = copyBool(s.HostGatewayEnabled)
+	cp.CAImport = copyBool(s.CAImport)
 	cp.Version = engine.SettingsVersion
 	return &cp
 }
@@ -413,7 +535,9 @@ func Equal(a, b *engine.Settings) bool {
 	ac, bc := *a, *b
 	ac.ManageContext, bc.ManageContext = nil, nil
 	ac.HostGatewayEnabled, bc.HostGatewayEnabled = nil, nil
-	return ac == bc && sameBool(a.ManageContext, b.ManageContext) && sameBool(a.HostGatewayEnabled, b.HostGatewayEnabled)
+	ac.CAImport, bc.CAImport = nil, nil
+	return ac == bc && sameBool(a.ManageContext, b.ManageContext) && sameBool(a.HostGatewayEnabled, b.HostGatewayEnabled) &&
+		sameBool(a.CAImport, b.CAImport)
 }
 
 // Names returns the key names, sorted, for usage text.

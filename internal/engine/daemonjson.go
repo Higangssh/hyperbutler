@@ -17,13 +17,16 @@ import (
 	"unicode/utf8"
 
 	"github.com/Higangssh/hyperbutler/internal/daemoncfg"
+	"github.com/Higangssh/hyperbutler/internal/dockerenv"
 	"github.com/Higangssh/hyperbutler/internal/guestctl"
 )
 
-// DaemonPusher sends a daemon.json to the guest (guestctl.Client).
+// DaemonPusher sends a daemon.json and dockerd's environment to the guest
+// (guestctl.Client).
 type DaemonPusher interface {
 	Hello() guestctl.HelloReply
 	DaemonConfig(ctx context.Context, data []byte, restart bool) (guestctl.DaemonResult, error)
+	DockerdEnv(ctx context.Context, data []byte, restart bool) (guestctl.EnvResult, error)
 }
 
 // DaemonSource says where the daemon.json in effect came from.
@@ -51,6 +54,9 @@ type DaemonState struct {
 	// Error is why the last delivery did not put the user's file in effect.
 	Error   string    `json:"error,omitempty"`
 	Updated time.Time `json:"updated"`
+	// Env is dockerd's environment (proxies and CA certificates, REQ-UX-009),
+	// delivered with daemon.json; nil when the engine has none to deliver.
+	Env *EnvState `json:"env,omitempty"`
 }
 
 // Validate reports the first field out of range.
@@ -66,6 +72,9 @@ func (d *DaemonState) Validate() error {
 		return fmt.Errorf("daemon state: bad hash %q", d.SHA256)
 	case len(d.Error) > maxErrorLen || !utf8.ValidString(d.Error):
 		return errors.New("daemon state: error text too long or not UTF-8")
+	}
+	if d.Env != nil {
+		return d.Env.Validate()
 	}
 	return nil
 }
@@ -96,6 +105,11 @@ type DaemonConfig struct {
 	Log         *slog.Logger
 	// OnState, if set, receives every change (for state.json).
 	OnState func(DaemonState)
+	// Env, if set, builds dockerd's environment (proxies and CA certificates,
+	// REQ-UX-009) from the current settings: once for the first control connection
+	// and again for every Apply. It is delivered before daemon.json, so the guest's
+	// first dockerd starts with both.
+	Env func() (*dockerenv.Doc, EnvState)
 
 	once      sync.Once
 	delivered chan struct{} // closed when the first delivery is done
@@ -108,6 +122,11 @@ type DaemonConfig struct {
 	inEffect []byte // what the guest's dockerd runs with (or will start with)
 	known    bool   // inEffect is known (a delivery succeeded on this VM)
 	pusher   DaemonPusher
+
+	envInEffect  []byte // the encoded environment the guest accepted last
+	envKnown     bool
+	envSt        EnvState
+	envRestarted bool // the environment delivery of this Connected or Apply restarted dockerd
 }
 
 func isHexDigest(s string) bool {
@@ -130,10 +149,12 @@ func (d *DaemonConfig) result(src DaemonSource, data []byte, restarted bool, err
 	if len(data) == 0 {
 		d.st.Source = DaemonNone
 	}
-	d.st.Restarted = restarted
-	d.st.Error = strings.ToValidUTF8(errText, "?")
-	if len(d.st.Error) > maxErrorLen {
-		d.st.Error = d.st.Error[:maxErrorLen]
+	d.st.Restarted = restarted || d.envRestarted
+	d.st.Error = clipError(errText)
+	if d.Env != nil {
+		e := d.envSt
+		e.Error = clipError(e.Error)
+		d.st.Env = &e
 	}
 	d.st.Updated = time.Now().UTC().Truncate(time.Millisecond)
 	d.pubMu.Lock()
@@ -142,6 +163,89 @@ func (d *DaemonConfig) result(src DaemonSource, data []byte, restarted bool, err
 	if d.OnState != nil {
 		d.OnState(d.st)
 	}
+}
+
+func clipError(s string) string {
+	s = strings.ToValidUTF8(s, "?")
+	if len(s) > maxErrorLen {
+		s = strings.ToValidUTF8(s[:maxErrorLen], "")
+	}
+	return s
+}
+
+// deliverEnv sends dockerd's environment: the one in effect (a reconnect) or, with
+// fresh or before the first success, a new one from d.Env. The guest restarts dockerd
+// if it changed while dockerd runs. A refused or failed delivery leaves the previous
+// environment in effect; the reason is in the state's Env.Error and returned.
+func (d *DaemonConfig) deliverEnv(ctx context.Context, p DaemonPusher, fresh bool) error {
+	d.envRestarted = false
+	if d.Env == nil {
+		return nil
+	}
+	data := d.envInEffect
+	var st EnvState
+	if fresh || !d.envKnown {
+		doc, s := d.Env()
+		st = s
+		b, err := doc.Encode()
+		if err != nil { // BuildDockerdEnv validated it; never send what does not encode
+			st.Error = strings.TrimPrefix(st.Error+"; "+err.Error(), "; ")
+			b = nil
+		}
+		data = b
+	} else {
+		st = d.envSt
+		st.Error, st.Restarted = "", false
+	}
+	if p.Hello().Features&guestctl.FeatureDockerdEnv == 0 {
+		if len(data) == 0 {
+			d.envSt = st
+			return nil
+		}
+		err := errors.New("the guest image cannot take proxy or CA certificate settings; update it")
+		d.log().Warn("dockerd environment not delivered", "err", err)
+		d.envSt = EnvState{CAImport: st.CAImport, Error: err.Error()}
+		return err
+	}
+	r, err := p.DockerdEnv(ctx, data, false)
+	if err == nil && r.Code != guestctl.DaemonOK {
+		err = errors.New(describeEnv(guestctl.DaemonResult(r)))
+	}
+	if err != nil {
+		d.log().Warn("dockerd environment not applied", "err", err)
+		prev := d.envSt
+		prev.Restarted = r.Flags&guestctl.DaemonRestarted != 0
+		prev.Error = err.Error() + "; the previous proxy and CA settings stay in effect"
+		d.envSt = prev
+		d.envRestarted = prev.Restarted
+		return err
+	}
+	d.envInEffect, d.envKnown = data, true
+	st.SHA256 = digest(data)
+	st.Restarted = r.Flags&guestctl.DaemonRestarted != 0
+	d.envRestarted = st.Restarted
+	d.envSt = st
+	// Never the URLs themselves: the redacted forms only.
+	d.log().Info("dockerd environment delivered", "httpProxy", st.HTTPProxy, "httpsProxy", st.HTTPSProxy, "noProxy", st.NoProxy,
+		"caCerts", st.CACerts, "caSkipped", st.CASkipped, "dockerdRestarted", st.Restarted)
+	if st.Error != "" {
+		d.log().Warn("dockerd environment: part of the settings could not be used", "why", st.Error)
+		return errors.New(st.Error)
+	}
+	return nil
+}
+
+func describeEnv(r guestctl.DaemonResult) string {
+	msg := guestText(r.Message)
+	switch r.Code {
+	case guestctl.DaemonRejected:
+		return "the guest refused the proxy and CA settings: " + msg
+	case guestctl.DaemonBadTransfer:
+		return "the guest received damaged proxy and CA settings (" + msg + ")"
+	case guestctl.DaemonRolledBack:
+		return msg
+	}
+	return "the guest could not apply the proxy and CA settings: " + msg
 }
 
 func (d *DaemonConfig) deliveredChan() chan struct{} {
@@ -221,6 +325,12 @@ func (d *DaemonConfig) Connected(ctx context.Context, p DaemonPusher) {
 		}
 	}()
 	d.pusher = p
+	// The environment goes first: the guest's init starts dockerd once daemon.json is
+	// settled (its daemon.ready), so the first dockerd has both. On a reconnect the
+	// environment in effect is sent again, not a new import: the certificate stores can
+	// change at any time (AuthRoot fills on demand, Group Policy refreshes), and a
+	// changed environment restarts dockerd, which only an explicit apply may do.
+	_ = d.deliverEnv(ctx, p, false)
 	if p.Hello().Features&guestctl.FeatureDaemonConfig == 0 {
 		d.log().Warn("the guest image cannot take a daemon.json; dockerd runs with its defaults")
 		d.result(DaemonNone, nil, false, "the guest image does not support daemon.json; update it")
@@ -303,16 +413,20 @@ func (d *DaemonConfig) saveApplied(b []byte) {
 // ErrNoGuest is returned by Apply while no control connection is up.
 var ErrNoGuest = errors.New("the guest's control channel is not connected")
 
-// Apply reads the user's daemon.json again and puts it in effect, restarting dockerd
-// (not the VM). An invalid file, or one dockerd refuses, leaves the previous one in
-// effect. The outcome is in State as well as the error.
+// Apply reads the user's daemon.json and settings (proxies, CA certificates) again and
+// puts them in effect, restarting dockerd (not the VM) once, or twice when both the
+// environment and daemon.json changed. An invalid file, or one dockerd refuses, leaves
+// the previous one in effect. The outcome is in State as well as the error; an
+// environment problem is in State.Env.Error.
 func (d *DaemonConfig) Apply(ctx context.Context) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	d.st.Applies++
+	d.envRestarted = false
+	var envErr error
 	fail := func(err error) error {
 		d.result(d.st.Source, d.inEffect, false, err.Error())
-		return err
+		return errors.Join(envErr, err)
 	}
 	p := d.pusher
 	if p != nil && p.Hello().Features&guestctl.FeatureDaemonConfig == 0 {
@@ -321,11 +435,16 @@ func (d *DaemonConfig) Apply(ctx context.Context) error {
 	if p == nil || !d.known {
 		return fail(ErrNoGuest)
 	}
+	// A fresh import: this is the explicit apply that may restart dockerd.
+	envErr = d.deliverEnv(ctx, p, true)
 	data, err := ReadDaemonJSON(d.Layout, d.GuestSubnet)
 	if err != nil {
 		return fail(fmt.Errorf("%w; the previous daemon.json stays in effect", err))
 	}
-	r, err := p.DaemonConfig(ctx, data, true)
+	// dockerd restarted for the environment already runs with the daemon.json in
+	// effect; restart again only for a changed file.
+	restart := !d.envRestarted || !bytes.Equal(data, d.inEffect)
+	r, err := p.DaemonConfig(ctx, data, restart)
 	if err != nil {
 		return fail(fmt.Errorf("could not deliver daemon.json: %w", err))
 	}
@@ -341,12 +460,12 @@ func (d *DaemonConfig) Apply(ctx context.Context) error {
 		}
 		d.log().Info("daemon.json applied", "bytes", len(data), "dockerdRestarted", r.Flags&guestctl.DaemonRestarted != 0, "took", r.Duration)
 		d.result(src, data, r.Flags&guestctl.DaemonRestarted != 0, "")
-		return nil
+		return envErr
 	case guestctl.DaemonRolledBack:
 		err := errors.New(describe(r))
 		d.log().Warn("daemon.json rolled back", "why", err)
 		d.result(d.st.Source, d.inEffect, true, err.Error())
-		return err
+		return errors.Join(envErr, err)
 	}
 	err = errors.New(describe(r))
 	if r.Code == guestctl.DaemonRejected {

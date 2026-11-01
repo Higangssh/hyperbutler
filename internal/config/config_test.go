@@ -2,6 +2,7 @@ package config
 
 import (
 	"errors"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -174,7 +175,7 @@ func TestSetDoesNotChangeInput(t *testing.T) {
 }
 
 func TestLookup(t *testing.T) {
-	if _, err := Lookup("proxy.http"); !errors.Is(err, ErrReserved) {
+	if _, err := Lookup("proxy.mode"); !errors.Is(err, ErrReserved) {
 		t.Errorf("reserved: %v", err)
 	}
 	if _, err := Lookup("nope"); !errors.Is(err, ErrUnknownKey) {
@@ -223,5 +224,95 @@ func TestParseBool(t *testing.T) {
 		if _, err := ParseBool(v); err == nil {
 			t.Errorf("ParseBool(%q) accepted", v)
 		}
+	}
+}
+
+func TestProxyKeys(t *testing.T) {
+	e, _ := testEnv(t)
+	set := func(s *engine.Settings, k, v string) (*engine.Settings, error) {
+		key, err := Lookup(k)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return key.Set(s, v, e)
+	}
+	s, err := set(nil, "proxy.https", "http://corp%5Cuser:s3cret@proxy.corp:3128")
+	if err != nil {
+		t.Fatal(err)
+	}
+	k, _ := Lookup("proxy.https")
+	it := k.Get(s, e)
+	if it.Value != "http://corp%5Cuser:***@proxy.corp:3128" || it.Source != SourceFile {
+		t.Fatalf("shown as %+v", it)
+	}
+	for _, it := range List(s, e) {
+		if strings.Contains(it.Value, "s3cret") {
+			t.Fatalf("list shows the password: %+v", it)
+		}
+	}
+	e.ShowSecrets = true
+	if it := k.Get(s, e); it.Value != "http://corp%5Cuser:s3cret@proxy.corp:3128" {
+		t.Fatalf("--show-secrets: %q", it.Value)
+	}
+	e.ShowSecrets = false
+	// Refusals never quote the value.
+	for _, v := range []string{"ftp://u:s3cret@x", "http://u:s3cret@x/path", "http://u:s3cret@x:99999", "u:s3cret@x"} {
+		_, err := set(s, "proxy.http", v)
+		if err == nil || strings.Contains(err.Error(), "s3cret") {
+			t.Errorf("%q: %v", v, err)
+		}
+	}
+	// NO_PROXY is stored normalized.
+	if s, err = set(s, "proxy.noProxy", " .corp , 10.0.0.0/8 "); err != nil || s.NoProxy != ".corp,10.0.0.0/8" {
+		t.Fatalf("%v %q", err, s.NoProxy)
+	}
+	// A proxy on this host's loopback needs the host gateway, for its port.
+	if s, err = set(s, "proxy.http", "http://127.0.0.1:3128"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := set(s, "hostGateway.enabled", "false"); err == nil || !strings.Contains(err.Error(), "loopback") {
+		t.Fatalf("turning the gateway off under a loopback proxy: %v", err)
+	}
+	if _, err := set(s, "hostGateway.ports", "5432"); err == nil {
+		t.Fatal("a port list without the proxy's port was accepted")
+	}
+	if _, err := set(s, "hostGateway.ports", "3128,5432"); err != nil {
+		t.Fatal(err)
+	}
+	// An unrelated key is not refused for it.
+	off := false
+	bad := *s
+	bad.HostGatewayEnabled = &off
+	if _, err := set(&bad, "memory", "2GiB"); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestCAKeys(t *testing.T) {
+	e, _ := testEnv(t)
+	k, _ := Lookup("ca.import")
+	if it := k.Get(nil, e); it.Value != "true" || it.Apply != ApplyDockerd {
+		t.Fatalf("%+v", it)
+	}
+	s, err := k.Set(nil, "off", e)
+	if err != nil || s.CAImported() {
+		t.Fatal(err)
+	}
+	if again, _ := k.Set(s, "off", e); !Equal(again, s) {
+		t.Fatal("not equal")
+	}
+	x, _ := Lookup("ca.extraFile")
+	p := filepath.Join(t.TempDir(), "ca.pem")
+	if _, err := x.Set(s, p, e); err == nil {
+		t.Fatal("a missing file was accepted")
+	}
+	if err := os.WriteFile(p, []byte("not a certificate"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := x.Set(s, p, e); err == nil || !strings.Contains(err.Error(), "CERTIFICATE") {
+		t.Fatalf("not PEM: %v", err)
+	}
+	if _, err := x.Set(s, `\\server\share\ca.pem`, e); err == nil {
+		t.Fatal("a network path was accepted")
 	}
 }
