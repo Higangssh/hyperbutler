@@ -120,7 +120,11 @@ splits it into two arguments.)
   images and tags, volume names, the content hash of every volume it will read, and its
   containers with their states; afterwards it records them again and prints "Docker
   Desktop unchanged: N images, M volumes, K containers", or what differs (then it exits
-  1). Anything Docker Desktop's own containers change during the import shows there too.
+  1). A difference is something the import could have caused: an image, a tag, a
+  volume, the content of a volume it read, one of its helper containers still there. A
+  container that changed state, or was created or removed, during the import is a
+  warning only (the import never starts, stops, creates or removes a container of the
+  user's: it was the user or Docker Desktop), and the exit is 0 when every item is OK.
 - **Where Docker Desktop is.** The endpoint of the `desktop-linux` docker context (its
   `meta.json` under `%DOCKER_CONFIG%` or `~/.docker`, read only, and only a local
   `npipe://` endpoint is used), else `\\.\pipe\dockerDesktopLinuxEngine`. Nothing else of
@@ -129,39 +133,71 @@ splits it into two arguments.)
   start`).
 - **What is already here.** An image whose id hyperbutler has is "already imported", under
   any tags; if only some of its tags are missing they are added (the tag API, nothing is
-  copied). A volume of the same name whose content hash equals Docker Desktop's is
-  "already imported". `--dry-run` and the numbered list mark each item new, already
-  imported, partly present (tags), conflict, or cannot import (an untagged image; a
-  volume that is not a plain local one, such as a bind or NFS volume). A second run right
-  after a full one copies 0 bytes: "Nothing to import: 5 images and 2 volumes already
-  here.", exit 0. There is no record file: what counts is what hyperbutler has.
+  copied). A volume of the same name whose content hash equals Docker Desktop's, with the
+  same labels (those docker compose relies on; the import's own `dev.hyperbutler.import*`
+  labels left out) and no driver options, is "already imported". `--dry-run` and the
+  numbered list mark each item new, already imported, partly present (tags), conflict,
+  same content but different labels, or cannot import (an untagged image; a volume that
+  is not a plain local one, such as a bind or NFS volume). A second run right after a
+  full one copies 0 bytes: "Nothing to import: 5 images and 2 volumes already here.",
+  exit 0. What counts is what hyperbutler has; `imports-complete.json` in the state
+  directory only records which volumes an import verified, so that the recovery of a
+  killed import never removes one.
 - **What is refused** (exit 1, nothing changed): a tag that names another image in
   hyperbutler (remove or retag it there first); a volume of the same name with other
-  content (`--overwrite-volumes` deletes hyperbutler's and copies Docker Desktop's); a
-  volume a running Docker Desktop container mounts, with the container names: stop them
-  in Docker Desktop first, so the copy is consistent. `--allow-live-volumes` copies
-  anyway and warns that the copy may be inconsistent. The command never stops anything
-  itself.
+  content, or with the same content and other labels (`--overwrite-volumes` replaces it,
+  below); a volume a running Docker Desktop container mounts, with the container names:
+  stop them in Docker Desktop first, so the copy is consistent. `--allow-live-volumes`
+  copies anyway and warns that the copy may be inconsistent. The command never stops
+  anything itself. One exception is not refused: an empty hyperbutler volume without
+  docker compose labels that no hyperbutler container uses, where Docker Desktop's is
+  empty too, is created again with Docker Desktop's labels (nothing is lost).
+- **`--overwrite-volumes`** never leaves hyperbutler without either the old content or
+  a verified copy of the new one. Docker Desktop's volume is copied into a temporary
+  volume (`hyperbutler-import-<run>-<hash>`) and verified; only then is hyperbutler's
+  volume deleted, created again with Docker Desktop's labels, filled from the temporary
+  one inside hyperbutler (through the archive API of two helpers there) and verified
+  again, and the temporary one removed. A failure, Ctrl+C or kill before the delete
+  leaves the old volume as it was; after it, the temporary volume holds Docker Desktop's
+  verified content and the message (and the next import) names it. A volume a
+  hyperbutler container uses is refused first. It needs twice the volume's size while
+  it runs.
 - **Free space.** Before copying, the planned bytes (the sizes of the new images and of
-  the volumes to copy) plus a 10% margin must fit in the free space the VM's data disk
-  last reported (the `guestFs` report `status` prints under `data:`) and on the host
-  volume of `data.vhdx`, above the 5 GiB the free-space guard keeps. Otherwise the
-  import is refused before anything is copied, saying which one is short; `--force-space`
-  starts it anyway. A volume Docker Desktop gives no size for is not counted (a note
-  says so), and a place whose free space is not known is not checked.
-- **One at a time.** Each import removes the helpers it finds left over, so a second one
-  in the same installation while one runs (a dry run too) refuses at once: "another
-  import is running" (`import.lock` in the state directory).
+  the volumes to copy, twice for one `--overwrite-volumes` replaces) plus a 10% margin
+  must fit in the free space the VM's data disk last reported (the `guestFs` report
+  `status` prints under `data:`) and on the host volume of `data.vhdx`, above the 5 GiB
+  the free-space guard keeps. Otherwise the import is refused before anything is copied,
+  saying which one is short; `--force-space` starts it anyway. A volume Docker Desktop
+  gives no size for is not counted (a note says so), and a place whose free space is
+  not known is not checked. The import itself checks it (`internal/desktopimport`'s
+  Run), so an import from a GUI is checked too.
+- **One at a time.** An import holds the installation's `import.lock` (state directory)
+  while it runs; a second one in the same installation, from the CLI or a GUI, refuses at
+  once: "another import is running". A dry run takes no lock: it removes nothing. Each
+  import run has a random id, held alive by a named mutex
+  (`Global\hyperbutler-import-<id>`, else `Local\...`) that goes when its process ends,
+  and labels its helpers and new volumes with it (`dev.hyperbutler.import.run`). An
+  import removes only helpers and volumes of runs that are not alive, so two imports from
+  two installations reading the same Docker Desktop leave each other's alone.
 - **Verification.** After loading an image every tag must name the same image id in
   hyperbutler. A volume is hashed as it streams (entry names, types, permission bits,
   owners, sizes, link targets, contents); the hash must equal the one recorded before the
   copy (else the volume changed while copying), and a fresh export of the copy in
-  hyperbutler must hash the same. A mismatch removes the copy from hyperbutler, and only
-  there, and exits 1.
+  hyperbutler must hash the same, read through a new read-only helper after the helper
+  that filled it is removed. A mismatch removes the copy from hyperbutler, and only
+  there, and exits 1. A verified volume is recorded in `imports-complete.json` (removed
+  by `uninstall`, kept with `--keep-data`).
 - **Progress** goes to stderr (bytes and rate). Ctrl+C cancels: the item in progress is
   removed from hyperbutler, the helpers are removed, and the check of Docker Desktop
-  still runs; a second Ctrl+C quits at once. If the command is killed, the next one
-  removes the helpers and the half-filled volume it left.
+  still runs; a second Ctrl+C quits at once. If the command is killed, the next import
+  (not a dry run, which only lists it) removes what it left: helpers whose run is gone,
+  after the checks below, in both engines; a hyperbutler volume only when a left-over
+  helper of that run was filling it, the run created it, and it is not recorded as
+  verified; a temporary `--overwrite-volumes` volume when it was not verified or its
+  volume is there again (a verified one whose volume is gone is kept and named).
+- An aborted image load can leave layers no image refers to in hyperbutler's image
+  store until dockerd's garbage collection removes them; `docker image prune` does not
+  see them, and they take space until then.
 - `--json` prints a schema 1 result: every item with its size, status, outcome, bytes
   copied and reason, the skipped ones, and the check of Docker Desktop
   ([settings.md](research/settings.md#--json-req-ux-008)).
@@ -177,25 +213,29 @@ API, and that works on a container. So for each volume it reads, the command cre
 **helper container** in Docker Desktop that
 
 - mounts the volume **read-only** (and never copies image content into it),
-- is created from an image already there (the smallest tagged one), so nothing is
-  pulled,
+- is created from an image already there, so nothing is pulled: the smallest tagged one
+  that declares no `VOLUME` and is for the engine's platform (`/info`). A container
+  created from an image with `VOLUME` (redis, postgres, mysql and many more) gets an
+  anonymous volume for each, which would be a change to Docker Desktop,
 - has no network and an entrypoint that does not exist, and is **never started**,
-- is labelled `dev.hyperbutler.import=helper`,
-- is removed right after the read, also on an error or Ctrl+C (a killed command's helper
-  is removed by the next run, after checking it is one: the label, the entrypoint, state
-  "created", never started).
+- is labeled `dev.hyperbutler.import=helper` and `dev.hyperbutler.import.run=<id>`,
+- is removed right after the read with any anonymous volume (`v=1`, in case; a named
+  volume is never removed by it), also on an error or Ctrl+C (a killed command's helper
+  is removed by the next run, after checking it is one: the label, exactly the
+  entrypoint, state "created", never started, and its run no longer alive).
 
 That is a short-lived entry in Docker Desktop's container list and a small snapshot on its
-disk while it exists; the volume itself is never written. Without any image in Docker
-Desktop, volumes are skipped with a message (pull a small image there, or use the manual
-steps). A read-only way without a container does not exist in the Docker API: `system df`
-gives sizes only, and the volume API has no content endpoint. The client cannot tag,
-delete, prune, stop, start, exec or attach; its tests fail if it gains a method or
-sends anything else. In hyperbutler the command creates helpers the same way (writable),
-volumes with Docker Desktop's labels (so `docker compose` takes them as its own) plus
-`dev.hyperbutler.import.source`, and loads images; when hyperbutler has no image for its
-helper, Docker Desktop's helper image is copied for the time of the import and removed
-afterwards.
+disk while it exists; the volume itself is never written. Without such an image in Docker
+Desktop, volumes are skipped with a message that says why (pull a small image without
+`VOLUME` there, such as busybox, or use the manual steps). A read-only way without a
+container does not exist in the Docker API: `system df` gives sizes only, and the volume
+API has no content endpoint. The client cannot tag, delete, prune, stop, start, exec or
+attach; its tests fail if it gains a method or sends anything else. In hyperbutler the
+command creates helpers the same way, from an image picked by the same rules: read-only
+to hash a volume, writable only to fill a new one; volumes with Docker Desktop's labels
+(so `docker compose` takes them as its own) plus `dev.hyperbutler.import.source` and the
+run id; and loads images. When hyperbutler has no such image, Docker Desktop's helper
+image is copied for the time of the import and removed afterwards.
 
 Images stream from `GET /images/get` straight into hyperbutler's `POST /images/load`, and
 volumes from the helper's archive straight into `PUT /containers/{id}/archive` of
@@ -208,7 +248,8 @@ multi-platform image exports the whole index with only the platforms that were p
 (seen with `alpine:3.22`: the index digest, its manifest for linux/amd64); hyperbutler's
 dockerd loads it and keeps the same id. When one engine uses the containerd store and the
 other does not, the ids differ for the same image, and an image counts as the same when
-its layers, creation time and platform match.
+its layers, creation time, platform and config (command, entrypoint, environment,
+labels, working directory, user, exposed ports, volumes) match.
 
 Checked on 2026-11-01 against a second hyperbutler installation serving
 `\\.\pipe\dockerDesktopLinuxEngine` (dockerd 29.9 with the containerd image store), not
@@ -220,31 +261,56 @@ each side and a half-filled volume, which the next run removed before copying it
 a second run copied 0 bytes and exited 0; the source's images, volumes, volume md5s and
 `docker ps -a` were identical before and after, and alpine still ran there.
 
+Checked again on 2026-11-01 after the second review, the same way (two test
+installations, the source on `\\.\pipe\dockerDesktopLinuxEngine`, a `desktop-linux`
+context in the target's test `DOCKER_CONFIG`). redis:alpine 8.10.3 no longer declares
+`VOLUME`, so the source had a 9 kB image made with `docker image import --change
+'VOLUME /data'` as its smallest tagged image, and redis:alpine: a volume import used
+redis:alpine for the helpers, and `docker volume ls` on the source was the same before
+and after. An import with a test hook that leaves the filling helper behind
+(`HYPERBUTLER_TEST_IMPORT_HOOK=keep-copying-helper`) succeeded; the next one removed the
+helper, kept the volume ("was verified by the import that made it") and the md5s on both
+sides were equal. `--overwrite-volumes` of a 400 MiB volume killed while it filled the
+temporary volume left hyperbutler's old content intact (same md5); killed after the
+temporary copy was verified (the old volume deleted), the temporary volume held the
+verified content and the next import named it, removed the half-filled volume and
+copied it again; the import after that removed the temporary volume. Every run said
+"Docker Desktop unchanged".
+
 #### Adversarial review (2026-11-01)
 
 - **Writes to Docker Desktop.** Only the helper container: create and remove. A mount of
   a volume that does not exist would create it, so the helper is created only after the
   volume is looked up; if it is deleted in that instant, Docker Desktop gets a new empty
   volume, and the check after the run reports "volume X is new". Removal is by id, only of
-  helpers this run created or ones verified as helpers, never forced.
+  helpers this run created or ones verified as unused helpers of a run that is gone,
+  never forced, with their anonymous volumes. (Corrected, H1: helpers used to be created
+  from the smallest image even when it declared `VOLUME`, which left an anonymous volume
+  in Docker Desktop on every read and made every run report a change.)
 - **Leftover helpers.** Removed on every path (deferred, on a context that outlives a
   cancel, 30 s each); a failure to remove is printed with the `docker rm` line; a kill is
-  cleaned up by the next run, and the check after the run lists any helper still there.
-  Two imports at the same time could remove each other's helpers, so the second one of
-  an installation refuses while the first runs (`import.lock`).
+  cleaned up by the next run, and the check after the run lists any helper of its own
+  still there. (Corrected, M1: `import.lock` was taken by the CLI only and per
+  installation, so neither two installations nor a GUI import next to a CLI one were
+  stopped from removing each other's helpers; now the import itself takes the lock, every
+  helper carries its run's id, and only helpers of runs that are no longer alive are
+  removed.)
 - **Partial imports.** A failed or canceled load removes the tags it added and the image
-  if it was not there; a failed, canceled or mismatching volume copy removes the volume
-  it created. A kill between creating a volume in hyperbutler and creating its helper (one
-  API call) leaves an empty labelled volume that the next run reports as a conflict
-  (open). `--overwrite-volumes` deletes hyperbutler's volume before copying, so a failed
-  overwrite leaves none.
+  if it was not there (layers it unpacked stay until dockerd's garbage collection, L7); a
+  failed, canceled or mismatching volume copy removes the volume it created. A kill
+  between creating a volume in hyperbutler and creating its helper (one API call), or
+  between removing a failed copy's helper and its volume, leaves a volume the next run
+  reports (a conflict, or "already" when the content is equal) instead of removing it
+  (open: it cannot tell it from a user's volume without the helper). (Corrected, M5:
+  `--overwrite-volumes` used to delete hyperbutler's volume before copying; now the old
+  one stays until a verified copy is in hyperbutler.)
 - **Name injection.** Names from the command line are checked (the MCP server's checks,
   now `internal/dockerapi`) before anything is sent; names and ids from either engine are
   checked before they go into a path; query values are URL-encoded.
 - **Huge streams.** Images and volumes are streamed, never held; JSON answers are bounded
   (8 MiB), error bodies (64 KiB) and the load answer (4 MiB) too. There is no limit on an
-  image's or volume's size or on the time a copy takes (Ctrl+C stops it), and no check of
-  hyperbutler's free space first (its free-space guard and dockerd's errors apply).
+  image's or volume's size or on the time a copy takes (Ctrl+C stops it). (Corrected:
+  hyperbutler's free space is checked first, by the import itself, see Free space.)
 - **A malicious archive from the source.** The checker refuses entries outside the volume
   (`..`, absolute names, backslashes, names not under `v/`), hard links pointing out of
   it, unexpected entry types, a missing or repeated root and short contents, before they
@@ -258,8 +324,33 @@ a second run copied 0 bytes and exited 0; the source's images, volumes, volume m
   capabilities, ACLs), so a copy that lost those still verifies. The hash relies on both
   dockerds walking the volume in the same (lexical) order; a different order fails safe
   (the copy is removed). An image's RepoDigests are not carried over. With different image
-  stores on the two sides, image identity falls back to layers, creation time and
-  platform.
+  stores on the two sides, image identity falls back to layers, creation time, platform
+  and config (corrected, M4: the config was not compared). A volume's labels and driver
+  options are compared too (corrected, M3: "already imported" looked at the content
+  only).
+
+Second review (2026-11-01), each fixed with a regression test against the two fake
+engines (`internal/desktopimport`, `review_test.go` unless named):
+
+| ID | Finding | Outcome |
+|----|---------|---------|
+| H1 | Helpers created from an image with `VOLUME` (redis, postgres, mysql) made anonymous volumes in Docker Desktop that were never removed (`v=0`); every run then reported a change. | Fixed. Helper images on both sides must have no `VOLUME` and match the engine's OS and architecture; without one in Docker Desktop, volumes are skipped with a note. Helpers are removed with `v=1`. The fake makes anonymous volumes; `TestHelperImageWithoutVolumes`, `TestNoHelperImageSkipsVolumes`. Checked on the VM. |
+| H2 | Recovery could delete a complete, or later changed, hyperbutler volume: the filling helper's label stayed until the end and its removal could fail silently. | Fixed. The filling helper is removed right after the copy (tried three times; a failure fails the item), and the copy is verified through a new read-only helper. Volumes and helpers carry the run id; recovery deletes a volume only for an orphaned filling helper of the run that created it, and never one recorded in `imports-complete.json` after its verification. `TestCopyingHelperRemovalFailsOnce`, `TestCopyingHelperRemovalFails`, `TestStuckCopyingHelperKeepsVerifiedVolume`, `TestRecoveryRules`. Checked on the VM with a test hook. |
+| M1 | The per-installation lock did not cover two installations or a GUI import next to a CLI one, so they could remove each other's helpers. | Fixed. A named mutex per run tells live runs from dead ones; recovery skips helpers and volumes of live runs. The lock moved into the package (a GUI import takes it too). `TestParallelImports`. |
+| M2 | One volume that could not be hashed before the import stopped the whole run. | Fixed. That volume fails; images and the other volumes go on. `TestHashFailureIsPerVolume`. |
+| M3 | "Already imported" ignored a volume's labels and options. | Fixed. New status "same content, different labels"; an empty, unused volume without compose labels is created again with Docker Desktop's labels; otherwise `--overwrite-volumes` is needed. `TestVolumeLabelsCompared`. |
+| M4 | With different image stores, images with the same layers, time and platform but another config counted as the same. | Fixed. Cmd, Entrypoint, Env, Labels, WorkingDir, User, ExposedPorts and Volumes are compared. `TestMixedStoreComparesConfig`. |
+| M5 | `--overwrite-volumes` deleted hyperbutler's volume before copying. | Fixed. Copy to a temporary volume and verify, then replace; the space check counts the volume twice. `TestOverwriteKeepsOldUntilVerified`. Checked on the VM by killing it in both phases. |
+| L1 | Container state changes (the user's) made the run fail. | Fixed. They are warnings; differences are what the import could cause. `TestCompareSnapshots`, `TestSourceChangeIsReported`. |
+| L2 | `--dry-run` (Plan) removed left-over helpers and volumes. | Fixed. Plan lists them (`Plan.Recovery`); only Run removes. `TestPlanRemovesNothing`. |
+| L3 | A dry run with names matched them differently from the import. | Fixed. `Plan.Select` uses the import's resolution and refuses unknown names. `TestPlanSelect`. |
+| L4 | hyperbutler's volumes were read through writable helpers. | Fixed. Read-only, except the one that fills a new volume. `TestTargetReadsAreReadOnly`. |
+| L5 | Stale helpers in hyperbutler were removed on the label alone. | Fixed. The same checks as in Docker Desktop (label, exact entrypoint, created, never started) plus the run. `TestRecoveryRules`. |
+| L6 | The helper image's platform was not checked. | Fixed with H1. `TestHelperImageWithoutVolumes`. |
+| L7 | An aborted load can leave unreferenced layers. | Documented above (until dockerd's garbage collection). |
+| L8 | A volume live at plan time but not at run time was not hashed, so it failed. | Fixed. Run decides from the containers running then. `TestVolumeNoLongerLive`. |
+| L9 | REQ-UX-023's text said nothing is ever changed in Docker Desktop, without the helper. | Fixed in docs/requirements.md. |
+| L10 | PowerShell splits an unquoted `--volume a,b`; the error did not say why. | Fixed. The error names the flag and how to quote. `TestImportUsage` (cmd/hyperbutler). |
 
 ### By hand (the fallback)
 
