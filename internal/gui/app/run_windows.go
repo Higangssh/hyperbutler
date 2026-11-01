@@ -74,8 +74,11 @@ const BrowserArgs = "--in-process-gpu --enable-features=NetworkServiceInProcess2
 // Options configure the window.
 type Options struct {
 	Bridge bridge.Options
-	// Title is the window title.
-	Title string
+	// Texts are the window's own texts, translated by the caller.
+	Texts
+	// TextsFor, if set, gives the Texts for a catalog: after the page changed its
+	// language (bridge.Options.OnLanguage), the window's own texts follow it.
+	TextsFor func(messages map[string]string) Texts
 	// DataDir holds the browser profile (WebView2's user data folder).
 	DataDir string
 	// Language is the browser's UI language.
@@ -95,10 +98,15 @@ type Options struct {
 	// directory); a second Run with the same key brings the first window to the front
 	// and returns, or says so when that window cannot be found.
 	InstanceKey string
+}
+
+// Texts are the window's own texts (title and message boxes).
+type Texts struct {
+	// Title is the window title.
+	Title string
 	// ImportRunningText asks, when the window is closed during an import, whether to
 	// stop it and close; StoppingText is shown while the import stops; NotRespondingText
-	// says that another window holds the instance but cannot be found. Translated by the
-	// caller.
+	// says that another window holds the instance but cannot be found.
 	ImportRunningText, StoppingText, NotRespondingText string
 }
 
@@ -218,6 +226,22 @@ func Run(o Options) int {
 				_ = s.view.PostJSON(string(b))
 			}
 		})
+	}
+	if o.TextsFor != nil {
+		then := bo.OnLanguage
+		bo.OnLanguage = func(lang string, msgs map[string]string) {
+			if then != nil {
+				then(lang, msgs)
+			}
+			t := o.TextsFor(msgs)
+			// s.o is the window thread's: it changes there.
+			s.disp.post(func() {
+				s.o.Texts = t
+				if s.hwnd != 0 && !s.closing && !s.stopping {
+					setWindowText(s.hwnd, t.Title)
+				}
+			})
+		}
 	}
 	s.d = bridge.New(bo)
 

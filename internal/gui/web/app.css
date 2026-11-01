@@ -211,6 +211,12 @@ textarea.code[readonly] { color: var(--soft); }
 .first-card img { object-fit: contain; }
 .first-card h1 { font-size: 30px; }
 
+/* First open: the language picker */
+.langs { border: 0; margin: 4px 0; padding: 0; display: flex; gap: 12px; flex-wrap: wrap; justify-content: center; align-self: stretch; }
+.langs label { flex: 1 1 200px; display: flex; align-items: center; gap: 12px; padding: 16px 20px; border-radius: 22px; background: #F5F8FC; border: 2px solid transparent; cursor: pointer; font-size: 18px; font-weight: 700; text-align: left; overflow-wrap: anywhere; }
+.langs label:has(input:checked) { background: var(--accent-soft); border-color: var(--accent); }
+.langs input { width: 20px; height: 20px; flex: none; margin: 0; accent-color: var(--accent); }
+
 /* Toast and dialog */
 .toast {
   position: fixed; left: 50%; bottom: 20px; transform: translateX(-50%); width: min(640px, calc(100% - 40px));
@@ -229,6 +235,7 @@ dialog::backdrop { background: rgba(19, 32, 47, .35); }
 @media (forced-colors: active) {
   .tabs button[aria-selected="true"], .btn.primary, .pill.on { border: 2px solid ButtonText; }
   .tg { border: 2px solid ButtonText; }
+  .langs label { border-color: ButtonText; }
 }
 @media (prefers-reduced-motion: reduce) { .tg::after { transition: none; } }
 

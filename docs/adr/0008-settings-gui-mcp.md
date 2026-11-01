@@ -250,7 +250,9 @@ only `WebView2Loader.dll`, listed in `NOTICE`):
   - Every user-facing string comes from a message catalog with keys.
   - Messages are whole sentences with placeholders and plural rules, never concatenated
     fragments.
-  - The language follows Windows by default and can be changed in settings.
+  - The language follows Windows by default and can be changed in settings. The first
+    time the window opens it asks once, with the Windows display language preselected
+    (2026-11-02, docs/gui.md "Languages"); a change applies at once, without a restart.
   - Layouts leave room for about 30% longer text.
   - The type stack covers Korean, Japanese and Chinese.
   - The mascot's voice is written per language, not translated literally.

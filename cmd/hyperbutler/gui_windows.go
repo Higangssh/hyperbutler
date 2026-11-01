@@ -128,12 +128,15 @@ func noRuntimeText(msgs map[string]string) (title, text string) {
 // runGUI opens the window in this process and returns its exit code.
 func runGUI(o guiOptions, paint io.Writer, log func(string)) int {
 	h := &guiHost{imageDir: o.imageDir}
-	lang, startOnOpen := "", false
+	lang, startOnOpen, pick := "", false, false
 	data := o.data
 	if in, err := openInstall(); err == nil {
 		if in.settings != nil {
 			lang, startOnOpen = in.settings.GUILanguage, in.settings.GUIStartOnOpen
 		}
+		// The first open asks for the language once; an installation whose settings
+		// cannot be read is not asked (the answer could not be saved).
+		pick = !in.settings.GUILanguageChosen()
 		h.home = in.l.Home
 		if data == "" {
 			data = filepath.Join(in.l.Home, "gui")
@@ -144,26 +147,55 @@ func runGUI(o guiOptions, paint io.Writer, log func(string)) int {
 	if o.lang != "" {
 		lang = o.lang
 	}
-	lang = i18n.Resolve(lang, app.WindowsLanguages())
+	winLangs := app.WindowsLanguages()
+	lang = i18n.Resolve(lang, winLangs)
 	msgs := i18n.Messages(lang)
-	h.msgs = msgs
+	h.setMessages(msgs)
 	title, text := noRuntimeText(msgs)
 	browserLang := lang
+	// The picker preselects the language the window opened in, or Windows' for the
+	// pseudo-locale.
+	suggest := lang
 	if lang == i18n.Pseudo {
-		browserLang = "en"
+		browserLang, suggest = "en", i18n.Resolve("", winLangs)
 	}
 	imp := &guiImporter{sourcePipe: o.importFrom}
 	defer imp.close()
 	return app.Run(app.Options{
 		Bridge: bridge.Options{
 			Host: h, Lang: lang, Messages: msgs, Version: buildVersion(), HostCPUs: runtime.NumCPU(),
+			PickLanguage: pick, Suggest: suggest, Languages: guiLanguages(),
+			Language: func(setting string) (string, map[string]string) {
+				l := i18n.Resolve(setting, winLangs)
+				return l, i18n.Messages(l)
+			},
+			OnLanguage:  func(_ string, m map[string]string) { h.setMessages(m) },
 			StartOnOpen: startOnOpen, CheckLayout: o.checkLayout, Probe: o.probeWebRTC, Importer: imp,
 		},
-		Title: msgs["app.title"], DataDir: filepath.Join(data, "webview2"), Language: browserLang,
+		Texts: windowTexts(msgs), TextsFor: windowTexts, DataDir: filepath.Join(data, "webview2"), Language: browserLang,
 		NoRuntimeTitle: title, NoRuntimeText: text,
 		CloseNote: h.closeNote, ReportPaint: paint, Log: log, InstanceKey: instanceKey(data),
-		ImportRunningText: msgs["gui.closeImport"], StoppingText: msgs["import.stopping"], NotRespondingText: msgs["gui.notResponding"],
 	})
+}
+
+// windowTexts are the window's own texts in a catalog.
+func windowTexts(msgs map[string]string) app.Texts {
+	return app.Texts{Title: msgs["app.title"], ImportRunningText: msgs["gui.closeImport"], StoppingText: msgs["import.stopping"], NotRespondingText: msgs["gui.notResponding"]}
+}
+
+// guiLanguages are the shipped languages for the picker and the settings: each named
+// in itself, with the picker's texts in it (i18n.PickerKeys).
+func guiLanguages() []bridge.LanguageView {
+	var out []bridge.LanguageView
+	for _, code := range i18n.Languages() {
+		m := i18n.Messages(code)
+		texts := map[string]string{}
+		for _, k := range i18n.PickerKeys {
+			texts[k] = m[k]
+		}
+		out = append(out, bridge.LanguageView{Code: code, Name: m[i18n.NameKey], Texts: texts})
+	}
+	return out
 }
 
 // instanceKey is what makes one window per browser profile: the profile's directory as
@@ -182,11 +214,23 @@ func instanceKey(data string) string {
 type guiHost struct {
 	home     string
 	imageDir string
-	msgs     map[string]string
 
 	mu       sync.Mutex
 	lastZip  string
+	msgs     map[string]string // the page's catalog, which a change of language replaces
 	statusMu sync.Mutex
+}
+
+func (h *guiHost) setMessages(m map[string]string) {
+	h.mu.Lock()
+	h.msgs = m
+	h.mu.Unlock()
+}
+
+func (h *guiHost) message(key string) string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.msgs[key]
 }
 
 func (h *guiHost) Status(context.Context) (schema.Status, error) {
@@ -485,5 +529,5 @@ func (h *guiHost) closeNote() string {
 	if err := os.WriteFile(marker, nil, 0o600); err != nil {
 		return ""
 	}
-	return h.msgs["gui.closeNote"]
+	return h.message("gui.closeNote")
 }

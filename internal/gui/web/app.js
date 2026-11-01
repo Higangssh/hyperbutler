@@ -96,6 +96,15 @@
     for (const el of document.querySelectorAll("[data-k-alt]")) el.setAttribute("alt", t(el.dataset.kAlt));
     document.title = t("app.title");
   }
+  // setLanguage switches the page to a language and its catalog (at the start, and when
+  // gui.language changes: the host's answer carries both, so nothing reloads).
+  function setLanguage(lang, messages) {
+    LANG = lang;
+    M = messages;
+    plural = new Intl.PluralRules(LANG === "pseudo" ? "en" : LANG);
+    translateStatic();
+    $("about").textContent = t("help.about", { version: INIT.version });
+  }
   function busy(btn, on) {
     if (!btn) return;
     btn.disabled = on;
@@ -202,8 +211,9 @@
   }
 
   function render() {
+    if (picking) { $("first").hidden = true; $("win").hidden = true; return; }
     if (!status) return;
-    const first = !status.setUp && !firstDismissed;
+    const first = status.firstStart && !firstDismissed;
     $("first").hidden = !first;
     $("win").hidden = first;
     if (first) { renderFirst(); return; }
@@ -231,6 +241,71 @@
       busy(btn, false);
       await refreshStatus(false);
     }
+  }
+
+  // --- first open: the language, asked once ----------------------------------------------
+  // Shown before anything else while gui.language was never chosen (INIT.pickLanguage).
+  // Each language is named in itself, the Windows display language is preselected, and
+  // the picker's own texts follow the one pointed at. Continue saves it through
+  // config.set; the answer carries the catalog, so the page goes on in it at once.
+  let picking = false;
+  function showPicker() {
+    picking = true;
+    render();
+    const list = $("lang-list");
+    clear(list);
+    const langs = INIT.languages || [];
+    const pick = langs.some((l) => l.code === INIT.suggest) ? INIT.suggest : (langs[0] || {}).code;
+    const pickTexts = (code) => {
+      const l = langs.find((x) => x.code === code);
+      const tx = (l && l.texts) || {};
+      const say = (key) => (key in tx ? tx[key] : t(key));
+      $("lang").lang = code;
+      $("lang-title").textContent = say("language.pick.title");
+      $("lang-body").textContent = say("language.pick.body");
+      $("lang-ok").textContent = say("language.pick.ok");
+    };
+    for (const l of langs) {
+      const input = h("input", { type: "radio", name: "lang", value: l.code, checked: l.code === pick });
+      input.addEventListener("change", () => { if (input.checked) pickTexts(l.code); });
+      list.append(h("label", { lang: l.code }, input, h("span", { text: l.name })));
+    }
+    $("lang").hidden = false;
+    const checked = list.querySelector("input:checked");
+    if (checked) checked.focus();
+    return new Promise((resolve) => {
+      const ok = $("lang-ok");
+      async function choose() {
+        const c = list.querySelector("input:checked");
+        if (!c) return;
+        busy(ok, true);
+        try {
+          const r = await call("config.set", { key: "gui.language", value: c.value });
+          ok.removeEventListener("click", choose);
+          $("lang").hidden = true;
+          picking = false;
+          if (r.lang && r.messages) setLanguage(r.lang, r.messages);
+          resolve();
+        } catch (e) {
+          showError(e, t("fail.setting", { name: t("setting.gui.language") }));
+        } finally {
+          busy(ok, false);
+        }
+      }
+      ok.addEventListener("click", choose);
+    });
+  }
+  // relanguage redraws what the page drew in the old language, after gui.language
+  // changed from Settings; the other screens draw again when shown.
+  function relanguage() {
+    $("toast").hidden = true;
+    clear($("doctor-list"));
+    $("diag-result").textContent = "";
+    $("daemon-result").hidden = true;
+    if (daemonReadOnly) daemonResult(false, t("error.HB-DMN-003"));
+    renderDaemonPath();
+    render();
+    renderSettings();
   }
 
   // --- first run ------------------------------------------------------------------------
@@ -533,7 +608,7 @@
     if (it.key === "memory" || it.key === "cpus" || it.key === "gui.language") {
       const opts = selectOptions(it);
       control = h("select", { class: "field", id, onchange: (e) => setSetting(it, e.currentTarget.value, e.currentTarget) },
-        opts.map(([v, text]) => h("option", { value: v, selected: v === it.value }, text)));
+        opts.map(([v, text, lang]) => h("option", { value: v, selected: v === it.value, lang }, text)));
     } else {
       const input = h("input", { class: "field", id, value: it.value, autocomplete: "off", spellcheck: "false" });
       control = h("span", { class: "row-buttons" }, input,
@@ -542,7 +617,8 @@
     return h("div", { class: "set" }, h("div", { class: "k" }, h("b", { text: settingName(it) }), h("span", { class: "sub small", text: settingHelp(it) })), label, control, whenPill(it));
   }
   function selectOptions(it) {
-    if (it.key === "gui.language") return [["auto", t("language.auto")], ["en", "English"], ["ko", "한국어"]];
+    // Each language named in itself, from its own catalog (INIT.languages).
+    if (it.key === "gui.language") return [["auto", t("language.auto")]].concat((INIT.languages || []).map((l) => [l.code, l.name, l.code]));
     if (it.key === "cpus") {
       const n = Math.max(1, INIT.hostCpus || 8);
       const out = [];
@@ -575,8 +651,11 @@
       const i = settings.findIndex((s) => s.key === it.key);
       if (i >= 0 && r.item && r.item.key) settings[i] = r.item;
       if (r.running && (it.apply === "restart-vm" || it.apply === "restart-dockerd")) pendingRestart.add(it.key);
-      if (it.key === "gui.language") showInfo(t("settings.languageNext"));
-      else showInfo(t("settings.saved", { name: settingName(it) }));
+      if (it.key === "gui.language" && r.lang && r.messages) {
+        setLanguage(r.lang, r.messages);
+        relanguage();
+        showInfo(t("settings.languageChanged"));
+      } else showInfo(t("settings.saved", { name: settingName(it) }));
     } catch (e) {
       showError(e, t("fail.setting", { name: settingName(it) }));
     } finally {
@@ -596,6 +675,11 @@
 
   // daemon.json
   let daemonReadOnly = false;
+  let daemonView = null;
+  function renderDaemonPath() {
+    const d = daemonView;
+    $("daemon-path").textContent = d ? t(d.exists ? "daemon.path" : "daemon.path.none", { path: d.path }) : "";
+  }
   async function loadDaemon() {
     let d;
     try { d = await call("daemon.get"); } catch (e) { showError(e); return; }
@@ -603,7 +687,8 @@
     ta.value = d.text || (d.exists ? "" : "{\n}\n");
     daemonReadOnly = d.readOnly;
     ta.readOnly = d.readOnly;
-    $("daemon-path").textContent = t(d.exists ? "daemon.path" : "daemon.path.none", { path: d.path });
+    daemonView = { exists: d.exists, path: d.path };
+    renderDaemonPath();
     $("daemon-save").disabled = d.readOnly;
     $("daemon-apply").disabled = false;
     if (d.readOnly) daemonResult(false, t("error.HB-DMN-003"));
@@ -954,6 +1039,14 @@
   async function checkLayout() {
     const wait = (ms) => new Promise((r) => setTimeout(r, ms));
     let issues = [];
+    if (picking) {
+      // The picker is checked as shown, then left without saving anything.
+      issues = issues.concat(layoutIssues("language"));
+      picking = false;
+      $("lang").hidden = true;
+    }
+    await opened;
+    render();
     if (!$("first").hidden) issues = issues.concat(layoutIssues("first-run"));
     firstDismissed = true;
     render();
@@ -968,18 +1061,28 @@
   }
 
   // --- start ----------------------------------------------------------------------------
+  let opened = Promise.resolve();
   async function start() {
     INIT = await call("init");
-    LANG = INIT.lang;
-    M = INIT.messages;
-    plural = new Intl.PluralRules(LANG === "pseudo" ? "en" : LANG);
-    translateStatic();
-    $("about").textContent = t("help.about", { version: INIT.version });
+    setLanguage(INIT.lang, INIT.messages);
     wire();
+    if (INIT.pickLanguage) {
+      // The picker is the first paint. The layout check does not answer it: it checks
+      // it and goes on (checkLayout), with the rest opened meanwhile.
+      const chosen = showPicker();
+      firstPaint();
+      if (INIT.checkLayout) { opened = openMain(); return; }
+      await chosen;
+    }
+    opened = openMain();
+    await opened;
+    if (!INIT.pickLanguage) firstPaint();
+  }
+  async function openMain() {
     if (INIT.starting) engineBusy = "engine.start";
     try { status = await call("status", { auto: false }); } catch (e) { showError(e); }
     render();
-    if (status && status.setUp) showTab("home", false);
+    if (status && !status.firstStart) showTab("home", false);
     schedule();
     if (INIT.starting) {
       // The host started the engine (gui.startOnOpen); follow it until it is up.
@@ -989,7 +1092,10 @@
         if (!status || status.phase === "running" || status.phase === "failed" || Date.now() > until) { engineBusy = ""; clearInterval(poll); renderHome(); }
       }, 5000);
     }
-    // First paint with content: the mascot decoded, then two frames.
+  }
+  // firstPaint reports the first paint with content (the mascot decoded, then two
+  // frames) and starts the layout check when asked.
+  function firstPaint() {
     const img = $("hero-mascot");
     (img.decode ? img.decode() : Promise.resolve()).catch(() => {}).then(() =>
       requestAnimationFrame(() => requestAnimationFrame(() => {

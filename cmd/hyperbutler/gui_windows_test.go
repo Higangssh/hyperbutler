@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/Higangssh/hyperbutler/internal/desktopimport"
+	"github.com/Higangssh/hyperbutler/internal/engine"
 	"github.com/Higangssh/hyperbutler/internal/gui/bridge"
 )
 
@@ -44,6 +45,77 @@ func TestGUIFlags(t *testing.T) {
 	}
 	if code, _, _ := runCLI(t, "gui", "extra"); code != 2 {
 		t.Fatalf("extra argument: exit %d", code)
+	}
+}
+
+// TestGUILanguageChosen: the window asks for its language only until one is chosen. A
+// settings.json that a CLI start wrote has none chosen; the window's answer (through
+// the same config set as the CLI's) is kept by a later start's rewrite of the file; and
+// "auto" is a choice too.
+func TestGUILanguageChosen(t *testing.T) {
+	testHome(t)
+	chosen := func() bool {
+		t.Helper()
+		in, err := openInstall()
+		if err != nil {
+			t.Fatal(err)
+		}
+		return in.settings.GUILanguageChosen()
+	}
+	if chosen() {
+		t.Fatal("no settings.json, but chosen")
+	}
+	start := func() {
+		t.Helper()
+		in, err := openInstall()
+		if err != nil || engine.MkdirPrivate(in.l.Home) != nil {
+			t.Fatal(err)
+		}
+		if err := in.applySettings("", "", 2, sizeFlag{}, "", ""); err != nil {
+			t.Fatal(err)
+		}
+	}
+	start() // the CLI starts first: settings.json, no language chosen
+	if chosen() {
+		t.Fatal("a CLI start chose the language")
+	}
+	h := &guiHost{}
+	if _, err := h.ConfigSet(context.Background(), "gui.language", "ko"); err != nil {
+		t.Fatal(err)
+	}
+	start()
+	in, err := openInstall()
+	if err != nil || in.settings.GUILanguage != "ko" || !chosen() {
+		t.Fatalf("after a start: %v %+v", err, in.settings)
+	}
+	if _, err := h.ConfigSet(context.Background(), "gui.language", "auto"); err != nil || !chosen() {
+		t.Fatalf("auto: %v", err)
+	}
+	if code, _, _ := runCLI(t, "config", "unset", "gui.language"); code != 0 || chosen() {
+		t.Fatalf("unset: exit %d, chosen %v", code, chosen())
+	}
+	// The window first, before anything made the state directory: the answer creates
+	// settings.json, and the first start keeps it.
+	testHome(t)
+	if _, err := h.ConfigSet(context.Background(), "gui.language", "en"); err != nil || !chosen() {
+		t.Fatalf("first open: %v", err)
+	}
+	start()
+	if !chosen() {
+		t.Fatal("the first start dropped the window's answer")
+	}
+	// The picker offers every shipped language, named in itself, with its texts.
+	langs := guiLanguages()
+	if len(langs) < 2 || langs[0].Code != "en" {
+		t.Fatalf("languages %+v", langs)
+	}
+	for _, l := range langs {
+		if l.Name == "" || l.Name != l.Texts["language.name"] || l.Texts["language.pick.ok"] == "" {
+			t.Errorf("%s: %+v", l.Code, l)
+		}
+	}
+	if w := windowTexts(map[string]string{"app.title": "t", "import.stopping": "s"}); w.Title != "t" || w.StoppingText != "s" {
+		t.Errorf("window texts %+v", w)
 	}
 }
 

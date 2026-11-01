@@ -167,6 +167,10 @@ func TestPageKeys(t *testing.T) {
 	// Keys the host uses (cmd/hyperbutler/gui_windows.go): the window title, the note at
 	// the first close while the engine runs, and the missing-runtime message.
 	keys = append(keys, "app.title", "gui.closeNote", "gui.noRuntime", "gui.closeImport", "gui.notResponding", "import.stopping")
+	// The first-open language picker: each language's name in itself and the picker's
+	// texts, which the host takes from every catalog (guiLanguages) and the page shows
+	// in the language pointed at.
+	keys = append(keys, PickerKeys...)
 	for _, c := range bridge.Codes {
 		keys = append(keys, "error."+c)
 	}
@@ -183,6 +187,31 @@ func TestPageKeys(t *testing.T) {
 		if !has(k) {
 			t.Errorf("the page uses %q, which the source catalog lacks", k)
 		}
+	}
+}
+
+// TestLanguageNames checks the picker's texts: every language names itself in its own
+// catalog (not by falling back to English), the names differ, and the picker has its
+// texts in each one.
+func TestLanguageNames(t *testing.T) {
+	seen := map[string]string{}
+	for _, lang := range Languages() {
+		name := Raw(lang)[NameKey]
+		if name == "" {
+			t.Errorf("%s: no %s of its own", lang, NameKey)
+		}
+		if other, dup := seen[name]; dup {
+			t.Errorf("%s and %s are both named %q", lang, other, name)
+		}
+		seen[name] = lang
+		for _, k := range PickerKeys {
+			if Raw(lang)[k] == "" {
+				t.Errorf("%s: the picker's %q is missing", lang, k)
+			}
+		}
+	}
+	if Raw("ko")[NameKey] != "한국어" || Raw("en")[NameKey] != "English" {
+		t.Errorf("names %q %q", Raw("en")[NameKey], Raw("ko")[NameKey])
 	}
 }
 

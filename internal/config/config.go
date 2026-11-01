@@ -321,18 +321,20 @@ var Keys = []*Key{
 	{
 		Name: "gui.language", Type: "language", Apply: ApplyLive,
 		Description: `the GUI's language: "auto" (the Windows display language), ` + strings.Join(engine.GUILanguages, ", "),
-		def:         func(Env) string { return "auto" },
+		def:         func(Env) string { return engine.GUILanguageAuto },
+		// Unset follows Windows as auto does, but nobody chose it yet, so the window
+		// asks once (engine.Settings.GUILanguageChosen); setting auto chooses it.
 		get: func(s *engine.Settings, _ Env) (string, bool) {
 			if s.GUILanguage == "" {
-				return "auto", false
+				return engine.GUILanguageAuto, false
 			}
 			return s.GUILanguage, true
 		},
 		set: func(s *engine.Settings, v string, _ Env) error {
 			v = strings.ToLower(strings.TrimSpace(v))
 			switch {
-			case v == "auto" || v == "":
-				s.GUILanguage = ""
+			case v == engine.GUILanguageAuto || v == "":
+				s.GUILanguage = engine.GUILanguageAuto
 			case slices.Contains(engine.GUILanguages, v):
 				s.GUILanguage = v
 			default:

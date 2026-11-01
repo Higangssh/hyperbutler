@@ -27,14 +27,18 @@ func field(s string) string {
 // StatusView is the home screen's engine state.
 type StatusView struct {
 	// Phase is notsetup, stopped, starting, running, stopping or failed.
-	Phase    string `json:"phase"`
-	Running  bool   `json:"running"`
-	SetUp    bool   `json:"setUp"`
-	MemoryMB int    `json:"memoryMB"`
-	CPUs     int    `json:"cpus"`
-	DiskUsed uint64 `json:"diskUsed"`
-	DiskMax  uint64 `json:"diskMax"`
-	HostFree uint64 `json:"hostFree"`
+	Phase   string `json:"phase"`
+	Running bool   `json:"running"`
+	SetUp   bool   `json:"setUp"`
+	// FirstStart says the engine never started here: no data disk, no state.json. The
+	// window shows its first-run screen then; settings.json alone (the language picker
+	// or a setting saved before the first start) does not count as started.
+	FirstStart bool   `json:"firstStart"`
+	MemoryMB   int    `json:"memoryMB"`
+	CPUs       int    `json:"cpus"`
+	DiskUsed   uint64 `json:"diskUsed"`
+	DiskMax    uint64 `json:"diskMax"`
+	HostFree   uint64 `json:"hostFree"`
 	// GuestUsed and GuestSize are the guest file system as the guest reported it.
 	GuestUsed uint64 `json:"guestUsed,omitempty"`
 	GuestSize uint64 `json:"guestSize,omitempty"`
@@ -68,6 +72,7 @@ func EngineCode(c string) string {
 func MakeStatus(s schema.Status) StatusView {
 	v := StatusView{Running: s.Running, SetUp: s.SetUp, MemoryMB: s.MemoryMB, CPUs: s.CPUs,
 		DiskUsed: s.DiskUsed, DiskMax: s.DiskMax, HostFree: s.HostFree, Paused: s.GuardPause != nil, Home: field(s.Home)}
+	v.FirstStart = !s.Running && s.State == nil && s.Disk == ""
 	if s.GuestDisk != nil {
 		v.GuestUsed, v.GuestSize = s.GuestDisk.UsedBytes, s.GuestDisk.SizeBytes
 	}

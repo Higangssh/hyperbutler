@@ -281,6 +281,76 @@ func TestDispatcher(t *testing.T) {
 
 func jsonInt(n int64) string { b, _ := json.Marshal(n); return string(b) }
 
+// TestLanguagePick: the first open asks for the language (init says so, with the
+// languages and the suggestion); choosing one goes through config.set, which refuses
+// anything but auto or a shipped language before the host sees it, answers with the
+// new catalog, tells the host, and stops the asking (a reloaded page does not ask).
+func TestLanguagePick(t *testing.T) {
+	h := &fakeHost{}
+	var told []string
+	langs := []LanguageView{{Code: "en", Name: "English"}, {Code: "ko", Name: "한국어"}}
+	d := New(Options{Host: h, Lang: "en", Messages: map[string]string{"tab.home": "Home"},
+		PickLanguage: true, Suggest: "ko", Languages: langs,
+		Language: func(setting string) (string, map[string]string) {
+			l := setting
+			if l == "auto" {
+				l = "en" // Windows, here
+			}
+			return l, map[string]string{"tab.home": "home in " + l}
+		},
+		OnLanguage: func(lang string, _ map[string]string) { told = append(told, lang) },
+	})
+	r := call(t, d, `{"id":1,"op":"init"}`)
+	iv := r.Data.(InitView)
+	if !r.OK || !iv.PickLanguage || iv.Suggest != "ko" || len(iv.Languages) != 2 || iv.Lang != "en" {
+		t.Fatalf("init: %+v", r)
+	}
+	for _, bad := range []string{"fr", "KO", " ko", "ko-KR", "pseudo", "", "auto ", "en,ko", "../ko"} {
+		v, _ := json.Marshal(bad)
+		r := call(t, d, `{"id":2,"op":"config.set","args":{"key":"gui.language","value":`+string(v)+`}}`)
+		if r.OK || r.Error.Code != CodeConfigValue {
+			t.Errorf("gui.language %q: %+v", bad, r)
+		}
+	}
+	if len(h.sets) != 0 || len(told) != 0 {
+		t.Fatalf("a refused value reached the host: %v %v", h.sets, told)
+	}
+	if !call(t, d, `{"id":3,"op":"init"}`).Data.(InitView).PickLanguage {
+		t.Fatal("a refused value stopped the asking")
+	}
+	r = call(t, d, `{"id":4,"op":"config.set","args":{"key":"gui.language","value":"ko"}}`)
+	sv, _ := r.Data.(SetView)
+	if !r.OK || sv.Lang != "ko" || sv.Messages["tab.home"] != "home in ko" {
+		t.Fatalf("set ko: %+v", r)
+	}
+	if strings.Join(h.sets, " ") != "gui.language=ko" || strings.Join(told, " ") != "ko" {
+		t.Fatalf("sets %v, told %v", h.sets, told)
+	}
+	iv = call(t, d, `{"id":5,"op":"init"}`).Data.(InitView)
+	if iv.PickLanguage || iv.Lang != "ko" || iv.Messages["tab.home"] != "home in ko" {
+		t.Fatalf("init after the choice: %+v", iv)
+	}
+	// Settings: auto is a choice too, and switches at once.
+	r = call(t, d, `{"id":6,"op":"config.set","args":{"key":"gui.language","value":"auto"}}`)
+	if sv := r.Data.(SetView); !r.OK || sv.Lang != "en" || strings.Join(told, " ") != "ko en" {
+		t.Fatalf("set auto: %+v %v", r, told)
+	}
+	// Another setting carries no catalog.
+	r = call(t, d, `{"id":7,"op":"config.set","args":{"key":"cpus","value":"2"}}`)
+	if sv := r.Data.(SetView); !r.OK || sv.Lang != "" || sv.Messages != nil {
+		t.Fatalf("set cpus: %+v", r)
+	}
+	// Without Options.Language the change is saved and the page keeps its language.
+	d2 := New(Options{Host: &fakeHost{}, Lang: "en", PickLanguage: true})
+	r = call(t, d2, `{"id":8,"op":"config.set","args":{"key":"gui.language","value":"ko"}}`)
+	if sv := r.Data.(SetView); !r.OK || sv.Lang != "" || call(t, d2, `{"id":9,"op":"init"}`).Data.(InitView).PickLanguage {
+		t.Fatalf("no Language: %+v", r)
+	}
+	if b, _ := json.Marshal(call(t, d2, `{"id":10,"op":"init"}`).Data); !strings.Contains(string(b), `"languages":[]`) {
+		t.Fatalf("init without languages: %s", b)
+	}
+}
+
 func TestDaemonJSON(t *testing.T) {
 	h := &fakeHost{daemon: []byte(`{"proxies":{"http-proxy":"http://u:secretpw@p:3128"}}`)}
 	d := New(Options{Host: h})
@@ -486,6 +556,17 @@ func TestMakeStatus(t *testing.T) {
 	run := &engine.State{Phase: engine.PhaseRunning, Started: time.Now().Add(-time.Minute)}
 	if v := MakeStatus(schema.Status{SetUp: true, Running: true, State: run}); v.Phase != "running" || v.UpSeconds < 59 {
 		t.Fatalf("running status: %+v", v)
+	}
+	// Settings saved before the first start (the language picker writes settings.json)
+	// still show the first-run screen; a data disk or state.json does not.
+	if v := MakeStatus(schema.Status{SetUp: true}); !v.FirstStart || v.Phase != "stopped" {
+		t.Fatalf("settings only: %+v", v)
+	}
+	if v := MakeStatus(schema.Status{SetUp: true, Disk: `C:\d\data.vhdx`}); v.FirstStart {
+		t.Fatalf("with a data disk: %+v", v)
+	}
+	if v := MakeStatus(schema.Status{SetUp: true, State: st}); v.FirstStart {
+		t.Fatalf("with state.json: %+v", v)
 	}
 	if v := MakeStatus(schema.Status{}); v.Phase != "notsetup" {
 		t.Fatalf("not set up: %+v", v)

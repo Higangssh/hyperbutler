@@ -64,6 +64,15 @@ func TestNoNetworkOrHTML(t *testing.T) {
 			t.Errorf("app.js glues text together with %q; use a catalog sentence", bad)
 		}
 	}
+	// Nor any text in a language in the script: language names come from the catalogs
+	// too (language.name), so no letter outside ASCII is written in it, but for the
+	// typographic signs it draws (marks, the missing-key brackets).
+	for i, r := range string(js) {
+		if r > 0x7e && !strings.ContainsRune("⟦⟧✓×", r) {
+			t.Errorf("app.js has %q at byte %d; put the text in the catalogs", r, i)
+			break
+		}
+	}
 	html, _ := files.ReadFile("index.html")
 	if regexp.MustCompile(`<script>|<style|\son[a-z]+=|style="`).Match(html) {
 		t.Error("index.html has an inline script, style or event handler, which the CSP refuses")

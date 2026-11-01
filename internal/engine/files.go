@@ -410,13 +410,22 @@ type Settings struct {
 	// GUIStartOnOpen says whether opening the GUI starts a stopped engine (REQ-UX-016);
 	// by default it never does, and shows a Start button instead.
 	GUIStartOnOpen bool `json:"guiStartOnOpen,omitempty"`
-	// GUILanguage is the GUI's language (REQ-UX-013), one of GUILanguages; empty means
-	// the Windows display language.
+	// GUILanguage is the GUI's language (REQ-UX-013): one of GUILanguages, or
+	// GUILanguageAuto for the Windows display language. Empty means nobody chose one
+	// yet: the GUI follows Windows then too, and asks once, the first time it opens.
 	GUILanguage string `json:"guiLanguage,omitempty"`
 }
 
-// GUILanguages are the languages the GUI ships, besides empty (follow Windows).
+// GUILanguages are the languages the GUI ships.
 var GUILanguages = []string{"en", "ko"}
+
+// GUILanguageAuto is gui.language chosen as "follow the Windows display language".
+const GUILanguageAuto = "auto"
+
+// GUILanguageChosen reports whether the GUI's language was chosen (in the window's
+// first-open picker, in its settings or with `config set gui.language`): the window
+// then opens in it without asking.
+func (s *Settings) GUILanguageChosen() bool { return s != nil && s.GUILanguage != "" }
 
 // UpdateChecked reports whether the update check is on.
 func (s *Settings) UpdateChecked() bool { return s.UpdateCheck == nil || *s.UpdateCheck }
@@ -556,8 +565,8 @@ func (s *Settings) Validate() error {
 			return fmt.Errorf("settings: https proxy: %w", err)
 		}
 	}
-	if s.GUILanguage != "" && !slices.Contains(GUILanguages, s.GUILanguage) {
-		return fmt.Errorf("settings: GUI language %q is not one of %s", s.GUILanguage, strings.Join(GUILanguages, ", "))
+	if s.GUILanguage != "" && s.GUILanguage != GUILanguageAuto && !slices.Contains(GUILanguages, s.GUILanguage) {
+		return fmt.Errorf("settings: GUI language %q is not %s or one of %s", s.GUILanguage, GUILanguageAuto, strings.Join(GUILanguages, ", "))
 	}
 	if s.NoProxy != "" {
 		if err := dockerenv.ValidateNoProxy(s.NoProxy); err != nil {

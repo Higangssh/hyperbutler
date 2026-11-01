@@ -43,7 +43,7 @@ hyperbutler restart
 | `autostart` | bool | false | at once: `set` creates or removes the sign-in task |
 | `updateCheck` | bool | true | at once (the next `start` or `status`) |
 | `gui.startOnOpen` | bool | false | the next time the GUI opens (REQ-UX-016) |
-| `gui.language` | `auto`, `en` or `ko` | auto (the Windows display language) | the next time the GUI opens (REQ-UX-013) |
+| `gui.language` | `auto`, `en` or `ko` | unset: the Windows display language, and the GUI asks once at its first open | at once in an open GUI (REQ-UX-013) |
 
 - **Reserved names** (refused with "reserved for a later release"): `proxy.mode` (the
   Windows system proxy, 0.2), `tray`, `ports.lan`, `buildkit.gcKeepStorage`.

@@ -6,13 +6,16 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"slices"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/Higangssh/hyperbutler/internal/config"
 	"github.com/Higangssh/hyperbutler/internal/dockerapi"
+	"github.com/Higangssh/hyperbutler/internal/engine"
 	"github.com/Higangssh/hyperbutler/internal/redact"
 	"github.com/Higangssh/hyperbutler/internal/schema"
 )
@@ -68,8 +71,22 @@ type Options struct {
 	// English.
 	Lang     string
 	Messages map[string]string
-	Version  string
-	HostCPUs int
+	// PickLanguage shows the language picker before anything else: nobody chose
+	// gui.language yet (engine.Settings.GUILanguageChosen). Suggest is the language it
+	// preselects (the Windows display language), and Languages what it offers.
+	PickLanguage bool
+	Suggest      string
+	Languages    []LanguageView
+	// Language resolves a gui.language value (auto or a language) to the page's
+	// language and catalog, as at the window's start. After the page changed
+	// gui.language, the answer carries them and the page switches without a reload;
+	// nil keeps the language until the window opens again.
+	Language func(setting string) (lang string, messages map[string]string)
+	// OnLanguage is told the new language and catalog after such a change (the host's
+	// own texts: the close note, message boxes); may be nil.
+	OnLanguage func(lang string, messages map[string]string)
+	Version    string
+	HostCPUs   int
 	// StartOnOpen starts a stopped engine at the page's first init (gui.startOnOpen).
 	StartOnOpen bool
 	// Visible reports whether the window is shown (not minimized or hidden).
@@ -138,6 +155,11 @@ type Dispatcher struct {
 	noteOrder []int64
 	nextRef   int64
 	lastZip   string
+	// lang, msgs and pick are the page's language, catalog and whether to ask for one:
+	// Options' at first, then what a change of gui.language made them.
+	lang string
+	msgs map[string]string
+	pick bool
 
 	base context.Context
 	imp  importState
@@ -211,7 +233,8 @@ func New(o Options) *Dispatcher {
 	if o.Context == nil {
 		o.Context = context.Background()
 	}
-	return &Dispatcher{o: o, errs: map[int64]string{}, base: o.Context, tok: tokens{now: time.Now}}
+	return &Dispatcher{o: o, errs: map[int64]string{}, base: o.Context, tok: tokens{now: time.Now},
+		lang: o.Lang, msgs: o.Messages, pick: o.PickLanguage}
 }
 
 // Handle answers one raw message. The context ends the operation (the window closed).
@@ -486,10 +509,32 @@ type InitView struct {
 	Starting bool `json:"starting"`
 	// CheckLayout asks the page to run its layout check (Options.CheckLayout).
 	CheckLayout bool `json:"checkLayout,omitempty"`
+	// PickLanguage shows the first-open language picker, with Suggest preselected.
+	PickLanguage bool   `json:"pickLanguage"`
+	Suggest      string `json:"suggest"`
+	// Languages are the shipped languages, each named in itself.
+	Languages []LanguageView `json:"languages"`
+}
+
+// LanguageView is a shipped language as the picker and the settings list it: its
+// code, its name in itself ("한국어"), and the picker's own texts in it, so the picker
+// speaks the language the user points at before anything is saved.
+type LanguageView struct {
+	Code  string            `json:"code"`
+	Name  string            `json:"name"`
+	Texts map[string]string `json:"texts"`
 }
 
 func (d *Dispatcher) init(ctx context.Context) (any, error) {
-	v := InitView{Lang: d.o.Lang, Messages: d.o.Messages, Version: field(d.o.Version), HostCPUs: d.o.HostCPUs, MaxTail: MaxTail, CheckLayout: d.o.CheckLayout}
+	d.mu.Lock()
+	lang, msgs, pick := d.lang, d.msgs, d.pick
+	d.mu.Unlock()
+	langs := d.o.Languages
+	if langs == nil {
+		langs = []LanguageView{}
+	}
+	v := InitView{Lang: lang, Messages: msgs, Version: field(d.o.Version), HostCPUs: d.o.HostCPUs, MaxTail: MaxTail, CheckLayout: d.o.CheckLayout,
+		PickLanguage: pick, Suggest: d.o.Suggest, Languages: langs}
 	// gui.startOnOpen: only at the first init of the window, only when set, and only
 	// for an installation that is set up and stopped (REQ-UX-016).
 	d.initOnce.Do(func() {
@@ -723,11 +768,24 @@ var Editable = map[string]Access{
 	"proxy.noProxy":      CLIOnly,
 }
 
-// SetView is a change of one setting.
+// SetView is a change of one setting. A change of gui.language carries the page's new
+// language and catalog (Options.Language), which the page switches to at once.
 type SetView struct {
-	Item    SettingView `json:"item"`
-	Output  string      `json:"output"`
-	Running bool        `json:"running"`
+	Item     SettingView       `json:"item"`
+	Output   string            `json:"output"`
+	Running  bool              `json:"running"`
+	Lang     string            `json:"lang,omitempty"`
+	Messages map[string]string `json:"messages,omitempty"`
+}
+
+// languageValue checks a gui.language value from the page: exactly auto or a shipped
+// language. The CLI's own check folds case and spaces; the page sends only the values
+// it was given, so anything else is refused before it reaches the host.
+func languageValue(v string) error {
+	if v == engine.GUILanguageAuto || slices.Contains(engine.GUILanguages, v) {
+		return nil
+	}
+	return Codedf(CodeConfigValue, "gui.language %.40q: want %s or one of %s", v, engine.GUILanguageAuto, strings.Join(engine.GUILanguages, ", "))
 }
 
 // configSet runs under exclusive: a token is spent only by a request that runs.
@@ -735,6 +793,11 @@ func (d *Dispatcher) configSet(ctx context.Context, key, value, token string) (a
 	k, err := config.Lookup(key)
 	if err != nil {
 		return nil, Coded(CodeConfigValue, err)
+	}
+	if k.Name == "gui.language" {
+		if err := languageValue(value); err != nil {
+			return nil, err
+		}
 	}
 	switch Editable[k.Name] {
 	case Free:
@@ -763,6 +826,21 @@ func (d *Dispatcher) configSet(ctx context.Context, key, value, token string) (a
 	}
 	if s, err := d.o.Host.Status(c); err == nil {
 		v.Running = s.Running
+	}
+	if k.Name == "gui.language" {
+		// Chosen: a reload of the page does not ask again, and it speaks the new one.
+		d.mu.Lock()
+		d.pick = false
+		d.mu.Unlock()
+		if d.o.Language != nil {
+			v.Lang, v.Messages = d.o.Language(value)
+			d.mu.Lock()
+			d.lang, d.msgs = v.Lang, v.Messages
+			d.mu.Unlock()
+			if d.o.OnLanguage != nil {
+				d.o.OnLanguage(v.Lang, v.Messages)
+			}
+		}
 	}
 	return v, nil
 }

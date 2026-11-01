@@ -298,6 +298,30 @@ Every string is in `internal/gui/i18n/messages/<lang>.json`, keyed, whole senten
 `{name}` placeholders and CLDR plural forms (`key#one`, `key#other`). English is the
 source, Korean ships too. The language follows the Windows display languages
 (`GetUserPreferredUILanguages`) unless `gui.language` (auto, en, ko) says otherwise.
+
+**Asked once.** While nobody chose a language, the first thing the window shows is a
+small picker: each language named in itself (`language.name` in its own catalog:
+English, 한국어), the Windows display language preselected, one Continue button. The
+picker's title and button switch to the language pointed at (the host sends the
+`i18n.PickerKeys` texts of every language in `init`), so it speaks it before anything is
+saved. Continue is an ordinary `config.set gui.language`; the answer carries the new
+language and catalog, and the page goes on into the first-run or home screen in it
+without a reload. Changing the language in Settings works the same way and applies at
+once: the page redraws, and the host's own texts (title, close note, message boxes)
+follow through `bridge.Options.OnLanguage`.
+
+"Chosen" is kept in the value itself, apart from "follow Windows": `guiLanguage` in
+settings.json is `en`, `ko`, `auto` (chosen: follow Windows) or absent (not chosen yet:
+follow Windows and ask). `config set gui.language auto` and the picker store a value;
+`config unset gui.language` goes back to absent, so the next window asks again. A
+settings.json written by a CLI `start` or `config set` before the window first opened
+has no language, so the window still asks; the answer is in settings.json and every
+later write keeps it. The bridge refuses any `gui.language` value from the page other
+than exactly `auto` or a shipped language (HB-CFG-001) before the host sees it, and
+`config set` and settings.json validation refuse it again. The first-run screen now
+follows `status.firstStart` (no data disk and no state.json yet) rather than whether
+settings.json exists, since the picker creates that file.
+
 Errors show the translated explanation, the stable code (`HB-VM-001`, ...) and "Copy the
 English original". Doctor's summaries and container status texts (`Up 10 seconds`) are
 dockerd's or the CLI's English and are shown as such under translated titles.

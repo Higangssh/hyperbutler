@@ -36,6 +36,15 @@ var PluralForms = map[string][]string{
 	"ko": {"other"},
 }
 
+// NameKey is a language's name in itself ("English", "한국어"), which the language
+// picker and the settings show for it.
+const NameKey = "language.name"
+
+// PickerKeys are the first-open language picker's texts. The picker shows them in the
+// language the user points at, before one is chosen, so the host sends them in every
+// language.
+var PickerKeys = []string{NameKey, "language.pick.title", "language.pick.body", "language.pick.ok"}
+
 var catalogs = map[string]map[string]string{}
 
 func init() {

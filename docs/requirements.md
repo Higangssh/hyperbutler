@@ -309,7 +309,8 @@ Status of the usage requirements (2026-11-01, for 0.1; scenarios in
   Nothing polls while the window is hidden.
 - REQ-UX-013 (2026-11-01): met for English and Korean. Every GUI string is in a keyed
   catalog with placeholders and plural forms; the language follows Windows or
-  `gui.language`; errors show a stable code and copy the English original; the
+  `gui.language`, the window asks once at its first open (Windows' language
+  preselected) and a change applies at once (2026-11-02); errors show a stable code and copy the English original; the
   completeness test and the pseudo-locale layout check (`bench/footprint -lang pseudo
   -check-layout`) pass. Japanese and Chinese are for 1.0.
 - REQ-UX-023 in the window (2026-11-01): Storage's "Import from Docker Desktop" dialog

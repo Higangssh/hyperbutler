@@ -400,12 +400,34 @@ func TestGUIKeys(t *testing.T) {
 	if err != nil || s.GUILanguage != "ko" {
 		t.Fatalf("set ko: %v %+v", err, s)
 	}
-	if s, err = lang.Set(s, "auto", e); err != nil || s.GUILanguage != "" {
+	if !s.GUILanguageChosen() {
+		t.Fatal("ko set, but not chosen")
+	}
+	// auto follows Windows, as unset does, but is a choice: the window does not ask
+	// again (its first-open picker). Unset is "not chosen yet".
+	if s, err = lang.Set(s, "auto", e); err != nil || s.GUILanguage != engine.GUILanguageAuto || !s.GUILanguageChosen() {
 		t.Fatalf("set auto: %v %+v", err, s)
 	}
-	for _, bad := range []string{"fr", "ko-KR", "../x", "<script>"} {
+	if it := lang.Get(s, e); it.Value != "auto" || it.Source == SourceDefault {
+		t.Fatalf("chosen auto %+v", it)
+	}
+	if err := s.Validate(); err != nil {
+		t.Fatalf("auto in settings.json: %v", err)
+	}
+	if s, err = lang.Unset(s, e); err != nil || s.GUILanguage != "" || s.GUILanguageChosen() {
+		t.Fatalf("unset: %v %+v", err, s)
+	}
+	if (*engine.Settings)(nil).GUILanguageChosen() {
+		t.Fatal("no settings.json, but chosen")
+	}
+	for _, bad := range []string{"fr", "ko-KR", "../x", "<script>", "pseudo", "auto,ko"} {
 		if _, err := lang.Set(nil, bad, e); err == nil {
 			t.Errorf("gui.language %q accepted", bad)
+		}
+		bs := *s // valid but for the language
+		bs.GUILanguage = bad
+		if err := bs.Validate(); err == nil || !strings.Contains(err.Error(), "GUI language") {
+			t.Errorf("settings.json with guiLanguage %q accepted", bad)
 		}
 	}
 	open, err := Lookup("gui.startOnOpen")
