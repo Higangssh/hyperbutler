@@ -257,7 +257,7 @@ func (r *Report) Failures() []string {
 	}
 	var out []string
 	for _, s := range r.Sockets {
-		if s.External() && counted[s.Phase] && !(s.Remote.IsValid() && guest[s.Remote.String()]) {
+		if s.External() && counted[s.Phase] && (!s.Remote.IsValid() || !guest[s.Remote.String()]) {
 			out = append(out, fmt.Sprintf("%s: PID %d %s %s -> %s %s", s.Phase, s.PID, s.Proto, s.Local, s.Remote, s.State))
 		}
 	}

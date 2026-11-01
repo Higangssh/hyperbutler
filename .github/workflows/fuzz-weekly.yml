@@ -33,7 +33,7 @@ jobs:
   fuzz:
     name: fuzz (${{ inputs.fuzztime || '1m' }} per target)
     runs-on: windows-latest
-    # 78 targets at 1 m is about 90 minutes with the builds.
+    # 81 targets at 1 m is about 90 minutes with the builds.
     timeout-minutes: 150
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -52,7 +52,7 @@ jobs:
         env:
           FUZZTIME: ${{ inputs.fuzztime || '1m' }}
           # Raise it whenever a Fuzz target is added (also in ci.yml).
-          FUZZ_MIN_TARGETS: "78"
+          FUZZ_MIN_TARGETS: "81"
         run: ./scripts/ci/fuzz-all.ps1
 
       - name: Upload crashing inputs

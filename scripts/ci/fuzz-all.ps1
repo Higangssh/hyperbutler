@@ -1,7 +1,7 @@
 # Fuzzes every Fuzz target in every package for $env:FUZZTIME each. The fuzz smoke job in
 # ci.yml runs it short on every push and PR; fuzz-weekly.yml runs it long once a week.
 #
-#   $env:FUZZTIME = '10s'; $env:FUZZ_MIN_TARGETS = '78'; ./scripts/ci/fuzz-all.ps1
+#   $env:FUZZTIME = '10s'; $env:FUZZ_MIN_TARGETS = '81'; ./scripts/ci/fuzz-all.ps1
 #
 # FUZZ_MIN_TARGETS fails the run if fewer targets are found, so a renamed or mis-tagged
 # target can't make it pass silently. Raise it whenever a Fuzz target is added.
