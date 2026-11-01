@@ -24,6 +24,7 @@ import (
 	"github.com/Higangssh/hyperbutler/internal/diag"
 	"github.com/Higangssh/hyperbutler/internal/engine"
 	"github.com/Higangssh/hyperbutler/internal/engine/dockerctx"
+	"github.com/Higangssh/hyperbutler/internal/updatecheck"
 	"github.com/Higangssh/hyperbutler/internal/vm"
 )
 
@@ -757,12 +758,34 @@ func statusCommand(args []string, stdout, stderr io.Writer, checkUpdate bool) (i
 	if err != nil {
 		return 1, err
 	}
+	r, upd, cli, err := in.collectStatus(checkUpdate, stderr)
+	if err != nil {
+		return 1, err
+	}
+	code := 0
+	if !r.Running {
+		code = exitNotRunning
+	}
+	if *asJSON {
+		if err := writeJSON(stdout, r); err != nil {
+			return 1, err
+		}
+		return code, nil
+	}
+	return code, in.printStatus(stdout, r, upd, cli)
+}
+
+// collectStatus builds the `status --json` document. With checkUpdate it makes the
+// update check (at most once a day); without it the update field is the last record.
+// The GUI calls it without, so it makes no network request (REQ-UX-005).
+func (in *install) collectStatus(checkUpdate bool, stderr io.Writer) (StatusJSON, *updatecheck.Record, dockerCLI, error) {
+	var err error
 	r := StatusJSON{Schema: SchemaVersion, Home: in.l.Home, SetUp: in.settings != nil, DaemonJSON: in.l.DaemonConfigPath()}
 	if _, err := os.Lstat(r.DaemonJSON); err == nil {
 		r.DaemonJSONExists = true
 	}
 	if r.Running, err = in.running(); err != nil {
-		return 1, err
+		return r, nil, dockerCLI{}, err
 	}
 	if st, err := engine.LoadState(in.l); err == nil {
 		r.State = st
@@ -801,16 +824,11 @@ func statusCommand(args []string, stdout, stderr io.Writer, checkUpdate bool) (i
 	r.Update = updateJSON(upd)
 	cli := findDockerCLI()
 	r.DockerCLI, r.DockerCLIBundled = cli.Path, cli.Bundled
-	code := 0
-	if !r.Running {
-		code = exitNotRunning
-	}
-	if *asJSON {
-		if err := writeJSON(stdout, r); err != nil {
-			return 1, err
-		}
-		return code, nil
-	}
+	return r, upd, cli, nil
+}
+
+// printStatus prints the text form of r.
+func (in *install) printStatus(stdout io.Writer, r StatusJSON, upd *updatecheck.Record, cli dockerCLI) error {
 	st := r.State
 	switch {
 	case r.Running && st != nil && st.Phase.Live():
@@ -830,7 +848,7 @@ func statusCommand(args []string, stdout, stderr io.Writer, checkUpdate bool) (i
 		_, _ = fmt.Fprintf(stdout, "hyperbutler: stopped (last run failed: %s)\n", string(printable([]byte(st.Error))))
 	case in.settings == nil:
 		_, _ = fmt.Fprintln(stdout, "hyperbutler: not set up yet (run hyperbutler start)")
-		return code, nil
+		return nil
 	default:
 		_, _ = fmt.Fprintln(stdout, "hyperbutler: stopped")
 	}
@@ -889,7 +907,7 @@ func statusCommand(args []string, stdout, stderr io.Writer, checkUpdate bool) (i
 	}
 	_, _ = fmt.Fprintf(stdout, "  state:   %s\n", in.l.Home)
 	noteUpdate(stdout, upd)
-	return code, nil
+	return nil
 }
 
 // --- logs -----------------------------------------------------------------------------
