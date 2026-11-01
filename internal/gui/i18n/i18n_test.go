@@ -152,7 +152,7 @@ func TestPageKeys(t *testing.T) {
 	for _, th := range []string{"back", "maybe", "stays"} {
 		keys = append(keys, "stop.then."+th)
 	}
-	for _, s := range []string{bridge.ImportNew, bridge.ImportDone, bridge.ImportPartial, bridge.ImportConflict} {
+	for _, s := range bridge.ImportStatuses {
 		keys = append(keys, "import.status."+s)
 	}
 	for _, s := range []string{"ok", "info", "warn", "fail"} {

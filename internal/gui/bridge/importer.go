@@ -17,16 +17,25 @@ type Importer interface {
 	// Plan lists what could be imported and the state of each item.
 	Plan(ctx context.Context) ([]ImportItem, error)
 	// Run imports the items with these ids, reporting progress, until done or ctx ends.
-	Run(ctx context.Context, ids []string, progress func(ImportProgress)) error
+	Run(ctx context.Context, ids []string, progress func(ImportProgress)) (ImportResult, error)
 }
 
-// Import item states.
+// Import item states. New, partial and exists can be chosen; the others are shown only.
 const (
-	ImportNew      = "new"
-	ImportDone     = "imported" // already imported: shown, not selectable
-	ImportPartial  = "partial"
-	ImportConflict = "conflict"
+	ImportNew         = "new"
+	ImportDone        = "imported" // already imported
+	ImportPartial     = "partial"  // the image is there, some tags are missing
+	ImportConflict    = "conflict" // something else has the name in hyperbutler
+	ImportExists      = "exists"   // a volume of that name is there, content not compared
+	ImportUnsupported = "unsupported"
+	ImportInUse       = "inuse" // a volume a running Docker Desktop container mounts
 )
+
+// ImportStatuses are every state, for the catalog test.
+var ImportStatuses = []string{ImportNew, ImportDone, ImportPartial, ImportConflict, ImportExists, ImportUnsupported, ImportInUse}
+
+// importSelectable are the states an item can be imported from.
+var importSelectable = map[string]bool{ImportNew: true, ImportPartial: true, ImportExists: true}
 
 // ImportItem is one thing the import can bring over.
 type ImportItem struct {
@@ -35,6 +44,22 @@ type ImportItem struct {
 	Name   string `json:"name"`
 	Size   int64  `json:"size"` // bytes; -1 unknown
 	Status string `json:"status"`
+	// Note is the source's reason or detail (English): the containers using a volume,
+	// why an item is refused.
+	Note string `json:"note,omitempty"`
+}
+
+// ImportResult is what an import did, for its last progress event.
+type ImportResult struct {
+	Imported int   `json:"imported"`
+	Already  int   `json:"already"`
+	Refused  int   `json:"refused"`
+	Failed   int   `json:"failed"`
+	Bytes    int64 `json:"bytes"`
+	// SourceUnchanged is the check that Docker Desktop is as it was before; Differences
+	// say what changed when it is not.
+	SourceUnchanged bool     `json:"sourceUnchanged"`
+	Differences     []string `json:"differences,omitempty"`
 }
 
 // ImportProgress is the import's progress, sent to the page as {"event":"import"}.
@@ -48,6 +73,8 @@ type ImportProgress struct {
 	// stopped it.
 	Error    *ErrorView `json:"error,omitempty"`
 	Canceled bool       `json:"canceled,omitempty"`
+	// Result is set on the last event.
+	Result *ImportResult `json:"result,omitempty"`
 }
 
 // CodeImportUnavailable: the import is not in this build yet.
@@ -58,7 +85,8 @@ const CodeImportFailed = "HB-IMP-002"
 
 // ImportArgs are the ids import.run takes.
 type ImportArgs struct {
-	IDs []string `json:"ids"`
+	IDs   []string `json:"ids"`
+	Token string   `json:"token"`
 }
 
 const maxImportItems = 500
@@ -66,6 +94,9 @@ const maxImportItems = 500
 var reImportID = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:/@-]{0,127}$`)
 
 func checkImportArgs(a *ImportArgs) error {
+	if err := checkToken(a.Token); err != nil {
+		return err
+	}
 	if len(a.IDs) == 0 || len(a.IDs) > maxImportItems {
 		return fmt.Errorf("ids: want 1 to %d", maxImportItems)
 	}
@@ -98,12 +129,14 @@ func (d *Dispatcher) importPlan(ctx context.Context) (any, error) {
 		if i == maxImportItems {
 			break
 		}
-		switch it.Status {
-		case ImportNew, ImportDone, ImportPartial, ImportConflict:
-		default:
-			it.Status = ImportConflict
+		known := false
+		for _, s := range ImportStatuses {
+			known = known || it.Status == s
 		}
-		it.ID, it.Kind, it.Name = field(it.ID), field(it.Kind), field(it.Name)
+		if !known {
+			it.Status = ImportUnsupported
+		}
+		it.ID, it.Kind, it.Name, it.Note = field(it.ID), field(it.Kind), field(it.Name), field(it.Note)
 		planned[it.ID] = it.Status
 		out = append(out, it)
 	}
@@ -128,7 +161,7 @@ func (d *Dispatcher) importRun(ids []string) (any, error) {
 	}
 	var take []string
 	for _, id := range ids {
-		if st, ok := d.imp.planned[id]; ok && st != ImportDone {
+		if st, ok := d.imp.planned[id]; ok && importSelectable[st] {
 			take = append(take, id)
 		}
 	}
@@ -143,16 +176,15 @@ func (d *Dispatcher) importRun(ids []string) (any, error) {
 				d.o.Notify("import", p)
 			}
 		}
-		err := d.o.Importer.Run(ctx, take, notify)
-		final := ImportProgress{Total: len(take)}
+		res, err := d.o.Importer.Run(ctx, take, notify)
+		res.Differences = cleanList(res.Differences)
+		final := ImportProgress{Total: len(take), Done: res.Imported + res.Already + res.Refused + res.Failed, Bytes: res.Bytes, Result: &res}
 		switch {
 		case errors.Is(err, context.Canceled):
 			final.Canceled = true
 		case err != nil:
 			r := d.fail(0, Coded(CodeImportFailed, err), CodeImportFailed)
 			final.Error = r.Error
-		default:
-			final.Done = len(take)
 		}
 		d.imp.mu.Lock()
 		d.imp.cancel = nil
@@ -170,4 +202,16 @@ func (d *Dispatcher) importCancel() (any, error) {
 		d.imp.cancel()
 	}
 	return struct{}{}, nil
+}
+
+// cleanList bounds a list of English lines from the import for the page.
+func cleanList(l []string) []string {
+	if len(l) > 20 {
+		l = l[:20]
+	}
+	out := make([]string, 0, len(l))
+	for _, s := range l {
+		out = append(out, field(s))
+	}
+	return out
 }

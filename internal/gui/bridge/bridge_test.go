@@ -21,17 +21,22 @@ func TestMain(m *testing.M) {
 	leaktest.VerifyTestMain(m)
 }
 
-const cid = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+const (
+	cid   = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	tok32 = "0123456789abcdef0123456789abcdef"
+)
 
 func TestDecode(t *testing.T) {
 	good := []string{
 		`{"id":1,"op":"status","args":{"auto":true}}`,
 		`{"id":2,"op":"init"}`,
 		`{"id":3,"op":"init","args":null}`,
-		`{"id":4,"op":"container.action","args":{"id":"` + cid + `","action":"stop"}}`,
+		`{"id":4,"op":"container.action","args":{"id":"` + cid + `","action":"stop","token":"` + tok32 + `"}}`,
+		`{"id":8,"op":"container.action","args":{"id":"` + cid + `","action":"start"}}`,
+		`{"id":9,"op":"confirm","args":{"action":"engine.stop"}}`,
 		`{"id":5,"op":"container.logs","args":{"id":"` + cid + `"}}`,
 		`{"id":6,"op":"config.set","args":{"key":"cpus","value":"2"}}`,
-		`{"id":7,"op":"import.run","args":{"ids":["image:busybox:latest"]}}`,
+		`{"id":7,"op":"import.run","args":{"ids":["image:busybox:latest"],"token":"` + tok32 + `"}}`,
 	}
 	for _, m := range good {
 		if _, _, err := Decode(m); err != nil {
@@ -59,8 +64,15 @@ func TestDecode(t *testing.T) {
 		"newline in value": `{"id":1,"op":"config.set","args":{"key":"cpus","value":"2\n--apply"}}`,
 		"bad key":          `{"id":1,"op":"config.set","args":{"key":"../x","value":"1"}}`,
 		"big daemon.json":  `{"id":1,"op":"daemon.save","args":{"text":"` + strings.Repeat("a", MaxDaemonJSON+1) + `"}}`,
-		"no import ids":    `{"id":1,"op":"import.run","args":{"ids":[]}}`,
-		"bad import id":    `{"id":1,"op":"import.run","args":{"ids":["a b"]}}`,
+		"no import ids":    `{"id":1,"op":"import.run","args":{"ids":[],"token":"` + tok32 + `"}}`,
+		"stop no token":    `{"id":1,"op":"container.action","args":{"id":"` + cid + `","action":"stop"}}`,
+		"engine no token":  `{"id":1,"op":"engine.stop"}`,
+		"save no token":    `{"id":1,"op":"daemon.save","args":{"text":"{}"}}`,
+		"import no token":  `{"id":1,"op":"import.run","args":{"ids":["x"]}}`,
+		"bad token":        `{"id":1,"op":"engine.stop","args":{"token":"xyz"}}`,
+		"confirm start":    `{"id":1,"op":"confirm","args":{"action":"engine.start"}}`,
+		"confirm no id":    `{"id":1,"op":"confirm","args":{"action":"container.stop"}}`,
+		"bad import id":    `{"id":1,"op":"import.run","args":{"ids":["a b"],"token":"` + tok32 + `"}}`,
 		"bad ref":          `{"id":1,"op":"error.copy","args":{"ref":0}}`,
 		"too big":          `{"id":1,"op":"log","args":{"text":"` + strings.Repeat("a", MaxMessage) + `"}}`,
 		"not utf-8":        "{\"id\":1,\"op\":\"status\",\"x\":\"\xff\"}",
@@ -80,10 +92,10 @@ func TestDecode(t *testing.T) {
 // operation with checked arguments.
 func FuzzDecode(f *testing.F) {
 	f.Add(`{"id":1,"op":"status","args":{"auto":true}}`)
-	f.Add(`{"id":4,"op":"container.action","args":{"id":"` + cid + `","action":"stop"}}`)
+	f.Add(`{"id":4,"op":"container.action","args":{"id":"` + cid + `","action":"stop","token":"` + tok32 + `"}}`)
 	f.Add(`{"id":6,"op":"config.set","args":{"key":"cpus","value":"2"}}`)
-	f.Add(`{"id":7,"op":"import.run","args":{"ids":["x"]}}`)
-	f.Add(`{"id":1,"op":"daemon.save","args":{"text":"{}"}}`)
+	f.Add(`{"id":7,"op":"import.run","args":{"ids":["x"],"token":"` + tok32 + `"}}`)
+	f.Add(`{"id":1,"op":"daemon.save","args":{"text":"{}","token":"` + tok32 + `"}}`)
 	f.Fuzz(func(t *testing.T, msg string) {
 		r, args, err := Decode(msg)
 		if err != nil {
@@ -199,14 +211,19 @@ func TestDispatcher(t *testing.T) {
 		t.Fatalf("config.list leaked a password: %s", b)
 	}
 
-	// Engine operations, output cleaned.
-	r = call(t, d, `{"id":7,"op":"engine.stop"}`)
+	// Engine operations need a token from confirm, which carries the REQ-UX-017 list
+	// (here the engine is stopped: not running, nothing listed). Output is cleaned.
+	c := call(t, d, `{"id":7,"op":"confirm","args":{"action":"engine.stop"}}`)
+	cv := c.Data.(ConfirmView)
+	if !c.OK || cv.Preview == nil || cv.Preview.Running || cv.Token == "" {
+		t.Fatalf("confirm: %+v", c)
+	}
+	r = call(t, d, `{"id":8,"op":"engine.stop","args":{"token":"`+cv.Token+`"}}`)
 	if !r.OK || strings.Contains(r.Data.(OutputView).Output, "\x1b") || len(h.engineOps) != 1 {
 		t.Fatalf("engine.stop: %+v %v", r, h.engineOps)
 	}
-	// Preview with the engine stopped: not running, nothing listed.
-	if r := call(t, d, `{"id":8,"op":"engine.preview"}`); !r.OK || r.Data.(PreviewView).Running {
-		t.Fatalf("preview: %+v", r)
+	if r := call(t, d, `{"id":8,"op":"engine.stop","args":{"token":"`+cv.Token+`"}}`); r.OK || r.Error.Code != CodeConfirm || len(h.engineOps) != 1 {
+		t.Fatalf("token reused: %+v", r)
 	}
 	// A Docker operation with the engine stopped says so, with its code.
 	if r := call(t, d, `{"id":9,"op":"containers","args":{}}`); r.OK || r.Error.Code != CodeEngineStopped {
@@ -256,14 +273,14 @@ func TestDaemonJSON(t *testing.T) {
 	if !v.ReadOnly || strings.Contains(v.Text, "secretpw") {
 		t.Fatalf("daemon.get with credentials: %+v", v)
 	}
-	if r := call(t, d, `{"id":2,"op":"daemon.save","args":{"text":"{}"}}`); r.OK || r.Error.Code != CodeDaemonReadOnly {
+	if r := call(t, d, `{"id":2,"op":"daemon.save","args":{"text":"{}","token":"`+tokenFor(t, d, "daemon.save", "")+`"}}`); r.OK || r.Error.Code != CodeDaemonReadOnly {
 		t.Fatalf("saved over a file with credentials: %+v", r)
 	}
 	h.daemon = []byte(`{"log-level":"info"}`)
-	if r := call(t, d, `{"id":3,"op":"daemon.save","args":{"text":"{\"debug\":true}"}}`); !r.OK || string(h.written) != `{"debug":true}` {
+	if r := call(t, d, `{"id":3,"op":"daemon.save","args":{"text":"{\"debug\":true}","token":"`+tokenFor(t, d, "daemon.save", "")+`"}}`); !r.OK || string(h.written) != `{"debug":true}` {
 		t.Fatalf("save: %+v %q", r, h.written)
 	}
-	if r := call(t, d, `{"id":4,"op":"daemon.save","args":{"text":"{"}}`); r.OK || r.Error.Code != CodeDaemonInvalid {
+	if r := call(t, d, `{"id":4,"op":"daemon.save","args":{"text":"{","token":"`+tokenFor(t, d, "daemon.save", "")+`"}}`); r.OK || r.Error.Code != CodeDaemonInvalid {
 		t.Fatalf("saved invalid JSON: %+v", r)
 	}
 	if r := call(t, d, `{"id":5,"op":"daemon.validate","args":{"text":"{"}}`); !r.OK || r.Data.(CheckView).OK {
@@ -331,26 +348,26 @@ func (f *fakeImporter) Plan(context.Context) ([]ImportItem, error) {
 	return []ImportItem{{ID: "image:a", Kind: "image", Name: "a", Status: ImportNew}, {ID: "image:b", Kind: "image", Name: "b", Status: ImportDone}}, nil
 }
 
-func (f *fakeImporter) Run(_ context.Context, ids []string, progress func(ImportProgress)) error {
+func (f *fakeImporter) Run(_ context.Context, ids []string, progress func(ImportProgress)) (ImportResult, error) {
 	progress(ImportProgress{Running: true, Total: len(ids)})
 	f.got <- ids
-	return nil
+	return ImportResult{Imported: len(ids), SourceUnchanged: true}, nil
 }
 
 func TestImport(t *testing.T) {
 	imp := &fakeImporter{got: make(chan []string, 1)}
 	events := make(chan ImportProgress, 4)
 	d := New(Options{Host: &fakeHost{}, Importer: imp, Notify: func(_ string, p any) { events <- p.(ImportProgress) }})
-	if r := call(t, d, `{"id":1,"op":"import.run","args":{"ids":["image:a"]}}`); r.OK {
+	if r := call(t, d, `{"id":1,"op":"import.run","args":{"ids":["image:a"],"token":"`+tokenFor(t, d, "import.run", "")+`"}}`); r.OK {
 		t.Fatal("ran without a plan")
 	}
 	if r := call(t, d, `{"id":2,"op":"import.plan"}`); !r.OK {
 		t.Fatalf("plan: %+v", r)
 	}
-	if r := call(t, d, `{"id":3,"op":"import.run","args":{"ids":["image:b"]}}`); r.OK {
+	if r := call(t, d, `{"id":3,"op":"import.run","args":{"ids":["image:b"],"token":"`+tokenFor(t, d, "import.run", "")+`"}}`); r.OK {
 		t.Fatal("imported an item that is already imported")
 	}
-	if r := call(t, d, `{"id":4,"op":"import.run","args":{"ids":["image:a","image:b","image:zzz"]}}`); !r.OK {
+	if r := call(t, d, `{"id":4,"op":"import.run","args":{"ids":["image:a","image:b","image:zzz"],"token":"`+tokenFor(t, d, "import.run", "")+`"}}`); !r.OK {
 		t.Fatalf("run: %+v", r)
 	}
 	if got := <-imp.got; len(got) != 1 || got[0] != "image:a" {
@@ -358,10 +375,81 @@ func TestImport(t *testing.T) {
 	}
 	for p := range events {
 		if !p.Running {
-			if p.Done != 1 || p.Error != nil {
+			if p.Done != 1 || p.Error != nil || p.Result == nil || !p.Result.SourceUnchanged {
 				t.Fatalf("final %+v", p)
 			}
 			break
 		}
+	}
+}
+
+// tokenFor asks the dispatcher for a confirmation token.
+func tokenFor(t *testing.T, d *Dispatcher, action, id string) string {
+	t.Helper()
+	msg := `{"id":99,"op":"confirm","args":{"action":"` + action + `"`
+	if id != "" {
+		msg += `,"id":"` + id + `"`
+	}
+	r := call(t, d, msg+`}}`)
+	if !r.OK {
+		t.Fatalf("confirm %s: %+v", action, r)
+	}
+	return r.Data.(ConfirmView).Token
+}
+
+// TestTokens: the host enforces the confirmation of destructive operations. A token is
+// for one action (and container), once, for TokenTTL.
+func TestTokens(t *testing.T) {
+	h := &fakeHost{}
+	d := New(Options{Host: h})
+	now := time.Now()
+	d.tok.now = func() time.Time { return now }
+	other := strings.Repeat("b", 64)
+
+	// Unknown token.
+	if r := call(t, d, `{"id":1,"op":"engine.restart","args":{"token":"`+tok32+`"}}`); r.OK || r.Error.Code != CodeConfirm {
+		t.Fatalf("unknown token: %+v", r)
+	}
+	// A token for another action.
+	tk := tokenFor(t, d, "engine.stop", "")
+	if r := call(t, d, `{"id":2,"op":"engine.restartDockerd","args":{"token":"`+tk+`"}}`); r.OK || r.Error.Code != CodeConfirm {
+		t.Fatalf("token for another action: %+v", r)
+	}
+	// The mismatch spent it.
+	if r := call(t, d, `{"id":3,"op":"engine.stop","args":{"token":"`+tk+`"}}`); r.OK {
+		t.Fatal("a refused token was still good")
+	}
+	// A container token is for that container.
+	tk = tokenFor(t, d, "container.stop", cid)
+	if r := call(t, d, `{"id":4,"op":"container.action","args":{"id":"`+other+`","action":"stop","token":"`+tk+`"}}`); r.OK || r.Error.Code != CodeConfirm {
+		t.Fatalf("container token on another container: %+v", r)
+	}
+	// Expired.
+	tk = tokenFor(t, d, "engine.restart", "")
+	now = now.Add(TokenTTL + time.Second)
+	if r := call(t, d, `{"id":5,"op":"engine.restart","args":{"token":"`+tk+`"}}`); r.OK || r.Error.Code != CodeConfirm {
+		t.Fatalf("expired token: %+v", r)
+	}
+	if len(h.engineOps) != 0 {
+		t.Fatalf("an engine operation ran without a valid token: %v", h.engineOps)
+	}
+	// A good one runs, once.
+	tk = tokenFor(t, d, "engine.restart", "")
+	if r := call(t, d, `{"id":6,"op":"engine.restart","args":{"token":"`+tk+`"}}`); !r.OK || len(h.engineOps) != 1 {
+		t.Fatalf("good token: %+v %v", r, h.engineOps)
+	}
+	// Starting needs none.
+	if r := call(t, d, `{"id":7,"op":"engine.start"}`); !r.OK {
+		t.Fatalf("start: %+v", r)
+	}
+	// Outstanding tokens are bounded.
+	for range maxTokens + 5 {
+		tokenFor(t, d, "daemon.save", "")
+	}
+	d.tok.mu.Lock()
+	n := len(d.tok.m)
+	d.tok.mu.Unlock()
+	if n > maxTokens {
+		t.Fatalf("%d tokens outstanding", n)
 	}
 }

@@ -328,5 +328,15 @@
   "import.kind.container": "컨테이너",
   "import.kind.context": "docker 컨텍스트",
   "error.HB-IMP-001": "Docker Desktop에서 가져오기는 이 버전에서 아직 쓸 수 없어요.",
-  "error.HB-IMP-002": "가져오다가 오류로 멈췄어요. 자세한 내용에 이유가 있고, 이미 가져온 건 그대로 있어요.",  "error.HB-OS-001": "Windows가 그 일을 하지 못했어요 (폴더 열기나 텍스트 복사)."
+  "error.HB-IMP-002": "가져오다가 오류로 멈췄어요. 자세한 내용에 이유가 있고, 이미 가져온 건 그대로 있어요.",  "import.status.exists": "같은 이름이 이미 있어요",
+  "import.status.unsupported": "가져올 수 없어요",
+  "import.status.inuse": "사용 중이에요. Docker Desktop에서 먼저 멈춰 주세요",
+  "import.result": "가져옴 {imported}개, 이미 있음 {already}개, 안 가져옴 {refused}개, 실패 {failed}개.",
+  "import.sourceUnchanged": "Docker Desktop은 그대로예요.",
+  "import.sourceChanged": "가져오는 동안 Docker Desktop이 바뀌었어요: {what}",
+  "confirm.import.title": "가져오기를 시작할까요?",
+  "confirm.import.body#other": "Docker Desktop에서 {n}개를 복사해 와요. Docker Desktop 쪽은 아무것도 바꾸지 않아요.",
+  "confirm.daemon.save.title": "daemon.json을 저장할까요?",
+  "confirm.daemon.save.body": "dockerd가 다음에 다시 시작할 때 써요. 지금 파일은 바뀌어요.",
+  "error.HB-GUI-005": "확인이 필요한 일인데 확인이 없거나, 이미 썼거나, 시간이 지났어요. 다시 해 주세요.",  "error.HB-OS-001": "Windows가 그 일을 하지 못했어요 (폴더 열기나 텍스트 복사)."
 }

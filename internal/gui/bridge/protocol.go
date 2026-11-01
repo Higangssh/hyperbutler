@@ -48,7 +48,7 @@ const (
 	OpContainers     = "containers"
 	OpContainerDo    = "container.action"
 	OpContainerLogs  = "container.logs"
-	OpEnginePreview  = "engine.preview"
+	OpConfirm        = "confirm"
 	OpEngineStart    = "engine.start"
 	OpEngineStop     = "engine.stop"
 	OpEngineRestart  = "engine.restart"
@@ -79,6 +79,8 @@ type RefreshArgs struct {
 type ContainerArgs struct {
 	ID     string `json:"id"`
 	Action string `json:"action"`
+	// Token confirms a stop or restart (a start needs none).
+	Token string `json:"token,omitempty"`
 }
 
 // LogsArgs asks for the last Tail lines of a container's output.
@@ -96,6 +98,8 @@ type ConfigSetArgs struct {
 // DaemonArgs carries a daemon.json text.
 type DaemonArgs struct {
 	Text string `json:"text"`
+	// Token confirms a save (a check needs none).
+	Token string `json:"token,omitempty"`
 }
 
 // LogArgs is a line for the host's log (a script error in the page).
@@ -120,11 +124,11 @@ var argTypes = map[string]func() any{
 	OpContainers:     func() any { return &RefreshArgs{} },
 	OpContainerDo:    func() any { return &ContainerArgs{} },
 	OpContainerLogs:  func() any { return &LogsArgs{} },
-	OpEnginePreview:  func() any { return &noArgs{} },
+	OpConfirm:        func() any { return &ConfirmArgs{} },
 	OpEngineStart:    func() any { return &noArgs{} },
-	OpEngineStop:     func() any { return &noArgs{} },
-	OpEngineRestart:  func() any { return &noArgs{} },
-	OpDockerdRestart: func() any { return &noArgs{} },
+	OpEngineStop:     func() any { return &TokenArgs{} },
+	OpEngineRestart:  func() any { return &TokenArgs{} },
+	OpDockerdRestart: func() any { return &TokenArgs{} },
 	OpConfigList:     func() any { return &noArgs{} },
 	OpConfigSet:      func() any { return &ConfigSetArgs{} },
 	OpDaemonGet:      func() any { return &noArgs{} },
@@ -231,6 +235,9 @@ func checkArgs(op string, args any) error {
 		if !containerActions[a.Action] {
 			return fmt.Errorf("action %.20q: want start, stop or restart", a.Action)
 		}
+		if a.Action != "start" {
+			return checkToken(a.Token)
+		}
 	case *LogsArgs:
 		if !reContainerID.MatchString(a.ID) {
 			return errors.New("id: want a container id (64 hex digits)")
@@ -249,6 +256,11 @@ func checkArgs(op string, args any) error {
 			return fmt.Errorf("value: at most %d bytes of printable text", maxValue)
 		}
 	case *DaemonArgs:
+		if op == OpDaemonSave {
+			if err := checkToken(a.Token); err != nil {
+				return err
+			}
+		}
 		if len(a.Text) > MaxDaemonJSON {
 			return fmt.Errorf("daemon.json of %d bytes is over %d", len(a.Text), MaxDaemonJSON)
 		}
@@ -258,6 +270,10 @@ func checkArgs(op string, args any) error {
 		}
 	case *ImportArgs:
 		return checkImportArgs(a)
+	case *ConfirmArgs:
+		return checkConfirmArgs(a)
+	case *TokenArgs:
+		return checkToken(a.Token)
 	case *RefArgs:
 		if a.Ref <= 0 || a.Ref > maxID {
 			return errors.New("ref: not an error reference")

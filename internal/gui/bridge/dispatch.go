@@ -130,6 +130,7 @@ type Dispatcher struct {
 
 	base context.Context
 	imp  importState
+	tok  tokens
 }
 
 // New returns a dispatcher.
@@ -143,7 +144,7 @@ func New(o Options) *Dispatcher {
 	if o.Context == nil {
 		o.Context = context.Background()
 	}
-	return &Dispatcher{o: o, errs: map[int64]string{}, base: o.Context}
+	return &Dispatcher{o: o, errs: map[int64]string{}, base: o.Context, tok: tokens{now: time.Now}}
 }
 
 // Handle answers one raw message. The context ends the operation (the window closed).
@@ -251,7 +252,11 @@ func (d *Dispatcher) serve(ctx context.Context, op string, args any) (any, error
 		defer cancel()
 		return d.importPlan(c)
 	case OpImportRun:
-		return d.importRun(args.(*ImportArgs).IDs)
+		a := args.(*ImportArgs)
+		if err := d.tok.use(a.Token, OpImportRun, ""); err != nil {
+			return nil, err
+		}
+		return d.importRun(a.IDs)
 	case OpImportCancel:
 		return d.importCancel()
 	case OpLog:
@@ -281,6 +286,11 @@ func (d *Dispatcher) serve(ctx context.Context, op string, args any) (any, error
 		return d.containers(c)
 	case OpContainerDo:
 		a := args.(*ContainerArgs)
+		if a.Action != "start" {
+			if err := d.tok.use(a.Token, "container."+a.Action, a.ID); err != nil {
+				return nil, err
+			}
+		}
 		return d.exclusive(func() (any, error) {
 			c, cancel := timed(readTimeout + 10*time.Second)
 			defer cancel()
@@ -291,13 +301,16 @@ func (d *Dispatcher) serve(ctx context.Context, op string, args any) (any, error
 		c, cancel := timed(readTimeout)
 		defer cancel()
 		return d.logs(c, a.ID, a.Tail)
-	case OpEnginePreview:
-		c, cancel := timed(8 * time.Second)
-		defer cancel()
-		return d.preview(c)
+	case OpConfirm:
+		return d.confirm(ctx, args.(*ConfirmArgs))
 	case OpEngineStart, OpEngineStop, OpEngineRestart, OpDockerdRestart:
 		eop, t := map[string]EngineOp{OpEngineStart: EngineStart, OpEngineStop: EngineStop, OpEngineRestart: EngineRestart, OpDockerdRestart: EngineRestartDockerd}[op],
 			map[string]time.Duration{OpEngineStart: startTimeout, OpEngineStop: stopTimeout, OpEngineRestart: restartTimeout, OpDockerdRestart: stopTimeout + time.Minute}[op]
+		if eop != EngineStart {
+			if err := d.tok.use(args.(*TokenArgs).Token, op, ""); err != nil {
+				return nil, err
+			}
+		}
 		return d.exclusive(func() (any, error) {
 			c, cancel := timed(t)
 			defer cancel()
@@ -323,7 +336,11 @@ func (d *Dispatcher) serve(ctx context.Context, op string, args any) (any, error
 	case OpDaemonValidate:
 		return d.daemonCheck(args.(*DaemonArgs).Text)
 	case OpDaemonSave:
-		text := args.(*DaemonArgs).Text
+		a := args.(*DaemonArgs)
+		if err := d.tok.use(a.Token, OpDaemonSave, ""); err != nil {
+			return nil, err
+		}
+		text := a.Text
 		return d.exclusive(func() (any, error) { return d.daemonSave(ctx, text) })
 	case OpStorage:
 		c, cancel := timed(readTimeout)

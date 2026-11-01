@@ -341,5 +341,16 @@
   "import.kind.container": "Container",
   "import.kind.context": "docker context",
   "error.HB-IMP-001": "Importing from Docker Desktop is not available in this version yet.",
-  "error.HB-IMP-002": "The import stopped with an error. The details say why; what was already imported stays.",  "error.HB-OS-001": "Windows could not do that (open the folder or copy the text)."
+  "error.HB-IMP-002": "The import stopped with an error. The details say why; what was already imported stays.",  "import.status.exists": "Same name already here",
+  "import.status.unsupported": "Can't be imported",
+  "import.status.inuse": "In use: stop it in Docker Desktop first",
+  "import.result": "Imported: {imported}. Already here: {already}. Not imported: {refused}. Failed: {failed}.",
+  "import.sourceUnchanged": "Docker Desktop is unchanged.",
+  "import.sourceChanged": "Docker Desktop changed during the import: {what}",
+  "confirm.import.title": "Start the import?",
+  "confirm.import.body#one": "{n} item will be copied from Docker Desktop. Nothing in Docker Desktop is changed.",
+  "confirm.import.body#other": "{n} items will be copied from Docker Desktop. Nothing in Docker Desktop is changed.",
+  "confirm.daemon.save.title": "Save daemon.json?",
+  "confirm.daemon.save.body": "dockerd uses it the next time it restarts. The file you have now is replaced.",
+  "error.HB-GUI-005": "That needs a confirmation, and this one was missing, used or out of date. Please try again.",  "error.HB-OS-001": "Windows could not do that (open the folder or copy the text)."
 }

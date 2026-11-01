@@ -143,9 +143,14 @@
   }
   // stopConfirm asks before something stops the running containers: what is "engine.stop",
   // "engine.restart" or "dockerd". It lists them and what happens to each (REQ-UX-017).
+  // It returns the host's confirmation token, or "" when the user cancels. The host
+  // computes the list and issues the token together, and refuses the operation without
+  // it (internal/gui/bridge/confirm.go).
+  const confirmAction = { "engine.stop": "engine.stop", "engine.restart": "engine.restart", dockerd: "engine.restartDockerd" };
   async function stopConfirm(what) {
-    let p;
-    try { p = await call("engine.preview"); } catch (e) { p = { running: true, unknown: true, containers: [], counts: {} }; }
+    let c;
+    try { c = await call("confirm", { action: confirmAction[what] }); } catch (e) { showError(e); return ""; }
+    const p = c.preview || { running: true, unknown: true, containers: [], counts: {} };
     const items = (p.containers || []).map((c) => h("li", {}, h("span", { class: "name", text: c.name }),
       h("span", { class: "sub", text: c.image }), h("span", { class: "sub", text: t("stop.then." + c.then) })));
     let body;
@@ -153,7 +158,12 @@
     else if (p.unknown) body = t("stop.unknown");
     else if (!items.length) body = t("stop.none");
     else body = tp("stop.summary", items.length, { back: fmtInt(p.counts.back || 0), stays: fmtInt((p.counts.stays || 0) + (p.counts.maybe || 0)) });
-    return confirmDialog(t("confirm." + what + ".title"), body, t("confirm." + what + ".ok"), items);
+    return (await confirmDialog(t("confirm." + what + ".title"), body, t("confirm." + what + ".ok"), items)) ? c.token : "";
+  }
+  // confirmToken shows a plain confirmation and returns the host's token for action.
+  async function confirmToken(action, id, title, body, okLabel) {
+    if (!(await confirmDialog(title, body, okLabel, []))) return "";
+    try { return (await call("confirm", id ? { action, id } : { action })).token; } catch (e) { showError(e); return ""; }
   }
 
   // --- state ----------------------------------------------------------------------------
@@ -196,16 +206,17 @@
   }
 
   // --- engine actions ---------------------------------------------------------------------
-  async function engineAction(op, btn) {
+  async function engineAction(op, btn, token) {
     if (engineBusy) return;
-    if (op === "engine.stop" && !(await stopConfirm("engine.stop"))) return;
-    if (op === "engine.restart" && !(await stopConfirm("engine.restart"))) return;
-    if (op === "engine.restartDockerd" && !(await stopConfirm("dockerd"))) return;
+    if (!token && op !== "engine.start") {
+      token = await stopConfirm({ "engine.stop": "engine.stop", "engine.restart": "engine.restart", "engine.restartDockerd": "dockerd" }[op]);
+      if (!token) return;
+    }
     engineBusy = op;
     busy(btn, true);
     renderHome();
     try {
-      await call(op);
+      await call(op, token ? { token } : {});
       showInfo(t("done." + op));
     } catch (e) {
       showError(e, t("fail." + op));
@@ -401,13 +412,14 @@
     loadLogs();
   }
   async function containerAction(c, action, btn) {
+    let token = "";
     if (action !== "start") {
-      const ok = await confirmDialog(t("confirm.container." + action + ".title", { name: c.name }), t("confirm.container." + action + ".body"), t("action." + action), []);
-      if (!ok) return;
+      token = await confirmToken("container." + action, c.id, t("confirm.container." + action + ".title", { name: c.name }), t("confirm.container." + action + ".body"), t("action." + action));
+      if (!token) return;
     }
     busy(btn, true);
     try {
-      await call("container.action", { id: c.id, action });
+      await call("container.action", token ? { id: c.id, action, token } : { id: c.id, action });
       showInfo(t("done.container." + action, { name: c.name }));
     } catch (e) {
       showError(e, t("fail.container." + action, { name: c.name }));
@@ -591,10 +603,18 @@
     else daemonResult(false, t("daemon.invalid"), r.detail);
     return r.ok;
   }
-  async function daemonSave() {
+  // daemonSave writes daemon.json. With ask it shows its own confirmation; Apply asks
+  // once, in the dockerd dialog, and then only fetches the save's token.
+  async function daemonSave(ask) {
     if (daemonReadOnly) return false;
+    let token;
+    if (ask) token = await confirmToken("daemon.save", "", t("confirm.daemon.save.title"), t("confirm.daemon.save.body"), t("daemon.save"));
+    else {
+      try { token = (await call("confirm", { action: "daemon.save" })).token; } catch (e) { showError(e); return false; }
+    }
+    if (!token) return false;
     try {
-      await call("daemon.save", { text: $("daemon-text").value });
+      await call("daemon.save", { text: $("daemon-text").value, token });
       daemonResult(true, t("daemon.saved"));
       return true;
     } catch (e) {
@@ -603,9 +623,15 @@
     }
   }
   async function daemonApply(btn) {
-    if (!daemonReadOnly && !(await daemonSave())) return;
-    if (!status || !status.running) { daemonResult(true, t("daemon.appliesAtStart")); return; }
-    await engineAction("engine.restartDockerd", btn);
+    if (!status || !status.running) {
+      if (await daemonSave(true)) daemonResult(true, t("daemon.appliesAtStart"));
+      return;
+    }
+    // One dialog: the dockerd restart's, with the containers it stops.
+    const token = await stopConfirm("dockerd");
+    if (!token) return;
+    if (!daemonReadOnly && !(await daemonSave(false))) return;
+    await engineAction("engine.restartDockerd", btn, token);
   }
 
   // --- help -------------------------------------------------------------------------------
@@ -675,13 +701,14 @@
     if (!plan.items.length) { $("import-note").textContent = t("import.nothing"); $("import-start").hidden = true; return; }
     $("import-note").textContent = t("import.pick");
     for (const it of plan.items) {
-      const done = it.status === "imported";
-      const box = h("input", { type: "checkbox", value: it.id, checked: it.status === "new", disabled: done });
+      const can = it.status === "new" || it.status === "partial" || it.status === "exists";
+      const box = h("input", { type: "checkbox", value: it.id, checked: it.status === "new", disabled: !can });
       box.addEventListener("change", updateImportStart);
-      ul.append(h("li", { class: done ? "done" : "" }, h("label", {}, box,
+      ul.append(h("li", { class: can ? "" : "done" }, h("label", {}, box,
         h("span", { class: "name", text: it.name }), h("span", { class: "sub small", text: ("import.kind." + it.kind) in M ? t("import.kind." + it.kind) : it.kind }),
         h("span", { class: "tag " + it.status, text: importStatusText(it.status) }),
-        h("span", { class: "sub small", text: it.size >= 0 ? bytesText(it.size) : t("storage.unknownSize") }))));
+        h("span", { class: "sub small", text: it.size >= 0 ? bytesText(it.size) : t("storage.unknownSize") }),
+        it.note ? h("span", { class: "sub small note-line", text: it.note }) : null)));
     }
     updateImportStart();
   }
@@ -690,6 +717,11 @@
   async function startImport() {
     const ids = selectedImport();
     if (!ids.length) return;
+    const dlg = $("import");
+    dlg.close();
+    const token = await confirmToken("import.run", "", t("confirm.import.title"), tp("confirm.import.body", ids.length), t("import.start"));
+    dlg.showModal();
+    if (!token) return;
     importing = true;
     updateImportStart();
     for (const x of $("import-list").querySelectorAll("input")) x.disabled = true;
@@ -697,7 +729,7 @@
     $("import-cancel").hidden = false;
     $("import-progress-text").textContent = t("import.starting");
     try {
-      await call("import.run", { ids });
+      await call("import.run", { ids, token });
     } catch (e) {
       importing = false;
       $("import-cancel").hidden = true;
@@ -714,9 +746,12 @@
     importing = false;
     $("import-cancel").hidden = true;
     $("import-start").hidden = true;
-    if (p.canceled) $("import-progress-text").textContent = t("import.cancelled");
-    else if (p.error) { $("import-progress-text").textContent = t("error.HB-IMP-002"); showError(p.error, t("import.failed")); }
-    else $("import-progress-text").textContent = t("import.done", { n: fmtInt(p.done || 0) });
+    const r = p.result || {};
+    const counts = t("import.result", { imported: fmtInt(r.imported || 0), already: fmtInt(r.already || 0), refused: fmtInt(r.refused || 0), failed: fmtInt(r.failed || 0) });
+    const src = r.sourceUnchanged ? t("import.sourceUnchanged") : t("import.sourceChanged", { what: (r.differences || []).join("; ") || "-" });
+    if (p.canceled) $("import-progress-text").textContent = t("import.cancelled") + " " + counts + " " + src;
+    else if (p.error) { $("import-progress-text").textContent = t("error.HB-IMP-002") + " " + src; showError(p.error, t("import.failed")); }
+    else $("import-progress-text").textContent = counts + " " + src;
   }
 
   // --- tabs (keyboard: arrows, Home, End) -------------------------------------------------
@@ -786,7 +821,7 @@
       renderBanner();
     });
     $("daemon-validate").addEventListener("click", () => daemonValidate().catch(showError));
-    $("daemon-save").addEventListener("click", () => daemonSave());
+    $("daemon-save").addEventListener("click", () => daemonSave(true));
     $("daemon-apply").addEventListener("click", (e) => daemonApply(e.currentTarget));
     $("doctor-run").addEventListener("click", runDoctor);
     $("import-open").addEventListener("click", openImport);
