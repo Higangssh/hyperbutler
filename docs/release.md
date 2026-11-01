@@ -204,6 +204,21 @@ met blocks the release. Changing a gate needs an ADR change, not a waiver here.
     nothing at that speed. Not a `docker pull`: there is no way yet to set
     `insecure-registries` for the guest's dockerd. The gate still needs a 1 Gbit host link
     and the HNS NAT comparison.
+  - 1 Gbit run (2026-11-01): the same Pi, the Windows host on a 1 Gbit USB adapter
+    (Realtek USB GbE, link 1 Gbps), an amd64 image of three 256 MiB random layers in
+    `registry:2`, the Pi's page cache warmed. Three blobs in parallel, three runs each:
+    host `curl.exe` 916-941 Mbit/s, a container through the stack (busybox `wget`)
+    929-931 Mbit/s (99% of the host). A real `docker pull` through the stack
+    (`insecure-registries` in daemon.json; download, digest check and extraction):
+    735-861 Mbit/s over 30 back-to-back pull/rmi cycles, 0 failed. HNS NAT was not run:
+    it needs an HNS network created on the host, a system change. HNS NAT is a VM path
+    too, so it cannot beat the host's own rate, and the stack is within 1% of that.
+    This meets the gate's intent against an upper bound of NAT; whether that replaces
+    the NAT run is the maintainer's call.
+  - The same run found a silent corruption bug in the host-to-guest link: about 1 in 10
+    back-to-back pulls failed with "unexpected commit digest" until it was fixed
+    (036c062; [guest-networking.md](research/guest-networking.md), "Layer digest
+    mismatches on LAN pulls (2026-11-01)"). The 30 clean cycles above are after the fix.
 
 **ADR 0005 (guest image)**
 - [ ] The image comes from the release run's guest-image job in strict mode, so every
