@@ -21,10 +21,16 @@ package transport
 // de-chunked) and without Expect. A create the filter refuses (too large, folded
 // header lines, or a rewrite error) is answered by the proxy itself, after dockerd has
 // answered every earlier request on the connection, and the connection is closed.
+//
+// With Proxy.CheckStart set, a POST /containers/{name}/start is first passed to it, and
+// a start it refuses is answered the same way (500, with the checker's message as
+// dockerd's), so dockerd never starts that container. The request itself, when
+// allowed, goes on unchanged.
 
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -38,6 +44,19 @@ import (
 // CreateRewriter rewrites the JSON body of a container create request. It returns the
 // body to send (body itself when nothing changes) or an error the client is shown.
 type CreateRewriter func(body []byte) ([]byte, error)
+
+// StartChecker is asked before a container start request goes to dockerd. container
+// is the name or ID from the request path, as the client sent it. A non-nil error
+// refuses the start: the client gets a 500 whose message is the error's text, as
+// dockerd would phrase it (no prefix is added). The checker should allow what it
+// cannot judge (an unknown container, dockerd not answering): dockerd answers those.
+type StartChecker func(ctx context.Context, container string) error
+
+// filterHooks are what the request filter does to requests; nil fields do nothing.
+type filterHooks struct {
+	rewrite    CreateRewriter
+	checkStart StartChecker
+}
 
 // MaxCreateBody bounds the container create body the proxy buffers for a rewrite.
 // Larger bodies are refused with 413.
@@ -61,24 +80,33 @@ var (
 	createPath = regexp.MustCompile(`^(/v[0-9.]+)?/containers/create$`)
 	// hijackPath matches the endpoints dockerd may hijack without an Upgrade header.
 	hijackPath = regexp.MustCompile(`^(/v[0-9.]+)?/(containers/[^/]+/attach(/ws)?|exec/[^/]+/start|session|grpc)$`)
+	// startPath matches POST /containers/{name}/start; the name is the second group.
+	startPath = regexp.MustCompile(`^(/v[0-9.]+)?/containers/([^/]+)/start$`)
 
 	errLineTooLong = errors.New("transport: line too long")
 	errMalformed   = errors.New("transport: malformed chunked body")
 )
 
-// rejection is a create request the proxy answers itself.
+// rejection is a request the proxy answers itself.
 type rejection struct {
 	status int
 	msg    string
+	// plain sends msg as it is, without the "hyperbutler: " prefix: it already reads
+	// like dockerd's own error (a refused start).
+	plain bool
 }
 
 func (r *rejection) Error() string { return r.msg }
 
 // response is the HTTP response for r, in dockerd's error format.
 func (r *rejection) response() []byte {
+	msg := r.msg
+	if !r.plain {
+		msg = "hyperbutler: " + msg
+	}
 	body, _ := json.Marshal(struct {
 		Message string `json:"message"`
-	}{"hyperbutler: " + r.msg})
+	}{msg})
 	body = append(body, '\n')
 	return fmt.Appendf(nil, "HTTP/1.1 %d %s\r\nContent-Type: application/json\r\nContent-Length: %d\r\nConnection: close\r\n\r\n%s",
 		r.status, http.StatusText(r.status), len(body), body)
@@ -86,10 +114,12 @@ func (r *rejection) response() []byte {
 
 // reqFilter is the client-to-guest direction of one connection.
 type reqFilter struct {
-	br      *bufio.Reader
-	dst     io.Writer
-	rewrite CreateRewriter
-	buf     []byte // for raw copying
+	br         *bufio.Reader
+	dst        io.Writer
+	rewrite    CreateRewriter // nil forwards creates unchanged
+	checkStart StartChecker   // nil forwards starts unchecked
+	ctx        context.Context
+	buf        []byte // for raw copying
 	// handled counts the requests followed to their end; wentRaw is set once the rest
 	// of the connection is copied unchanged (for tests).
 	handled int
@@ -97,7 +127,24 @@ type reqFilter struct {
 }
 
 func newReqFilter(src io.Reader, dst io.Writer, rw CreateRewriter) *reqFilter {
-	return &reqFilter{br: bufio.NewReaderSize(src, filterBufSize), dst: dst, rewrite: rw}
+	return &reqFilter{br: bufio.NewReaderSize(src, filterBufSize), dst: dst, rewrite: rw, ctx: context.Background()}
+}
+
+// maxStartRef bounds the container name or ID passed to a StartChecker. Docker names
+// and IDs are far shorter; a longer one is left to dockerd.
+const maxStartRef = 256
+
+// startRef returns the container of a start request, or "" when req is not one the
+// checker is asked about.
+func startRef(req *http.Request) string {
+	if req.Method != http.MethodPost {
+		return ""
+	}
+	m := startPath.FindStringSubmatch(req.URL.Path)
+	if m == nil || len(m[2]) > maxStartRef {
+		return ""
+	}
+	return m[2]
 }
 
 // run forwards requests until the client finishes sending (nil), a create is refused
@@ -128,11 +175,18 @@ func (f *reqFilter) run() error {
 			return f.raw()
 		}
 		chunked := len(req.TransferEncoding) > 0
-		if req.Method == http.MethodPost && createPath.MatchString(req.URL.Path) {
+		if f.rewrite != nil && req.Method == http.MethodPost && createPath.MatchString(req.URL.Path) {
 			if err := f.create(head, req, chunked); err != nil {
 				return err
 			}
 			continue
+		}
+		if f.checkStart != nil {
+			if ref := startRef(req); ref != "" {
+				if err := f.checkStart(f.ctx, ref); err != nil {
+					return &rejection{status: http.StatusInternalServerError, msg: err.Error(), plain: true}
+				}
+			}
 		}
 		if _, err := f.dst.Write(head); err != nil {
 			return err
@@ -246,7 +300,7 @@ func hijacks(req *http.Request) bool {
 // create reads, rewrites and forwards one container create request.
 func (f *reqFilter) create(head []byte, req *http.Request, chunked bool) error {
 	if folded(head) {
-		return &rejection{http.StatusBadRequest, "container create: folded header lines are not supported"}
+		return &rejection{status: http.StatusBadRequest, msg: "container create: folded header lines are not supported"}
 	}
 	var body []byte
 	if chunked {
@@ -254,17 +308,17 @@ func (f *reqFilter) create(head []byte, req *http.Request, chunked bool) error {
 		b.max = MaxCreateBody
 		if err := scanChunked(f.br, io.Discard, &b); err != nil {
 			if errors.Is(err, errBodyTooLarge) {
-				return &rejection{http.StatusRequestEntityTooLarge, fmt.Sprintf("container create body exceeds %d MiB", MaxCreateBody>>20)}
+				return &rejection{status: http.StatusRequestEntityTooLarge, msg: fmt.Sprintf("container create body exceeds %d MiB", MaxCreateBody>>20)}
 			}
 			if errors.Is(err, errMalformed) || errors.Is(err, errLineTooLong) {
-				return &rejection{http.StatusBadRequest, "container create: malformed chunked body"}
+				return &rejection{status: http.StatusBadRequest, msg: "container create: malformed chunked body"}
 			}
 			return err
 		}
 		body = b.b
 	} else {
 		if req.ContentLength > MaxCreateBody {
-			return &rejection{http.StatusRequestEntityTooLarge, fmt.Sprintf("container create body exceeds %d MiB", MaxCreateBody>>20)}
+			return &rejection{status: http.StatusRequestEntityTooLarge, msg: fmt.Sprintf("container create body exceeds %d MiB", MaxCreateBody>>20)}
 		}
 		body = make([]byte, req.ContentLength)
 		if _, err := io.ReadFull(f.br, body); err != nil {
@@ -273,7 +327,7 @@ func (f *reqFilter) create(head []byte, req *http.Request, chunked bool) error {
 	}
 	nb, err := f.rewrite(body)
 	if err != nil {
-		return &rejection{http.StatusBadRequest, err.Error()}
+		return &rejection{status: http.StatusBadRequest, msg: err.Error()}
 	}
 	if !chunked && bytes.Equal(nb, body) {
 		// Nothing to translate: the request goes out exactly as it came.

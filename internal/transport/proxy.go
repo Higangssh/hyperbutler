@@ -41,6 +41,10 @@ type Proxy struct {
 	// rewrite.go); all other traffic still passes unchanged. Nil keeps the proxy
 	// byte-level.
 	RewriteCreate CreateRewriter
+	// CheckStart, if set, is asked before every POST /containers/{name}/start and can
+	// refuse it (see rewrite.go). Like RewriteCreate, it makes the proxy follow request
+	// boundaries in the client-to-guest direction.
+	CheckStart StartChecker
 
 	// peerPollInterval is how often a half-closed client is checked for having gone
 	// away entirely. Zero means defaultPeerPollInterval. Tests shorten it.
@@ -126,7 +130,11 @@ func (p *Proxy) handle(ctx context.Context, client net.Conn) {
 		}
 		return
 	}
-	forward(ctx, client, upstream, p.pollInterval(), p.logger(), p.RewriteCreate)
+	var h *filterHooks
+	if p.RewriteCreate != nil || p.CheckStart != nil {
+		h = &filterHooks{rewrite: p.RewriteCreate, checkStart: p.CheckStart}
+	}
+	forward(ctx, client, upstream, p.pollInterval(), p.logger(), h)
 }
 
 func (p *Proxy) dialTimeout() time.Duration {
@@ -229,9 +237,9 @@ const rejectWait = 10 * time.Second
 // other direction keeps running. Any other error, or a destination that cannot
 // half-close, tears down both connections.
 //
-// With rw set, the client-to-upstream direction runs through the request filter
+// With h set, the client-to-upstream direction runs through the request filter
 // (rewrite.go).
-func forward(ctx context.Context, client, upstream net.Conn, poll time.Duration, log *slog.Logger, rw CreateRewriter) {
+func forward(ctx context.Context, client, upstream net.Conn, poll time.Duration, log *slog.Logger, h *filterHooks) {
 	c := &halfConn{conn: client}
 	u := &halfConn{conn: upstream}
 
@@ -254,13 +262,15 @@ func forward(ctx context.Context, client, upstream net.Conn, poll time.Duration,
 	// client -> upstream
 	go func() {
 		defer wg.Done()
-		if rw == nil {
+		if h == nil {
 			if !copyHalf(u, client, log, "client->upstream") {
 				abort()
 				return
 			}
 		} else {
-			err := newReqFilter(readerOnly{client}, writerOnly{u.conn}, rw).run()
+			f := newReqFilter(readerOnly{client}, writerOnly{u.conn}, h.rewrite)
+			f.checkStart, f.ctx = h.checkStart, ctx
+			err := f.run()
 			var rej *rejection
 			if errors.As(err, &rej) {
 				rejecting.Store(true)
@@ -311,13 +321,13 @@ func forward(ctx context.Context, client, upstream net.Conn, poll time.Duration,
 	abort()
 }
 
-// refuse answers a refused create: no more requests go upstream, dockerd finishes the
+// refuse answers a refused create or start: no more requests go upstream, dockerd finishes the
 // responses it owes, then the client gets the refusal and the connection closes. What
 // the client still sends is read and discarded meanwhile (bounded), so a client blocked
 // writing a large body can get to reading the answer.
 func refuse(ctx context.Context, c, u *halfConn, client net.Conn, upDone <-chan struct{}, rej *rejection, abort func(), log *slog.Logger) {
 	defer abort()
-	log.Warn("transport: refused a container create", "err", rej.msg)
+	log.Warn("transport: refused a request", "err", rej.msg)
 	drained := make(chan struct{})
 	go func() {
 		defer close(drained)
