@@ -941,9 +941,11 @@ then forward slashes). `hyperbutler status` prints it on the "docker:" line.
 
 ## Proposed requirements
 
-None of these are in [requirements.md](../requirements.md). The IDs continue the existing
-numbering, so the maintainer can accept, renumber or drop each one. "0.1" means before
-the first preview, "0.2" the release with the GUI, "later" after that.
+The seven marked 0.1 were accepted into [requirements.md](../requirements.md) on
+2026-11-01 with these IDs (REQ-NET-005, REQ-UX-014, REQ-UX-016, REQ-UX-017, REQ-UX-020,
+REQ-DISK-010, REQ-PLAT-008). The rest are proposals only: the maintainer can accept,
+renumber or drop each one. "0.1" means before the first preview, "0.2" the release with
+the GUI, "later" after that.
 
 | Suggested ID | Requirement | Priority | Scenarios |
 |---|---|---|---|

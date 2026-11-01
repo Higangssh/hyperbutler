@@ -42,6 +42,7 @@ wanted is marked *withdrawn*, not deleted.
 | REQ-DISK-006 | Build cache stays bounded by default. | With default settings, 30 `docker compose build` cycles of a reference project keep BuildKit cache at ≤ 10 GB, or the configured limit (`bench/buildcache`). | P1 | D2 |
 | REQ-DISK-007 | The data location can be chosen at first run and moved safely later, without admin. | `hyperbutler start --data D:\hyperbutler` works. `hyperbutler move` runs as a standard user. Killed at any point (once every 1 s across a run), it leaves either the old or the new location fully usable (`bench/disk-move`). | P1 | D6 |
 | REQ-DISK-008 | Upgrades don't leak disk. | After upgrading hyperbutler, host disk usage grows by no more than the size of the new guest image. Old guest images are removed (`bench/upgrade`). | P1 | D2 |
+| REQ-DISK-010 | A paused VM says why. | A VM paused by the free-space guard (REQ-DISK-004) is shown in `state.json` and `status`, with the volume and the free space needed to resume ([usage-scenarios.md](research/usage-scenarios.md) S7.2). | P0 | S7.2 |
 
 ## Start-up and memory
 
@@ -130,6 +131,7 @@ a round trip (`FUSE_NO_OPEN_SUPPORT` with a host handle cache that closes idle h
 | REQ-NET-002 | VPN and corporate DNS work with zero configuration. | With at least one common VPN client connected (tested clients are listed in `docs/compat.md`), containers reach VPN routes. Split DNS works: VPN suffixes resolve through the VPN's resolver and everything else through the default one. Connecting or disconnecting the VPN needs no hyperbutler restart (`bench/net-vpn`, *manual*). | P1 | N2 |
 | REQ-NET-003 | Published ports can be exposed on the LAN, opt-in. | Behind a flag, published ports are reachable from another machine at the host's LAN IP. Off by default (`bench/net-lan`). | P2 | N1 |
 | REQ-NET-004 | Containers reach the host as `host.docker.internal`. | As in Docker Desktop, `host.docker.internal` (and `--add-host NAME:host-gateway`) resolves in every container, and a connection to it on any TCP port reaches a service listening on the Windows host's `127.0.0.1` on that port. It reaches nothing else: not other host addresses, not the LAN. A setting turns it off or limits it to listed ports (`bench/host-gateway`). | P0 | N1 |
+| REQ-NET-005 | Published ports never split. | A published port is mirrored on `127.0.0.1` and `[::1]` together or not at all. A port held by any host socket, wildcard or specific, is reported to the user: `docker run` fails with Docker's "Ports are not available" wording, and `status` lists ports a restart policy could not publish. Checking a port opens no wildcard socket (no Windows Firewall prompt). | P0 | S3.4 |
 
 Status on the reference machine (2026-10-31, `hyperbutler-dev` with the user-mode stack of
 [ADR 0006](adr/0006-guest-networking.md#gate-results-2026-10-31), 2 GiB / 2 vCPU guest, and
@@ -166,6 +168,7 @@ Status on the reference machine (2026-10-31, `hyperbutler-dev` with the user-mod
 | REQ-PLAT-005 | Upgrades keep data, and recovery never needs a destructive reset. | Upgrading across every release since the last minor keeps images, volumes, and containers. No documented recovery step deletes user data (release checklist). | P1 | U1 |
 | REQ-PLAT-006 | Runs natively on Windows on ARM64. | P0 criteria pass on an ARM64 Windows 11 device with an arm64 guest. | P2 | P4 |
 | REQ-PLAT-007 | Usable under real-time antivirus. | With Defender real-time protection on and no exclusions, REQ-FS-002 and REQ-START-001 still pass within 1.5× of their limits (`bench/av`). Evidence for P3 is weak (†), so the first `bench/av` run also checks whether this requirement is needed. | P1 | P3 |
+| REQ-PLAT-008 | Starting another version says so. | `start` from a different folder or version than the running engine says so and points to `restart`. `state.json` records the engine's executable path and version. | P0 | S9.1 S9.2 |
 
 ## Sleep and resume
 
@@ -191,6 +194,10 @@ Status on the reference machine (2026-10-31, `hyperbutler-dev` with the user-mod
 | REQ-UX-011 | On-demand GUI. | A GUI shows status, containers (grouped by Compose project) with start/stop, logs, images, volumes, real disk and memory use, settings and `daemon.json`, and troubleshooting. It is not Electron, does not poll while hidden, and leaves no process behind within 2 s of its window closing (`bench/footprint`). A tray icon, if offered, is off by default. | P1 | A5 A17 |
 | REQ-UX-012 | MCP server for AI tools. | `hyperbutler mcp` serves the Model Context Protocol over stdio and exits with its client, so it adds no resident process. Read-only tools by default (status, containers, logs, images, disk and memory use, settings, diagnose); tools that change state need `--allow-write`, and deletions need their own flag. Secrets are redacted from what it returns (`bench/mcp` and a review). | P1 | A17 |
 | REQ-UX-013 | The GUI speaks the user's language; logs stay English. | Every GUI string comes from a message catalog. English and Korean ship with the first GUI, and Japanese and Simplified Chinese by 1.0. The language follows Windows and can be overridden. Logs, `diagnose`, CLI output and MCP responses stay English. Each GUI error shows a stable error code and can copy its English original ([ADR 0008](adr/0008-settings-gui-mcp.md) "Languages"; a catalog completeness test and a pseudo-locale layout check). | P1 | A17 |
+| REQ-UX-014 | A stopped engine is explained. | `stop` says docker commands fail until `start` and how to switch context. The context description says to run `hyperbutler start`. The README quotes the CLI's error with the fix. | P0 | S1.1 S3.1 |
+| REQ-UX-016 | Launching the exe does something useful. | Launched without a console of its own (Explorer, a shortcut), `hyperbutler.exe` shows the status, offers to start a stopped engine on Enter, says the engine outlives the window, and waits before closing. Usage without arguments exits 0. From 0.2 it opens the GUI; the GUI never starts the engine unless asked (a Start button, or an opt-in setting), and closing it never stops the engine. | P0 (console), P1 (GUI) | S0.1 S0.2 S0.3 |
+| REQ-UX-017 | No surprise container stops. | Before any stop or restart of the VM or dockerd (`stop`, `restart`, `--apply`, `config daemon apply`), hyperbutler lists the running containers that will stop and which will come back (restart policy). | P0 | S2.7 S6.1 S6.2 |
+| REQ-UX-020 | A taken pipe is explained. | When the Docker API pipe is taken, the error names the configured pipe, says another user's or installation's engine may hold it, and gives the `config set pipe` fix. The README says each Windows user has their own engine and that published ports are shared. | P0 | S5.1 S5.2 S5.3 |
 
 Status of the settings requirements (2026-10-31, `hyperbutler start`; details in
 [settings.md](research/settings.md)):
