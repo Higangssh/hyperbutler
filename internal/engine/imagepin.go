@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+
+	"github.com/Higangssh/hyperbutler/guest/image"
 )
 
 // pinnedManifest is the SHA-256 (lowercase hex) of the image.json that this build
@@ -22,6 +24,18 @@ var pinnedManifest string
 // has one. A build without a pin accepts any image whose files match its own manifest.
 func ImagePin() (sum string, pinned bool) {
 	return pinnedManifest, pinnedManifest != ""
+}
+
+// CheckImageDirPin reports whether this build would boot the image in dir as far as the
+// pin goes: the image.json there matches it (nil for a development build). The engine
+// checks the rest of the image when it boots.
+func CheckImageDirPin(dir string) error {
+	p := filepath.Join(dir, image.ManifestName)
+	b, err := ReadFileBounded(p)
+	if err != nil {
+		return err
+	}
+	return checkPin(pinnedManifest, p, b)
 }
 
 // checkPin checks the manifest bytes b, read from path, against pin. An empty pin

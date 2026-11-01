@@ -535,14 +535,19 @@ func cmdRestart(args []string, stdout, stderr io.Writer) error {
 }
 
 // restartImageDir is the image directory a restart without --image-dir uses: the one
-// the engine ran (state.json). A release build is pinned to the image next to it, so
-// after a side-by-side upgrade the old folder's image would only be refused: it then
-// uses its own (""), and says so (ignored).
-func restartImageDir(stateDir, exeDir string, pinned bool) (dir string, ignored bool) {
+// the engine ran (state.json), which may have come from an explicit --image-dir. A
+// release build boots only the image it is pinned to, so an image there that fails
+// check (engine.CheckImageDirPin: after a side-by-side upgrade, the old folder's) would
+// only be refused: the restart then uses the build's own image (""), and says why
+// (ignored). An image that passes is kept, wherever it is.
+func restartImageDir(stateDir, exeDir string, pinned bool, check func(dir string) error) (dir string, ignored error) {
 	if !pinned || stateDir == "" || (exeDir != "" && engine.SamePath(stateDir, exeDir)) {
-		return stateDir, false
+		return stateDir, nil
 	}
-	return "", true
+	if err := check(stateDir); err != nil {
+		return "", err
+	}
+	return stateDir, nil
 }
 
 // restart stops hyperbutler if it runs and starts it again, with the same guest image
@@ -555,10 +560,11 @@ func restart(imageDir string, timeout time.Duration, stdout, stderr io.Writer) e
 	if imageDir == "" {
 		if st, err := engine.LoadState(in.l); err == nil && st.ImageDir != "" {
 			_, pinned := engine.ImagePin()
-			var ignored bool
-			imageDir, ignored = restartImageDir(st.ImageDir, exeDir(), pinned)
-			if ignored {
-				_, _ = fmt.Fprintf(stderr, "hyperbutler: the engine ran the guest image in %s; this release build boots its own, next to it in %s.\n", st.ImageDir, exeDir())
+			var ignored error
+			imageDir, ignored = restartImageDir(st.ImageDir, exeDir(), pinned, engine.CheckImageDirPin)
+			if ignored != nil {
+				_, _ = fmt.Fprintf(stderr, "hyperbutler: the engine ran the guest image in %s, which this release build does not boot (%v);\n"+
+					"        restarting with the image released with it, next to it in %s. Pass --image-dir to choose another.\n", st.ImageDir, ignored, exeDir())
 			}
 		}
 	}

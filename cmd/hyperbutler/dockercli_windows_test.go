@@ -4,6 +4,7 @@ package main
 
 import (
 	"bytes"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -35,9 +36,16 @@ func TestParseCLIVersion(t *testing.T) {
 }
 
 // After a side-by-side upgrade, a pinned build restarts with its own image, not the one
-// the old engine ran (which it would refuse).
+// the old engine ran (which it would refuse). An image elsewhere that matches the pin (an
+// explicit --image-dir with a copy of the released image) is kept (L-9).
 func TestRestartImageDir(t *testing.T) {
-	newDir, oldDir := `C:\hb\new`, `C:\hb\old`
+	newDir, oldDir, copyDir := `C:\hb\new`, `C:\hb\old`, `D:\images\hb`
+	check := func(dir string) error {
+		if dir == copyDir {
+			return nil
+		}
+		return errors.New("not the pinned image")
+	}
 	for _, c := range []struct {
 		state, exe string
 		pinned     bool
@@ -46,12 +54,13 @@ func TestRestartImageDir(t *testing.T) {
 	}{
 		{oldDir, newDir, false, oldDir, false}, // development build: as before
 		{oldDir, newDir, true, "", true},
+		{copyDir, newDir, true, copyDir, false},
 		{newDir, newDir, true, newDir, false},
 		{`c:\HB\new\`, newDir, true, `c:\HB\new\`, false},
 		{"", newDir, true, "", false},
 	} {
-		got, ignored := restartImageDir(c.state, c.exe, c.pinned)
-		if got != c.want || ignored != c.ignored {
+		got, ignored := restartImageDir(c.state, c.exe, c.pinned, check)
+		if got != c.want || (ignored != nil) != c.ignored {
 			t.Errorf("restartImageDir(%q, %q, %v) = %q, %v; want %q, %v", c.state, c.exe, c.pinned, got, ignored, c.want, c.ignored)
 		}
 	}
