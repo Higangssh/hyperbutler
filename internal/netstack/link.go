@@ -110,15 +110,21 @@ func (l *guestLink) writeLoop() {
 			l.mu.Unlock()
 			return
 		}
+		// The spare becomes the queue, so it is no longer a spare: left in place, a
+		// write of buf that does not hand buf back (one a burst grew) would make the
+		// live queue the next spare, and the next write would send a buffer that
+		// enqueue is overwriting. The guest does not verify the checksums of these
+		// frames (NEEDS_CSUM), so that is silent payload corruption.
 		buf := l.pending
-		l.pending = l.spare[:0]
+		l.pending, l.spare = l.spare[:0], nil
 		l.cond.Broadcast()
 		l.mu.Unlock()
 
 		_, err := l.conn.Write(buf)
 
 		l.mu.Lock()
-		// Keep one spare buffer of about the queue bound, not a larger one a burst grew.
+		// buf is written out: keep it as the spare if it is about the queue bound, not
+		// a larger one a burst grew.
 		if cap(buf) <= maxPending+frame.MaxVnetFrameLen+frame.HeaderLen {
 			l.spare = buf[:0]
 		}
