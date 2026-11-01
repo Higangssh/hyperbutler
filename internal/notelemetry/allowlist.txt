@@ -71,3 +71,13 @@ cmd/hyperbutler/autostart_windows.go exec:computed 1 %SystemRoot%\System32\schta
 # The WebView2 binding (internal/gui/webview2) names the WebView2 Runtime's download page,
 # shown as text in a message box when the runtime is missing; it is never requested.
 internal/gui/webview2/loader_windows.go url:go.microsoft.com 1 the WebView2 Runtime's download page, shown as text when the runtime is missing; never requested
+
+# The GUI (REQ-UX-011, `hyperbutler gui`, docs/gui.md). It runs this same executable:
+# `hyperbutler gui` without --wait starts `hyperbutler gui --wait` detached so the shell
+# gets its prompt back, and the engine operations (start, stop, restart, config daemon
+# apply) run the CLI as a child so they finish if the window closes. Its page is served
+# from memory on the name hb.localhost, which no request leaves the process for: the
+# WebView2 control answers every request itself (WebResourceRequested on "*"), and its
+# resolver rule makes every name lookup of the browser's network stack fail.
+cmd/hyperbutler/gui_windows.go exec:computed 2 this executable (os.Executable): gui --wait, and start, stop, restart or config daemon apply
+internal/gui/app/run_windows.go url:hb.localhost 1 the page's origin, answered in process by WebResourceRequested; never resolved or connected to

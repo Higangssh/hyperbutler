@@ -13,6 +13,9 @@ import (
 	"unsafe"
 
 	"golang.org/x/sys/windows"
+
+	"github.com/Higangssh/hyperbutler/internal/gui/app"
+	"github.com/Higangssh/hyperbutler/internal/gui/i18n"
 )
 
 // REQ-UX-016 (0.1, console): hyperbutler.exe started with no arguments in a console of
@@ -238,4 +241,25 @@ func (l *launcher) printErr(err error) {
 	if !errors.As(err, &se) {
 		_, _ = fmt.Fprintln(l.stderr, "hyperbutler:", err)
 	}
+}
+
+var procFreeConsole = launcherKernel32.NewProc("FreeConsole")
+
+// launcherGUI opens the window for a start with no arguments in a console of its own
+// (REQ-UX-016 from 0.2). It returns ran false when the window cannot open, after a
+// message box that names the WebView2 Runtime's download page: the console launcher
+// then runs as in 0.1. A variable, so tests can choose either path.
+var launcherGUI = func() (code int, ran bool) {
+	if !guiRuntimeOK() {
+		lang := ""
+		if in, err := openInstall(); err == nil && in.settings != nil {
+			lang = in.settings.GUILanguage
+		}
+		title, text := noRuntimeText(i18n.Messages(i18n.Resolve(lang, app.WindowsLanguages())))
+		app.MessageBox(title, text)
+		return 0, false
+	}
+	// The console window Explorer made for this process closes: the window replaces it.
+	_, _, _ = procFreeConsole.Call()
+	return runGUI(guiOptions{wait: true}, nil, nil), true
 }

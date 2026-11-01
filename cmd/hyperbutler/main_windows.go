@@ -15,6 +15,7 @@
 //	hyperbutler uninstall remove everything hyperbutler created (--dry-run lists it)
 //	hyperbutler import    copy images and volumes from Docker Desktop (--from-desktop)
 //	hyperbutler mcp      serve the Model Context Protocol on stdio for AI clients
+//	hyperbutler gui      open the window (also what a double-click on hyperbutler.exe does)
 //
 // See docs/research/cli-engine.md.
 package main
@@ -47,11 +48,13 @@ Usage:
   hyperbutler version [--json]
   hyperbutler import  --from-desktop [--image NAME,...|--all-images] [--volume NAME,...|--all-volumes] [--dry-run] [--json]
   hyperbutler mcp     [--allow-write [--allow-delete]]   (MCP server on stdio, docs/mcp.md)
+  hyperbutler gui     [--wait] [--lang LANG]   (the window, docs/gui.md)
 
 State lives in %LOCALAPPDATA%\hyperbutler (override with HYPERBUTLER_HOME).
 Run "hyperbutler COMMAND -h" for a command's flags.
-Without arguments in a window of its own (Explorer, a shortcut) it shows the status and
-offers a start; HYPERBUTLER_NO_LAUNCHER=1 prints this usage instead.
+Without arguments in a window of its own (Explorer, a shortcut) it opens the window (or,
+without the WebView2 Runtime, shows the status and offers a start);
+HYPERBUTLER_NO_LAUNCHER=1 prints this usage instead.
 `
 
 func main() {
@@ -67,6 +70,11 @@ func run(args []string, stdout, stderr io.Writer) int {
 		// (REQ-UX-016). From a shell, or with HYPERBUTLER_NO_LAUNCHER=1: the usage,
 		// which is not an error.
 		if !launcherDisabled() && ownsConsole() {
+			// From 0.2 the window opens instead; the console launcher stays for a
+			// machine without the WebView2 Runtime.
+			if code, ran := launcherGUI(); ran {
+				return code
+			}
 			return newLauncher(stdout, stderr).run()
 		}
 		_, _ = fmt.Fprint(stdout, usageText)
@@ -97,6 +105,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		err = cmdUninstall(args[1:], os.Stdin, stdout, stderr)
 	case "import":
 		err = cmdImport(args[1:], os.Stdin, stdout, stderr)
+	case "gui":
+		err = cmdGUI(args[1:], stdout, stderr)
 	case "mcp":
 		err = cmdMCP(args[1:], os.Stdin, stdout, stderr)
 	case "engine":

@@ -16,9 +16,11 @@ import (
 
 func setOwnsConsole(t *testing.T, own bool) {
 	t.Helper()
-	prev := ownsConsole
+	prev, prevGUI := ownsConsole, launcherGUI
 	ownsConsole = func() bool { return own }
-	t.Cleanup(func() { ownsConsole = prev })
+	// The console launcher's tests: as on a machine without the WebView2 Runtime.
+	launcherGUI = func() (int, bool) { return 0, false }
+	t.Cleanup(func() { ownsConsole, launcherGUI = prev, prevGUI })
 }
 
 // fakeLauncher is a launcher whose status is code (and then 0 once started), whose
