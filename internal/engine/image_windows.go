@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"golang.org/x/sys/windows"
 
@@ -91,6 +92,12 @@ func openImage(path, pin string) (_ *guestImage, err error) {
 		if err := want.Check(f); err != nil {
 			return nil, fmt.Errorf("engine: %w (%s)", err, fix)
 		}
+		// HCS opens the files by path. Hand it the path of the file this handle holds,
+		// with any junction or directory link on the way resolved: a link can be
+		// retargeted while the file stays open, the real directories cannot be renamed.
+		if p, err = finalPath(f); err != nil {
+			return nil, fmt.Errorf("engine: guest image file %s: %w", f.Name(), err)
+		}
 		switch i {
 		case 0:
 			g.kernel = p
@@ -104,6 +111,31 @@ func openImage(path, pin string) (_ *guestImage, err error) {
 		}
 	}
 	return g, nil
+}
+
+// GetFinalPathNameByHandle flags (fileapi.h).
+const fileNameNormalized, volumeNameDOS = 0x0, 0x0
+
+// finalPath returns the normalized path of the open file f, as a plain drive-letter or
+// UNC path.
+func finalPath(f *os.File) (string, error) {
+	buf := make([]uint16, windows.MAX_LONG_PATH)
+	n, err := windows.GetFinalPathNameByHandle(windows.Handle(f.Fd()), &buf[0], windows.MAX_LONG_PATH,
+		fileNameNormalized|volumeNameDOS)
+	if err != nil {
+		return "", err
+	}
+	if int(n) >= len(buf) {
+		return "", errors.New("path too long")
+	}
+	p := windows.UTF16ToString(buf[:n])
+	switch {
+	case strings.HasPrefix(p, `\\?\UNC\`):
+		return `\\` + p[len(`\\?\UNC\`):], nil
+	case strings.HasPrefix(p, `\\?\`) && len(p) > 6 && p[5] == ':' && p[6] == '\\':
+		return p[len(`\\?\`):], nil
+	}
+	return "", fmt.Errorf("unexpected final path %q", p)
 }
 
 // checkFooter checks that the system disk ends in a fixed-VHD footer for exactly the

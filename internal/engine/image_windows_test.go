@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -65,8 +66,12 @@ func TestOpenImage(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if g.system != filepath.Join(dir, "system.vhd") || g.kernel != filepath.Join(dir, "vmlinuz-virt") {
-		t.Fatalf("paths: %+v", g)
+	for got, want := range map[string]string{g.system: "system.vhd", g.kernel: "vmlinuz-virt", g.initrd: "initramfs-hyperbutler.gz"} {
+		a, err1 := os.Stat(got)
+		b, err2 := os.Stat(filepath.Join(dir, want))
+		if err1 != nil || err2 != nil || !os.SameFile(a, b) || !filepath.IsAbs(got) || strings.HasPrefix(got, `\\?\`) {
+			t.Errorf("path %q for %s (%v, %v)", got, want, err1, err2)
+		}
 	}
 	// While the image is held, nobody can write or delete its files, but reading works.
 	for _, name := range []string{"vmlinuz-virt", "initramfs-hyperbutler.gz", "system.vhd", image.ManifestName} {
@@ -246,8 +251,34 @@ func TestOpenImageHoldsDirectory(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer g.Close()
-	if err := os.Rename(dir, dir+"-moved"); err == nil {
-		_ = os.Rename(dir+"-moved", dir)
-		t.Fatal("the image directory was renamed while the image is held")
+	for _, d := range []string{dir, filepath.Dir(dir)} {
+		if err := os.Rename(d, d+"-moved"); err == nil {
+			_ = os.Rename(d+"-moved", d)
+			t.Fatalf("%s was renamed while the image is held", d)
+		}
+	}
+}
+
+// A junction on the way to the image is resolved: HCS gets the real directory, so
+// retargeting the junction after the check changes nothing.
+func TestOpenImageResolvesJunction(t *testing.T) {
+	dir, _ := writeImage(t)
+	link := filepath.Join(t.TempDir(), "img")
+	// mklink /J needs no privilege, unlike a symbolic link.
+	if out, err := exec.Command("cmd", "/c", "mklink", "/J", link, dir).CombinedOutput(); err != nil {
+		t.Skipf("mklink /J: %v %s", err, out)
+	}
+	g, err := openImage(filepath.Join(link, image.ManifestName), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer g.Close()
+	if strings.HasPrefix(strings.ToLower(g.system), strings.ToLower(link)) {
+		t.Fatalf("system disk path %q goes through the junction", g.system)
+	}
+	a, _ := os.Stat(g.system)
+	b, _ := os.Stat(filepath.Join(dir, "system.vhd"))
+	if !os.SameFile(a, b) {
+		t.Fatalf("%q is not the checked file", g.system)
 	}
 }

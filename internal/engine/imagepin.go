@@ -4,6 +4,8 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"os"
+	"path/filepath"
 )
 
 // pinnedManifest is the SHA-256 (lowercase hex) of the image.json that this build
@@ -33,9 +35,17 @@ func checkPin(pin, path string, b []byte) error {
 	}
 	sum := sha256.Sum256(b)
 	if got := hex.EncodeToString(sum[:]); got != pin {
-		return fmt.Errorf("engine: %s is not the guest image this hyperbutler.exe was built with (sha256 %s, expected %s). "+
+		exe := "hyperbutler.exe"
+		if p, err := os.Executable(); err == nil {
+			exe = p
+		}
+		where := "the guest image folder is " + filepath.Dir(path) + ", " + exe + " is in " + filepath.Dir(exe)
+		if filepath.Base(exe) != "hyperbutler.exe" {
+			where = "the guest image folder is " + filepath.Dir(path) // a test binary or another host
+		}
+		return fmt.Errorf("engine: %s is not the guest image this hyperbutler.exe was built with (sha256 %s, expected %s; %s). "+
 			"Extract the release zip again into one folder, replacing every file, and keep hyperbutler.exe next to its image; "+
-			"to boot another image, use a development build", path, got, pin)
+			"to boot another image, use a development build", path, got, pin, where)
 	}
 	return nil
 }
