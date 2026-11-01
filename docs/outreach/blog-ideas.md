@@ -144,6 +144,19 @@ surprising. Numbers are from the maintainer's Windows 11 Home laptop unless note
   prompt that a wildcard probe bind can; the API proxy then fails the container start
   with Docker's own "Ports are not available" error
   ([usage-scenarios.md](../research/usage-scenarios.md#s34-both-publish-the-same-port)).
+- **A CRC on a link that cannot corrupt:** hvsock delivers what it is given, and with
+  checksum offload neither the guest kernel nor gVisor checks a TCP checksum, so one
+  reused buffer on the host turned `docker pull` into "unexpected commit digest". The
+  per-frame CRC-32C (33 GB/s with SSE4.2, 1-2% of the engine's CPU at 8 Gbit/s) now
+  drops such frames instead.
+  Replaying the bug showed what corruption on a framed stream looks like: whole frames
+  in the wrong place (harmless, TCP takes them for retransmissions), frames mixed from
+  two (every one caught by the CRC), and, most often, a length read from the middle of
+  a payload, which no CRC can save but which ends the link loudly.
+- **Same words, different error:** a test that passed on Windows failed on Linux
+  because gVisor's reset error and Linux's `ECONNRESET` are both "connection reset by
+  peer", and the relay told the two apart by text. On Windows the socket error reads
+  differently, so the bug only existed on the platform the code does not ship on.
 
 ## Still to measure before writing
 

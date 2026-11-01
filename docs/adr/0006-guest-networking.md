@@ -180,7 +180,8 @@ not exist on Windows. Instead:
   - **Offload mode** (default since 2026-10-31). The engine adds `hyperbutler.netvnet=1`
     to the kernel command line. `netfwd -vnet` then opens the TAP with `IFF_VNET_HDR` and
     checksum and IPv4 TSO offload, and listens on the port (CID 2 only). The engine
-    dials it and sends `frame.Hello`. Every frame then starts with a virtio_net_hdr.
+    dials it and sends `frame.Hello`, whose last byte is the link version (2, see
+    "Integrity"). Every frame then starts with a CRC-32C and a virtio_net_hdr.
     TCP segments of up to 64 KiB cross the link in both directions with a partial
     checksum: the guest's TSO on one side, gVisor's host GSO on the other. The host
     dials because Windows sends slowly on an accepted hvsock connection (see "Gate
@@ -190,18 +191,50 @@ not exist on Windows. Instead:
     fit an IPv4 packet. gVisor does not verify checksums on this link
     (`CapabilityRXChecksumOffload`, as before): it terminates every packet and forwards
     none.
-  - **Integrity.** Frames are trusted without a checksum in both directions: the guest
-    kernel takes `NEEDS_CSUM` segments as it would from a virtio NIC, and gVisor does not
-    verify what the guest sends. hvsock delivers the bytes it is given, so a frame is
-    only as intact as the buffers it passes through on both ends, and a buffer reused
-    while it is still being written corrupts payloads silently (the layer digest
-    mismatches of 2026-11-01, `docs/research/guest-networking.md`). Tests guard buffer
-    ownership instead: `TestLinkIntegrityUnderStalls` streams seeded data both ways
-    through the real link and `frame.Pump` with a stalling hvsock and checks SHA-256 at
-    both ends and every frame on arrival in the fake guest; `linkCheck` asserts that the
-    queue, the buffer in flight and the spare never share an array; `TestPump` and
-    netfwd's relay tests check whole frames with stalled consumers; and `bench/net-perf`
-    verifies its bulk streams (`corrupt` must be 0). A per-frame CRC is not implemented.
+  - **Integrity.** Neither end verifies a TCP checksum: the guest kernel takes
+    `NEEDS_CSUM` segments as it would from a virtio NIC, and gVisor does not verify
+    what the guest sends. hvsock delivers the bytes it is given, so a buffer reused
+    while it is still being written corrupted payloads silently (the layer digest
+    mismatches of 2026-11-01, `docs/research/guest-networking.md`). Since link version
+    2 (2026-11-01) every frame, both ways, carries a CRC-32C (Castagnoli, `hash/crc32`
+    with SSE4.2 or the ARMv8 CRC instructions) of its virtio_net_hdr and Ethernet
+    frame: `length | CRC-32C | virtio_net_hdr | Ethernet frame`, both fields 4 bytes
+    big-endian (`frame/crc.go`). The engine computes it in `guestLink.enqueue` from the
+    bytes it is about to queue, netfwd right after each TAP read; the receiver checks it
+    before delivering (the engine in `frame.ChunkReader` on `Pump`'s reader goroutine,
+    netfwd before the TAP write). A frame that fails is dropped, which TCP recovers by
+    retransmitting, and counted: `Stats.FramesCRCDropped` (from the guest) and
+    `GuestFramesCRCDropped` (netfwd's count, sent in a link report frame at most once a
+    second when it changed); both sides log the first five with size and direction,
+    then one line a minute. The CRC cannot help when a corrupted length desynchronizes
+    the stream: that fails the length check and ends the link, loudly, and netfwd
+    reconnects.
+    - *Versions.* The Hello's last byte is the version; the engine offers one and
+      netfwd refuses any other than the one it was started for, with a message naming
+      both. There is no fallback to version 1: the engine ships its guest image, so a
+      mismatch is a broken install, and running on without the CRC would hide it.
+    - *Modes.* `NetConfig.CRC`, in `hyperbutler-dev run -net-crc on|off|strict`, which
+      passes `hyperbutler.netcrc=0` or `=strict` to the guest. `off` is version 1, kept
+      only to measure the cost; `strict` ends the link at a mismatch on both sides, so
+      tests and benches fail loudly. `hyperbutler start` always runs `on`.
+    - *Cost.* The CRC runs at 33 GB/s on the test laptop (`BenchmarkCRC`). `bench/net-perf`,
+      4 engine boots alternating on, off, on, off, medians of 5 rounds of 5 s (container
+      Gbit/s, on / off): dl 8.38, 8.05 / 8.76, 8.26; ul 7.81, 7.76 / 8.74, 8.08; pub-dl
+      8.04, 7.92 / 8.71, 8.59; pub-ul 9.33, 8.88 / 9.75, 9.93. Every pair is lower with
+      the CRC, 2.5-11%, about 6.5% on average, while the engine's cores per Gbit/s stayed
+      0.16-0.20 either way. A CPU profile puts the engine's own CRC at 1.9% (dl) and 1.1%
+      (ul) of its CPU; most of the engine's time is in syscalls. Where the rest goes (the
+      guest's pass in netfwd, or noise: the host-only baseline moved 21-41 Gbit/s
+      between the same runs) was not measured.
+    - *Evidence.* With 036c062 reverted, `TestGuestLinkBackpressureStress` saw 22-80 of
+      3000 frames per run mixed from several frames, every one failing its CRC, and
+      `TestLinkIntegrityUnderStalls` delivered no segment with other bytes in 20 runs
+      (with version 1, 2 of 20 did). On the real VM, 20 back-to-back pulls of the LAN
+      registry's 768 MiB image failed 0 times with 0 CRC drops, and the 40 bench runs
+      had 0 drops and 0 corrupt streams.
+    - The buffer-ownership tests stay: `TestLinkIntegrityUnderStalls` (now also
+      requiring 0 CRC drops), `linkCheck`, `TestPump`, netfwd's relay tests, and
+      `bench/net-perf`'s verified streams (`corrupt` must be 0).
   - **Plain mode** (`-net-offload=false`, or a guest image whose netfwd dials). The
     guest dials the host's listener and sends bare Ethernet frames of at most the MTU.
   - A stack keeps the mode of its first link. TCP endpoints created on an offload link

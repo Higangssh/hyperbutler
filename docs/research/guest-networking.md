@@ -544,8 +544,51 @@ producers against a stalling reader (211-490 of 3000 frames corrupted before the
 0 after).
 
 Still open: the earlier failing pull that took 4.2 s, faster than the line, was not
-explained; here a failed commit left no ingest behind to resume from. The receive path
-(guest to host) uses a different buffer scheme (`frame.Pump`) and was not part of this.
+explained; here a failed commit left no ingest behind to resume from.
+
+**Follow-up: a CRC-32C on every frame (link version 2).** So that the next such bug
+drops frames instead of corrupting data, every offload-mode frame now carries a CRC-32C
+of its virtio_net_hdr and Ethernet frame, in both directions, computed where the frame
+is built and checked before it is delivered (ADR 0006, "Integrity", has the format, the
+counters and the modes). The receive path (guest to host, `frame.Pump`) is covered the
+same way. What it does against this bug, with 036c062 reverted in a local build:
+
+| Test (fix reverted) | Version 1, no CRC | Version 2 |
+|---|---|---|
+| `TestGuestLinkBackpressureStress`, per run of 3000 frames | (211-490 frames with another frame's payload, measured before the CRC) | 110-357 whole frames in another's place (a real segment; TCP takes it for a retransmission), 22-80 frames mixed from several, all failing the CRC, 0 passing it |
+| `TestGuestLinkSpareNotLive` | frame 18 arrives with frame 19's payload | frame 18 arrives as a whole, intact copy of frame 19 |
+| `TestLinkIntegrityUnderStalls`, 20 runs | 2 delivered a segment with other bytes; 12 ended out of sync | 0 delivered one; 8 dropped 1-4 frames for their CRC; 15 ended out of sync |
+
+"Out of sync" is a length read from the middle of a payload: the overwrite starts
+mid-frame, and a random length is out of range almost always. The CRC cannot repair the
+stream; the length check ends the link, which netfwd reconnects, and nothing corrupt is
+delivered. With the fix, all three pass with 0 CRC drops.
+
+On the real VM (this image and engine, `hyperbutler start`, 4 GiB, 4 vCPUs, test home
+under `%TEMP%\hb-dev\crc\`): 20 back-to-back `docker pull`/`docker rmi` cycles of the LAN
+registry's `lanbench:1` (768 MiB) failed 0 times at 726-865 Mbit/s, and neither the engine
+log nor the guest console reported a CRC drop. An engine without version 2 against this
+image gets no network; netfwd logs, every time the engine dials, that the host speaks
+version 1 and the guest expects 2.
+
+Cost, from `bench/net-perf` against `hyperbutler-dev run -net-crc on|off` on the same
+image, 4 boots alternating on, off, on, off, medians of 5 rounds of 5 s:
+
+| Test | On (boot 1, 3) | Off (boot 2, 4) | Engine cores per Gbit/s, on / off |
+|---|---|---|---|
+| dl | 8.38, 8.05 | 8.76, 8.26 | 0.16, 0.17 / 0.16, 0.16 |
+| ul | 7.81, 7.76 | 8.74, 8.08 | 0.18, 0.19 / 0.17, 0.19 |
+| pub-dl | 8.04, 7.92 | 8.71, 8.59 | 0.20, 0.20 / 0.19, 0.20 |
+| pub-ul | 9.33, 8.88 | 9.75, 9.93 | 0.16, 0.18 / 0.16, 0.16 |
+
+All 8 pairs are lower with the CRC, by 2.5-11% (6.5% on average), more than the 5% the
+change was allowed. A 15 s CPU profile of the engine during dl and ul puts
+`castagnoliSSE42Triple` and its callers at 1.9% and 1.1% of the engine's CPU (syscalls
+are 74-80%), and the CRC itself runs at 33 GB/s (`BenchmarkCRC`), about 3% of a core per
+side at 9 Gbit/s. So the engine's own pass does not explain the drop. The guest's pass
+in netfwd was not profiled, and this laptop is noisy: the host-only medians of the same
+runs, which do not touch the engine, moved between 21 and 41 Gbit/s. 40 bulk runs, 0
+corrupt, 0 CRC drops. `-net-crc off` is there to repeat this on a quieter machine.
 
 ## Comparison
 
