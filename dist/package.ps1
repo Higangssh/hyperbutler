@@ -221,6 +221,30 @@ try {
             foreach ($f in $files) { Copy-Item -LiteralPath $f.FullName (Join-Path $dst $f.Name) }
             $index.Add("$($d.Path)  $($d.Version)  " + (($files | ForEach-Object { "go/$($d.Path)/$($_.Name)" }) -join ' '))
         }
+
+        # --- WebView2Loader.dll, for the window (hyperbutler gui, ADR 0008) ------------------
+        # Microsoft's WebView2 SDK loader (BSD-3-Clause), next to hyperbutler.exe: the GUI
+        # loads it from there by full path. It comes from the module cache copy of the SDK
+        # that github.com/jchv/go-webview2 vendors (the version in go.mod), and must match
+        # the pinned SHA-256 and carry a valid Microsoft signature.
+        $wv2Mod = 'github.com/jchv/go-webview2'
+        $wv2Ver = ((Exec go list -m $wv2Mod) | Select-Object -First 1) -split ' ' | Select-Object -Last 1
+        $wv2 = (Exec go mod download -json "$wv2Mod@$wv2Ver") -join "`n" | ConvertFrom-Json
+        if (-not $wv2.Dir) { Fail "no module directory for $wv2Mod@$wv2Ver" }
+        $loaderSrc = Join-Path $wv2.Dir 'webviewloader\sdk\x64\WebView2Loader.dll'
+        $loaderPin = 'c4674acf95f0800793a4a6d61132adf5dfa694c218e482d86093494c4e84100a'
+        if ((Sha256 $loaderSrc) -ne $loaderPin) { Fail "WebView2Loader.dll in $wv2Mod@$wv2Ver does not match its pin" }
+        $sig = Get-AuthenticodeSignature -LiteralPath $loaderSrc
+        if ($sig.Status -ne 'Valid' -or $sig.SignerCertificate.Subject -notmatch '^CN=Microsoft Corporation,') {
+            Fail "WebView2Loader.dll is not validly signed by Microsoft ($($sig.Status))"
+        }
+        Copy-Item -LiteralPath $loaderSrc (Join-Path $stage 'WebView2Loader.dll')
+        $wv2Lic = Join-Path $tp 'webview2'
+        New-Item -ItemType Directory -Force $wv2Lic | Out-Null
+        Copy-Item -LiteralPath (Join-Path $wv2.Dir 'webviewloader\sdk\LICENSE.txt') (Join-Path $wv2Lic 'LICENSE.txt')
+        $index.Add('')
+        $index.Add('== WebView2Loader.dll: Microsoft Edge WebView2 SDK loader, x64, Microsoft-signed')
+        $index.Add("Microsoft.Web.WebView2 loader  (from $wv2Mod@$wv2Ver, sha256 $loaderPin)  webview2/LICENSE.txt (BSD-3-Clause)")
     } finally {
         $env:GOOS, $env:GOARCH, $env:CGO_ENABLED, $env:GOTOOLCHAIN, $env:GOFLAGS = $saved
     }

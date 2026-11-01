@@ -31,6 +31,15 @@ Third-party Go modules linked into hyperbutler binaries:
   by guest/cmd/netfwd for the TAP device and AF_VSOCK,
   and by internal/diag and bench/soak (process handle count, process snapshots).
 
+Shipped next to hyperbutler.exe for the window (hyperbutler gui, ADR 0008):
+
+- WebView2Loader.dll, the loader of the Microsoft Edge WebView2 SDK (x64), signed by
+  Microsoft. BSD 3-Clause License, Copyright (C) Microsoft Corporation. dist/package.ps1
+  takes it from the copy of the SDK in github.com/jchv/go-webview2 (the version in
+  go.mod), checks its SHA-256 and signature, and puts its license in THIRD-PARTY/webview2.
+  internal/gui/webview2 is hyperbutler's own binding of the WebView2 interfaces; no code
+  of go-webview2 is linked into hyperbutler.exe.
+
 The user-mode guest network (internal/netstack, ADR 0006) links these into hyperbutler-dev:
 
 - github.com/containers/gvisor-tap-vsock v0.9.0
