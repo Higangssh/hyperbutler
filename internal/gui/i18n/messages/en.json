@@ -352,5 +352,9 @@
   "confirm.import.body#other": "{n} items will be copied from Docker Desktop. Nothing in Docker Desktop is changed.",
   "confirm.daemon.save.title": "Save daemon.json?",
   "confirm.daemon.save.body": "dockerd uses it the next time it restarts. The file you have now is replaced.",
-  "error.HB-GUI-005": "That needs a confirmation, and this one was missing, used or out of date. Please try again.",  "error.HB-OS-001": "Windows could not do that (open the folder or copy the text)."
+  "error.HB-GUI-005": "That needs a confirmation, and this one was missing, used or out of date. Please try again.",  "error.HB-IMP-003": "Docker Desktop is not running. Start Docker Desktop, then try again.",
+  "import.status.attention": "Needs attention",
+  "import.force": "Start anyway",
+  "error.HB-IMP-004": "This may not fit: there may not be enough free space in the VM or on this PC. Free some space or choose fewer items, or start anyway.",
+  "error.HB-IMP-005": "Another import is running in this hyperbutler. Wait for it to finish.",  "error.HB-OS-001": "Windows could not do that (open the folder or copy the text)."
 }

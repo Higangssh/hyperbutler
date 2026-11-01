@@ -342,7 +342,17 @@ func TestMakeStatus(t *testing.T) {
 }
 
 // fakeImporter checks that import.run passes only planned, not imported items.
-type fakeImporter struct{ got chan []string }
+type fakeImporter struct {
+	got     chan []string
+	noSpace bool
+}
+
+func (f *fakeImporter) Check(context.Context, []string) error {
+	if f.noSpace {
+		return Codedf(CodeImportSpace, "not enough space")
+	}
+	return nil
+}
 
 func (f *fakeImporter) Plan(context.Context) ([]ImportItem, error) {
 	return []ImportItem{{ID: "image:a", Kind: "image", Name: "a", Status: ImportNew}, {ID: "image:b", Kind: "image", Name: "b", Status: ImportDone}}, nil
@@ -367,7 +377,12 @@ func TestImport(t *testing.T) {
 	if r := call(t, d, `{"id":3,"op":"import.run","args":{"ids":["image:b"],"token":"`+tokenFor(t, d, "import.run", "")+`"}}`); r.OK {
 		t.Fatal("imported an item that is already imported")
 	}
-	if r := call(t, d, `{"id":4,"op":"import.run","args":{"ids":["image:a","image:b","image:zzz"],"token":"`+tokenFor(t, d, "import.run", "")+`"}}`); !r.OK {
+	imp.noSpace = true
+	if r := call(t, d, `{"id":5,"op":"import.run","args":{"ids":["image:a"],"token":"`+tokenFor(t, d, "import.run", "")+`"}}`); r.OK || r.Error.Code != CodeImportSpace {
+		t.Fatalf("ran without space: %+v", r)
+	}
+	// force is import --force-space: the check is skipped.
+	if r := call(t, d, `{"id":4,"op":"import.run","args":{"ids":["image:a","image:b","image:zzz"],"force":true,"token":"`+tokenFor(t, d, "import.run", "")+`"}}`); !r.OK {
 		t.Fatalf("run: %+v", r)
 	}
 	if got := <-imp.got; len(got) != 1 || got[0] != "image:a" {

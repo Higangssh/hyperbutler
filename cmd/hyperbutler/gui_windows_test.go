@@ -4,11 +4,13 @@ package main
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/Higangssh/hyperbutler/internal/desktopimport"
 	"github.com/Higangssh/hyperbutler/internal/gui/bridge"
 )
 
@@ -94,5 +96,28 @@ func TestGUIEngineArgs(t *testing.T) {
 	}
 	if _, _, err := h.engineArgs("delete"); err == nil {
 		t.Error("unknown operation accepted")
+	}
+}
+
+func TestImportStatus(t *testing.T) {
+	for s, want := range map[desktopimport.Status]string{
+		desktopimport.StatusNew: bridge.ImportNew, desktopimport.StatusAlready: bridge.ImportDone,
+		desktopimport.StatusPartial: bridge.ImportPartial, desktopimport.StatusConflict: bridge.ImportConflict,
+		desktopimport.StatusExists: bridge.ImportExists, desktopimport.StatusUnsupported: bridge.ImportUnsupported,
+		"something new": bridge.ImportAttention,
+	} {
+		if got := importStatus(s); got != want {
+			t.Errorf("%s: %s, want %s", s, got, want)
+		}
+	}
+	// Without a plan, nothing runs.
+	g := &guiImporter{}
+	if _, err := g.Run(context.Background(), []string{"image:x"}, func(bridge.ImportProgress) {}); err == nil {
+		t.Fatal("ran without a plan")
+	}
+	// With the engine stopped, the plan says so with its code.
+	testHome(t)
+	if _, err := g.Plan(context.Background()); !errors.Is(err, bridge.ErrEngineStopped) {
+		t.Fatalf("plan with no engine: %v", err)
 	}
 }

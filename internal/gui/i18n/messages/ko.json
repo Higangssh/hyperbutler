@@ -319,7 +319,7 @@
   "import.done": "다 됐어요. {n}개를 가져왔어요.",
   "import.cancelled": "가져오기를 멈췄어요. 이미 가져온 건 그대로 있어요.",
   "import.failed": "가져오다가 오류가 났어요",
-  "import.status.new": "새로 가져옴",
+  "import.status.new": "새 항목",
   "import.status.imported": "이미 가져옴",
   "import.status.partial": "일부만 가져옴",
   "import.status.conflict": "같은 이름이 있어요",
@@ -338,5 +338,9 @@
   "confirm.import.body#other": "Docker Desktop에서 {n}개를 복사해 와요. Docker Desktop 쪽은 아무것도 바꾸지 않아요.",
   "confirm.daemon.save.title": "daemon.json을 저장할까요?",
   "confirm.daemon.save.body": "dockerd가 다음에 다시 시작할 때 써요. 지금 파일은 바뀌어요.",
-  "error.HB-GUI-005": "확인이 필요한 일인데 확인이 없거나, 이미 썼거나, 시간이 지났어요. 다시 해 주세요.",  "error.HB-OS-001": "Windows가 그 일을 하지 못했어요 (폴더 열기나 텍스트 복사)."
+  "error.HB-GUI-005": "확인이 필요한 일인데 확인이 없거나, 이미 썼거나, 시간이 지났어요. 다시 해 주세요.",  "error.HB-IMP-003": "Docker Desktop이 꺼져 있어요. Docker Desktop을 켠 다음 다시 해 주세요.",
+  "import.status.attention": "확인이 필요해요",
+  "import.force": "그래도 시작",
+  "error.HB-IMP-004": "공간이 모자랄 수 있어요. VM이나 이 PC에 여유 공간이 부족할 수 있어요. 공간을 비우거나 더 적게 고르거나, 그래도 시작할 수 있어요.",
+  "error.HB-IMP-005": "이 hyperbutler에서 다른 가져오기가 진행 중이에요. 끝날 때까지 기다려 주세요.",  "error.HB-OS-001": "Windows가 그 일을 하지 못했어요 (폴더 열기나 텍스트 복사)."
 }

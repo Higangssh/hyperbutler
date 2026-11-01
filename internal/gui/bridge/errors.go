@@ -46,7 +46,7 @@ var Codes = []string{
 	CodeAccessDenied, CodeVMExited, CodePipeInUse, CodeDataDisk,
 	CodeAPIUnreachable, CodeAPIError, CodeNoContainer,
 	CodeConfigValue, CodeConfigFailed, CodeDaemonInvalid, CodeDaemonApply, CodeDaemonReadOnly,
-	CodeDiagnose, CodeDoctor, CodeOS, CodeImportUnavailable, CodeImportFailed, CodeConfirm,
+	CodeDiagnose, CodeDoctor, CodeOS, CodeImportUnavailable, CodeImportFailed, CodeDesktopNotRunning, CodeImportSpace, CodeImportBusy, CodeConfirm,
 }
 
 // Error is an error with its code: what the page shows. Err's text is the English

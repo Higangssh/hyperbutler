@@ -686,6 +686,7 @@
     clear(ul);
     $("import-progress").hidden = true;
     $("import-cancel").hidden = true;
+    $("import-force").hidden = true;
     $("import-start").hidden = false;
     $("import-start").disabled = true;
     $("import-note").textContent = t("import.loading");
@@ -714,9 +715,12 @@
   }
   function selectedImport() { return [...$("import-list").querySelectorAll("input:checked:not(:disabled)")].map((x) => x.value); }
   function updateImportStart() { $("import-start").disabled = importing || selectedImport().length === 0; }
-  async function startImport() {
+  // startImport asks, then starts. force is import --force-space, offered only after the
+  // host's free-space check said the copy may not fit.
+  async function startImport(force) {
     const ids = selectedImport();
     if (!ids.length) return;
+    $("import-force").hidden = true;
     const dlg = $("import");
     dlg.close();
     const token = await confirmToken("import.run", "", t("confirm.import.title"), tp("confirm.import.body", ids.length), t("import.start"));
@@ -729,11 +733,19 @@
     $("import-cancel").hidden = false;
     $("import-progress-text").textContent = t("import.starting");
     try {
-      await call("import.run", { ids, token });
+      await call("import.run", force ? { ids, token, force: true } : { ids, token });
     } catch (e) {
       importing = false;
       $("import-cancel").hidden = true;
-      showError(e);
+      $("import-progress").hidden = true;
+      for (const x of $("import-list").querySelectorAll("input")) x.disabled = x.closest("li").classList.contains("done");
+      updateImportStart();
+      if (e.code === "HB-IMP-004") {
+        $("import-note").textContent = t("error.HB-IMP-004") + " " + (e.detail || "");
+        $("import-force").hidden = false;
+      } else {
+        showError(e);
+      }
     }
   }
   function onImportProgress(p) {
@@ -746,6 +758,7 @@
     importing = false;
     $("import-cancel").hidden = true;
     $("import-start").hidden = true;
+    loadStorage();
     const r = p.result || {};
     const counts = t("import.result", { imported: fmtInt(r.imported || 0), already: fmtInt(r.already || 0), refused: fmtInt(r.refused || 0), failed: fmtInt(r.failed || 0) });
     const src = r.sourceUnchanged ? t("import.sourceUnchanged") : t("import.sourceChanged", { what: (r.differences || []).join("; ") || "-" });
@@ -825,7 +838,8 @@
     $("daemon-apply").addEventListener("click", (e) => daemonApply(e.currentTarget));
     $("doctor-run").addEventListener("click", runDoctor);
     $("import-open").addEventListener("click", openImport);
-    $("import-start").addEventListener("click", startImport);
+    $("import-start").addEventListener("click", () => startImport(false));
+    $("import-force").addEventListener("click", () => startImport(true));
     $("import-cancel").addEventListener("click", () => call("import.cancel").catch(showError));
     $("import").addEventListener("cancel", (e) => { if (importing) e.preventDefault(); });
     $("import-close").addEventListener("click", (e) => { if (importing) e.preventDefault(); });

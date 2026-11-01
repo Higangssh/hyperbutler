@@ -16,6 +16,9 @@ import (
 type Importer interface {
 	// Plan lists what could be imported and the state of each item.
 	Plan(ctx context.Context) ([]ImportItem, error)
+	// Check says whether the items with these ids fit (the free-space check); an error
+	// with CodeImportSpace says they may not. Run does not check again.
+	Check(ctx context.Context, ids []string) error
 	// Run imports the items with these ids, reporting progress, until done or ctx ends.
 	Run(ctx context.Context, ids []string, progress func(ImportProgress)) (ImportResult, error)
 }
@@ -29,10 +32,12 @@ const (
 	ImportExists      = "exists"   // a volume of that name is there, content not compared
 	ImportUnsupported = "unsupported"
 	ImportInUse       = "inuse" // a volume a running Docker Desktop container mounts
+	// ImportAttention is any state this window does not know yet: shown, not chosen.
+	ImportAttention = "attention"
 )
 
 // ImportStatuses are every state, for the catalog test.
-var ImportStatuses = []string{ImportNew, ImportDone, ImportPartial, ImportConflict, ImportExists, ImportUnsupported, ImportInUse}
+var ImportStatuses = []string{ImportNew, ImportDone, ImportPartial, ImportConflict, ImportExists, ImportUnsupported, ImportInUse, ImportAttention}
 
 // importSelectable are the states an item can be imported from.
 var importSelectable = map[string]bool{ImportNew: true, ImportPartial: true, ImportExists: true}
@@ -83,10 +88,22 @@ const CodeImportUnavailable = "HB-IMP-001"
 // CodeImportFailed: the import stopped with an error.
 const CodeImportFailed = "HB-IMP-002"
 
+// CodeDesktopNotRunning: nothing answers on Docker Desktop's engine pipe.
+const CodeDesktopNotRunning = "HB-IMP-003"
+
+// CodeImportSpace: the copy may not fit; import.run with force starts it anyway.
+const CodeImportSpace = "HB-IMP-004"
+
+// CodeImportBusy: another import runs in this installation.
+const CodeImportBusy = "HB-IMP-005"
+
 // ImportArgs are the ids import.run takes.
 type ImportArgs struct {
 	IDs   []string `json:"ids"`
 	Token string   `json:"token"`
+	// Force starts the copy even when the free-space check says it may not fit
+	// (import --force-space).
+	Force bool `json:"force,omitempty"`
 }
 
 const maxImportItems = 500
@@ -121,6 +138,10 @@ func (d *Dispatcher) importPlan(ctx context.Context) (any, error) {
 	}
 	items, err := d.o.Importer.Plan(ctx)
 	if err != nil {
+		var e *Error
+		if errors.As(err, &e) {
+			return nil, err // the importer's own code
+		}
 		return nil, Coded(CodeImportFailed, err)
 	}
 	out := make([]ImportItem, 0, min(len(items), maxImportItems))
@@ -134,7 +155,7 @@ func (d *Dispatcher) importPlan(ctx context.Context) (any, error) {
 			known = known || it.Status == s
 		}
 		if !known {
-			it.Status = ImportUnsupported
+			it.Status = ImportAttention
 		}
 		it.ID, it.Kind, it.Name, it.Note = field(it.ID), field(it.Kind), field(it.Name), field(it.Note)
 		planned[it.ID] = it.Status
@@ -150,7 +171,7 @@ func (d *Dispatcher) importPlan(ctx context.Context) (any, error) {
 
 // importRun starts the import of ids in the background; progress goes to the page as
 // events. Only items of the last plan that are not already imported are taken.
-func (d *Dispatcher) importRun(ids []string) (any, error) {
+func (d *Dispatcher) importRun(ids []string, force bool) (any, error) {
 	if d.o.Importer == nil {
 		return nil, Codedf(CodeImportUnavailable, "importing from Docker Desktop is not available in this build yet")
 	}
@@ -167,6 +188,18 @@ func (d *Dispatcher) importRun(ids []string) (any, error) {
 	}
 	if len(take) == 0 {
 		return nil, badf("import.run: none of the ids is in the plan, or all are imported")
+	}
+	if !force {
+		c, cancel := context.WithTimeout(d.base, readTimeout)
+		err := d.o.Importer.Check(c, take)
+		cancel()
+		if err != nil {
+			var e *Error
+			if !errors.As(err, &e) {
+				err = Coded(CodeImportFailed, err)
+			}
+			return nil, err
+		}
 	}
 	ctx, cancel := context.WithCancel(d.base)
 	d.imp.cancel = cancel

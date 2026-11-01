@@ -256,7 +256,7 @@ func (d *Dispatcher) serve(ctx context.Context, op string, args any) (any, error
 		if err := d.tok.use(a.Token, OpImportRun, ""); err != nil {
 			return nil, err
 		}
-		return d.importRun(a.IDs)
+		return d.importRun(a.IDs, a.Force)
 	case OpImportCancel:
 		return d.importCancel()
 	case OpLog:
