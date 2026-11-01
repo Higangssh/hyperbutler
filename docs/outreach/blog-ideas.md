@@ -96,6 +96,11 @@ surprising. Numbers are from the maintainer's Windows 11 Home laptop unless note
   HcsRevokeVmAccess also drops the shared worker-capability entry other VMs added.
   `hyperbutler uninstall` finds stale entries by matching them against live compute
   systems. `bench/uninstall`.
+- **Your Windows trusts CAs Linux has never heard of:** 18 of the 29 valid roots in a
+  stock Windows 11 store are missing from Alpine's Mozilla bundle, and the store changes
+  by itself (AuthRoot fills on demand), which is why the import runs only at boot and on
+  an explicit apply: re-reading it on a reconnect would restart dockerd and every
+  container.
 
 ## Still to measure before writing
 

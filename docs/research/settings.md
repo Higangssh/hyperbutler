@@ -1,14 +1,17 @@
 # Settings, daemon.json and --json output
 
 - Date: 2026-10-31
-- Requirements: REQ-UX-006, REQ-UX-007, REQ-UX-008 ([ADR 0008](../adr/0008-settings-gui-mcp.md))
+- Requirements: REQ-UX-006, REQ-UX-007, REQ-UX-008, REQ-UX-009 ([ADR 0008](../adr/0008-settings-gui-mcp.md))
 - Machine: Windows 11 Home 10.0.26200, non-elevated account in Hyper-V Administrators,
   a 3 GiB / 8 vCPU guest on its own pipe (`\\.\pipe\docker_engine_hb_settings`) with
   `HYPERBUTLER_HOME` and `DOCKER_CONFIG` in a temp directory.
 - Code: `internal/config` (the keys), `internal/daemoncfg` (daemon.json checks),
   `internal/engine/daemonjson.go` (delivery), `internal/guestctl` (the transfer),
   `guest/cmd/hyperbutlerd/daemoncfg.go` and `guest/prototype/init` (the guest side),
-  `cmd/hyperbutler/config_windows.go` and `schema.go` (the CLI).
+  `cmd/hyperbutler/config_windows.go` and `schema.go` (the CLI). REQ-UX-009:
+  `internal/dockerenv` (proxy checks, the CA set, the document), `internal/wincert` (the
+  Windows stores), `internal/engine/dockerdenv.go`, `guest/cmd/hyperbutlerd/dockerdenv.go`,
+  `bench/corp-proxy`.
 
 ## Settings (REQ-UX-006)
 
@@ -32,10 +35,14 @@ hyperbutler restart
 | `engine.memoryLimit` | GOMEMLIMIT syntax or `off` | 256MiB | VM restart |
 | `hostGateway.enabled` | bool | true | at once (the running engine, no restart) |
 | `hostGateway.ports` | port list (`5432,8000-8100`) or `all` | all | at once (the running engine, no restart) |
+| `ca.import` | bool | true | dockerd restart (`config daemon apply`, or `--apply`) |
+| `ca.extraFile` | a PEM file on a local drive, or empty | empty | dockerd restart |
+| `proxy.http`, `proxy.https` | `http://`, `https://` or `socks5://` URL, credentials allowed | none | dockerd restart |
+| `proxy.noProxy` | comma-separated hosts, `.domains`, IPs, CIDRs | empty | dockerd restart |
 
-- **Reserved names** (refused with "reserved for a later release"): `proxy.mode`,
-  `proxy.http`, `proxy.https`, `proxy.noProxy`, `ca.import`, `updates.check`, `autostart`,
-  `tray`, `ports.lan`, `buildkit.gcKeepStorage`.
+- **Reserved names** (refused with "reserved for a later release"): `proxy.mode` (the
+  Windows system proxy, 0.2), `updates.check`, `autostart`, `tray`, `ports.lan`,
+  `buildkit.gcKeepStorage`.
 - **Source** is `default`, `file` (settings.json) or `env`. `engine.memoryLimit` shows `env`
   when this shell has `GOMEMLIMIT`; the running engine has the environment of the shell
   that started it, which may differ. `data.dir` and `disk.size` always show `file` once
@@ -141,7 +148,7 @@ Owned keys, and why:
 | `shutdown-timeout`, `log-level` | passed as flags (dockerd refuses a key that is also a flag); use `"debug": true` |
 | `live-restore` | containers left running keep the data disk busy at shutdown, so the VM would power off with a dirty file system (review finding 3) |
 
-`proxies` is not owned yet; REQ-UX-009's proxy settings may take it over.
+| `proxies` | dockerd's proxies are the `proxy.*` settings (REQ-UX-009); a daemon.json value would override them without a word (Docker Desktop 4.35 had that bug, A7 in the pain points) |
 
 ### End to end (`bench/daemon-json/run.ps1`, 2026-10-31)
 
@@ -167,6 +174,140 @@ checks passed:
 
 Not tested: a registry on another machine of the LAN (there is no second machine; `-Registry`
 takes one), and a reconnect during an apply in a real guest (unit-tested).
+
+## Corporate CA and proxy (REQ-UX-009)
+
+```powershell
+hyperbutler config set proxy.https http://user:password@proxy.corp:3128 --apply
+hyperbutler config set proxy.http  http://proxy.corp:3128
+hyperbutler config set proxy.noProxy .corp.example,10.0.0.0/8
+hyperbutler config set ca.import false          # default on
+hyperbutler config set ca.extraFile D:\certs\corp-root.pem
+hyperbutler config daemon apply                  # or --apply on the last set
+```
+
+### What dockerd gets
+
+- **CA certificates.** With `ca.import` the engine reads the trusted roots of
+  `CurrentUser\Root` (the logical store, which includes the machine's), `LocalMachine\Root`
+  and its Group Policy and Enterprise (Active Directory) stores, read-only through crypt32
+  (`CertOpenStore`, `CertEnumCertificatesInStore`). It never changes a store. It keeps a
+  certificate only if it parses, is a CA (basic constraints CA:TRUE, or a self-issued
+  version 1 root without basic constraints), is within its validity period, and is not in
+  `CurrentUser\Disallowed` or `LocalMachine\Disallowed`; duplicates are dropped by the
+  SHA-256 of the DER. `ca.extraFile` certificates come first and need only parse.
+  Intermediate stores (`CA`) are not read: an entry there is a cache, not a trust
+  decision, and Go would treat it as a trust anchor. On this machine: 70 certificates in
+  the stores, 29 kept (29 duplicates, 12 expired), 7 ms; 18 of the 29 are not in Alpine's
+  bundle (Microsoft's own roots and other Windows-only CAs).
+- **Bounds.** At most 20000 entries are read per store, 16 KiB per certificate, 2000
+  certificates and 960 KiB of PEM in total; what is over the limit is left out and counted
+  (`caStats.overLimit`, with a message in `env.error`), never a reason to fail the start.
+- **The guest** writes `/run/hyperbutler/ca-certificates.crt`: the stock bundle as it is,
+  then the certificates it lacks. The init starts dockerd with
+  `SSL_CERT_FILE=/run/hyperbutler/ca-certificates.crt`. dockerd, its containerd and
+  BuildKit (which dockerd embeds) use Go's crypto/x509, which reads that file instead of the
+  stock one; per-registry certificates in `/etc/docker/certs.d` are not used (the system
+  disk is read-only).
+- **Proxies** become `HTTP_PROXY`, `HTTPS_PROXY` and `NO_PROXY` in dockerd's environment.
+  Go's `http.ProxyFromEnvironment`, which dockerd's registry client uses, supports http,
+  https and socks5 proxies, so those are the schemes accepted. The URL must be
+  `scheme://[user[:password]@]host[:port]`, nothing else; it is checked when it is set
+  (unit and fuzz tests).
+- **NO_PROXY** is the user's list plus what a proxy elsewhere can never reach:
+  `localhost,127.0.0.1,::1,192.168.127.0/24,host.docker.internal,gateway.docker.internal,192.168.127.254`
+  and the hosts of daemon.json's `insecure-registries` and `registry-mirrors`. Only when a
+  proxy is set.
+- **A proxy on this host's loopback** (a local NTLM or Kerberos relay such as px or cntlm,
+  which is how such proxies are used without Docker Desktop's Business-only support) is
+  rewritten to the host gateway address, `192.168.127.254`, which forwards to Windows'
+  `127.0.0.1` (REQ-NET-004). `config set proxy.*` and `hostGateway.*` refuse a combination
+  where the host gateway is off or does not forward the proxy's port.
+- **Containers and builds** are not changed, as in Docker Desktop: its docs say to add a
+  corporate CA to an image and run `update-ca-certificates`, and its proxy settings are for
+  pulls, not for what runs in a container. To give containers and `docker build` a proxy,
+  the docker CLI's own `proxies` in `~/.docker/config.json` still works; certificates still
+  go into the image. `proxy.mode` (the WinINET/WinHTTP system proxy, and PAC files) is
+  reserved for 0.2: reading it is small, but a PAC file needs a JavaScript evaluator, and
+  following the system proxy live means restarting dockerd when it changes.
+
+### Why the environment and not daemon.json's `proxies`
+
+dockerd has a `proxies` key since 23.0. Using it would mean hyperbutler editing the
+user's daemon.json, which REQ-UX-007 delivers byte for byte, or merging two files with
+rules about which wins. The environment is dockerd's oldest proxy interface and needs no
+merge; to keep one source of truth, `proxies` is now an owned daemon.json key (refused
+with a pointer to `config set proxy.*`). The CA bundle has no daemon.json key at all.
+
+### Delivery
+
+The proxies and the certificates travel as one document (`dockerenv.Doc`, JSON, at most
+1 MiB) over the control channel with the framing of daemon.json: `TEnvChunk` frames (232
+bytes at an offset, their own buffer in the guest, so the two transfers can interleave),
+an `TEnvCommit` with size and SHA-256, and an `REnv` reply with the daemon.json codes.
+Guest images advertise `FeatureDockerdEnv`; for an older image the state says to update
+it and dockerd runs without. hyperbutlerd decodes the document strictly (known fields,
+valid values, canonical bytes), writes `dockerd.env` (KEY=VALUE lines) and the bundle,
+0600 in a 0700 `/run/hyperbutler`, and the init exports only `HTTP_PROXY`, `HTTPS_PROXY`,
+`NO_PROXY` and `SSL_CERT_FILE` from it, without evaluating the file as shell code.
+
+- **Boot:** the engine builds the document before the first control connection is used
+  and sends it before daemon.json, so the init's one readiness gate (`daemon.ready`,
+  which the daemon.json commit creates) covers both, and `start` waits for both. On the
+  VM: `dockerd environment: installed` at 0.38 s, `daemon-config-ready` at 0.40 s, and the
+  first dockerd (generation 1) had `SSL_CERT_FILE` and the proxy.
+- **Restarts only when asked.** A changed environment on a running dockerd restarts it
+  (never reported as in effect without), so only `config daemon apply` and `config set
+  ... --apply` build a new one. On a control reconnect (sleep and resume, a hyperbutlerd
+  restart) the engine sends what is in effect, not a new import: the stores change on
+  their own (AuthRoot fills on demand, Group Policy refreshes), and a restart stops every
+  container. An apply restarts dockerd once: for the environment if it changed, otherwise
+  for daemon.json; twice only when both changed.
+- **Rollback:** the environment shares daemon.json's lock, hold file and 90 s watch in the
+  guest; a dockerd that does not come back is restarted with the previous environment
+  (`DaemonRolledBack`). At boot there is no previous environment to go back to; see the
+  review below.
+
+### Secrets
+
+Proxy URLs can carry a password. It is stored in settings.json (in the user-only state
+directory, like the rest) and sent to the guest; everywhere else it is
+`user:***@host` (a user name alone, often a token, is `***@host`): `config list/get`
+(unless `--show-secrets`), `config set` output, state.json and `status --json`
+(`state.daemonConfig.env`), `status`, and the engine log. Validation errors never quote a
+proxy URL. hyperbutlerd logs only which variables are set. Not on the kernel command line.
+`docker info` shows dockerd's own masked form (`xxxxx:xxxxx@`).
+
+### State
+
+`state.daemonConfig.env` (additive within schema 1): `httpProxy`, `httpsProxy` (redacted,
+as the guest sees them), `noProxy`, `caImport`, `caCerts`, `caSkipped`, `caStats`
+(`added`, `duplicate`, `notCA`, `expired`, `notYetValid`, `invalid`, `disallowed`,
+`overLimit`), `sha256`, `restarted`, `error`. `status` prints a `proxy:` line.
+
+### End to end (`bench/corp-proxy`, 2026-11-01)
+
+The bench runs its own TLS-inspecting proxy on `127.0.0.1` (Basic credentials required),
+with a root CA made for the run. It never touches a certificate store: the CA reaches
+hyperbutler through `ca.extraFile`, which takes the same path as the store's
+certificates from the CertSet on. The proxy dials Docker Hub itself. 21 of 21 checks
+passed on the guest image built from this tree:
+
+| Check | Result |
+|---|---|
+| `proxy.http`/`https` = `http://corpuser:PASSWORD@127.0.0.1:PORT`, apply | dockerd restarted once (1.8 s) |
+| `hostGateway.enabled false` with that proxy | refused: on loopback, needs the host gateway |
+| `docker pull busybox:1.37` without the CA | fails, `x509: certificate signed by unknown authority`; the proxy saw `CONNECT registry-1.docker.io:443` and a refused handshake |
+| `ca.extraFile` = the proxy's CA, `--apply` | dockerd restarted (1.3 s); the pull works in 2.9 s through the proxy: 4 CONNECTs, 4 inspected TLS sessions, 15 requests, no 407 |
+| guest | `dockerd.env` 0600 in a 0700 directory; `HTTP(S)_PROXY` at `192.168.127.254`, `NO_PROXY`, `SSL_CERT_FILE` |
+| containers | no proxy variables; `/proc/cmdline` without the proxy |
+| the password | in none of: `config list/get/set` output, `status [--json]`, state.json, engine.log, console.log, `docker info`; `--show-secrets` shows it |
+| unset and apply | the pull works directly, no CONNECT |
+
+Also on the VM: the store import itself (29 roots sent, 18 added beyond the stock bundle);
+the boot path above; and a forced reconnect (hyperbutlerd killed in the guest, the init
+restarted it) after the CA file changed on disk: the engine re-sent the environment in
+effect, dockerd kept generation 5 and its PID, the bundle's hash did not change.
 
 ## --json (REQ-UX-008)
 
@@ -219,8 +360,35 @@ fields are only added; removing or renaming one means a new version.
   (two crashers before, see above); `guestctl` FuzzDecode 10.2M, FuzzServeConn 1.8M,
   FuzzClient 0.28M, FuzzReadFrame 10.5M; `engine` FuzzParseSettings 1.4M, FuzzParseState 1.5M.
   All passed after the fixes.
+- REQ-UX-009: unit tests for the proxy checks and redaction, the CA set (limits, order,
+  expiry, untrusted), the bundle, the document, the transfer (1 MiB, interleaved with a
+  daemon.json), the guest's install, restart and rollback, the shared lock, the engine's
+  order, reconnect and apply, the secrets, and a read of this machine's real stores
+  (`internal/wincert`). `go test -race` for the guest packages, `guestctl`, `dockerenv`,
+  `daemoncfg` and the engine's delivery tests ran in a golang:1.27 container on the
+  guest. New fuzz targets, 20-45 s each: `dockerenv` FuzzProxyURL 0.15M (one false alarm
+  in the property, fixed), FuzzDecode 0.32M, FuzzNoProxy 3.6M; `config` FuzzSet 1.9M
+  with the new keys and a no-password-shown property; `guestctl` FuzzServeConn 0.66M,
+  FuzzDecode, FuzzClient with the new messages. All passed.
 
-## Adversarial review
+## Adversarial review (REQ-UX-009)
+
+| # | Finding | Resolution |
+|---|---|---|
+| H3 | Re-reading the stores on a control reconnect would restart dockerd, and so every container, whenever AuthRoot or Group Policy changed them. | **Fixed:** built at boot and on an explicit apply only; a reconnect re-sends what is in effect. Test `TestDockerdEnvReconnectKeepsInEffect`; on the VM, a forced reconnect after the CA file changed kept dockerd's PID. |
+| H4 | If the environment arrived after daemon.json, dockerd would start without the CA and be restarted on every boot. | **Fixed:** the engine sends it first in the same connection, so the one gate (`daemon.ready`) covers both, and `start` waits for both. Tests `TestDockerdEnvBootOrder`, `TestDockerdEnvAfterBoot` (a late one is applied with a restart, never reported as in effect without); on the VM, generation 1 had the environment. |
+| H5 | Proxy credentials could reach the kernel command line, the logs, state.json or `status --json`. | **Fixed/verified:** redacted everywhere but settings.json and the guest's 0600 `dockerd.env` (0700 directory); `--show-secrets` for `config list/get`. Tests `TestDockerdEnvNoSecrets`, `TestConfigProxySecret`, `TestProxyKeys`, the FuzzSet and FuzzProxyURL properties; checked on the VM by the bench. |
+| H6 | A proxy for the guest's own addresses; a loopback proxy the host gateway does not forward. | **Fixed:** the default NO_PROXY entries and daemon.json's registries are added; `config set` refuses the gateway/port combination (`TestCheckProxyReach`, `TestProxyKeys`). |
+| M1 | `proxies` in daemon.json would silently override `proxy.*`. | **Fixed:** owned key. |
+| L4 | Certificates dropped over the limits or not yet valid were invisible. | **Fixed:** `caStats` in state.json, `status --json` and the engine log; `notYetValid` counted apart from `expired`. |
+| L5 | Builds and containers do not get the CA or the proxy; NTLM needs a relay. | **Documented** above and in the README. |
+| 1 low | A store with absurdly many or large entries. | Bounded per store, per certificate and in total; duplicates are dropped before parsing. |
+| 2 low | A root that Windows restricts with properties (enhanced key usage set on the store entry, or a disabled flag) is still imported; only the `Disallowed` stores and the certificate's own fields are honored. | **Open**, as in Docker Desktop as far as we know. |
+| 3 low | At boot, a new environment that keeps dockerd from starting is not watched like a daemon.json: with no previous one, the VM would power off. The proxy and certificate values are checked on the host and again in the guest, and neither a proxy variable nor a CA bundle stops dockerd from starting (an unreadable bundle gives an empty pool, not an exit). | **Accepted** for 0.1; a running dockerd is watched and rolled back. |
+| 4 low | `ca.extraFile` on a local drive can still be a link to a network path; it is read at each boot and apply. | **Open**; UNC and device paths are refused. |
+| 5 low | dockerd's environment is readable through `/proc` by a `--privileged --pid=host` container, which is root on the guest anyway. | **Accepted.** |
+
+## Adversarial review (REQ-UX-006, REQ-UX-007)
 
 | # | Finding | Resolution |
 |---|---|---|
@@ -235,6 +403,10 @@ fields are only added; removing or renaming one means a new version.
 | 9 low | The bench compared the host's hash, not the guest's file. | **Fixed:** the bench reads the guest file back; the rollback and `live-restore` cases were added. |
 
 ## Open
+
+- `proxy.mode`: the Windows system proxy and PAC files (0.2).
+- Kerberos and NTLM proxy authentication without a local relay.
+- Windows store properties (EKU restrictions, disabled roots), see review 2.
 
 - `config edit`, `config daemon edit`, `config reset` (0.2 per the settings plan).
 - A LAN registry on a second machine (`-Registry`).

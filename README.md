@@ -199,6 +199,21 @@ HTTP:
 { "insecure-registries": ["192.168.1.20:5000"] }
 ```
 
+Behind a corporate proxy, dockerd trusts the CA certificates of the Windows root stores
+(`ca.import`, on by default; a PEM file can be added with `ca.extraFile`), and takes a
+proxy:
+
+```powershell
+hyperbutler config set proxy.https http://proxy.corp:3128
+hyperbutler config set proxy.http  http://proxy.corp:3128 --apply   # restarts dockerd
+```
+
+A proxy on this machine's `127.0.0.1`, such as px or cntlm for NTLM or Kerberos, works as
+it is. Passwords in proxy URLs are shown as `***`. This is for dockerd's own pulls and
+pushes: as with Docker Desktop, containers and `docker build` do not get the CA or the
+proxy, so add the certificate to the image and set the proxy for builds (the docker CLI's
+`proxies` in `config.json`).
+
 `status`, `version`, `config list/get/path`, `diagnose` and `uninstall` take `--json`; every
 document carries `"schema": 1`. See [docs/research/settings.md](docs/research/settings.md).
 

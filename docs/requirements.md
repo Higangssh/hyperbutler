@@ -242,6 +242,15 @@ Status of REQ-UX-004 and REQ-UX-005 (2026-11-01, for 0.1):
   no guest frame at all at boot. The only remote endpoints were the pull of
   `busybox:1.37` the bench made itself (registry-1.docker.io, auth.docker.io,
   production.cloudfront.docker.com over 443), shown and not counted.
+- REQ-UX-009: met on one machine (2026-11-01). `ca.import` (default on) sends the Windows
+  root stores' CA certificates to the guest, where dockerd trusts them through a combined
+  bundle; `ca.extraFile` adds a PEM file; `proxy.http`, `proxy.https`, `proxy.noProxy`
+  become dockerd's environment, a loopback proxy goes through the host gateway, and
+  credentials are redacted everywhere they are shown. `bench/corp-proxy` (21 of 21) pulled
+  through a local TLS-inspecting proxy: x509 error without its CA, success with it. The
+  CA came from `ca.extraFile`, since the bench does not change a certificate store; the
+  store import itself was checked by reading this machine's stores. The Windows system
+  proxy (`proxy.mode`) is 0.2; containers and builds are not changed, as in Docker Desktop.
 
 ## Non-goals
 

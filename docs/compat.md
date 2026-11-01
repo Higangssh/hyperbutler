@@ -1,7 +1,7 @@
 # Docker compatibility notes
 
 Known differences from Docker Desktop and Docker Engine on Linux (REQ-API-001). Only the
-networking and docker CLI notes exist so far.
+networking, docker CLI and proxy notes exist so far.
 
 ## host.docker.internal
 
@@ -71,8 +71,8 @@ default), `start` lists `clients\cli-plugins` in `cliPluginsExtraDirs` while no 
 `docker-compose.exe` is in that search, and takes it out again when one appears (Docker
 Desktop installs into `%ProgramFiles%\Docker\cli-plugins`). An extra directory comes
 first, so listing it next to another copy would shadow that copy; this rule never does.
-Nothing is copied into `~/.docker/cli-plugins`. `hyperbutler delete` takes the entry out;
-an uninstaller uses `dockerctx.SetExtraPluginDir(config, dir, false)`.
+Nothing is copied into `~/.docker/cli-plugins`. `hyperbutler delete` and `hyperbutler
+uninstall` take the entry out.
 
 **Docker Desktop at the same time.**
 
@@ -86,9 +86,9 @@ an uninstaller uses `dockerctx.SetExtraPluginDir(config, dir, false)`.
 **Not covered** (no Docker Desktop on the test machine; from reading the code):
 
 - `hyperbutler stop` leaves `hyperbutler` selected, and `delete` resets the selection to
-  docker's `default`, not to the context `start` replaced. A Desktop user switches back
-  with `docker context use desktop-linux`. Remembering and restoring the previous context
-  is not implemented.
+  docker's `default`. `start` records the context it replaced, and `hyperbutler uninstall`
+  selects that one again if it still exists (`desktop-linux`, say). Between a `stop` and
+  an uninstall, a Desktop user switches back with `docker context use desktop-linux`.
 - Whether Docker Desktop re-selects `desktop-linux` when it starts, or rewrites
   `cliPluginsExtraDirs`, was not checked.
 - `DOCKER_HOST` or `DOCKER_CONTEXT` in the environment overrides the selected context;
@@ -100,3 +100,18 @@ image is x86_64 and cannot boot in an ARM64 Hyper-V VM, so ARM64 is not supporte
 Docker publishes no Windows arm64 static CLI; an arm64 release would build `docker.exe`
 from the same pinned source with `GOARCH=arm64` (compose also publishes a
 `windows-aarch64` build).
+## Corporate CA and proxy
+
+REQ-UX-009, [settings.md](research/settings.md#corporate-ca-and-proxy-req-ux-009).
+
+| | Docker Desktop | hyperbutler |
+|---|---|---|
+| dockerd trusts the Windows store's CAs | yes | yes, trusted roots only (`ca.import`, default on); intermediates are not anchors |
+| An extra PEM file of CAs | no | `ca.extraFile` |
+| Containers and `docker build` trust them | no: add them to the image | no: the same |
+| Proxy for pulls | the "Containers proxy" setting | `proxy.http`, `proxy.https`, `proxy.noProxy` (dockerd's environment) |
+| `proxies` in daemon.json | allowed (it overrode the app's setting in 4.35) | refused: use `config set proxy.*` |
+| The Windows system proxy, PAC | yes | not yet (`proxy.mode`, 0.2) |
+| SOCKS5 | Business plan | yes (`socks5://`) |
+| NTLM, Kerberos | Business plan | through a local relay (px, cntlm) on `127.0.0.1`, reached via the host gateway |
+| Proxy passwords shown | redacted | redacted (`--show-secrets` shows them) |
