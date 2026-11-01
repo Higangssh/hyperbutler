@@ -42,6 +42,14 @@ func TestNoNetworkOrHTML(t *testing.T) {
 			}
 		}
 	}
+	// Text the user reads is whole catalog sentences with placeholders, and lists are
+	// joined by Intl.ListFormat (REQ-UX-013): no sentence pieces glued in the script.
+	js, _ := files.ReadFile("app.js")
+	for _, bad := range []string{`+ " · " +`, `"● " +`, `.join(", ")`, `.join("; ")`, `+ " " + t(`, `t("error.HB-IMP-004") +`} {
+		if bytes.Contains(js, []byte(bad)) {
+			t.Errorf("app.js glues text together with %q; use a catalog sentence", bad)
+		}
+	}
 	html, _ := files.ReadFile("index.html")
 	if regexp.MustCompile(`<script>|<style|\son[a-z]+=|style="`).Match(html) {
 		t.Error("index.html has an inline script, style or event handler, which the CSP refuses")

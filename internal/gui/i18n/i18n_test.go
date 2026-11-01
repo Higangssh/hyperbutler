@@ -152,9 +152,12 @@ func TestPageKeys(t *testing.T) {
 	for _, th := range []string{"back", "maybe", "stays"} {
 		keys = append(keys, "stop.then."+th)
 	}
+	// Every status and detail the import adapter can give (cmd/hyperbutler's
+	// TestImportStatus checks it gives only these), in every language (the catalog test).
 	for _, s := range bridge.ImportStatuses {
 		keys = append(keys, "import.status."+s)
 	}
+	keys = append(keys, bridge.ImportDetails...)
 	for _, s := range []string{"ok", "info", "warn", "fail"} {
 		keys = append(keys, "check."+s)
 	}

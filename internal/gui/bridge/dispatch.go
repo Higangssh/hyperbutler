@@ -130,8 +130,11 @@ type Dispatcher struct {
 	mu       sync.Mutex
 	errs     map[int64]string
 	errOrder []int64
-	nextRef  int64
-	lastZip  string
+	// noteOrder are the refs of kept notes (keep), bounded on their own so a large
+	// plan does not push out the errors.
+	noteOrder []int64
+	nextRef   int64
+	lastZip   string
 
 	base context.Context
 	imp  importState
@@ -268,6 +271,25 @@ func (d *Dispatcher) remember(code, text string) int64 {
 		d.errOrder = d.errOrder[1:]
 	}
 	d.mu.Unlock()
+	return ref
+}
+
+// maxNotes bounds the English notes kept for error.copy (an import plan's items).
+const maxNotes = maxImportItems + 64
+
+// keep keeps an English text someone else wrote (an import's reason) for error.copy and
+// returns its ref; the page gets the ref, not the text.
+func (d *Dispatcher) keep(text string) int64 {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.nextRef++
+	ref := d.nextRef
+	d.errs[ref] = text
+	d.noteOrder = append(d.noteOrder, ref)
+	if len(d.noteOrder) > maxNotes {
+		delete(d.errs, d.noteOrder[0])
+		d.noteOrder = d.noteOrder[1:]
+	}
 	return ref
 }
 

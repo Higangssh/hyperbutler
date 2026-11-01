@@ -5,8 +5,13 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"slices"
+	"strings"
 	"sync"
 	"time"
+
+	"github.com/Higangssh/hyperbutler/internal/dockerapi"
+	"github.com/Higangssh/hyperbutler/internal/redact"
 )
 
 // The window's "Import from Docker Desktop" (REQ-UX-023). The import itself lives in
@@ -16,7 +21,7 @@ import (
 // Importer is what the window needs from the Docker Desktop import.
 type Importer interface {
 	// Plan lists what could be imported and the state of each item.
-	Plan(ctx context.Context) ([]ImportItem, error)
+	Plan(ctx context.Context) (ImportPlan, error)
 	// Check says whether the items with these ids fit (the free-space check); an error
 	// with CodeImportSpace says they may not. Run does not check again.
 	Check(ctx context.Context, ids []string) error
@@ -33,15 +38,42 @@ const (
 	ImportExists      = "exists"   // a volume of that name is there, content not compared
 	ImportUnsupported = "unsupported"
 	ImportInUse       = "inuse" // a volume a running Docker Desktop container mounts
+	// ImportLabels: a volume of that name has the same content but other labels or
+	// options; the window does not overwrite it (import --overwrite-volumes does).
+	ImportLabels = "labels"
 	// ImportAttention is any state this window does not know yet: shown, not chosen.
 	ImportAttention = "attention"
 )
 
 // ImportStatuses are every state, for the catalog test.
-var ImportStatuses = []string{ImportNew, ImportDone, ImportPartial, ImportConflict, ImportExists, ImportUnsupported, ImportInUse, ImportAttention}
+var ImportStatuses = []string{ImportNew, ImportDone, ImportPartial, ImportConflict, ImportExists, ImportUnsupported, ImportInUse, ImportLabels, ImportAttention}
 
 // importSelectable are the states an item can be imported from.
 var importSelectable = map[string]bool{ImportNew: true, ImportPartial: true, ImportExists: true}
+
+// Details of an item: catalog keys of a sentence the page shows in the window's
+// language, with ImportItem.Args filling its placeholders. The import's own reason is
+// English and stays behind "copy the English original" (ImportItem.Note).
+const (
+	DetailImageAlready   = "import.detail.image.already"   // same id and every tag
+	DetailImagePartial   = "import.detail.image.partial"   // {tags}: the missing ones
+	DetailImageConflict  = "import.detail.image.conflict"  // {tags}: another image has them
+	DetailImageUntagged  = "import.detail.image.untagged"  // cannot be imported
+	DetailVolumeAlready  = "import.detail.volume.already"  // same content and labels
+	DetailVolumeConflict = "import.detail.volume.conflict" // other content
+	DetailVolumeLabels   = "import.detail.volume.labels"   // same content, other labels
+	DetailVolumeExists   = "import.detail.volume.exists"   // content not compared yet
+	DetailVolumeDriver   = "import.detail.volume.driver"   // {driver}: not a local volume
+	DetailVolumeOptions  = "import.detail.volume.options"  // a bind mount or a share
+	DetailVolumeInUse    = "import.detail.volume.inuse"    // {containers}: mount it
+	// DetailOther is a reason the window has no sentence for: only the English original.
+	DetailOther = "import.detail.other"
+)
+
+// ImportDetails are every detail, for the catalog test.
+var ImportDetails = []string{DetailImageAlready, DetailImagePartial, DetailImageConflict, DetailImageUntagged,
+	DetailVolumeAlready, DetailVolumeConflict, DetailVolumeLabels, DetailVolumeExists, DetailVolumeDriver,
+	DetailVolumeOptions, DetailVolumeInUse, DetailOther}
 
 // ImportItem is one thing the import can bring over.
 type ImportItem struct {
@@ -50,9 +82,21 @@ type ImportItem struct {
 	Name   string `json:"name"`
 	Size   int64  `json:"size"` // bytes; -1 unknown
 	Status string `json:"status"`
-	// Note is the source's reason or detail (English): the containers using a volume,
-	// why an item is refused.
-	Note string `json:"note,omitempty"`
+	// Detail is one of ImportDetails (or empty), with its placeholders' values in Args:
+	// each a list the page joins in its language (tags, container names).
+	Detail string              `json:"detail,omitempty"`
+	Args   map[string][]string `json:"args,omitempty"`
+	// Note is the import's own reason (English). The page does not get it: NoteRef
+	// lets error.copy put it on the clipboard.
+	Note    string `json:"-"`
+	NoteRef int64  `json:"noteRef,omitempty"`
+}
+
+// ImportPlan is a plan as the window shows it. Notes are the import's English notes on
+// the whole plan (what an interrupted import left behind and the next run removes).
+type ImportPlan struct {
+	Items []ImportItem
+	Notes []string
 }
 
 // ImportResult is what an import did, for its last progress event.
@@ -63,9 +107,12 @@ type ImportResult struct {
 	Failed   int   `json:"failed"`
 	Bytes    int64 `json:"bytes"`
 	// SourceUnchanged is the check that Docker Desktop is as it was before; Differences
-	// say what changed when it is not.
+	// say what changed when it is not (English: the page gets their number, and DiffRef
+	// for error.copy).
 	SourceUnchanged bool     `json:"sourceUnchanged"`
-	Differences     []string `json:"differences,omitempty"`
+	Differences     []string `json:"-"`
+	DiffCount       int      `json:"diffCount,omitempty"`
+	DiffRef         int64    `json:"diffRef,omitempty"`
 }
 
 // ImportProgress is the import's progress, sent to the page as {"event":"import"}.
@@ -146,7 +193,7 @@ func (d *Dispatcher) importPlan(ctx context.Context) (any, error) {
 		// A new plan replaces the importer the running import uses.
 		return nil, Codedf(CodeBusy, "an import is running; plan again when it is done")
 	}
-	items, err := d.o.Importer.Plan(ctx)
+	plan, err := d.o.Importer.Plan(ctx)
 	if err != nil {
 		var e *Error
 		if errors.As(err, &e) {
@@ -154,29 +201,73 @@ func (d *Dispatcher) importPlan(ctx context.Context) (any, error) {
 		}
 		return nil, Coded(CodeImportFailed, err)
 	}
-	out := make([]ImportItem, 0, min(len(items), maxImportItems))
+	out := make([]ImportItem, 0, min(len(plan.Items), maxImportItems))
 	planned := map[string]string{}
-	for i, it := range items {
+	for i, it := range plan.Items {
 		if i == maxImportItems {
 			break
 		}
-		known := false
-		for _, s := range ImportStatuses {
-			known = known || it.Status == s
-		}
-		if !known {
+		if !slices.Contains(ImportStatuses, it.Status) {
 			it.Status = ImportAttention
 		}
-		it.ID, it.Kind, it.Name, it.Note = field(it.ID), field(it.Kind), field(it.Name), field(it.Note)
+		if it.Detail != "" && !slices.Contains(ImportDetails, it.Detail) {
+			it.Detail, it.Args = DetailOther, nil
+		}
+		if it.Detail == "" && it.Note != "" {
+			it.Detail = DetailOther
+		}
+		args := map[string][]string{}
+		for k, l := range it.Args {
+			if len(args) == 4 {
+				break
+			}
+			if reArg.MatchString(k) {
+				args[k] = cleanList(l)
+			}
+		}
+		it.Args = args
+		it.ID, it.Kind, it.Name = field(it.ID), field(it.Kind), field(it.Name)
+		if it.Note != "" {
+			it.NoteRef = d.keep(englishLine(it.Note))
+		}
 		planned[it.ID] = it.Status
 		out = append(out, it)
+	}
+	v := ImportPlanView{Items: out}
+	if n := len(plan.Notes); n > 0 {
+		v.Notes, v.NotesRef = n, d.keep(englishLines(plan.Notes))
 	}
 	d.imp.mu.Lock()
 	d.imp.planned = planned
 	d.imp.mu.Unlock()
-	return struct {
-		Items []ImportItem `json:"items"`
-	}{out}, nil
+	return v, nil
+}
+
+// ImportPlanView is import.plan's answer. Notes is how many notes the import has on the
+// whole plan (English, behind NotesRef).
+type ImportPlanView struct {
+	Items    []ImportItem `json:"items"`
+	Notes    int          `json:"notes,omitempty"`
+	NotesRef int64        `json:"notesRef,omitempty"`
+}
+
+// reArg is a placeholder name.
+var reArg = regexp.MustCompile(`^[a-z][a-zA-Z]{0,31}$`)
+
+// englishLine and englishLines are the import's English text as error.copy keeps it.
+func englishLine(s string) string {
+	return dockerapi.Clip(dockerapi.CleanText(redact.String(s), false), 2048)
+}
+
+func englishLines(l []string) string {
+	if len(l) > 50 {
+		l = l[:50]
+	}
+	out := make([]string, 0, len(l))
+	for _, s := range l {
+		out = append(out, englishLine(s))
+	}
+	return strings.Join(out, "\n")
 }
 
 // importRun starts the import of ids in the background; progress goes to the page as
@@ -234,7 +325,10 @@ func (d *Dispatcher) importRun(ids []string, force bool, token string) (any, err
 			p.Current = field(p.Current) // a name someone else wrote
 			notify(p)
 		})
-		res.Differences = cleanList(res.Differences)
+		if res.DiffCount = len(res.Differences); res.DiffCount > 0 {
+			res.DiffRef = d.keep(englishLines(res.Differences))
+		}
+		res.Differences = nil
 		final := ImportProgress{Total: len(take), Done: res.Imported + res.Already + res.Refused + res.Failed, Bytes: res.Bytes, Result: &res}
 		switch {
 		case errors.Is(err, context.Canceled):
@@ -274,7 +368,7 @@ func (d *Dispatcher) CancelImport() {
 	}
 }
 
-// cleanList bounds a list of English lines from the import for the page.
+// cleanList bounds a list of values (tags, names) from the import for the page.
 func cleanList(l []string) []string {
 	if len(l) > 20 {
 		l = l[:20]

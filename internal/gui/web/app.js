@@ -49,6 +49,11 @@
     return t(k, Object.assign({ n: fmtInt(n) }, params || {}));
   }
   function fmtInt(n) { return new Intl.NumberFormat(LANG).format(n); }
+  // listText joins a list as the language does ("a, b and c"; "unit": "a, b").
+  function listText(items, type) {
+    const lang = LANG === "pseudo" ? "en" : LANG;
+    return new Intl.ListFormat(lang, { style: "long", type: type || "conjunction" }).format(items.map(String));
+  }
   function fmt1(n) { return new Intl.NumberFormat(LANG, { maximumFractionDigits: 1, minimumFractionDigits: n < 10 ? 1 : 0 }).format(n); }
   // bytes returns [number, unit] for a big-number card.
   function bytes(b) {
@@ -260,7 +265,7 @@
     const ph = phaseKey();
     const st = $("hero-state");
     st.className = "state " + ({ running: "running", failed: "failed", starting: "busy", stopping: "busy", restarting: "busy" }[ph] || "");
-    st.textContent = "● " + t("phase." + ph);
+    st.textContent = t("home.state", { phase: t("phase." + ph) });
     const running = containers ? containers.running : 0;
     let title, sub;
     if (ph === "running") {
@@ -311,7 +316,7 @@
     $("st-mem-unit").textContent = mu;
     $("st-mem-sub").textContent = t(status.running ? "home.memory.sub.running" : "home.memory.sub.stopped");
     $("st-cpu").textContent = status.cpus ? fmtInt(status.cpus) : "-";
-    $("st-cpu-sub").textContent = INIT.hostCpus ? t("home.cpus.sub", { host: fmtInt(INIT.hostCpus) }) : "";
+    $("st-cpu-sub").textContent = INIT.hostCpus ? tp("home.cpus.sub", INIT.hostCpus) : "";
     if (status.diskMax) {
       const [dn, du] = bytes(status.diskUsed || 0);
       $("st-disk").textContent = dn;
@@ -324,7 +329,7 @@
     }
     if (containers) {
       $("st-ctr").textContent = fmtInt(containers.running);
-      $("st-ctr-unit").textContent = "/ " + fmtInt(containers.total);
+      $("st-ctr-unit").textContent = t("home.containers.total", { n: fmtInt(containers.total) });
       $("st-ctr-sub").textContent = t("home.containers.sub");
     } else {
       $("st-ctr").textContent = "-";
@@ -344,7 +349,7 @@
         const sec = h("div", { class: "proj" }, h("h3", { class: "strong", text: g.project ? t("home.project", { name: g.project }) : t("containers.noProject") }));
         for (const c of run.slice(0, 6)) {
           sec.append(h("div", { class: "proj-row" }, h("span", { class: "name", text: c.name }), h("span", { class: "sub", text: c.image }),
-            h("span", { class: "sub", text: c.ports.slice(0, 2).join(", ") })));
+            h("span", { class: "sub", text: listText(c.ports.slice(0, 2), "unit") })));
         }
         box.append(sec);
       }
@@ -385,7 +390,7 @@
         const on = c.state === "running";
         box.append(h("button", { class: "item" + (on ? "" : " off"), "aria-current": c.id === selected ? "true" : "false", onclick: () => selectContainer(c.id) },
           h("span", { class: "av" + (on ? "" : " off"), "aria-hidden": "true", text: initial(c.name) }),
-          h("div", { class: "grow" }, h("div", { text: c.name }), h("div", { class: "sub small", text: c.image + " · " + c.status })),
+          h("div", { class: "grow" }, h("div", { text: c.name }), h("div", { class: "sub small", text: t("containers.imageStatus", { image: c.image, status: c.status }) })),
           c.ports.length ? h("span", { class: "sub small", text: c.ports[0] }) : null));
       }
     }
@@ -397,7 +402,7 @@
     $("ctr-av").textContent = initial(c.name);
     $("ctr-av").className = "av" + (c.state === "running" ? "" : " off");
     $("ctr-name").textContent = c.name;
-    $("ctr-status").textContent = c.image + " · " + c.status;
+    $("ctr-status").textContent = t("containers.imageStatus", { image: c.image, status: c.status });
     const acts = $("ctr-actions");
     clear(acts);
     if (c.state === "running") {
@@ -462,8 +467,8 @@
     const leg = $("sto-legend");
     clear(leg);
     const parts = [["", "storage.images", s.imagesSize], ["vol", "storage.volumes", s.volumesSize], ["cache", "storage.cache", s.buildCache]];
-    $("sto-bar").setAttribute("aria-label", parts.map((p) => t(p[1], { size: bytesText(p[2]) })).join(", "));
-    for (const [cls, key, size] of parts) leg.append(h("span", { class: cls, text: "● " + t(key, { size: bytesText(size) }) }));
+    $("sto-bar").setAttribute("aria-label", listText(parts.map((p) => t(p[1], { size: bytesText(p[2]) })), "unit"));
+    for (const [cls, key, size] of parts) leg.append(h("span", { class: cls, text: t("storage.legendItem", { text: t(key, { size: bytesText(size) }) }) }));
     $("sto-list-title").textContent = s.engine ? t("storage.counts", { images: tp("storage.imageCount", s.imageCount), volumes: tp("storage.volumeCount", s.volumeCount) }) : t("containers.engineOff");
     const list = $("sto-list");
     clear(list);
@@ -584,7 +589,7 @@
     $("set-banner").hidden = !keys.length;
     if (!keys.length) return;
     const vm = keys.some((k) => (settings.find((s) => s.key === k) || {}).apply === "restart-vm");
-    const names = keys.map((k) => settingName(settings.find((s) => s.key === k) || { key: k })).join(", ");
+    const names = listText(keys.map((k) => settingName(settings.find((s) => s.key === k) || { key: k })));
     $("set-banner-text").textContent = t(vm ? "settings.pending.vm" : "settings.pending.dockerd", { names });
     $("set-banner-apply").dataset.op = vm ? "engine.restart" : "engine.restartDockerd";
   }
@@ -695,6 +700,27 @@
   // chosen. Progress arrives as {"event":"import"} from the host: nothing polls.
   let importing = false;
   function importStatusText(st) { return t("import.status." + st); }
+  // The import's reasons are English: the page shows its own sentence for each (a
+  // detail key with lists for its placeholders) and only a button that copies the
+  // English original the host kept (by ref), as for errors.
+  function copyButton(ref) {
+    if (!ref) return null;
+    return h("button", { type: "button", class: "link inline-copy", onclick: (e) => { e.preventDefault(); copyEnglish(ref, e.currentTarget); } }, t("error.copy"));
+  }
+  function detailText(it) {
+    const params = {};
+    for (const [k, l] of Object.entries(it.args || {})) params[k] = listText(l);
+    return t(it.detail, params);
+  }
+  // importNote shows a sentence in the dialog, with the copy button when ref is set.
+  function importNote(text, ref) {
+    const n = $("import-note");
+    clear(n);
+    n.append(text);
+    const b = copyButton(ref);
+    if (b) n.append(b);
+  }
+  function errorText(e) { return ("error." + e.code) in M ? t("error." + e.code) : t("error.unknown"); }
   async function openImport() {
     const d = $("import");
     const ul = $("import-list");
@@ -704,27 +730,32 @@
     $("import-force").hidden = true;
     $("import-start").hidden = false;
     $("import-start").disabled = true;
-    $("import-note").textContent = t("import.loading");
+    importNote(t("import.loading"));
     d.showModal();
     let plan;
     try {
       plan = await call("import.plan");
     } catch (e) {
-      $("import-note").textContent = e.code === "HB-IMP-001" ? t("error.HB-IMP-001") : (("error." + e.code) in M ? t("error." + e.code) : t("error.unknown"));
+      importNote(errorText(e), e.ref);
       $("import-start").hidden = true;
       return;
     }
-    if (!plan.items.length) { $("import-note").textContent = t("import.nothing"); $("import-start").hidden = true; return; }
-    $("import-note").textContent = t("import.pick");
+    if (!plan.items.length) { importNote(t("import.nothing")); $("import-start").hidden = true; return; }
+    importNote(t("import.pick"));
+    if (plan.notes) {
+      const n = $("import-note");
+      n.append(h("span", { class: "line" }, tp("import.notes", plan.notes), copyButton(plan.notesRef)));
+    }
     for (const it of plan.items) {
       const can = it.status === "new" || it.status === "partial" || it.status === "exists";
       const box = h("input", { type: "checkbox", value: it.id, checked: it.status === "new", disabled: !can });
       box.addEventListener("change", updateImportStart);
+      const note = it.detail ? h("span", { class: "sub small note-line" }, h("span", { text: detailText(it) }), copyButton(it.noteRef)) : null;
       ul.append(h("li", { class: can ? "" : "done" }, h("label", {}, box,
         h("span", { class: "name", text: it.name }), h("span", { class: "sub small", text: ("import.kind." + it.kind) in M ? t("import.kind." + it.kind) : it.kind }),
         h("span", { class: "tag " + it.status, text: importStatusText(it.status) }),
         h("span", { class: "sub small", text: it.size >= 0 ? bytesText(it.size) : t("storage.unknownSize") }),
-        it.note ? h("span", { class: "sub small note-line", text: it.note }) : null)));
+        note)));
     }
     updateImportStart();
   }
@@ -756,7 +787,7 @@
       for (const x of $("import-list").querySelectorAll("input")) x.disabled = x.closest("li").classList.contains("done");
       updateImportStart();
       if (e.code === "HB-IMP-004") {
-        $("import-note").textContent = t("error.HB-IMP-004") + " " + (e.detail || "");
+        importNote(t("error.HB-IMP-004"), e.ref); // the sizes, in English, behind the copy
         $("import-force").hidden = false;
       } else {
         showError(e);
@@ -774,12 +805,18 @@
     $("import-cancel").hidden = true;
     $("import-start").hidden = true;
     loadStorage();
+    // One sentence per line: what stopped it, the counts, and Docker Desktop's check.
     const r = p.result || {};
-    const counts = t("import.result", { imported: fmtInt(r.imported || 0), already: fmtInt(r.already || 0), refused: fmtInt(r.refused || 0), failed: fmtInt(r.failed || 0) });
-    const src = r.sourceUnchanged ? t("import.sourceUnchanged") : t("import.sourceChanged", { what: (r.differences || []).join("; ") || "-" });
-    if (p.canceled) $("import-progress-text").textContent = t("import.cancelled") + " " + counts + " " + src;
-    else if (p.error) { $("import-progress-text").textContent = t("error.HB-IMP-002") + " " + src; showError(p.error, t("import.failed")); }
-    else $("import-progress-text").textContent = counts + " " + src;
+    const lines = [];
+    if (p.canceled) lines.push(t("import.cancelled"));
+    if (p.error) lines.push(t("error.HB-IMP-002"));
+    else lines.push(t("import.result", { imported: fmtInt(r.imported || 0), already: fmtInt(r.already || 0), refused: fmtInt(r.refused || 0), failed: fmtInt(r.failed || 0) }));
+    const out = $("import-progress-text");
+    clear(out);
+    for (const l of lines) out.append(h("span", { class: "line", text: l }));
+    if (r.sourceUnchanged) out.append(h("span", { class: "line", text: t("import.sourceUnchanged") }));
+    else out.append(h("span", { class: "line" }, tp("import.sourceChanged", r.diffCount || 0), copyButton(r.diffRef)));
+    if (p.error) showError(p.error, t("import.failed"));
   }
 
   // --- tabs (keyboard: arrows, Home, End) -------------------------------------------------

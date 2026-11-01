@@ -7,6 +7,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -164,11 +165,40 @@ func TestImportStatus(t *testing.T) {
 		desktopimport.StatusNew: bridge.ImportNew, desktopimport.StatusAlready: bridge.ImportDone,
 		desktopimport.StatusPartial: bridge.ImportPartial, desktopimport.StatusConflict: bridge.ImportConflict,
 		desktopimport.StatusExists: bridge.ImportExists, desktopimport.StatusUnsupported: bridge.ImportUnsupported,
-		"something new": bridge.ImportAttention,
+		desktopimport.StatusDifferentLabels: bridge.ImportLabels,
+		"something new":                     bridge.ImportAttention,
 	} {
 		if got := importStatus(s); got != want {
 			t.Errorf("%s: %s, want %s", s, got, want)
 		}
+	}
+	// Every status the import can give, on an image and a volume (in use too), comes
+	// out as a status and a detail the window's catalog has (TestPageKeys checks the
+	// catalog has each of bridge.ImportStatuses and bridge.ImportDetails).
+	statuses := []desktopimport.Status{desktopimport.StatusNew, desktopimport.StatusAlready, desktopimport.StatusPartial,
+		desktopimport.StatusConflict, desktopimport.StatusDifferentLabels, desktopimport.StatusExists, desktopimport.StatusUnsupported, "something new"}
+	var items []bridge.ImportItem
+	for _, s := range statuses {
+		items = append(items,
+			imageItem(desktopimport.ImagePlan{ID: "sha256:1", Tags: []string{"a:1"}, Status: s, MissingTags: []string{"a:2"}, Conflicts: []string{"a:3"}, Reason: "English"}),
+			volumeItem(desktopimport.VolumePlan{Name: "v", Driver: "local", Status: s, Reason: "English"}),
+			volumeItem(desktopimport.VolumePlan{Name: "v", Driver: "nfs", Status: s}),
+			volumeItem(desktopimport.VolumePlan{Name: "v", Driver: "local", Status: s, UsedBy: []string{"web", "db"}}))
+	}
+	for _, it := range items {
+		if !slices.Contains(bridge.ImportStatuses, it.Status) {
+			t.Errorf("%s: status %q is not one the window knows", it.ID, it.Status)
+		}
+		if it.Detail != "" && !slices.Contains(bridge.ImportDetails, it.Detail) {
+			t.Errorf("%s (%s): detail %q is not in bridge.ImportDetails", it.ID, it.Status, it.Detail)
+		}
+		if it.Status != bridge.ImportNew && it.Status != bridge.ImportAttention && it.Detail == "" {
+			t.Errorf("%s (%s): no detail", it.ID, it.Status)
+		}
+	}
+	if it := volumeItem(desktopimport.VolumePlan{Name: "v", Status: desktopimport.StatusNew, UsedBy: []string{"web"}}); it.Status != bridge.ImportInUse ||
+		it.Detail != bridge.DetailVolumeInUse || strings.Join(it.Args["containers"], ",") != "web" {
+		t.Errorf("volume in use: %+v", it)
 	}
 	// Without a plan, nothing runs.
 	g := &guiImporter{}

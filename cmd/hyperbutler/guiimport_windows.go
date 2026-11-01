@@ -70,11 +70,22 @@ func importStatus(s desktopimport.Status) string {
 		return bridge.ImportConflict
 	case desktopimport.StatusExists:
 		return bridge.ImportExists
+	case desktopimport.StatusDifferentLabels:
+		return bridge.ImportLabels
 	case desktopimport.StatusUnsupported:
 		return bridge.ImportUnsupported
 	}
 	// A state added to the import later: shown as needing attention, not chosen.
 	return bridge.ImportAttention
+}
+
+// withDetail gives an item the window has no sentence for (a status or combination the
+// import added later) the generic detail; its English original is behind the copy.
+func withDetail(it bridge.ImportItem) bridge.ImportItem {
+	if it.Detail == "" && (it.Status != bridge.ImportNew || it.Note != "") {
+		it.Detail = bridge.DetailOther
+	}
+	return it
 }
 
 // selection turns the window's ids into the import's selection.
@@ -91,43 +102,81 @@ func selection(ids []string) desktopimport.Selection {
 	return sel
 }
 
-func (g *guiImporter) Plan(ctx context.Context) ([]bridge.ImportItem, error) {
+func (g *guiImporter) Plan(ctx context.Context) (bridge.ImportPlan, error) {
 	// A plan removes nothing, so it needs no lock; Run takes the import lock itself.
 	im, err := g.open(ctx)
 	if err != nil {
-		return nil, err
+		return bridge.ImportPlan{}, err
 	}
 	plan, err := im.Plan(ctx, desktopimport.PlanOptions{CompareVolumes: true})
 	if err != nil {
 		im.Close()
-		return nil, err
+		return bridge.ImportPlan{}, err
 	}
 	g.mu.Lock()
 	if g.running > 0 || g.closed {
 		g.mu.Unlock()
 		im.Close()
-		return nil, bridge.Codedf(bridge.CodeBusy, "an import is running; plan again when it is done")
+		return bridge.ImportPlan{}, bridge.Codedf(bridge.CodeBusy, "an import is running; plan again when it is done")
 	}
 	if g.im != nil {
 		g.im.Close()
 	}
 	g.im, g.plan = im, plan
 	g.mu.Unlock()
-	var out []bridge.ImportItem
+	out := bridge.ImportPlan{Notes: plan.Recovery}
 	for _, ip := range plan.Images {
-		out = append(out, bridge.ImportItem{ID: importImagePrefix + ip.ID, Kind: desktopimport.KindImage, Name: ip.Name(),
-			Size: ip.Size, Status: importStatus(ip.Status), Note: ip.Reason})
+		out.Items = append(out.Items, imageItem(ip))
 	}
 	for _, vp := range plan.Volumes {
-		it := bridge.ImportItem{ID: importVolumePrefix + vp.Name, Kind: desktopimport.KindVolume, Name: vp.Name,
-			Size: vp.Size, Status: importStatus(vp.Status), Note: vp.Reason}
-		if len(vp.UsedBy) > 0 && (vp.Status == desktopimport.StatusNew || vp.Status == desktopimport.StatusExists) {
-			// Run refuses a volume a running container mounts; the user stops it first.
-			it.Status, it.Note = bridge.ImportInUse, strings.Join(vp.UsedBy, ", ")
-		}
-		out = append(out, it)
+		out.Items = append(out.Items, volumeItem(vp))
 	}
 	return out, nil
+}
+
+// imageItem and volumeItem are a plan's entry as the window shows it: a status, and a
+// sentence of the window's catalog for the detail, built from the plan's fields, not
+// its English reason, which stays behind "copy the English original" (Note).
+func imageItem(ip desktopimport.ImagePlan) bridge.ImportItem {
+	it := bridge.ImportItem{ID: importImagePrefix + ip.ID, Kind: desktopimport.KindImage, Name: ip.Name(),
+		Size: ip.Size, Status: importStatus(ip.Status), Note: ip.Reason}
+	switch ip.Status {
+	case desktopimport.StatusAlready:
+		it.Detail = bridge.DetailImageAlready
+	case desktopimport.StatusPartial:
+		it.Detail, it.Args = bridge.DetailImagePartial, map[string][]string{"tags": ip.MissingTags}
+	case desktopimport.StatusConflict:
+		it.Detail, it.Args = bridge.DetailImageConflict, map[string][]string{"tags": ip.Conflicts}
+	case desktopimport.StatusUnsupported:
+		it.Detail = bridge.DetailImageUntagged
+	}
+	return withDetail(it)
+}
+
+func volumeItem(vp desktopimport.VolumePlan) bridge.ImportItem {
+	it := bridge.ImportItem{ID: importVolumePrefix + vp.Name, Kind: desktopimport.KindVolume, Name: vp.Name,
+		Size: vp.Size, Status: importStatus(vp.Status), Note: vp.Reason}
+	switch vp.Status {
+	case desktopimport.StatusAlready:
+		it.Detail = bridge.DetailVolumeAlready
+	case desktopimport.StatusConflict:
+		it.Detail = bridge.DetailVolumeConflict
+	case desktopimport.StatusDifferentLabels:
+		it.Detail = bridge.DetailVolumeLabels
+	case desktopimport.StatusExists:
+		it.Detail = bridge.DetailVolumeExists
+	case desktopimport.StatusUnsupported:
+		it.Detail = bridge.DetailVolumeOptions
+		if vp.Driver != "local" {
+			it.Detail, it.Args = bridge.DetailVolumeDriver, map[string][]string{"driver": {vp.Driver}}
+		}
+	}
+	if len(vp.UsedBy) > 0 && (vp.Status == desktopimport.StatusNew || vp.Status == desktopimport.StatusExists) {
+		// Run refuses a volume a running container mounts; the user stops it first.
+		it.Status, it.Detail, it.Args = bridge.ImportInUse, bridge.DetailVolumeInUse, map[string][]string{"containers": vp.UsedBy}
+		it.Note = strings.TrimPrefix(it.Note+"; used by "+strings.Join(vp.UsedBy, ", "), "; ")
+	}
+	return withDetail(it)
 }
 
 func (g *guiImporter) planned() (*desktopimport.Importer, *desktopimport.Plan, error) {

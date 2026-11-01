@@ -505,8 +505,12 @@ func (f *fakeImporter) Check(context.Context, []string) error {
 	return nil
 }
 
-func (f *fakeImporter) Plan(context.Context) ([]ImportItem, error) {
-	return []ImportItem{{ID: "image:a", Kind: "image", Name: "a", Status: ImportNew}, {ID: "image:b", Kind: "image", Name: "b", Status: ImportDone}}, nil
+func (f *fakeImporter) Plan(context.Context) (ImportPlan, error) {
+	return ImportPlan{Items: []ImportItem{{ID: "image:a", Kind: "image", Name: "a", Status: ImportNew},
+		{ID: "image:b", Kind: "image", Name: "b", Status: ImportDone, Detail: DetailImageAlready, Note: "in hyperbutler with the same id and tags"},
+		{ID: "image:c", Kind: "image", Name: "c", Status: ImportConflict, Detail: DetailImageConflict, Args: map[string][]string{"tags": {"c:1‮", "c:2"}, "Bad Arg": {"x"}}, Note: "hyperbutler has c:1, c:2 as another image"},
+		{ID: "volume:v", Kind: "volume", Name: "v", Status: "some-new-state", Detail: "import.detail.made.up", Note: "a reason"}},
+		Notes: []string{"an interrupted import left a helper"}}, nil
 }
 
 func (f *fakeImporter) Run(_ context.Context, ids []string, progress func(ImportProgress)) (ImportResult, error) {
@@ -522,8 +526,35 @@ func TestImport(t *testing.T) {
 	if r := call(t, d, `{"id":1,"op":"import.run","args":{"ids":["image:a"],"token":"`+tokenFor(t, d, "import.run", "")+`"}}`); r.OK {
 		t.Fatal("ran without a plan")
 	}
-	if r := call(t, d, `{"id":2,"op":"import.plan"}`); !r.OK {
-		t.Fatalf("plan: %+v", r)
+	pr := call(t, d, `{"id":2,"op":"import.plan"}`)
+	if !pr.OK {
+		t.Fatalf("plan: %+v", pr)
+	}
+	// The import's English reasons reach the page only as refs; details are catalog keys
+	// with cleaned arguments; an unknown status or detail becomes one the page knows.
+	pv := pr.Data.(ImportPlanView)
+	if b, _ := json.Marshal(pv); strings.Contains(string(b), "same id and tags") || strings.Contains(string(b), "interrupted") {
+		t.Fatalf("English reasons sent to the page: %s", b)
+	}
+	byID := map[string]ImportItem{}
+	for _, it := range pv.Items {
+		byID[it.ID] = it
+	}
+	if it := byID["image:c"]; it.Detail != DetailImageConflict || len(it.Args) != 1 || strings.ContainsRune(strings.Join(it.Args["tags"], ""), 0x202e) || it.NoteRef == 0 {
+		t.Fatalf("conflict item %+v", it)
+	}
+	if it := byID["volume:v"]; it.Status != ImportAttention || it.Detail != DetailOther {
+		t.Fatalf("unknown item %+v", it)
+	}
+	if it := byID["image:a"]; it.Detail != "" || it.NoteRef != 0 {
+		t.Fatalf("new item %+v", it)
+	}
+	h := d.o.Host.(*fakeHost)
+	if r := call(t, d, `{"id":9,"op":"error.copy","args":{"ref":`+jsonInt(byID["image:b"].NoteRef)+`}}`); !r.OK || h.copied != "in hyperbutler with the same id and tags" {
+		t.Fatalf("copy the English original: %+v %q", r, h.copied)
+	}
+	if call(t, d, `{"id":9,"op":"error.copy","args":{"ref":`+jsonInt(pv.NotesRef)+`}}`); pv.Notes != 1 || !strings.Contains(h.copied, "interrupted") {
+		t.Fatalf("plan notes: %d %q", pv.Notes, h.copied)
 	}
 	if r := call(t, d, `{"id":3,"op":"import.run","args":{"ids":["image:b"],"token":"`+tokenFor(t, d, "import.run", "")+`"}}`); r.OK {
 		t.Fatal("imported an item that is already imported")
