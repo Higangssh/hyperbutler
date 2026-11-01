@@ -250,6 +250,15 @@ proxy, so add the certificate to the image and set the proxy for builds (the doc
 `status`, `version`, `config list/get/path`, `diagnose` and `uninstall` take `--json`; every
 document carries `"schema": 1`. See [docs/research/settings.md](docs/research/settings.md).
 
+### AI tools (MCP)
+
+`hyperbutler mcp` is a Model Context Protocol server on stdio for an MCP client such as
+your editor's AI assistant: `"command": "hyperbutler.exe", "args": ["mcp"]`. It is
+read-only (status, containers, logs, images, volumes, disk and memory use, settings,
+diagnose); `--allow-write` adds start, stop, run, pull and `config_set`, and
+`--allow-delete` the deletes. Results are redacted and bounded, and it exits with its
+client. See [docs/mcp.md](docs/mcp.md).
+
 ### Troubleshooting and uninstalling
 
 ```powershell
