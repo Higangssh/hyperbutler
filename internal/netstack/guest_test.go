@@ -40,6 +40,9 @@ type fakeGuest struct {
 	bigIn, bigOut atomic.Int64
 	// csumOK counts frames from the host whose partial checksum completed correctly.
 	csumOK atomic.Int64
+	// crcBad counts frames from the host that failed their CRC (link version 2) and
+	// were dropped, as netfwd drops them.
+	crcBad atomic.Int64
 }
 
 var guestMAC = tcpip.LinkAddress("\x02\x00\x00\x00\x00\x02")
@@ -61,14 +64,19 @@ type fakeGuestOpts struct {
 	// link reader's buffer, before the guest finishes its checksum or copies it.
 	inspect func(eth []byte)
 	// linkErr, if set, is called when the guest stops reading the host's frames because
-	// the stream or a frame is malformed (not when the link closes).
+	// the stream or a frame is malformed (not when the link closes), or in strict CRC
+	// mode (the stack's Config.LinkCRC) because a frame failed its CRC.
 	linkErr func(error)
+	// sent, if set, sees every frame the guest sends, framed, before it is written; it
+	// may change it.
+	sent func(framed []byte)
 }
 
 func newFakeGuestWith(t *testing.T, n *Stack, o fakeGuestOpts) *fakeGuest {
 	t.Helper()
 	offload := o.offload
 	cfg := n.Config()
+	crc := offload && cfg.LinkCRC != CRCOff
 	hostEnd, guestEnd := net.Pipe()
 	hostConn := hostEnd
 	if o.wrap != nil {
@@ -133,7 +141,15 @@ func newFakeGuestWith(t *testing.T, n *Stack, o fakeGuestOpts) *fakeGuest {
 				b = append(b, v...)
 			}
 			pkt.DecRef()
-			if _, err := guestEnd.Write(frame.Append(nil, b)); err != nil {
+			if crc {
+				b = frame.AppendCRC(nil, b)
+			} else {
+				b = frame.Append(nil, b)
+			}
+			if o.sent != nil {
+				o.sent(b)
+			}
+			if _, err := guestEnd.Write(b); err != nil {
 				return
 			}
 		}
@@ -144,17 +160,31 @@ func newFakeGuestWith(t *testing.T, n *Stack, o fakeGuestOpts) *fakeGuest {
 		fr, _ := frame.NewReader(br, cfg.MTU)
 		if offload {
 			var hello [frame.HeaderLen]byte
-			if _, err := io.ReadFull(br, hello[:]); err != nil || hello != frame.Hello {
+			if _, err := io.ReadFull(br, hello[:]); err != nil || hello != frame.HelloVersion(cfg.LinkCRC.linkVersion()) {
 				return
 			}
 			fr = frame.NewVnetReader(br)
+			if crc {
+				fr.WithCRC()
+			}
 		}
 		for {
 			// b is the frame reader's buffer, valid until the next frame. Nothing here
 			// copies it before inspect sees it, or before the guest stack takes it
 			// (MakeWithData copies, as a kernel copies into an skb), so bytes the host
-			// changed after handing them over are seen as they arrived.
+			// changed after handing them over are seen as they arrived, unless the
+			// CRC drops them first.
 			b, err := fr.Next()
+			if errors.Is(err, frame.ErrCRC) {
+				g.crcBad.Add(1)
+				if cfg.LinkCRC != CRCStrict {
+					continue
+				}
+				if o.linkErr != nil {
+					o.linkErr(err)
+				}
+				return
+			}
 			if err != nil {
 				if errors.Is(err, frame.ErrFrameSize) {
 					t.Errorf("the host's frame stream is out of sync: %v", err)

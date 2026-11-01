@@ -493,17 +493,22 @@ func dribble(c net.Conn, seed uint64) {
 // TestLinkIntegrityUnderStalls streams seeded data both ways through TCP connections
 // over an offload link whose hvsock writes stall, through the real guestLink and
 // frame.Pump: the queue to the guest fills to its bound and past it, the guest's frames
-// are read ahead of the stack, and neither side verifies a checksum (ADR 0006,
-// "Integrity"). Every stream must arrive with its SHA-256, every segment from the host
-// must carry its own bytes when the guest reads it, and the link's buffers must never
-// share an array. Before 036c062 a queue that outgrew the spare bound was sent while
-// enqueue overwrote it.
+// are read ahead of the stack, and only the link's CRC-32C checks the frames: neither
+// side verifies a TCP checksum (ADR 0006, "Integrity"). Every stream must arrive with
+// its SHA-256, every segment from the host must carry its own bytes when the guest
+// reads it, no frame may fail its CRC, and the link's buffers must never share an
+// array. Before 036c062 a queue that outgrew the spare bound was sent while enqueue
+// overwrote it.
 //
 // Four connections share the link, as parallel layer downloads do: one connection's
 // send buffer (tcpBufferLarge) is about the queue bound, so alone it rarely fills the
-// queue. A fifth one carries small writes (dribble). The link check fails on every run
-// without the fix; the data checks on most. HYPERBUTLER_TEST_LONG=1 streams 256 MiB
-// each way instead of 128 (16 with -short or -race).
+// queue. A fifth one carries small writes (dribble). Without the fix the link check
+// fails on every run. In 20 such runs no segment with other bytes reached the guest:
+// the guest dropped 1-4 frames mixed from several for their CRC in 8, and 15 ended
+// with the frame stream out of sync (a length read from a payload, which ends the
+// link; netfwd reconnects). With link version 1, which has no CRC, 2 of 20 runs
+// delivered a segment with other bytes. HYPERBUTLER_TEST_LONG=1 streams 256 MiB each
+// way instead of 128 (16 with -short or -race).
 func TestLinkIntegrityUnderStalls(t *testing.T) {
 	size := int64(128 << 20)
 	switch {
@@ -566,6 +571,9 @@ func TestLinkIntegrityUnderStalls(t *testing.T) {
 		inspect: check.inspect,
 		linkErr: func(error) { check.fail() },
 	})
+	defer func() {
+		t.Logf("frames dropped for a CRC mismatch: %d from the host (in the guest), %d from the guest (in the host)", g.crcBad.Load(), n.Stats().FramesCRCDropped)
+	}()
 	var cs []net.Conn
 	defer func() {
 		for _, c := range cs {
@@ -675,6 +683,9 @@ func TestLinkIntegrityUnderStalls(t *testing.T) {
 	}
 	if d := n.Stats().FramesDropped; d != 0 {
 		t.Errorf("FramesDropped = %d", d)
+	}
+	if c, h := g.crcBad.Load(), n.Stats().FramesCRCDropped; c != 0 || h != 0 {
+		t.Errorf("frames dropped for a CRC mismatch: %d from the host (in the guest), %d from the guest (in the host)", c, h)
 	}
 	// Under the race detector the stacks may be too slow to fill the queue past the
 	// bound in a short run; the other checks still apply.
@@ -902,7 +913,7 @@ func TestOffloadBadFrames(t *testing.T) {
 	gwMAC := []byte(n.Config().GatewayMAC)
 	eth := append(append(append([]byte{}, gwMAC...), 2, 0, 0, 0, 0, 9), 0x08, 0x00)
 	for _, vh := range []frame.VnetHdr{
-		{Flags: 0x80},                 // unknown flag
+		{Flags: 0x40},                 // unknown flag
 		{GSOType: 4, GSOSize: 1400},   // TCPv6
 		{GSOType: frame.VnetGSOECN},   // ECN without GSO
 		{GSOType: frame.VnetGSOTCPv4}, // GSO without a size
@@ -911,7 +922,7 @@ func TestOffloadBadFrames(t *testing.T) {
 	} {
 		b := make([]byte, frame.VnetHdrLen)
 		vh.Put(b)
-		if _, err := guest.Write(frame.Append(nil, append(b, eth...))); err != nil {
+		if _, err := guest.Write(frame.AppendCRC(nil, append(b, eth...))); err != nil {
 			t.Fatal(err)
 		}
 	}

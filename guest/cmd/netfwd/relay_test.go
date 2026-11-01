@@ -150,12 +150,12 @@ func (w *stallWriter) Write(b []byte) (int, error) {
 // was read, in order. A buffer handed back to the reader before its write finished
 // would be refilled under the write.
 func TestTapToHostStalledWriter(t *testing.T) {
-	lk := linkFormat{mtu: 1500}
+	lk := linkFormat{mtu: 1500, vnet: true, crc: true}
 	const frames = 400
 	lens := relayFrameLens(frames, lk.minFrame(), lk.maxFrame(), 7)
 	var want []byte
 	for i, n := range lens {
-		want = frame.Append(want, relayFrame(i, n))
+		want = frame.AppendCRC(want, relayFrame(i, n))
 	}
 	w := &stallWriter{release: make(chan struct{}), started: make(chan struct{}), rng: rand.New(rand.NewPCG(8, 1))}
 	var reads atomic.Int32
@@ -171,8 +171,8 @@ func TestTapToHostStalledWriter(t *testing.T) {
 			return buf[:0], io.EOF
 		}
 		out := buf[:0]
-		for k := 1 + rng.IntN(6); k > 0 && next < frames && cap(out)-len(out) >= frame.HeaderLen+lk.maxFrame(); k-- {
-			out = frame.Append(out, relayFrame(next, lens[next]))
+		for k := 1 + rng.IntN(6); k > 0 && next < frames && cap(out)-len(out) >= lk.prefix()+lk.maxFrame(); k-- {
+			out = frame.AppendCRC(out, relayFrame(next, lens[next]))
 			next++
 		}
 		return out, nil
@@ -201,7 +201,7 @@ func TestTapToHostStalledWriter(t *testing.T) {
 // firstBadFrame names the first frame of got that differs from its pattern.
 func firstBadFrame(got []byte, lens []int) string {
 	for i, n := range lens {
-		f := frame.Append(nil, relayFrame(i, n))
+		f := frame.AppendCRC(nil, relayFrame(i, n))
 		if len(got) < len(f) {
 			return fmt.Sprintf("the stream ends in frame %d", i)
 		}
@@ -266,12 +266,12 @@ func (w *stallTap) Write(b []byte) (int, error) {
 // whole and in order. A chunk handed back to the reader while its frames were being
 // written would be refilled under them.
 func TestHostToTapStalledWriter(t *testing.T) {
-	lk := linkFormat{mtu: 1500, vnet: true}
+	lk := linkFormat{mtu: 1500, vnet: true, crc: true}
 	const frames = 300 // about 9 MiB: more than hostChunks chunks of hostChunk
 	lens := relayFrameLens(frames, lk.minFrame(), lk.maxFrame(), 11)
 	var in []byte
 	for i, n := range lens {
-		in = frame.Append(in, relayFrame(i, n))
+		in = frame.AppendCRC(in, relayFrame(i, n))
 	}
 	r := &pieceReader{data: in, rng: rand.New(rand.NewPCG(12, 1))}
 	tap := &stallTap{release: make(chan struct{}), started: make(chan struct{}), rng: rand.New(rand.NewPCG(13, 1)), lens: lens}

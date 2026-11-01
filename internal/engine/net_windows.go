@@ -43,6 +43,10 @@ type NetConfig struct {
 	// NoOffload turns off checksum and TCP segmentation offload on the guest link
 	// (netstack.Config.Offload), for comparison.
 	NoOffload bool
+	// CRC is the per-frame CRC-32C of the offload link (netstack.Config.LinkCRC): on by
+	// default; off only to measure what it costs, strict to make a mismatch end the link
+	// (benches). The guest is told with hyperbutler.netcrc.
+	CRC netstack.CRCMode
 	// Port is the AF_VSOCK port the guest forwarder connects to; 0 means 1024.
 	Port uint32
 	// Publish are static published ports.
@@ -112,7 +116,7 @@ func setupNet(nc NetConfig, sddl string, log *slog.Logger) (g *guestNet, svcs []
 	if !subnet.IsValid() {
 		subnet = netstack.DefaultSubnet
 	}
-	cfg := netstack.Config{Subnet: subnet, MTU: nc.MTU, HostForwards: nc.HostForwards, HostGateway: nc.HostGateway}
+	cfg := netstack.Config{Subnet: subnet, MTU: nc.MTU, HostForwards: nc.HostForwards, HostGateway: nc.HostGateway, LinkCRC: nc.CRC}
 	nlog := log
 	if !nc.Debug {
 		nlog = slog.New(levelFilter{h: log.Handler(), min: slog.LevelWarn})
@@ -137,6 +141,7 @@ func setupNet(nc NetConfig, sddl string, log *slog.Logger) (g *guestNet, svcs []
 	if !nc.NoOffload {
 		svc.ConnectSDDL = sddl
 		args += " hyperbutler.netvnet=1"
+		args += cfg.LinkCRC.KernelArg()
 	}
 	svcs = []vm.Service{svc}
 	return g, svcs, args, nil
@@ -179,7 +184,7 @@ func (g *guestNet) start(ctx context.Context, vmid guid.GUID, step func(string, 
 		g.dialCancel, g.dialDone = cancel, make(chan struct{})
 		go func() {
 			defer close(g.dialDone)
-			g.dialGuest(dctx, vmid, func() { linkUp("offload") })
+			g.dialGuest(dctx, vmid, func() { linkUp("offload, link CRC " + g.cfg.LinkCRC.String()) })
 		}()
 	}
 	go func() {

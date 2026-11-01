@@ -44,6 +44,7 @@ type Reader struct {
 	max int
 	hdr [HeaderLen]byte
 	buf []byte
+	crc bool
 }
 
 // NewReader returns a Reader for a link with the given MTU. r should be buffered.
@@ -55,9 +56,20 @@ func NewReader(r io.Reader, mtu int) (*Reader, error) {
 	return &Reader{r: r, min: EthernetHeaderLen, max: max, buf: make([]byte, max)}, nil
 }
 
+// WithCRC makes fr read a version 2 stream: every frame has a CRC, which Next checks
+// and strips. Call it before the first Next.
+func (fr *Reader) WithCRC() *Reader {
+	fr.crc = true
+	fr.min += CRCLen
+	fr.max += CRCLen
+	fr.buf = make([]byte, fr.max)
+	return fr
+}
+
 // Next returns the next frame. The slice is valid until the next call. A length prefix
 // outside the allowed range returns ErrFrameSize, after which the stream is out of sync
-// and must be closed.
+// and must be closed. With WithCRC, a frame whose CRC does not match returns ErrCRC;
+// the stream is still in sync, so the caller may drop the frame and go on.
 func (fr *Reader) Next() ([]byte, error) {
 	if _, err := io.ReadFull(fr.r, fr.hdr[:]); err != nil {
 		return nil, err
@@ -72,6 +84,12 @@ func (fr *Reader) Next() ([]byte, error) {
 			err = io.ErrUnexpectedEOF
 		}
 		return nil, err
+	}
+	if fr.crc {
+		if !CheckCRC(b) {
+			return nil, fmt.Errorf("%w: frame of %d bytes", ErrCRC, n)
+		}
+		b = b[CRCLen:]
 	}
 	return b, nil
 }

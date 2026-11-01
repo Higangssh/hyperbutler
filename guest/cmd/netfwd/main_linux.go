@@ -13,6 +13,16 @@
 // transfer costs one frame per 64 KiB on both sides instead of one per MSS. The stream
 // then starts with frame.Hello (see package frame).
 //
+// In offload mode every frame carries a CRC-32C both ways (link version 2): netfwd
+// computes it right after the TAP read and checks it before the TAP write, drops a
+// frame that fails it (TCP retransmits it), logs the first few with their size, and
+// reports its count to the host, whose counters show it (netstack.Stats). -crc 0
+// (hyperbutler.netcrc=0) expects version 1, without the CRC; -crc strict
+// (hyperbutler.netcrc=strict) ends the link at a mismatch instead, for tests and
+// benches. The host's Hello must name the version netfwd expects, or netfwd refuses
+// the link: engine and guest image come together, so the two disagree only in a
+// broken install, and running on without the CRC would hide that.
+//
 // With -bench-tcp and -bench-vsock it also serves an endless stream of zeros on a TCP
 // port and an AF_VSOCK port, for comparing the stack with raw hvsock (hyperbutler-dev -bench).
 // Development only: init enables it only with hyperbutler.netbench=1 on the command line.
@@ -26,6 +36,7 @@ import (
 	"log"
 	"net"
 	"os"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -39,11 +50,12 @@ func main() {
 	dev := flag.String("dev", "eth0", "TAP device name")
 	mtu := flag.Int("mtu", 1500, "link MTU; must match the host")
 	vnet := flag.Bool("vnet", false, "virtio_net_hdr framing with TCP segmentation offload (the host must support it)")
+	crc := flag.String("crc", "1", `with -vnet, the per-frame CRC-32C: "1", "0" (link version 1) or "strict" (a mismatch ends the link); must match the host`)
 	benchTCP := flag.Int("bench-tcp", 0, "serve zeros on this TCP port (development)")
 	benchVsock := flag.Uint("bench-vsock", 0, "serve zeros on this AF_VSOCK port to the host (development)")
 	flag.Parse()
 	if flag.NArg() != 0 || *port == 0 || *port > 0xFFFFFFFE || !frame.ValidMTU(*mtu) ||
-		len(*dev) == 0 || len(*dev) >= unix.IFNAMSIZ {
+		len(*dev) == 0 || len(*dev) >= unix.IFNAMSIZ || (*crc != "1" && *crc != "0" && *crc != "strict") {
 		flag.Usage()
 		os.Exit(2)
 	}
@@ -54,7 +66,12 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	log.Printf("%s ready, relaying to host vsock port %d (MTU %d, offload %v)", *dev, *port, *mtu, *vnet)
+	lk := linkFormat{mtu: *mtu, vnet: *vnet, crc: *vnet && *crc != "0", strict: *crc == "strict", st: &linkStats{}}
+	if lk.vnet {
+		log.Printf("%s ready, relaying to host vsock port %d (MTU %d, offload, link version %d)", *dev, *port, *mtu, lk.version())
+	} else {
+		log.Printf("%s ready, relaying to host vsock port %d (MTU %d)", *dev, *port, *mtu)
+	}
 	if *benchTCP > 0 {
 		go benchServeTCP(*benchTCP)
 	}
@@ -64,7 +81,6 @@ func main() {
 
 	// Frames the TAP produces while the host is away are dropped by the kernel once its
 	// queue fills; TCP recovers them.
-	lk := linkFormat{mtu: *mtu, vnet: *vnet}
 	next := dialLoop(uint32(*port))
 	if lk.vnet {
 		// Retry rather than exit: exiting would only restart netfwd, which would
@@ -75,7 +91,7 @@ func main() {
 			time.Sleep(wait)
 			wait = min(2*wait, 2*time.Second)
 		}
-		next = acceptLoop(ln)
+		next = acceptLoop(ln, lk.version())
 	}
 	for {
 		conn := next()
@@ -102,9 +118,9 @@ func dialLoop(port uint32) func() *os.File {
 }
 
 // acceptLoop returns a function that waits for the host to connect (offload mode) and
-// to send frame.Hello. Only the host (CID 2) is accepted. The host dials because
-// Windows sends slowly on hvsock connections it accepted (ADR 0006).
-func acceptLoop(ln int) func() *os.File {
+// to send the Hello of link version. Only the host (CID 2) is accepted. The host dials
+// because Windows sends slowly on hvsock connections it accepted (ADR 0006).
+func acceptLoop(ln int, version byte) func() *os.File {
 	return func() *os.File {
 		for {
 			conn, err := acceptHost(ln)
@@ -113,7 +129,7 @@ func acceptLoop(ln int) func() *os.File {
 				time.Sleep(100 * time.Millisecond)
 				continue
 			}
-			if err := readHello(conn); err != nil {
+			if err := readHello(conn, version); err != nil {
 				log.Printf("host link: %v", err)
 				_ = conn.Close()
 				continue
@@ -162,18 +178,35 @@ func acceptHost(ln int) (*os.File, error) {
 	}
 }
 
-// readHello reads the host's frame.Hello, which opens an offload-mode link.
-func readHello(conn *os.File) error {
+// readHello reads the host's Hello, which opens an offload-mode link, and checks that
+// it is of link version.
+func readHello(conn io.Reader, version byte) error {
 	var b [frame.HeaderLen]byte
-	_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
-	defer conn.SetReadDeadline(time.Time{})
+	if f, ok := conn.(*os.File); ok {
+		_ = f.SetReadDeadline(time.Now().Add(5 * time.Second))
+		defer func() { _ = f.SetReadDeadline(time.Time{}) }()
+	}
 	if _, err := io.ReadFull(conn, b[:]); err != nil {
 		return fmt.Errorf("reading hello: %w", err)
 	}
-	if b != frame.Hello {
+	v, ok := frame.ParseHello(b)
+	if !ok {
 		return fmt.Errorf("unexpected hello %x", b)
 	}
+	if v != version {
+		// Refused rather than followed: engine and image disagree, which a matching
+		// install never does, and following a version 1 host would drop the CRC.
+		return fmt.Errorf("the host speaks link version %d and this guest expects %d (%s); refusing the link: the engine and the guest image do not match, or hyperbutler.netcrc is not what the engine uses",
+			v, version, versionName(version))
+	}
 	return nil
+}
+
+func versionName(v byte) string {
+	if v == frame.VersionCRC {
+		return "a CRC-32C on every frame"
+	}
+	return "no CRC, hyperbutler.netcrc=0"
 }
 
 // TUNSETOFFLOAD flags (linux/if_tun.h).
@@ -248,9 +281,40 @@ func dialHost(port uint32) (*os.File, error) {
 type linkFormat struct {
 	mtu  int
 	vnet bool
+	// crc (offload mode only): every frame carries a CRC-32C, link version 2.
+	crc bool
+	// strict: a frame from the host that fails its CRC ends the link.
+	strict bool
+	// st counts what the relays drop; nil counts nothing.
+	st *linkStats
 }
 
-// maxFrame is the largest frame (the length prefix's value) in either direction.
+// linkStats are netfwd's counters, for the life of the process (across links).
+type linkStats struct {
+	// crcDropped counts frames from the host that failed their CRC.
+	crcDropped atomic.Uint64
+	crcLog     frame.MismatchLog
+}
+
+// version is the offload link version lk expects.
+func (lk linkFormat) version() byte {
+	if lk.crc {
+		return frame.VersionCRC
+	}
+	return frame.VersionNoCRC
+}
+
+// prefix is what comes before a frame's virtio_net_hdr or Ethernet header: the length,
+// and the CRC.
+func (lk linkFormat) prefix() int {
+	if lk.crc {
+		return frame.HeaderLen + frame.CRCLen
+	}
+	return frame.HeaderLen
+}
+
+// maxFrame is the largest frame (the length prefix's value, not counting a CRC) in
+// either direction.
 func (lk linkFormat) maxFrame() int {
 	if lk.vnet {
 		return frame.MaxVnetFrameLen
@@ -293,9 +357,11 @@ type readBatchFunc func(buf []byte) ([]byte, error)
 
 // tapBatchReader reads every frame the TAP has queued, up to the buffer's capacity, so
 // that one vsock write carries many frames. It blocks (in the runtime poller) only when
-// nothing is queued.
+// nothing is queued. In link version 2 each frame's CRC is computed right after the
+// read, from the bytes as the kernel wrote them.
 func tapBatchReader(rc syscall.RawConn, lk linkFormat) readBatchFunc {
-	slot := frame.HeaderLen + lk.maxFrame()
+	pre := lk.prefix()
+	slot := pre + lk.maxFrame()
 	minLen := lk.minFrame()
 	return func(buf []byte) ([]byte, error) {
 		out := buf[:0]
@@ -303,7 +369,7 @@ func tapBatchReader(rc syscall.RawConn, lk linkFormat) readBatchFunc {
 		err := rc.Read(func(fd uintptr) bool {
 			for cap(out)-len(out) >= slot {
 				start := len(out)
-				n, err := unix.Read(int(fd), out[start+frame.HeaderLen:start+slot])
+				n, err := unix.Read(int(fd), out[start+pre:start+slot])
 				if err != nil {
 					if errors.Is(err, unix.EINTR) {
 						continue
@@ -317,8 +383,11 @@ func tapBatchReader(rc syscall.RawConn, lk linkFormat) readBatchFunc {
 				if n < minLen {
 					continue
 				}
-				out = out[:start+frame.HeaderLen+n]
-				frame.PutHeader(out[start:], n)
+				out = out[:start+pre+n]
+				frame.PutHeader(out[start:], pre-frame.HeaderLen+n)
+				if lk.crc {
+					frame.SealCRC(out[start+frame.HeaderLen:])
+				}
 			}
 			return true
 		})

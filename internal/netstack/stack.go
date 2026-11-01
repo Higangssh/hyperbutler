@@ -43,6 +43,8 @@ import (
 	"gvisor.dev/gvisor/pkg/tcpip/transport/tcp"
 	"gvisor.dev/gvisor/pkg/tcpip/transport/udp"
 	"gvisor.dev/gvisor/pkg/waiter"
+
+	"github.com/Higangssh/hyperbutler/internal/netstack/frame"
 )
 
 const (
@@ -77,6 +79,11 @@ type Stats struct {
 	DNSQueries, DNSDropped             uint64
 	TCPSegmentsSent, TCPRetransmits    uint64
 	TCPTimeouts                        uint64
+	// FramesCRCDropped counts frames from the guest that failed their CRC-32C (link
+	// version 2) and were dropped; GuestFramesCRCDropped is the guest's count of frames
+	// from this host that failed it, as netfwd last reported it. Both stay 0 unless a
+	// buffer was corrupted on its way across the link (ADR 0006, "Integrity").
+	FramesCRCDropped, GuestFramesCRCDropped uint64
 }
 
 // Stack is one guest network.
@@ -115,11 +122,15 @@ type Stack struct {
 	// flows records what the guest asked the network for (FlowLog).
 	flows flowLog
 
+	// crcLog rate-limits the log lines about frames that failed their CRC.
+	crcLog frame.MismatchLog
+
 	st struct {
 		framesIn, framesOut, framesDropped atomic.Uint64
 		tcpDenied, udpDenied, tcpRefused   atomic.Uint64
 		tcpActive, udpActive               atomic.Int64
 		dnsQueries, dnsDropped             atomic.Uint64
+		crcDropped, guestCRCDropped        atomic.Uint64
 	}
 }
 
@@ -265,7 +276,8 @@ func (n *Stack) Stats() Stats {
 		TCPActive: n.st.tcpActive.Load(), UDPActive: n.st.udpActive.Load(),
 		DNSQueries: n.st.dnsQueries.Load(), DNSDropped: n.st.dnsDropped.Load(),
 		TCPSegmentsSent: n.s.Stats().TCP.SegmentsSent.Value(), TCPRetransmits: n.s.Stats().TCP.Retransmits.Value(),
-		TCPTimeouts: n.s.Stats().TCP.Timeouts.Value(),
+		TCPTimeouts:      n.s.Stats().TCP.Timeouts.Value(),
+		FramesCRCDropped: n.st.crcDropped.Load(), GuestFramesCRCDropped: n.st.guestCRCDropped.Load(),
 	}
 }
 

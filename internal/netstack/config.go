@@ -72,6 +72,70 @@ type Config struct {
 	// HostAddrs lists this host's own addresses. nil means the addresses of every local
 	// interface, read again at most once per second. Tests replace it.
 	HostAddrs func() ([]netip.Addr, error)
+
+	// LinkCRC is the per-frame CRC-32C of an offload-mode guest link (ADR 0006,
+	// "Integrity"). The guest must be told the same (hyperbutler.netcrc, see
+	// CRCMode.KernelArg); a guest that expects another link version refuses the link.
+	LinkCRC CRCMode
+}
+
+// CRCMode selects the per-frame CRC of an offload-mode guest link.
+type CRCMode int
+
+const (
+	// CRCOn (the zero value) is link version 2: every frame carries a CRC-32C, and a
+	// frame that fails it is dropped (TCP retransmits it) and counted.
+	CRCOn CRCMode = iota
+	// CRCOff is link version 1, without a CRC, only for measuring what the CRC costs.
+	CRCOff
+	// CRCStrict is CRCOn, but a mismatch ends the link instead of dropping the frame,
+	// on both sides, so tests and benches fail loudly.
+	CRCStrict
+)
+
+// ParseCRCMode parses "on" (or "1"), "off" (or "0") and "strict".
+func ParseCRCMode(s string) (CRCMode, error) {
+	switch s {
+	case "on", "1":
+		return CRCOn, nil
+	case "off", "0":
+		return CRCOff, nil
+	case "strict":
+		return CRCStrict, nil
+	}
+	return CRCOn, fmt.Errorf("netstack: link CRC %q: want on, off or strict", s)
+}
+
+func (m CRCMode) String() string {
+	switch m {
+	case CRCOn:
+		return "on"
+	case CRCOff:
+		return "off"
+	case CRCStrict:
+		return "strict"
+	}
+	return fmt.Sprintf("CRCMode(%d)", int(m))
+}
+
+// KernelArg is the guest kernel argument that tells netfwd the same mode, with a
+// leading space; the default needs none.
+func (m CRCMode) KernelArg() string {
+	switch m {
+	case CRCOff:
+		return " hyperbutler.netcrc=0"
+	case CRCStrict:
+		return " hyperbutler.netcrc=strict"
+	}
+	return ""
+}
+
+// linkVersion is the offload link version of m.
+func (m CRCMode) linkVersion() byte {
+	if m == CRCOff {
+		return frame.VersionNoCRC
+	}
+	return frame.VersionCRC
 }
 
 // HostForward relays guest TCP connections to Virtual to Host on this machine.
@@ -135,6 +199,9 @@ func (c Config) Validate() error {
 	}
 	if !frame.ValidMTU(c.MTU) {
 		return fmt.Errorf("netstack: MTU %d is outside %d..%d", c.MTU, frame.MinMTU, frame.MaxMTU)
+	}
+	if c.LinkCRC < CRCOn || c.LinkCRC > CRCStrict {
+		return fmt.Errorf("netstack: link CRC mode %d is unknown", c.LinkCRC)
 	}
 	for _, v := range []int{c.MaxTCPConns, c.MaxTCPInFlight, c.MaxUDPFlows, c.MaxDNSInFlight, c.MaxHostGatewayConns} {
 		if v < 1 || v > 1<<20 {

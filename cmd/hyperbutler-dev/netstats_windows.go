@@ -51,6 +51,7 @@ func netCounters(st *netstack.Stack) map[string]uint64 {
 	m := map[string]uint64{}
 	s := st.Stats()
 	m["FramesIn"], m["FramesOut"], m["FramesDropped"] = s.FramesIn, s.FramesOut, s.FramesDropped
+	m["FramesCRCDropped"], m["GuestFramesCRCDropped"] = s.FramesCRCDropped, s.GuestFramesCRCDropped
 	m["TCPDenied"], m["TCPRefused"], m["TCPActive"] = s.TCPDenied, s.TCPRefused, uint64(s.TCPActive) //nolint:gosec // G115: TCPActive is a connection count, never negative
 	g := st.GVisorStats()
 	walkStats("", reflect.ValueOf(&g).Elem(), m)

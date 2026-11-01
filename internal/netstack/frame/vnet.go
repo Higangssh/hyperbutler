@@ -7,7 +7,7 @@ import (
 	"io"
 )
 
-// Offload mode (version 1 of the link). netfwd -vnet opens the TAP with IFF_VNET_HDR
+// Offload mode. netfwd -vnet opens the TAP with IFF_VNET_HDR
 // and TCP segmentation offload and listens; the host connects and sends Hello. Every
 // frame, both ways, then begins with a virtio_net_hdr (VnetHdrLen bytes, little-endian,
 // as the TAP device reads and writes it), so both sides pass TCP segments of up to
@@ -15,6 +15,9 @@ import (
 //
 //	host to guest: Hello, then frames; guest to host: frames
 //	frame: length (4 bytes, big-endian, counting what follows) | virtio_net_hdr | Ethernet frame
+//
+// That is version 1 of the link. Version 2, the default, adds a CRC-32C to every frame
+// (see VersionCRC); the last byte of the Hello is the version the host speaks.
 //
 // A plain stream (the guest dials, no Hello) carries Ethernet frames only. A plain
 // frame length is below 2^16, so its first byte is 0 and can never be Hello.
@@ -35,8 +38,8 @@ const (
 )
 
 // Hello opens an offload-mode stream. Its first byte is 0xFF; the last one is the
-// link version.
-var Hello = [HeaderLen]byte{0xFF, 'h', 'b', 1}
+// link version, here the current one (HelloVersion makes the others).
+var Hello = [HeaderLen]byte{0xFF, 'h', 'b', VersionCRC}
 
 // virtio_net_hdr flags and GSO types (linux/virtio_net.h).
 const (

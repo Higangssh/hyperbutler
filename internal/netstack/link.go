@@ -3,8 +3,11 @@ package netstack
 import (
 	"context"
 	"errors"
+	"fmt"
+	"io"
 	"net"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/containers/gvisor-tap-vsock/pkg/tap"
@@ -55,8 +58,10 @@ func (l *gsoLink) SupportedGSO() stack.SupportedGSO {
 // (image pulls) fast. Producers block while maxPending bytes are queued, so a guest that
 // stops reading slows the stack down instead of growing the queue.
 type guestLink struct {
-	conn    net.Conn
-	vnet    bool
+	conn net.Conn
+	vnet bool
+	// crc: every frame carries a CRC-32C (offload link version 2).
+	crc     bool
 	mu      sync.Mutex
 	cond    sync.Cond
 	pending []byte
@@ -68,6 +73,10 @@ type guestLink struct {
 
 const maxPending = 1 << 20
 
+// maxSpare bounds the buffer writeLoop keeps as its spare: the queue bound plus one
+// frame of the largest size.
+const maxSpare = maxPending + frame.HeaderLen + frame.CRCLen + frame.MaxVnetFrameLen
+
 // linkCheck, when set, is called under guestLink.mu wherever the link's buffers change
 // hands, with the queue, the buffer being written (nil between writes) and the spare.
 // Tests set it, before any link runs, to check that no two of them share an array: a
@@ -75,8 +84,10 @@ const maxPending = 1 << 20
 // (ADR 0006). It is nil in production, which costs one load per call site.
 var linkCheck func(pending, inflight, spare []byte)
 
-func newGuestLink(conn net.Conn, vnet bool) *guestLink {
-	l := &guestLink{conn: conn, vnet: vnet}
+// newGuestLink returns a link over conn; crc (offload mode only) puts a CRC-32C on
+// every frame.
+func newGuestLink(conn net.Conn, vnet, crc bool) *guestLink {
+	l := &guestLink{conn: conn, vnet: vnet, crc: vnet && crc}
 	l.cond.L = &l.mu
 	return l
 }
@@ -84,6 +95,33 @@ func newGuestLink(conn net.Conn, vnet bool) *guestLink {
 // enqueue appends one frame (with vh in offload mode). It returns false once the link
 // is closed.
 func (l *guestLink) enqueue(pkt *stack.PacketBuffer, size int, vh *frame.VnetHdr) bool {
+	// The frame: length | CRC (version 2) | virtio_net_hdr (offload mode) | packet.
+	var h [frame.HeaderLen + frame.CRCLen + frame.VnetHdrLen]byte
+	hdr := h[:frame.HeaderLen]
+	switch {
+	case l.crc:
+		frame.PutHeader(h[:], frame.CRCLen+frame.VnetHdrLen+size)
+		vh.Put(h[frame.HeaderLen+frame.CRCLen:])
+		hdr = h[:]
+	case l.vnet:
+		frame.PutHeader(h[:], frame.VnetHdrLen+size)
+		vh.Put(h[frame.HeaderLen:])
+		hdr = h[:frame.HeaderLen+frame.VnetHdrLen]
+	default:
+		frame.PutHeader(h[:], size)
+	}
+	slices := pkt.AsSlices()
+	if l.crc {
+		// From the bytes that are about to be queued, before the lock: whatever
+		// changes them from here until the guest's check (the copy into the queue, a
+		// buffer reused while the hvsock write still reads it) drops the frame instead
+		// of delivering it (ADR 0006, "Integrity").
+		crc := frame.UpdateCRC(0, h[frame.HeaderLen+frame.CRCLen:])
+		for _, s := range slices {
+			crc = frame.UpdateCRC(crc, s)
+		}
+		frame.PutCRC(h[frame.HeaderLen:], crc)
+	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	for len(l.pending) >= maxPending && !l.closed {
@@ -92,16 +130,8 @@ func (l *guestLink) enqueue(pkt *stack.PacketBuffer, size int, vh *frame.VnetHdr
 	if l.closed {
 		return false
 	}
-	var h [frame.HeaderLen + frame.VnetHdrLen]byte
-	if l.vnet {
-		frame.PutHeader(h[:], frame.VnetHdrLen+size)
-		vh.Put(h[frame.HeaderLen:])
-		l.pending = append(l.pending, h[:]...)
-	} else {
-		frame.PutHeader(h[:], size)
-		l.pending = append(l.pending, h[:frame.HeaderLen]...)
-	}
-	for _, s := range pkt.AsSlices() {
+	l.pending = append(l.pending, hdr...)
+	for _, s := range slices {
 		l.pending = append(l.pending, s...)
 	}
 	if linkCheck != nil {
@@ -125,8 +155,9 @@ func (l *guestLink) writeLoop() {
 		// The spare becomes the queue, so it is no longer a spare: left in place, a
 		// write of buf that does not hand buf back (one a burst grew) would make the
 		// live queue the next spare, and the next write would send a buffer that
-		// enqueue is overwriting. The guest does not verify the checksums of these
-		// frames (NEEDS_CSUM), so that is silent payload corruption.
+		// enqueue is overwriting. The guest does not verify the TCP checksums of these
+		// frames (NEEDS_CSUM): without the CRC that is silent payload corruption, with
+		// it a dropped frame per overwritten one.
 		buf := l.pending
 		l.pending, l.spare = l.spare[:0], nil
 		if linkCheck != nil {
@@ -141,7 +172,7 @@ func (l *guestLink) writeLoop() {
 		l.mu.Lock()
 		// buf is written out: keep it as the spare if it is about the queue bound, not
 		// a larger one a burst grew.
-		if cap(buf) <= maxPending+frame.MaxVnetFrameLen+frame.HeaderLen {
+		if cap(buf) <= maxSpare {
 			l.spare = buf[:0]
 		}
 		if linkCheck != nil {
@@ -171,8 +202,14 @@ func (l *guestLink) close() {
 func (n *Stack) ServeConn(conn net.Conn) error { return n.serve(conn, linkPlain) }
 
 // ServeOffload runs an offload-mode guest link over conn, a connection this host
-// dialed to the guest forwarder (netfwd -vnet): it sends frame.Hello, then frames with
-// a virtio_net_hdr in both directions. Otherwise it behaves as ServeConn.
+// dialed to the guest forwarder (netfwd -vnet): it sends the Hello of the link version
+// of Config.LinkCRC, then frames with a virtio_net_hdr, and in version 2 a CRC-32C, in
+// both directions. Otherwise it behaves as ServeConn.
+//
+// There is no fallback between versions: a guest that expects the other one closes
+// the link, and the link stays down, with an error that says so, until engine and
+// guest agree. The engine ships its own guest image, so a mismatch is a broken
+// install, and quietly running without the CRC is what this version exists to stop.
 //
 // The host dials because Windows sends slowly on an accepted hvsock connection: on the
 // same boot, host-to-guest TCP through a link the guest dialed ran at 2.0-2.6 Gbit/s
@@ -194,18 +231,20 @@ func (n *Stack) serve(conn net.Conn, mode int32) error {
 		_ = conn.Close()
 		return ErrLinkMode
 	}
+	version := n.cfg.LinkCRC.linkVersion()
 	if mode == linkVnet {
 		// Before the link replaces the previous one: a guest that does not read
 		// leaves the old link in place, and the write is bounded.
 		_ = conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
-		_, err := conn.Write(frame.Hello[:])
+		hello := frame.HelloVersion(version)
+		_, err := conn.Write(hello[:])
 		_ = conn.SetWriteDeadline(time.Time{})
 		if err != nil {
 			_ = conn.Close()
 			return err
 		}
 	}
-	l := newGuestLink(conn, mode == linkVnet)
+	l := newGuestLink(conn, mode == linkVnet, version == frame.VersionCRC)
 	n.linkMu.Lock()
 	if n.ctx.Err() != nil {
 		n.linkMu.Unlock()
@@ -233,10 +272,19 @@ func (n *Stack) serve(conn net.Conn, mode int32) error {
 	// The link is read ahead on its own goroutine (frame.Pump), so the guest's writes
 	// keep flowing while the stack handles the frames already read.
 	var cr *frame.ChunkReader
-	handle := func(b []byte) error { n.deliver(b, frame.MaxFrameLen(n.cfg.MTU)); return nil }
+	var got atomic.Bool // a frame arrived on this link
+	handle := func(b []byte) error { got.Store(true); n.deliver(b, frame.MaxFrameLen(n.cfg.MTU)); return nil }
 	if l.vnet {
 		cr = frame.NewChunkReader(conn, frame.MinVnetFrameLen, frame.MaxVnetFrameLen)
-		handle = func(b []byte) error { n.deliverVnet(b); return nil }
+		handle = func(b []byte) error { got.Store(true); n.deliverVnet(b); return nil }
+		if l.crc {
+			// Checked on Pump's reader goroutine, while the stack handles the chunk
+			// before.
+			cr.WithCRC(frame.CRCCheck{Strict: n.cfg.LinkCRC == CRCStrict, Bad: func(size int) {
+				got.Store(true)
+				n.noteCRCMismatch("guest to host", size, n.st.crcDropped.Add(1))
+			}})
+		}
 	} else {
 		cr = frame.NewChunkReader(conn, frame.EthernetHeaderLen, frame.MaxFrameLen(n.cfg.MTU))
 	}
@@ -244,7 +292,22 @@ func (n *Stack) serve(conn net.Conn, mode int32) error {
 	if n.ctx.Err() != nil {
 		return n.ctx.Err()
 	}
+	if l.vnet && !got.Load() && (errors.Is(err, io.EOF) || errors.Is(err, net.ErrClosed)) {
+		// What a guest does with a Hello it does not take (netfwd logs why on the
+		// guest console).
+		return fmt.Errorf("netstack: the guest closed the offload link (version %d) before sending a frame; a guest image that expects another link version does that (link CRC %s, hyperbutler.netcrc): %w",
+			version, n.cfg.LinkCRC, err)
+	}
 	return err
+}
+
+// noteCRCMismatch logs a frame that failed its CRC, rate-limited (frame.MismatchLog):
+// dir is the direction it was sent in, size its length and total the count so far.
+func (n *Stack) noteCRCMismatch(dir string, size int, total uint64) {
+	if ok, skipped := n.crcLog.Note(time.Now()); ok {
+		n.log.Warn("guest link: a frame failed its CRC-32C and was dropped (TCP retransmits it)",
+			"direction", dir, "bytes", size, "total", total, "notLogged", skipped)
+	}
 }
 
 // The guest link is read in chunks of up to linkChunk bytes, linkChunks ahead.
@@ -255,6 +318,10 @@ const (
 
 // deliverVnet hands one offload-mode frame to the stack.
 func (n *Stack) deliverVnet(b []byte) {
+	if frame.IsLinkReport(b) {
+		n.linkReport(b)
+		return
+	}
 	h, eth, err := frame.ParseVnet(b, n.cfg.MTU)
 	if err != nil {
 		n.st.framesDropped.Add(1)
@@ -265,14 +332,29 @@ func (n *Stack) deliverVnet(b []byte) {
 		limit = frame.EthernetHeaderLen + frame.MaxIPv4Packet
 	}
 	// The checksum may be partial (NEEDS_CSUM): the NIC has CapabilityRXChecksumOffload,
-	// so gVisor does not verify it. Frames on this link are trusted without a checksum in
-	// both directions: hvsock delivers the bytes it was given, so a frame is only as
-	// intact as the buffers it passed through on both ends, and a buffer reused while it
-	// was still being written corrupts payloads silently (ADR 0006, "Integrity"). Tests
-	// guard buffer ownership instead: TestLinkIntegrityUnderStalls, linkCheck, frame's
-	// TestPump and netfwd's relay tests. The stack terminates every packet rather than
-	// forwarding it.
+	// so gVisor does not verify it. In link version 2 the frame's CRC-32C was checked
+	// before it got here; a buffer reused while it was still being written, on either
+	// end, makes the frame fail it instead of corrupting a payload silently (ADR 0006,
+	// "Integrity"). Version 1 (CRCOff) trusts the frame. The stack terminates every
+	// packet rather than forwarding it.
 	n.deliver(eth, limit)
+}
+
+// linkReport takes a link report from netfwd: the guest's count of frames from this
+// host that failed their CRC.
+func (n *Stack) linkReport(b []byte) {
+	r, err := frame.ParseLinkReport(b)
+	if err != nil {
+		n.st.framesDropped.Add(1)
+		return
+	}
+	if old := n.st.guestCRCDropped.Swap(r.CRCDropped); r.CRCDropped > old {
+		if ok, skipped := n.crcLog.Note(time.Now()); ok {
+			// The guest logs each frame's size on its console.
+			n.log.Warn("guest link: the guest dropped frames from this host that failed their CRC-32C (TCP retransmits them)",
+				"direction", "host to guest", "total", r.CRCDropped, "notLogged", skipped)
+		}
+	}
 }
 
 // deliver hands one guest Ethernet frame of at most limit bytes to the stack. Only

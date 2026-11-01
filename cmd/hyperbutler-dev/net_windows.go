@@ -30,6 +30,7 @@ type netFlags struct {
 	subnet      string
 	mtu         int
 	offload     bool
+	crc         string
 	port        uint
 	publish     multiFlag
 	publishLAN  bool
@@ -57,6 +58,7 @@ func (nf *netFlags) register(fs *flag.FlagSet) {
 	fs.StringVar(&nf.subnet, "net-subnet", netstack.DefaultSubnet.String(), "guest subnet (gateway .1, guest .2)")
 	fs.IntVar(&nf.mtu, "net-mtu", netstack.DefaultMTU, "guest link MTU")
 	fs.BoolVar(&nf.offload, "net-offload", true, "checksum and TCP segmentation offload on the guest link (needs a guest image with netfwd -vnet)")
+	fs.StringVar(&nf.crc, "net-crc", "on", `per-frame CRC-32C on the offload link: "on", "off" (to measure its cost; the guest gets hyperbutler.netcrc=0) or "strict" (a mismatch ends the link)`)
 	fs.UintVar(&nf.port, "net-port", 1024, "AF_VSOCK port the guest forwarder connects to")
 	fs.Var(&nf.publish, "publish", "publish a guest TCP port: [HOST_IP:]HOST_PORT:GUEST_PORT (repeatable)")
 	fs.BoolVar(&nf.publishLAN, "publish-lan", false, "allow -publish and auto-publish on non-loopback host addresses")
@@ -73,6 +75,11 @@ func (nf *netFlags) register(fs *flag.FlagSet) {
 // and kernel arguments the bench adds.
 func (nf *netFlags) config(sddl string) (engine.NetConfig, []vm.Service, string, error) {
 	nc := engine.NetConfig{MTU: nf.mtu, NoOffload: !nf.offload, AutoPublish: nf.autoPublish, Debug: nf.debug}
+	crc, err := netstack.ParseCRCMode(nf.crc)
+	if err != nil {
+		return nc, nil, "", fmt.Errorf("-net-crc: %w", err)
+	}
+	nc.CRC = crc
 	switch nf.mode {
 	case "none":
 		nc.Off = true

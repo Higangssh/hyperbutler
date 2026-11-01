@@ -34,6 +34,33 @@ func TestSetupNetOffload(t *testing.T) {
 	}
 }
 
+// The guest is told the link's CRC mode (ADR 0006, "Integrity"); the default says
+// nothing, and a plain link has no CRC to tell.
+func TestSetupNetCRC(t *testing.T) {
+	for _, tc := range []struct {
+		mode      netstack.CRCMode
+		noOffload bool
+		want      string
+	}{
+		{netstack.CRCOn, false, ""},
+		{netstack.CRCOff, false, " hyperbutler.netcrc=0"},
+		{netstack.CRCStrict, false, " hyperbutler.netcrc=strict"},
+		{netstack.CRCOff, true, ""},
+	} {
+		g, _, args, err := setupNet(NetConfig{CRC: tc.mode, NoOffload: tc.noOffload}, "D:P(A;;FA;;;SY)", slog.New(slog.DiscardHandler))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if g.st.Config().LinkCRC != tc.mode {
+			t.Errorf("%v: the stack's mode is %v", tc.mode, g.st.Config().LinkCRC)
+		}
+		g.st.Close()
+		if got := strings.Contains(args, "hyperbutler.netcrc"); got != (tc.want != "") || (tc.want != "" && !strings.Contains(args, tc.want)) {
+			t.Errorf("%v (no offload %v): kernel arguments %q, want %q", tc.mode, tc.noOffload, args, tc.want)
+		}
+	}
+}
+
 // REQ-NET-004: with a host gateway, on or off, the guest is told its address (dockerd's
 // --host-gateway-ip), so turning it off or on needs no dockerd restart.
 func TestSetupNetHostGateway(t *testing.T) {

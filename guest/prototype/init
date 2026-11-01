@@ -70,6 +70,7 @@ NET=
 MTU=1500
 NETBENCH=
 NETVNET=
+NETCRC=
 DATA=
 NEWDISK=
 MEMLOG=
@@ -89,6 +90,10 @@ for arg in $(cat /proc/cmdline); do
 	hyperbutler.mtu=*) MTU=${arg#hyperbutler.mtu=} ;;
 	hyperbutler.netbench=1) NETBENCH="-bench-tcp 5201 -bench-vsock 5202" ;;
 	hyperbutler.netvnet=1) NETVNET=-vnet ;;
+	# The per-frame CRC of the offload link (ADR 0006, "Integrity"): on unless the engine
+	# turns it off (0) or makes a mismatch end the link (strict). Must match the engine.
+	hyperbutler.netcrc=0) NETCRC="-crc 0" ;;
+	hyperbutler.netcrc=strict) NETCRC="-crc strict" ;;
 	hyperbutler.data=*) DATA=${arg#hyperbutler.data=} ;;
 	hyperbutler.newdisk=1) NEWDISK=1 ;;
 	hyperbutler.memlog=1) MEMLOG=1 ;;
@@ -112,7 +117,7 @@ if [ -n "$NET" ] && [ -d /sys/bus/vmbus ]; then
 	# Restart netfwd if it dies. The TAP is persistent, so eth0 keeps its address.
 	(while :; do
 		# shellcheck disable=SC2086
-		netfwd -port "$NET" -dev eth0 -mtu "$MTU" $NETVNET $NETBENCH >/dev/console 2>&1
+		netfwd -port "$NET" -dev eth0 -mtu "$MTU" $NETVNET $NETCRC $NETBENCH >/dev/console 2>&1
 		t "netfwd-exit $?"
 		sleep 1
 	done) &

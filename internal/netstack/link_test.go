@@ -28,7 +28,7 @@ func checkLinkBuffers(t *testing.T) *linkBufferStats {
 		if sameArray(pending, inflight) || sameArray(pending, spare) || sameArray(inflight, spare) {
 			st.shared.Add(1)
 		}
-		if cap(inflight) > maxPending+frame.MaxVnetFrameLen+frame.HeaderLen {
+		if cap(inflight) > maxSpare {
 			st.grown.Add(1)
 		}
 	}
@@ -200,16 +200,43 @@ func enqueueFrame(t *testing.T, l *guestLink, i int) {
 	}
 }
 
+// The link tests run in offload mode with the CRC (link version 2), as the engine does:
+// a frame is its length, its CRC, a virtio_net_hdr and testFrameLen bytes of payload.
+const (
+	testPayloadAt = frame.HeaderLen + frame.CRCLen + frame.VnetHdrLen
+	testRec       = testPayloadAt + testFrameLen
+)
+
+// testFrameCheck is what the guest got in the place of one frame.
+type testFrameCheck struct {
+	index  int  // the frame whose payload it starts with
+	intact bool // all of it is that frame: a whole frame, though maybe not the right one
+	crcOK  bool // its CRC matches what it carries
+}
+
+func checkTestFrame(f []byte) testFrameCheck {
+	p := f[testPayloadAt:]
+	i := int(binary.BigEndian.Uint32(p))
+	return testFrameCheck{index: i, intact: bytes.Equal(p, testFrame(i)), crcOK: frame.CheckCRC(f[frame.HeaderLen:])}
+}
+
+// silent reports whether c is a frame the guest would take although it is not a whole
+// frame: a TCP segment with another one's bytes, which nothing else checks. A whole
+// frame in the wrong place is a real segment; TCP takes it for a retransmission and
+// retransmits the one it replaced.
+func (c testFrameCheck) silent() bool { return c.crcOK && !c.intact }
+
 // TestGuestLinkSpareNotLive: frames queued while a write is in flight must reach the
 // guest as they were queued, also after a write of a queue that grew past the spare
 // bound. Such a write used to leave the spare pointing at the live queue, so the next
 // write sent a buffer that enqueue was overwriting: the guest got TCP segments whose
 // payload belonged to other segments, with a checksum it does not verify (NEEDS_CSUM),
-// and image layers arrived with the right size and the wrong digest.
+// and image layers arrived with the right size and the wrong digest. A frame that
+// arrives so must at least fail its CRC.
 func TestGuestLinkSpareNotLive(t *testing.T) {
 	checkLinkBuffers(t)
 	c := &heldConn{started: make(chan int, 8), release: make(chan struct{})}
-	l := newGuestLink(c, false)
+	l := newGuestLink(c, true, true)
 	done := make(chan struct{})
 	go func() { defer close(done); l.writeLoop() }()
 	stopped := false
@@ -239,7 +266,7 @@ func TestGuestLinkSpareNotLive(t *testing.T) {
 	l.mu.Lock()
 	grown := cap(l.pending)
 	l.mu.Unlock()
-	if bound := maxPending + frame.MaxVnetFrameLen + frame.HeaderLen; grown <= bound {
+	if bound := maxSpare; grown <= bound {
 		t.Fatalf("test setup: queue capacity %d is within the spare bound %d", grown, bound)
 	}
 	step()
@@ -257,17 +284,24 @@ func TestGuestLinkSpareNotLive(t *testing.T) {
 	stop() // after this, nothing writes c.out
 
 	got := c.out.Bytes()
-	rec := frame.HeaderLen + testFrameLen
-	if len(got) != next*rec {
-		t.Fatalf("guest got %d bytes, want %d frames of %d", len(got), next, rec)
+	if len(got) != next*testRec {
+		t.Fatalf("guest got %d bytes, want %d frames of %d", len(got), next, testRec)
 	}
 	for i := range next {
-		f := got[i*rec:][:rec]
-		if n := binary.BigEndian.Uint32(f); n != testFrameLen {
-			t.Fatalf("frame %d: length %d, want %d", i, n, testFrameLen)
+		f := got[i*testRec:][:testRec]
+		if n := binary.BigEndian.Uint32(f); n != testRec-frame.HeaderLen {
+			t.Fatalf("frame %d: length %d, want %d", i, n, testRec-frame.HeaderLen)
 		}
-		if p := f[frame.HeaderLen:]; !bytes.Equal(p, testFrame(i)) {
-			t.Errorf("frame %d arrived with the payload of frame %d", i, binary.BigEndian.Uint32(p))
+		c := checkTestFrame(f)
+		switch {
+		case c.silent():
+			t.Errorf("frame %d arrived mixed with other frames, and its CRC matches", i)
+		case !c.intact:
+			t.Errorf("frame %d arrived mixed with other frames (it failed its CRC)", i)
+		case c.index != i:
+			t.Errorf("frame %d arrived as a copy of frame %d", i, c.index)
+		case !c.crcOK:
+			t.Errorf("frame %d failed its CRC", i)
 		}
 	}
 }
@@ -277,7 +311,7 @@ func TestGuestLinkSpareNotLive(t *testing.T) {
 func TestGuestLinkBackpressureStress(t *testing.T) {
 	checkLinkBuffers(t)
 	c := &stallConn{}
-	l := newGuestLink(c, false)
+	l := newGuestLink(c, true, true)
 	done := make(chan struct{})
 	go func() { defer close(done); l.writeLoop() }()
 	const frames = 3000
@@ -288,23 +322,28 @@ func TestGuestLinkBackpressureStress(t *testing.T) {
 		}
 	}
 	deadline := time.Now().Add(30 * time.Second)
-	for c.len() < frames*(frame.HeaderLen+testFrameLen) && time.Now().Before(deadline) {
+	for c.len() < frames*testRec && time.Now().Before(deadline) {
 		time.Sleep(time.Millisecond)
 	}
 	l.close()
 	<-done
 	got := c.bytes()
-	rec := frame.HeaderLen + testFrameLen
-	if len(got) != frames*rec {
-		t.Fatalf("guest got %d bytes, want %d", len(got), frames*rec)
+	if len(got) != frames*testRec {
+		t.Fatalf("guest got %d bytes, want %d", len(got), frames*testRec)
 	}
-	bad := 0
+	var moved, mixed, silent int
 	for i := range frames {
-		if !bytes.Equal(got[i*rec+frame.HeaderLen:][:testFrameLen], testFrame(i)) {
-			bad++
+		switch c := checkTestFrame(got[i*testRec:][:testRec]); {
+		case c.silent():
+			silent++
+		case !c.intact || !c.crcOK:
+			mixed++
+		case c.index != i:
+			moved++
 		}
 	}
-	if bad > 0 {
-		t.Fatalf("%d of %d frames arrived with another frame's payload", bad, frames)
+	if moved+mixed+silent > 0 {
+		t.Fatalf("of %d frames, %d arrived as copies of other frames, %d mixed with other frames and failing their CRC, %d mixed and passing it",
+			frames, moved, mixed, silent)
 	}
 }
