@@ -23,10 +23,11 @@ The zip has one top-level folder:
 
 | File | Notes |
 |---|---|
-| `hyperbutler.exe` | `CGO_ENABLED=0 go build -trimpath -buildvcs=true -ldflags "-s -w -buildid="`. The version is the tag, taken from Git by the Go toolchain; `package.ps1` fails if `go version -m hyperbutler.exe` reports anything else |
-| `vmlinuz-virt`, `initramfs-stage1.gz`, `system.vhd`, `image.json` | The guest image (ADR 0005 A2b), from the guest-image job. `hyperbutler start` finds them next to `hyperbutler.exe` and checks them against `image.json`. `package.ps1 -ImageFiles` names them |
+| `hyperbutler.exe` | `CGO_ENABLED=0 go build -trimpath -buildvcs=true -ldflags "-s -w -buildid= -X ...engine.pinnedManifest=<sha256 of image.json>"`. The version is the tag, taken from Git by the Go toolchain; `package.ps1` fails if `go version -m hyperbutler.exe` reports anything else, or if `hyperbutler.exe version --json` does not report the image pin |
+| `vmlinuz-virt`, `initramfs-stage1.gz`, `system.vhd`, `image.json` | The guest image (ADR 0005 A2b), from the guest-image job. `hyperbutler start` finds them next to `hyperbutler.exe`, checks `image.json` against the SHA-256 linked into `hyperbutler.exe` and the other files against `image.json` (ADR 0005, Decision 4). `package.ps1 -ImageFiles` names them |
+| `clients/docker.exe`, `clients/cli-plugins/docker-compose.exe` | The docker CLI and the compose plugin, built by `package.ps1` from the docker/cli and docker/compose source modules pinned in `dist/clients.lock` (module proxy, sum.golang.org and the lock's `h1:` hash; upstream build tags and version flags, `CGO_ENABLED=0 -trimpath`). Not next to `hyperbutler.exe`, so they never shadow a docker CLI on PATH ([compat.md](compat.md#the-docker-cli-and-docker-desktop)). Their license texts are in `THIRD-PARTY/clients/` |
 | `LICENSE`, `NOTICE` | hyperbutler's own |
-| `THIRD-PARTY/` | License texts of every Go module linked into `hyperbutler.exe` or the guest binaries, of the Go standard library, and of every guest package (from the upstream sources), with an index in `README.txt` |
+| `THIRD-PARTY/` | License texts of every Go module linked into `hyperbutler.exe`, the guest binaries or the bundled clients, of the Go standard library, and of every guest package (from the upstream sources), with an index in `README.txt`. The docker/cli and docker/compose LICENSE and NOTICE files (Apache-2.0 §4(a), (d)) are in `THIRD-PARTY/clients/<name>/` |
 | `SOURCE-OFFER.txt` | Names the source bundle by file name, SHA-256 and URL |
 | `README.txt`, `BUILDINFO.txt`, `SHA256SUMS` | Quick start; versions, flags, commit and hashes; checksums of every file in the zip |
 
@@ -40,6 +41,12 @@ release here.
 |---|---|---|
 | (dry run) | 79.7 MB | prototype A2a image, snapshot |
 | (dry run, 2026-10-31) | 84.9 MB | A2b image with the Alpine engine, snapshot (89,026,173 bytes; 113.1 MB unpacked) |
+| (dry run, 2026-11-01) | 106.7 MB | A2b image (local build, 88 MiB system disk) plus the docker CLI 29.9.2 and compose v5.6.1 built from source (30.4 and 30.0 MB), snapshot (111,857,104 bytes; 173.7 MB unpacked). Docker's prebuilt `docker.exe` would have been 44.9 MB |
+
+The release is x64 only. Docker publishes no Windows arm64 docker CLI; since it is built
+from source here, an arm64 release would only need `GOARCH=arm64`, but the guest image is
+x86_64 and does not boot on ARM64, so there is no arm64 release yet (on ARM64 Windows the
+x64 programs would run under emulation; the VM would not).
 
 There is no installer and nothing needs admin rights to install: unzip, add the folder to
 the user PATH, run `hyperbutler start` (REQ-PLAT-003). The one-time prerequisites (the Virtual
@@ -77,7 +84,10 @@ ships) do need an administrator; the README says so.
 2. **package** (`windows-latest`):
    - Checks that the tag is a semver tag, that it is HEAD, and that it is on `origin/main`.
    - Checks the guest artifact against the digest from job 1, then runs `dist/package.ps1`
-     without `-Snapshot`, so every check is fatal.
+     without `-Snapshot`, so every check is fatal. It links the SHA-256 of the checked
+     `image.json` into `hyperbutler.exe` and builds the docker CLI and compose from the
+     source modules in `dist/clients.lock` (through the Go module proxy, checked against
+     sum.golang.org and the lock).
 3. **sbom** (`ubuntu-latest`, no permissions at all): syft, installed from the release
    tarball checked against its pinned SHA-256, scans the unpacked zip.
 4. **publish** (`ubuntu-latest`, environment `release`):
@@ -90,7 +100,9 @@ ships) do need an administrator; the README says so.
 Supply-chain rules the workflows follow:
 
 - Every action is pinned by full commit SHA, with the version in a comment. Downloaded
-  tools (golangci-lint, syft, shellcheck for local checks) are pinned by SHA-256.
+  tools (golangci-lint, syft, shellcheck for local checks) are pinned by SHA-256. The
+  bundled docker CLI and compose are built from source modules pinned by their `h1:`
+  hash (`dist/clients.lock`), never downloaded as binaries.
 - Top-level `permissions: {}` in `release.yml`, `contents: read` elsewhere. Write
   permissions only in `publish`.
 - `persist-credentials: false` on every checkout.
@@ -183,7 +195,16 @@ met blocks the release. Changing a gate needs an ADR change, not a waiver here.
   upstream security release by more than 7 days (ADR 0005, revisit rule). Bump the lock
   if they are; move to building from source if Alpine has not caught up.
 - [ ] `hyperbutler.exe` checks the guest image files against hashes embedded at build time
-  (Decision 4). Not implemented yet.
+  (Decision 4): `hyperbutler version --json` of the released binary says
+  `"imagePinned": true` with the `image.json` SHA-256 from the guest-image job, and a
+  start with one byte of `image.json` changed is refused. Implemented 2026-11-01
+  (`internal/engine/imagepin.go`); `package.ps1` fails when the pin is missing.
+
+**Bundled clients (`dist/clients.lock`)**
+- [ ] `docker-cli` follows the guest's Docker Engine version and `docker-compose` is the
+  current release, neither behind an upstream security release by more than 7 days.
+- [ ] `clients\docker.exe version` and `docker compose version` from the zip print the
+  pinned versions, against the release candidate.
 - [ ] REQ-MEM-001: idle memory ≤ 400 MB (`bench/mem-idle`). Today 580 MiB; the A2b erofs
   layout is the planned fix.
 - [ ] REQ-START-001 is re-measured with the release image (20 runs, warm), and the first
@@ -204,7 +225,9 @@ met blocks the release. Changing a gate needs an ADR change, not a waiver here.
 - [ ] REQ-UX-002: the zip is ≤ 150 MB (`package.ps1` enforces it). Record the size in the
   table above.
 - [ ] REQ-UX-001: on a clean Windows 11 Home account, the README Quick Start works as
-  written: unzip, PATH, `hyperbutler start`, `docker run --rm hello-world`, `hyperbutler stop`.
+  written: unzip, PATH (with `clients\`, since a clean account has no docker CLI),
+  `hyperbutler start`, `docker run --rm hello-world`, `docker compose version`,
+  `hyperbutler stop`.
 - [ ] REQ-PLAT-005 (from the second release on): upgrading from every release since the
   last minor keeps images, volumes and containers.
 - [ ] The README "Current status" table matches the measured numbers for this release.
@@ -281,3 +304,26 @@ findings:
 | 12 | Low | A versioned folder on PATH goes stale on upgrade. | **Fixed:** the Quick Start installs into a fixed folder and documents the upgrade. |
 | 13 | Low | The glibc Go toolchain mounted into Alpine is unverified. | **Accepted and documented** ("Known limits"). The official toolchain is static; the first CI run confirms it. |
 | 14 | Low | This section was a placeholder. | **Fixed:** this table. |
+
+### Review of the image pin and the bundled clients (2026-11-01)
+
+A self-review, then an independent adversarial review, of the embedded image hash
+(`internal/engine/imagepin.go`, `image_windows.go`), the bundled clients
+(`dist/clients.lock`, `package.ps1`, `cmd/hyperbutler/dockercli_windows.go`,
+`internal/engine/dockerctx/plugins.go`) and these docs.
+
+| # | Sev | Finding | Resolution |
+|---|---|---|---|
+| S1 | Med | HCS opens the kernel, initrd and system disk by path after the check. With a junction or directory symlink on that path, the link could be retargeted while the checked files stay open (the open handles block a rename of the real directories, not a change of the link). | **Fixed:** the engine hands HCS the final path of each held handle (`GetFinalPathNameByHandle`), so links are resolved before the check is done. Tests: `TestOpenImageResolvesJunction`, `TestOpenImageHoldsDirectory` (the image directory and its parent cannot be renamed while held). Booted on Hyper-V with it. |
+| S2 | Low | `image.json` was read by path, not held, while the other files were. | **Fixed:** opened deny-write and kept open like the others; the pinned hash is over the same bytes that are parsed. Reparse points are refused as before. |
+| S3 | Low | Case, 8.3 names, streams, hard links. | **Checked:** manifest names are `[A-Za-z0-9._-]`, so no `:` streams; every check is over content, so case and short names cannot swap a file; a hard link shares the deny-write state. |
+| S4 | Low | A renamed `pinnedManifest` would make `-X` a silent no-op and ship an unpinned build. | **Fixed:** `package.ps1` runs `hyperbutler.exe version --json` and fails unless it reports the pin; `TestImagePinDefault` keeps the variable a plain string. |
+| S5 | Info | Whoever can write the install folder can replace `hyperbutler.exe` itself. | **Accepted** (ADR 0005, A2b): the pin stops a replaced or half-copied image, not an attacker who owns the folder. |
+| M5 | Med | After a side-by-side upgrade, `restart` passed the old folder (state.json's `imageDir`) to the new pinned build, which refused it and blamed the user. | **Fixed:** a pinned build uses its own image unless `--image-dir` is given, and says so; the refusal names both folders. Test: `TestRestartImageDir`; run with two unpacked copies. |
+| M6 | Med | Is "too old" really below 19.03? (Moby 29 was thought to require API 1.44.) | **Checked against the source:** moby `docker-v29.9.2`, `daemon/config/config.go`: `defaultMinAPIVersion = "1.40"`; the running guest reports `MinAPIVersion 1.40`. The warning uses 19.03 (API 1.40). The guest's dockerd environment is unchanged. |
+| M7 | Med | `docker.exe` next to `hyperbutler.exe` would shadow a docker CLI installed later, since that folder is on PATH. | **Fixed:** the clients are in `clients\`, which the README adds to PATH only when there is no docker CLI; `start` and `status` print the path in use and mark it `(bundled)`. |
+| M8 | Med | Docker's prebuilt Windows CLI zip has no published checksum, signature or provenance and `docker.exe` is not Authenticode-signed, so a SHA-256 pin was trust on first use; compose's checksum file comes from the same release as the binary. | **Fixed:** both are built from source in `package.ps1`: the docker/cli and docker/compose modules through the Go module proxy, checked by go against sum.golang.org and by `package.ps1` against the lock's `h1:` hash and commit, dependencies against the source's own `go.sum`, upstream tags and version flags, `CGO_ENABLED=0 -trimpath`. No binary is downloaded, so no Sigstore check is needed. Upstream's Windows docker CLI is built with cgo (only for the `osusergo` tag); this one is not. |
+| L6 | Low | Windows ARM64 was not mentioned. | **Fixed:** README, above and compat.md: x64 only; the x64 programs would run under emulation, the x86_64 guest image would not boot. |
+| C1 | Low | `cliPluginsExtraDirs` comes first in the CLI's plugin search, so registering the bundled compose there could shadow Docker Desktop's or the user's. | **Fixed:** it is listed only while no other `docker-compose.exe` is in the search, and taken out when one appears; `delete` removes it. Test: `TestSyncPluginDir`. |
+| C2 | Low | Docker Desktop side by side: `stop` leaves the `hyperbutler` context selected and `delete` resets to `default`, not to `desktop-linux`. | **Open** ([compat.md](compat.md#the-docker-cli-and-docker-desktop), "Not covered"); not tested with Docker Desktop installed. |
+| C3 | Low | After a side-by-side upgrade the old folder's `cli-plugins` stays registered until it disappears (the CLI skips missing directories, and the next `start` registers the new one). | **Accepted;** the README upgrades in place. |

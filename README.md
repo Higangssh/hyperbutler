@@ -88,7 +88,8 @@ except the one-time prerequisites.
 ### Prerequisites (one time)
 
 1. **Windows 11** (Home, Pro or Enterprise), x64, with virtualization enabled in the
-   firmware.
+   firmware. The release is x64 only: on ARM64 the x64 programs would run under
+   emulation, but the x86_64 guest image cannot boot there.
 2. **Virtual Machine Platform.** In an elevated PowerShell, then reboot:
 
    ```powershell
@@ -112,8 +113,9 @@ except the one-time prerequisites.
    developer-preview arrangement, not the supported end state. When you no longer need it,
    remove it the same way with `/delete` instead of `/add`.
 
-4. **The `docker` CLI**, for example `docker.exe` from Docker's static Windows binaries at
-   <https://download.docker.com/win/static/stable/x86_64/>. Docker Desktop is not needed.
+4. Nothing else: the zip comes with the `docker` CLI and the compose plugin (in its
+   `clients\` folder, built from Docker's source). A docker CLI you already have, 19.03 or
+   later (Docker Desktop's, or any other), works too. Docker Desktop is not needed.
 
 WSL is not needed and can stay disabled.
 
@@ -133,6 +135,9 @@ Copy-Item "$env:TEMP\hyperbutler-new\hyperbutler-*-windows-amd64\*" $dir -Recurs
 Remove-Item -Recurse $env:TEMP\hyperbutler-new
 [Environment]::SetEnvironmentVariable('Path', [Environment]::GetEnvironmentVariable('Path', 'User') + ";$dir", 'User')
 $env:Path += ";$dir"
+#    Only if `docker` is not found yet (Get-Command docker), also add the bundled CLI:
+[Environment]::SetEnvironmentVariable('Path', [Environment]::GetEnvironmentVariable('Path', 'User') + ";$dir\clients", 'User')
+$env:Path += ";$dir\clients"
 
 # 3. Start. The first start creates %LOCALAPPDATA%\hyperbutler and a 64 GiB sparse data disk,
 #    and creates and selects the `hyperbutler` docker context.
@@ -145,9 +150,32 @@ hyperbutler logs
 hyperbutler stop      # orderly guest shutdown
 ```
 
-To upgrade, run `hyperbutler stop`, repeat step 2 without the PATH line, and `hyperbutler start`. The
+To upgrade, run `hyperbutler stop`, repeat step 2 without the PATH lines, and `hyperbutler start`. The
 data disk in `%LOCALAPPDATA%\hyperbutler` is kept. Upgrades across releases are not tested yet
 (there has been no release).
+
+A release `hyperbutler.exe` boots only the guest image files it was released with, the
+ones next to it; `hyperbutler version` shows the `image.json` hash it expects. If it
+refuses them (a half-copied upgrade, a file from another version), extract the zip again
+into the same folder.
+
+### The docker CLI, compose and Docker Desktop
+
+- `hyperbutler start` and `hyperbutler status` show which `docker.exe` a plain `docker`
+  runs, marked `(bundled)` when it is the one in `clients\`. hyperbutler never changes your
+  PATH and never copies or replaces a docker CLI. A CLI older than 19.03 (API 1.40, the
+  oldest the guest's Docker Engine 29 accepts) gets a warning with the fix.
+- The docker CLI finds plugins only in `cliPluginsExtraDirs` from its `config.json`, then
+  `%USERPROFILE%\.docker\cli-plugins`, then `%ProgramFiles%\Docker\cli-plugins` (first match
+  wins), never next to `docker.exe`. So `hyperbutler start` adds `clients\cli-plugins` to
+  `cliPluginsExtraDirs`, but only while no other `docker-compose.exe` is in those places,
+  and takes it out again when one appears. Docker Desktop's or your own compose always
+  wins. With `context.manage false`, nothing is added; run
+  `docker compose` from Docker Desktop, or add the folder to `cliPluginsExtraDirs` yourself.
+- Docker Desktop can run at the same time: hyperbutler serves `\\.\pipe\docker_engine_hyperbutler`,
+  not Desktop's `docker_engine`, and only adds its own `hyperbutler` docker context. `start`
+  selects it (and prints the one it replaced); switch back with `docker context use
+  desktop-linux`. See [docs/compat.md](docs/compat.md#the-docker-cli-and-docker-desktop).
 
 ### Settings
 
@@ -175,8 +203,9 @@ HTTP:
 `"schema": 1`. See [docs/research/settings.md](docs/research/settings.md).
 
 `hyperbutler delete` removes the VM state and the data disk, with all images, containers and
-volumes. To uninstall, run `hyperbutler delete`, remove the folder and its PATH entry, and
-`docker context rm hyperbutler`.
+volumes. To uninstall, run `hyperbutler delete`, remove the folder and its PATH entries, and
+`docker context rm hyperbutler`. `delete` also takes `clients\cli-plugins` out of the docker
+CLI's `config.json`.
 
 ### Reaching the host from a container
 

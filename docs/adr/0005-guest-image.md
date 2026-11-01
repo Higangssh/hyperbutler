@@ -368,7 +368,8 @@ Some limits on that:
    and its signature chain verified by `apk`.
    It produces the kernel, initramfs, and erofs image, plus a GPL source bundle. All of these
    go to GitHub Releases as assets (never git), with SHA-256 sums and build provenance
-   attestations. `hyperbutler.exe` embeds the expected hashes.
+   attestations. `hyperbutler.exe` embeds the expected hashes (since 2026-11-01: the
+   SHA-256 of `image.json`, which carries the others; see "A2b implementation").
 
    Two paths for contributors without WSL:
    - The initramfs can be rebuilt natively on Windows. That works today, with `guest/cmd/mkinitramfs`.
@@ -473,9 +474,16 @@ device-mapper ioctl helper, and hashing on every read. Revisit it if a less-trus
 ever caches or serves the image, or if one image is shared between users.
 
 The manifest beside the image is not a trust anchor. Anyone who can write the image
-directory can also replace `hyperbutler.exe`. The release build should embed the manifest's
+directory can also replace `hyperbutler.exe`. The release build embeds the manifest's
 SHA-256 in `hyperbutler.exe` (Decision 4) so a replaced image is refused even with a matching
-`image.json`. That is not done yet.
+`image.json`. **Done 2026-11-01:** `dist/package.ps1` links the SHA-256 of the guest-image
+job's `image.json` in with `-X ...engine.pinnedManifest`; the engine holds `image.json`
+deny-write like the other files, hashes the bytes it parses, and refuses a mismatch with
+the file, both folders and the fix (extract the zip again). It hands HCS the final path of
+each held file, so a junction on the way cannot be retargeted after the check.
+Development builds have no pin, keep the manifest self-check and log that once per start;
+`hyperbutler version --json` reports `imagePinned` and `imageManifestSha256`. Review:
+docs/release.md, "Review of the image pin and the bundled clients".
 
 **Update path.**
 
@@ -506,7 +514,7 @@ requirements and the measurement scripts. Disposition:
 | A4 medium | `apk add erofs-utils=1.9.1-r0` is not pinned by hash, and Alpine drops old revisions. | **Accepted as a known gap.** It fails closed (the build stops when the revision disappears; it cannot silently change), apk checks the signature, and two clean builds were byte-identical. Follow-up 8: a builder image pinned by digest with erofs-utils in it, or the `.apk`s in `sources.lock`. |
 | A5 medium | An older `hyperbutler.exe` with a new image directory would boot stage 1 without `hyperbutler.system=` and only time out. | **Fixed.** Stage 1 is now `initramfs-stage1.gz`, a name older engines do not look for, so they fail at once with "not found". Test: `TestGuestArtifacts`. |
 | A6 low | No committed fuzz corpus; no test for `guestArtifacts`; LUN resolution and reparse rejection untested. | **Fixed** for the corpus (`guest/image/testdata/fuzz`) and `guestArtifacts`. **Rejected** for the shell LUN logic and reparse points: the shell is exercised on every boot (and the probes show the right disk at `/` and `/var/lib/docker` even when the kernel swapped `sda` and `sdb`), and creating a symlink needs Developer Mode or admin here. |
-| A7 low | The manifest is not a trust anchor; VM-account ACEs pile up on `system.vhd` after crashes. | **Accepted.** Both are stated above (embedding the hash in `hyperbutler.exe`; the same ACE issue exists on `data.vhdx`). Open item. |
+| A7 low | The manifest is not a trust anchor; VM-account ACEs pile up on `system.vhd` after crashes. | **Accepted.** Both are stated above (the same ACE issue exists on `data.vhdx`). Open item for the ACEs; the hash in `hyperbutler.exe` was done 2026-11-01. |
 | A8 low | The research doc still had placeholders. | **Fixed.** |
 
 The reviewer also checked and found fine: manifest and footer parsing (no traversal,

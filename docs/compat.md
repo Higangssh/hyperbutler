@@ -1,7 +1,7 @@
 # Docker compatibility notes
 
 Known differences from Docker Desktop and Docker Engine on Linux (REQ-API-001). Only the
-networking notes exist so far.
+networking and docker CLI notes exist so far.
 
 ## host.docker.internal
 
@@ -39,3 +39,64 @@ When it is off, connections to `192.168.127.254` are refused, the names give NXD
 **Not covered:** a `docker network create --subnet` that overlaps `192.168.127.0/24` cuts
 the guest off from the host gateway (daemon.json's `bip`, `fixed-cidr` and
 `default-address-pools` are checked; `docker network create` is not).
+
+## The docker CLI and Docker Desktop
+
+REQ-UX-001, REQ-API-001. Code: `cmd/hyperbutler/dockercli_windows.go`,
+`internal/engine/dockerctx`.
+
+**Which docker CLI.** The release zip carries `clients\docker.exe` and
+`clients\cli-plugins\docker-compose.exe`, built by `dist/package.ps1` from the docker/cli
+and docker/compose source modules pinned in `dist/clients.lock`. They sit in a subfolder
+so that the folder on PATH (the one with `hyperbutler.exe`) holds no `docker.exe`: the
+README adds `clients\` to PATH only for someone without a docker CLI. hyperbutler never
+edits PATH (system or user), never copies a CLI anywhere, and runs no docker CLI except
+`docker --version` at `start`. `start` and `status` (`dockerCli`, `dockerCliBundled` in
+`--json`) report the `docker.exe` a plain `docker` resolves to (the first on PATH, as
+`exec.LookPath` finds it) and mark it `(bundled)` when it is the one in `clients\`.
+
+**Old CLIs.** Docker Engine 29.9.2 refuses API versions below 1.40 unless configured
+otherwise (`daemon/config/config.go` at tag `docker-v29.9.2`: `defaultMinAPIVersion =
+"1.40"`; the running guest reports `MinAPIVersion 1.40`). API 1.40 is docker 19.03.
+`start` reads the CLI's version from `docker --version` and warns below 19.03, naming the
+bundled CLI and the `$env:Path` line for this shell. Newer CLIs negotiate down, so there
+is no upper limit.
+
+**Compose.** The docker CLI (v29, `cli-plugins/manager`) searches for plugins in
+`config.json`'s `cliPluginsExtraDirs`, then `<config dir>\cli-plugins` (`%DOCKER_CONFIG%`
+or `%USERPROFILE%\.docker`), then `%ProgramFiles%\Docker\cli-plugins`. The first match
+wins, and there is no search next to `docker.exe`, so without help no CLI, bundled or
+not, finds the bundled compose. With the context management on (`context.manage`, the
+default), `start` lists `clients\cli-plugins` in `cliPluginsExtraDirs` while no other
+`docker-compose.exe` is in that search, and takes it out again when one appears (Docker
+Desktop installs into `%ProgramFiles%\Docker\cli-plugins`). An extra directory comes
+first, so listing it next to another copy would shadow that copy; this rule never does.
+Nothing is copied into `~/.docker/cli-plugins`. `hyperbutler delete` takes the entry out;
+an uninstaller uses `dockerctx.SetExtraPluginDir(config, dir, false)`.
+
+**Docker Desktop at the same time.**
+
+| | Docker Desktop | hyperbutler |
+|---|---|---|
+| Docker API pipe | `\\.\pipe\docker_engine` (context `default`), `\\.\pipe\dockerDesktopLinuxEngine` (context `desktop-linux`) | `\\.\pipe\docker_engine_hyperbutler` (setting `pipe`), context `hyperbutler`; `start` fails if the pipe is taken |
+| docker contexts | `desktop-linux` and others | only its own `hyperbutler`, marked `HyperbutlerManaged`; a foreign context of that name is left alone |
+| `currentContext` in `config.json` | set by Desktop | `start` selects `hyperbutler` and prints the context it replaced; every other key is kept |
+| compose plugin | `%ProgramFiles%\Docker\cli-plugins` | used only when there is no other (above) |
+
+**Not covered** (no Docker Desktop on the test machine; from reading the code):
+
+- `hyperbutler stop` leaves `hyperbutler` selected, and `delete` resets the selection to
+  docker's `default`, not to the context `start` replaced. A Desktop user switches back
+  with `docker context use desktop-linux`. Remembering and restoring the previous context
+  is not implemented.
+- Whether Docker Desktop re-selects `desktop-linux` when it starts, or rewrites
+  `cliPluginsExtraDirs`, was not checked.
+- `DOCKER_HOST` or `DOCKER_CONTEXT` in the environment overrides the selected context;
+  `start` prints a note when they are set.
+
+**Windows on ARM64.** The release is x64 only (`hyperbutler-<tag>-windows-amd64.zip`).
+The x64 `hyperbutler.exe` and docker CLI would run under emulation on ARM64, but the guest
+image is x86_64 and cannot boot in an ARM64 Hyper-V VM, so ARM64 is not supported yet.
+Docker publishes no Windows arm64 static CLI; an arm64 release would build `docker.exe`
+from the same pinned source with `GOARCH=arm64` (compose also publishes a
+`windows-aarch64` build).
