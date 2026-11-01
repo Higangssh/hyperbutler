@@ -52,7 +52,7 @@ jobs:
         env:
           FUZZTIME: ${{ inputs.fuzztime || '1m' }}
           # Raise it whenever a Fuzz target is added (also in ci.yml).
-          FUZZ_MIN_TARGETS: "92"
+          FUZZ_MIN_TARGETS: "93"
         run: ./scripts/ci/fuzz-all.ps1
 
       - name: Upload crashing inputs
