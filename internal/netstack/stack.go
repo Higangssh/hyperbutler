@@ -112,6 +112,9 @@ type Stack struct {
 	// keep sending segments larger than the MTU.
 	mode atomic.Int32
 
+	// flows records what the guest asked the network for (FlowLog).
+	flows flowLog
+
 	st struct {
 		framesIn, framesOut, framesDropped atomic.Uint64
 		tcpDenied, udpDenied, tcpRefused   atomic.Uint64
@@ -165,6 +168,7 @@ func New(cfg Config, log *slog.Logger) (*Stack, error) {
 		dnsTCPSem: make(chan struct{}, maxDNSTCPConns),
 		largeSem:  make(chan struct{}, largeBufferConns),
 	}
+	n.dns.onQuery = n.flows.query
 	ep.Connect(n)
 	if err := n.buildStack(); err != nil {
 		cancel()
@@ -309,6 +313,7 @@ func (n *Stack) handleTCP(r *tcp.ForwarderRequest) {
 	id := r.ID()
 	dst := netip.AddrPortFrom(netipAddr(id.LocalAddress), id.LocalPort)
 	tgt, err := n.pol.Route(dst)
+	n.flows.flow("tcp", dst, routeName(tgt, err))
 	if err != nil {
 		n.st.tcpDenied.Add(1)
 		n.log.Debug("guest tcp denied", "dst", dst, "err", err)
@@ -499,7 +504,11 @@ func (n *Stack) handleUDP(r *udp.ForwarderRequest) bool {
 	// a UDP "connect" cannot tell whether anything listens, so there is no [::1]
 	// fallback).
 	tgt, err := n.pol.Route(dst)
-	if err != nil || tgt.Kind == TargetForward || tgt.Addr.Port() == 0 {
+	if err == nil && (tgt.Kind == TargetForward || tgt.Addr.Port() == 0) {
+		err = ErrBlockedAddress
+	}
+	n.flows.flow("udp", dst, routeName(tgt, err))
+	if err != nil {
 		n.st.udpDenied.Add(1)
 		return false // ICMP port unreachable
 	}

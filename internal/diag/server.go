@@ -33,6 +33,7 @@ const StatsPath = "/debug/stats"
 // Handler returns the debug endpoint's routes:
 //
 //	/debug/stats          Stats as JSON
+//	/debug/vars/NAME      what was published as NAME (Publish), as JSON
 //	/debug/pprof/...      net/http/pprof (index, named profiles, profile, trace, ...)
 //
 // It does not use http.DefaultServeMux, so importing net/http/pprof elsewhere never
@@ -40,6 +41,7 @@ const StatsPath = "/debug/stats"
 func Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET "+StatsPath, serveStats)
+	mux.HandleFunc("GET "+VarsPath+"{name}", serveVar)
 	// Every pprof route gets the cap: Index serves the named profiles, which take
 	// ?seconds= for delta profiles too.
 	mux.HandleFunc("GET /debug/pprof/", limitSeconds(pprof.Index))

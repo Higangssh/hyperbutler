@@ -20,6 +20,7 @@ import (
 	"github.com/Microsoft/go-winio"
 	"github.com/Microsoft/go-winio/pkg/guid"
 
+	"github.com/Higangssh/hyperbutler/internal/diag"
 	"github.com/Higangssh/hyperbutler/internal/netstack"
 	"github.com/Higangssh/hyperbutler/internal/transport"
 	"github.com/Higangssh/hyperbutler/internal/vm"
@@ -71,6 +72,19 @@ type guestNet struct {
 
 	dialCancel context.CancelFunc
 	dialDone   chan struct{}
+
+	unpublish func()
+}
+
+// NetVarName is the name under which the engine publishes NetVars on its debug
+// endpoint (diag.VarsPath + NetVarName).
+const NetVarName = "net"
+
+// NetVars is the guest network's diagnostics document: the stack's counters and what
+// the guest asked the network for (REQ-UX-005, bench/no-telemetry).
+type NetVars struct {
+	Stats netstack.Stats   `json:"stats"`
+	Flows netstack.FlowLog `json:"flows"`
 }
 
 // setupNet builds the stack. It returns nil when networking is off. The caller adds
@@ -100,6 +114,7 @@ func setupNet(nc NetConfig, sddl string, log *slog.Logger) (g *guestNet, svcs []
 	}
 	cfg = st.Config()
 	g = &guestNet{nc: nc, cfg: cfg, st: st, svc: transport.VsockServiceID(nc.Port), publish: nc.Publish, log: log}
+	g.unpublish = diag.Publish(NetVarName, func() any { return NetVars{Stats: st.Stats(), Flows: st.Flows()} })
 	// Only this user may listen on the link's service (for a guest forwarder that dials
 	// the host) and, in offload mode, connect to it (netfwd -vnet listens in the guest).
 	svc := vm.Service{ID: g.svc, BindSDDL: sddl}
@@ -227,6 +242,9 @@ func (g *guestNet) dialGuest(ctx context.Context, vmid guid.GUID, linkUp func())
 }
 
 func (g *guestNet) close() {
+	if g.unpublish != nil {
+		g.unpublish()
+	}
 	if g.apCancel != nil {
 		g.apCancel()
 		<-g.apDone

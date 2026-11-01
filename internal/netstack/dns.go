@@ -46,6 +46,8 @@ type dnsHandler struct {
 	// and whether it is on; HostGatewayNames are then answered here, never by the host
 	// resolver.
 	hostGateway func() (netip.Addr, bool)
+	// onQuery, if set, is told the name and type of every query that is looked up.
+	onQuery func(name, typ string)
 }
 
 // local answers the names this forwarder owns: HostGatewayNames and the reverse names
@@ -136,6 +138,9 @@ func (h *dnsHandler) answer(ctx context.Context, wire []byte, udp bool) []byte {
 	case req.Question[0].Qclass != dns.ClassINET:
 		m.Rcode = dns.RcodeNotImplemented
 	default:
+		if h.onQuery != nil {
+			h.onQuery(req.Question[0].Name, dns.Type(req.Question[0].Qtype).String())
+		}
 		ctx, cancel := context.WithTimeout(ctx, h.timeout)
 		h.resolve(ctx, m, req.Question[0])
 		cancel()

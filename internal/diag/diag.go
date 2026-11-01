@@ -5,8 +5,9 @@
 //     GOMEMLIMIT environment variable already sets one. The environment wins so an
 //     operator can always override a shipped default.
 //   - Serve exposes pprof, runtime.MemStats, the goroutine count and the process handle
-//     count on a named pipe that only the current user can open. It is off unless the
-//     process passes a pipe name.
+//     count on a named pipe that only the current user can open, with any document
+//     another package published (Publish). It is off unless the process passes a pipe
+//     name.
 package diag
 
 import (
