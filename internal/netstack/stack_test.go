@@ -12,6 +12,7 @@ import (
 	"net"
 	"net/netip"
 	"os"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -490,6 +491,43 @@ func dribble(c net.Conn, seed uint64) {
 	}
 }
 
+// growQueue makes the link's next queue outgrow the spare bound, until a write of such
+// a queue has been seen (bufs.grown), at most growTries times. It is called at the start
+// of a large write, after writeLoop took the queue: it gives the new queue an array of
+// its own with no room (as a fresh link has, or one whose last queue a burst grew), so
+// enqueue's appends grow it geometrically, and waits up to growWait for the queue to
+// fill to the bound while the write stalls.
+//
+// Without it, whether a run wrote such a queue at all was up to scheduling: the two
+// buffers writeLoop alternates soon settle at a capacity of 1088 KiB, within the bound,
+// and only a queue that fills to the bound while still in a smaller array grows past
+// it. TestLinkIntegrityUnderStalls failed its setup check ("0 checks while a queue past
+// the spare bound was written") in about 1 run in 10 with GOMAXPROCS=1, and once in a
+// loaded `go test ./...`.
+func growQueue(n *Stack, bufs *linkBufferStats, tries *atomic.Int64) {
+	const growTries, growWait = 40, 250 * time.Millisecond
+	if bufs.grown.Load() > 0 || tries.Add(1) > growTries {
+		return
+	}
+	n.linkMu.Lock()
+	l := n.link
+	n.linkMu.Unlock()
+	if l == nil {
+		return
+	}
+	l.mu.Lock()
+	l.pending = slices.Clip(l.pending)
+	l.mu.Unlock()
+	for deadline := time.Now().Add(growWait); time.Now().Before(deadline); time.Sleep(time.Millisecond) {
+		l.mu.Lock()
+		full := len(l.pending) >= maxPending || cap(l.pending) > maxSpare || l.closed
+		l.mu.Unlock()
+		if full {
+			return
+		}
+	}
+}
+
 // TestLinkIntegrityUnderStalls streams seeded data both ways through TCP connections
 // over an offload link whose hvsock writes stall, through the real guestLink and
 // frame.Pump: the queue to the guest fills to its bound and past it, the guest's frames
@@ -565,9 +603,14 @@ func TestLinkIntegrityUnderStalls(t *testing.T) {
 	})
 	check := newArrivalCheck(virt.Port())
 	var sc *stallingConn
+	var growTries atomic.Int64
 	g := newFakeGuestWith(t, n, fakeGuestOpts{
 		offload: true,
-		wrap:    func(c net.Conn) net.Conn { sc = newStallingConn(c, stallSeed); return sc },
+		wrap: func(c net.Conn) net.Conn {
+			sc = newStallingConn(c, stallSeed)
+			sc.grow = func() { growQueue(n, bufs, &growTries) }
+			return sc
+		},
 		inspect: check.inspect,
 		linkErr: func(error) { check.fail() },
 	})

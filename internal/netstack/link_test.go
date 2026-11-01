@@ -68,6 +68,10 @@ type stallingConn struct {
 	mu     sync.Mutex
 	rng    *rand.Rand
 	stalls int
+
+	// grow, when set, is called at the start of a large write, while the queue behind
+	// it fills, until the test has what it needs (see TestLinkIntegrityUnderStalls).
+	grow func()
 }
 
 func newStallingConn(c net.Conn, seed uint64) *stallingConn {
@@ -93,6 +97,9 @@ func (c *stallingConn) Write(b []byte) (int, error) {
 	// frames arrive cut and mixed, not just replaced by whole later frames.
 	large := len(b) > 256<<10
 	if large {
+		if c.grow != nil {
+			c.grow()
+		}
 		time.Sleep(c.stall(2))
 	} else {
 		time.Sleep(c.stall(16))
