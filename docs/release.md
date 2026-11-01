@@ -338,3 +338,33 @@ A self-review, then an independent adversarial review, of the embedded image has
 | C1 | Low | `cliPluginsExtraDirs` comes first in the CLI's plugin search, so registering the bundled compose there could shadow Docker Desktop's or the user's. | **Fixed:** it is listed only while no other `docker-compose.exe` is in the search, and taken out when one appears; `delete` removes it. Test: `TestSyncPluginDir`. |
 | C2 | Low | Docker Desktop side by side: `stop` leaves the `hyperbutler` context selected and `delete` resets to `default`, not to `desktop-linux`. | **Open** ([compat.md](compat.md#the-docker-cli-and-docker-desktop), "Not covered"); not tested with Docker Desktop installed. |
 | C3 | Low | After a side-by-side upgrade the old folder's `cli-plugins` stays registered until it disappears (the CLI skips missing directories, and the next `start` registers the new one). | **Accepted;** the README upgrades in place. |
+
+### Review of diagnose, uninstall, redaction, the telemetry scan and packaging (2026-11-01)
+
+An adversarial review of `hyperbutler diagnose` and `uninstall`, `internal/redact`,
+`internal/notelemetry`, `bench/no-telemetry`, the image pin's restart path and
+`package.ps1`. After the fixes `bench/uninstall` passed all 29 checks on a test
+installation (Windows 11 Home, real VMs; the runtime id recorded before the grant was
+the one the VM got), and `bench/no-telemetry -idle 1m` passed (vmwp identified, no
+request of hyperbutler's own; the bench's pull is the user's traffic).
+
+| ID | Finding | Outcome |
+|---|---|---|
+| H-1 | `files.json` in the diagnose zip carried the SHA-256 of the unredacted daemon.json and docker config.json: an offline oracle for a guessed proxy or registry password. | **Fixed:** size, BOM and CRLF stay; the hash is of the redacted copy. Test: `TestDiagnose` (no zip entry contains the original's hash). |
+| M-1 | Text redaction missed `password='x'`, `export DOCKER_PASSWORD='x'`, `password = x`, `PASSWORD : x`, `token:x`, `docker login -p x`, `--password -x` and a JSON member split across lines. | **Fixed.** `-p` and `-u` are redacted only on lines with the word `login` (elsewhere `-p 8080:80` is a port), documented in the package. FuzzString has templates for each and base64 secrets. Tests: `TestString`, `FuzzString`, `TestLongLines`; `BenchmarkLog` 16.8 MB/s before, 16.3 after. |
+| M-2 | The uninstall ACL sweep removed every VM account entry without a live compute system, including that of a VM another installation sharing system.vhd has granted access but not yet created (grant comes before Create), and another Windows user's VMs. | **Fixed:** the engine learns the runtime id before the first grant (a probe grant on a scratch file), records it in state.json `pastRuntimeIds` (last 16); uninstall removes only those and the last engine's, and keeps the rest with a note. Tests: `TestUninstallStaleVMAccess`, `TestGranterRecordsBeforeGrant`, `TestRecordRuntimeID`, `TestAccountSID`; `bench/uninstall`. Entries an engine from before this change left stay. |
+| M-3 | An invalid settings.json made uninstall (and its dry run and `--json`) impossible. | **Fixed:** treated like a missing one; the data disk is found through state.json and the state directory; settings.json is listed. Test: `TestUninstallInvalidSettings`. |
+| M-4 | Uninstall released both locks before settings.json and the directories went. | **Fixed:** only the lock files and the directory holding them go after unlock. Test: `TestUninstallRemovesSettingsUnderLock`. |
+| L-1 | A dry run while the engine runs left out the access entries. | **Fixed:** listed, as checked again after the engine stops. Test: `TestUninstallDryRunWhileUp`. |
+| L-2 | Uninstall removed an empty data directory the user had made (`--data D:\docker-data`). | **Fixed:** start records a data directory it creates (`createdDataDir` in settings.json, where the data directory is recorded); only that one goes. Older installs keep theirs, and the output says so. Tests: `TestUninstallCreatedDataDir`, `TestUninstallFindsDataFromState`. |
+| L-3 | A read-only data.vhdx waited the full 3 minutes. | **Fixed:** fails at once and says how to clear the attribute, which it never clears. Test: `TestUninstallReadOnlyDisk`. |
+| L-4 | A log tail could start mid-line. | **Fixed:** the partial first line is dropped. Test: `TestReadTail`. |
+| L-5 | docker-config.json and daemon.json over 64 KiB were left out of the zip. | **Fixed:** both are read up to 1 MiB; a larger file is listed in `missing` and summary.txt with its size. Test: `TestDiagnoseLargeConfig`. |
+| L-6 | The notelemetry scan missed dot imports, network tools in exec arguments (`cmd /c curl`), UDP listeners and `net.Resolve*Addr`, ws2_32.dll and dnsapi.dll, and cgo; one allowlist line covered every use in a file. | **Fixed:** each rule has a synthetic-source test; allowlist lines carry an exact use count. Tests: `TestScanGoEvasions`, `TestAllowlistCounts`, `TestNoUnreviewedNetworkUse`. |
+| L-7 | `bench/no-telemetry` passed when the VM's vmwp was not found. | **Fixed:** a FAIL unless `-allow-no-vmwp`. Test: `TestNoVMWP`. |
+| L-8 | settings.md's uninstall kinds lacked `docker-plugins`. | **Fixed:** the kinds are pinned, and checked against settings.md. Test: `TestUninstallKinds`. |
+| L-9 | A pinned restart dropped an explicit `--image-dir` that matched the pin. | **Fixed:** an image directory that passes the pin is kept; the fallback says why. Tests: `TestRestartImageDir`, `TestCheckImageDirPin`. |
+| L-10 | `TestUninstallStaleVMAccess` skipped whenever a compute system could not be opened. | **Fixed:** the live VM list and HCS revocation are test seams; the test needs no HCS. |
+| L-11 | The diagnose zip's private ACL is lost on FAT32 and exFAT. | **Fixed:** diagnose checks `FILE_PERSISTENT_ACLS` on the new file and says the zip is not private; the doc comment is conditional. Test: `TestPersistentACLs` (the NTFS side; the FAT side is not tested here). |
+| L-12 | `package.ps1` took GOPROXY, GOSUMDB, GONOSUMDB, GOPRIVATE, GOINSECURE and GOFLAGS from the caller for the client builds and go-winres; a `-Snapshot -Version vX` zip had a release's name. | **Fixed:** those steps run with `GOENV=off`, proxy.golang.org and sum.golang.org, the bypass variables cleared; a snapshot zip's name ends in `-snapshot`. Checked by a `-Snapshot -NoClients -Version v9.9.9` run under `GOSUMDB=off` (no test harness for the script). |
+| L-13 | start recorded only the first context it replaced. | **Fixed:** every replacement of another context is recorded, and the dry run says which one is restored. Test: `TestSelectContextRecordsLatest`. |
