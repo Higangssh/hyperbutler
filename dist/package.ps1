@@ -71,6 +71,11 @@ function Exec([string]$exe) {
     # Emit nothing (not $null) for no output, so @(Exec ...).Count is 0.
     $o | Where-Object { $null -ne $_ }
 }
+# The architecture of hyperbutler.exe and of the WebView2Loader.dll next to it. Releases
+# are windows/amd64 so far; a build for another one must take that one's loader, so the
+# loader step refuses an architecture it has no pinned loader for.
+$goarch = 'amd64'
+Add-Type -AssemblyName System.IO.Compression.FileSystem
 function Sha256([string]$path) { (Get-FileHash -Algorithm SHA256 -LiteralPath $path).Hash.ToLowerInvariant() }
 # What go fetches from the network (the client sources and their dependencies, and
 # go-winres) comes through proxy.golang.org and is checked against sum.golang.org,
@@ -156,7 +161,7 @@ try {
     } finally { ExitPinnedGoEnv $goSaved }
     $saved = $env:GOOS, $env:GOARCH, $env:CGO_ENABLED, $env:GOTOOLCHAIN, $env:GOFLAGS
     try {
-        $env:GOOS = 'windows'; $env:GOARCH = 'amd64'; $env:CGO_ENABLED = '0'
+        $env:GOOS = 'windows'; $env:GOARCH = $goarch; $env:CGO_ENABLED = '0'
         $env:GOTOOLCHAIN = 'local'; $env:GOFLAGS = '-mod=readonly'
         $ldflags = '-s -w -buildid='
         if ($pin) { $ldflags += " -X github.com/Higangssh/hyperbutler/internal/engine.pinnedManifest=$pin" }
@@ -224,16 +229,40 @@ try {
 
         # --- WebView2Loader.dll, for the window (hyperbutler gui, ADR 0008) ------------------
         # Microsoft's WebView2 SDK loader (BSD-3-Clause), next to hyperbutler.exe: the GUI
-        # loads it from there by full path. It comes from the module cache copy of the SDK
-        # that github.com/jchv/go-webview2 vendors (the version in go.mod), and must match
-        # the pinned SHA-256 and carry a valid Microsoft signature.
-        $wv2Mod = 'github.com/jchv/go-webview2'
-        $wv2Ver = ((Exec go list -m $wv2Mod) | Select-Object -First 1) -split ' ' | Select-Object -Last 1
-        $wv2 = (Exec go mod download -json "$wv2Mod@$wv2Ver") -join "`n" | ConvertFrom-Json
-        if (-not $wv2.Dir) { Fail "no module directory for $wv2Mod@$wv2Ver" }
-        $loaderSrc = Join-Path $wv2.Dir 'webviewloader\sdk\x64\WebView2Loader.dll'
-        $loaderPin = 'c4674acf95f0800793a4a6d61132adf5dfa694c218e482d86093494c4e84100a'
-        if ((Sha256 $loaderSrc) -ne $loaderPin) { Fail "WebView2Loader.dll in $wv2Mod@$wv2Ver does not match its pin" }
+        # loads it from there by full path. It comes from the Microsoft.Web.WebView2 NuGet
+        # package, downloaded from nuget.org at a pinned version and checked against the
+        # package's pinned SHA-256; the loader for the build's architecture must match its
+        # own pin and carry a valid Microsoft signature, and the license is the package's.
+        # (Not from github.com/jchv/go-webview2, which hyperbutler.exe no longer links: its
+        # copy of the SDK was a 2021 loader without ICoreWebView2EnvironmentOptions3, the
+        # interface that keeps crash dumps local.)
+        $wv2Ver = '1.0.4258.31'
+        $wv2Url = "https://api.nuget.org/v3-flatcontainer/microsoft.web.webview2/$wv2Ver/microsoft.web.webview2.$wv2Ver.nupkg"
+        $wv2Pin = '56f7f4b8bf9aee4b8efefbbdd4f67d5f74ebd1b100ed0806da71bf76af481aa9'
+        $loaders = @{   # GOARCH -> the package's loader and its SHA-256
+            amd64 = @('build/native/x64/WebView2Loader.dll', '3426dcc55fdfb8b5e7ac623cf33b4ccf283fbf68a0c5a65bddfdb4d749a8abee')
+            arm64 = @('build/native/arm64/WebView2Loader.dll', '4f48cb32d34298c86cca2108057eea0d900b5e422575e926e8086318a0b9cbf0')
+        }
+        $wv2LicPin = '0af8f1b807512aae39c2ac1aa4d0cae65cabecb6fd554b8439a5162a0d6eca55'
+        if (-not $loaders.ContainsKey($goarch)) { Fail "no WebView2Loader.dll is pinned for GOARCH=$goarch (only $($loaders.Keys -join ', '))" }
+        $wv2Dir = Join-Path $Out 'webview2-sdk'
+        if (Test-Path $wv2Dir) { Remove-Item -Recurse -Force $wv2Dir }
+        New-Item -ItemType Directory $wv2Dir | Out-Null
+        $nupkg = Join-Path $wv2Dir "microsoft.web.webview2.$wv2Ver.nupkg"
+        Invoke-WebRequest -UseBasicParsing -Uri $wv2Url -OutFile $nupkg
+        if ((Sha256 $nupkg) -ne $wv2Pin) { Fail "the Microsoft.Web.WebView2 $wv2Ver package does not match its pin" }
+        $zip = [IO.Compression.ZipFile]::OpenRead($nupkg)
+        try {
+            foreach ($e in @($loaders[$goarch][0], 'LICENSE.txt')) {
+                $entry = $zip.GetEntry($e)
+                if (-not $entry) { Fail "the Microsoft.Web.WebView2 package has no $e" }
+                [IO.Compression.ZipFileExtensions]::ExtractToFile($entry, (Join-Path $wv2Dir (Split-Path -Leaf $e)), $true)
+            }
+        } finally { $zip.Dispose() }
+        $loaderSrc = Join-Path $wv2Dir 'WebView2Loader.dll'
+        $loaderPin = $loaders[$goarch][1]
+        if ((Sha256 $loaderSrc) -ne $loaderPin) { Fail "WebView2Loader.dll ($goarch) in Microsoft.Web.WebView2 $wv2Ver does not match its pin" }
+        if ((Sha256 (Join-Path $wv2Dir 'LICENSE.txt')) -ne $wv2LicPin) { Fail "the WebView2 SDK license changed; review it and update the pin" }
         $sig = Get-AuthenticodeSignature -LiteralPath $loaderSrc
         if ($sig.Status -ne 'Valid' -or $sig.SignerCertificate.Subject -notmatch '^CN=Microsoft Corporation,') {
             Fail "WebView2Loader.dll is not validly signed by Microsoft ($($sig.Status))"
@@ -241,10 +270,10 @@ try {
         Copy-Item -LiteralPath $loaderSrc (Join-Path $stage 'WebView2Loader.dll')
         $wv2Lic = Join-Path $tp 'webview2'
         New-Item -ItemType Directory -Force $wv2Lic | Out-Null
-        Copy-Item -LiteralPath (Join-Path $wv2.Dir 'webviewloader\sdk\LICENSE.txt') (Join-Path $wv2Lic 'LICENSE.txt')
+        Copy-Item -LiteralPath (Join-Path $wv2Dir 'LICENSE.txt') (Join-Path $wv2Lic 'LICENSE.txt')
         $index.Add('')
-        $index.Add('== WebView2Loader.dll: Microsoft Edge WebView2 SDK loader, x64, Microsoft-signed')
-        $index.Add("Microsoft.Web.WebView2 loader  (from $wv2Mod@$wv2Ver, sha256 $loaderPin)  webview2/LICENSE.txt (BSD-3-Clause)")
+        $index.Add("== WebView2Loader.dll: Microsoft Edge WebView2 SDK loader, $goarch, Microsoft-signed")
+        $index.Add("Microsoft.Web.WebView2 $wv2Ver loader  (nuget.org package sha256 $wv2Pin; dll sha256 $loaderPin)  webview2/LICENSE.txt (BSD-3-Clause)")
     } finally {
         $env:GOOS, $env:GOARCH, $env:CGO_ENABLED, $env:GOTOOLCHAIN, $env:GOFLAGS = $saved
     }
@@ -478,7 +507,7 @@ try {
         "commit: $commit",
         "snapshot: $([bool]$Snapshot)",
         "go: $goVersion",
-        "build: GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -buildvcs=true -ldflags `"$ldflags`" ./cmd/hyperbutler",
+        "build: GOOS=windows GOARCH=$goarch CGO_ENABLED=0 go build -trimpath -buildvcs=true -ldflags `"$ldflags`" ./cmd/hyperbutler",
         "hyperbutler.exe: $(Sha256 $exe)",
         "guest image pin (image.json sha256): $(if ($pin) { $pin } else { 'none' })",
         'guest image:'

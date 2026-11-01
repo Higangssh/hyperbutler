@@ -33,12 +33,14 @@ Third-party Go modules linked into hyperbutler binaries:
 
 Shipped next to hyperbutler.exe for the window (hyperbutler gui, ADR 0008):
 
-- WebView2Loader.dll, the loader of the Microsoft Edge WebView2 SDK (x64), signed by
-  Microsoft. BSD 3-Clause License, Copyright (C) Microsoft Corporation. dist/package.ps1
-  takes it from the copy of the SDK in github.com/jchv/go-webview2 (the version in
-  go.mod), checks its SHA-256 and signature, and puts its license in THIRD-PARTY/webview2.
+- WebView2Loader.dll, the loader of the Microsoft Edge WebView2 SDK (the build's
+  architecture), signed by Microsoft. BSD 3-Clause License, Copyright (C) Microsoft
+  Corporation. dist/package.ps1 downloads the Microsoft.Web.WebView2 NuGet package at a
+  pinned version from nuget.org, checks the package's and the loader's SHA-256 and the
+  loader's signature, and puts the package's license in THIRD-PARTY/webview2.
   internal/gui/webview2 is hyperbutler's own binding of the WebView2 interfaces; no code
-  of go-webview2 is linked into hyperbutler.exe.
+  of github.com/jchv/go-webview2 (used only by the spike in spike/gui) is linked into
+  hyperbutler.exe.
 
 The user-mode guest network (internal/netstack, ADR 0006) links these into hyperbutler-dev:
 
