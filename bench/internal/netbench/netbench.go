@@ -7,9 +7,11 @@ package netbench
 
 import (
 	"context"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"hash/crc32"
 	"io"
 	"net"
 	"net/http"
@@ -25,9 +27,13 @@ const BufSize = 256 << 10
 
 // Server kinds, at consecutive ports from a base port.
 const (
-	Source = 0 // writes zeros until the peer closes
-	Sink   = 1 // reads until EOF, then writes one byte
-	Echo   = 2 // returns every byte (latency)
+	// Source writes an 8-byte seed, then the pattern of that seed (see Pattern) until
+	// the peer closes. Download checks what it reads against it.
+	Source = 0
+	// Sink reads until EOF, then writes how many bytes it read (8 bytes) and their
+	// CRC-32C (4 bytes), so that Upload can check that every byte arrived intact.
+	Sink = 1
+	Echo = 2 // returns every byte (latency)
 	// Ping returns one byte, then waits for the client to go away (connections per
 	// second). The client resets the connection (SO_LINGER 0): an orderly close leaves
 	// TIME_WAIT behind, and at thousands of connections per second that exhausts the
@@ -35,8 +41,6 @@ const (
 	Ping  = 3
 	Kinds = 4
 )
-
-var zeros = make([]byte, BufSize)
 
 // Serve accepts on ln until it fails and serves each connection as kind.
 func Serve(ln net.Listener, kind int) error {
@@ -56,19 +60,31 @@ func serveConn(c net.Conn, kind int) {
 	defer func() { _ = c.Close() }()
 	switch kind {
 	case Source:
+		seed := newSeed()
+		var hdr [8]byte
+		binary.BigEndian.PutUint64(hdr[:], seed)
+		if _, err := c.Write(hdr[:]); err != nil {
+			return
+		}
+		pw := newPatternWriter(NewPattern(seed))
 		for {
-			if _, err := c.Write(zeros); err != nil {
+			if _, err := c.Write(pw.next()); err != nil {
 				return
 			}
 		}
 	case Sink:
 		buf := make([]byte, BufSize)
+		var n int64
+		var sum uint32
 		for {
-			if _, err := c.Read(buf); err != nil {
+			k, err := c.Read(buf)
+			n += int64(k)
+			sum = crc32.Update(sum, castagnoli, buf[:k])
+			if err != nil {
 				break
 			}
 		}
-		_, _ = c.Write([]byte{1})
+		_, _ = c.Write(sinkReport(n, sum))
 	case Ping:
 		var b [1]byte
 		_ = c.SetDeadline(time.Now().Add(10 * time.Second))
@@ -124,6 +140,10 @@ type Result struct {
 	MaxUs   float64 `json:"max_us,omitempty"`
 	ConnsPS float64 `json:"conns_per_s,omitempty"`
 	Errors  int64   `json:"errors,omitempty"`
+	// Corrupt counts data that arrived different from what was sent: BlockSize blocks
+	// for a download, and 1 for an upload whose CRC-32C or length the sink reported
+	// different. Anything but 0 fails the benchmark.
+	Corrupt int64 `json:"corrupt,omitempty"`
 	// FirstError is the first error seen, if any.
 	FirstError string `json:"first_error,omitempty"`
 }
@@ -148,7 +168,8 @@ func ParseResult(line []byte) (Result, error) {
 
 func gbit(n int64, d time.Duration) float64 { return float64(n) * 8 / d.Seconds() / 1e9 }
 
-// Download reads from a Source for d and reports the rate.
+// Download reads from a Source for d, checks one block in VerifyEvery against the
+// pattern that was sent, and reports the rate.
 func Download(ctx context.Context, addr string, d time.Duration) (Result, error) {
 	c, err := dial(ctx, addr)
 	if err != nil {
@@ -160,25 +181,32 @@ func Download(ctx context.Context, addr string, d time.Duration) (Result, error)
 
 func readFor(r net.Conn, d time.Duration, name string) (Result, error) {
 	buf := make([]byte, BufSize)
-	var got int64
 	t0 := time.Now()
 	end := t0.Add(d)
 	_ = r.SetReadDeadline(end.Add(30 * time.Second))
+	var hdr [8]byte
+	if _, err := io.ReadFull(r, hdr[:]); err != nil {
+		return Result{}, fmt.Errorf("%s: reading the source's seed: %w", name, err)
+	}
+	v := newVerifier(NewPattern(binary.BigEndian.Uint64(hdr[:])), VerifyEvery)
+	got := int64(len(hdr))
 	for time.Now().Before(end) {
 		n, err := r.Read(buf)
 		got += int64(n)
+		v.check(buf[:n])
 		if err != nil {
 			return Result{}, fmt.Errorf("%s: %w after %d bytes", name, err, got)
 		}
 	}
 	el := time.Since(t0)
-	return Result{Name: name, Bytes: got, Seconds: el.Seconds(), Gbit: gbit(got, el)}, nil
+	return Result{Name: name, Bytes: got, Seconds: el.Seconds(), Gbit: gbit(got, el), Corrupt: v.corrupt}, nil
 }
 
 type closeWriter interface{ CloseWrite() error }
 
-// Upload writes to a Sink for d, half-closes and waits for the sink's
-// acknowledgement, so every byte counted has arrived.
+// Upload writes the pattern of a fresh seed to a Sink for d, half-closes and waits for
+// the sink's report, so every byte counted has arrived; Corrupt is 1 if the sink read
+// other bytes than were sent.
 func Upload(ctx context.Context, addr string, d time.Duration) (Result, error) {
 	c, err := dial(ctx, addr)
 	if err != nil {
@@ -186,12 +214,16 @@ func Upload(ctx context.Context, addr string, d time.Duration) (Result, error) {
 	}
 	defer func() { _ = c.Close() }()
 	var sent int64
+	var sum uint32
+	pw := newPatternWriter(NewPattern(newSeed()))
 	t0 := time.Now()
 	end := t0.Add(d)
 	_ = c.SetDeadline(end.Add(30 * time.Second))
 	for time.Now().Before(end) {
-		n, err := c.Write(zeros)
+		b := pw.next()
+		n, err := c.Write(b)
 		sent += int64(n)
+		sum = crc32.Update(sum, castagnoli, b[:n])
 		if err != nil {
 			return Result{}, fmt.Errorf("upload: %w after %d bytes", err, sent)
 		}
@@ -203,12 +235,17 @@ func Upload(ctx context.Context, addr string, d time.Duration) (Result, error) {
 	if err := cw.CloseWrite(); err != nil {
 		return Result{}, err
 	}
-	var ack [1]byte
-	if _, err := io.ReadFull(c, ack[:]); err != nil {
+	var rep [sinkReportLen]byte
+	if _, err := io.ReadFull(c, rep[:]); err != nil {
 		return Result{}, fmt.Errorf("upload: waiting for the sink: %w", err)
 	}
 	el := time.Since(t0)
-	return Result{Name: "upload", Bytes: sent, Seconds: el.Seconds(), Gbit: gbit(sent, el)}, nil
+	r := Result{Name: "upload", Bytes: sent, Seconds: el.Seconds(), Gbit: gbit(sent, el)}
+	if n, s := binary.BigEndian.Uint64(rep[:8]), binary.BigEndian.Uint32(rep[8:]); n != uint64(sent) || s != sum {
+		r.Corrupt = 1
+		r.FirstError = fmt.Sprintf("the sink read %d bytes with CRC-32C %08x; sent %d with %08x", n, s, sent, sum)
+	}
+	return r, nil
 }
 
 // Clock returns a monotonic time in nanoseconds. Windows overrides it with the

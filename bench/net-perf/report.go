@@ -133,6 +133,17 @@ func Report(runs []runRec) string {
 			num(hm), span(h.vals), num(cm), span(c.vals), ratio*100,
 			num(median(c.cores)), perG, num(maxOf(c.ws)), num(maxOf(c.priv)), num(maxOf(c.heap)), num(median(c.gcs)))
 	}
+	var bulk, corrupt int64
+	for _, r := range runs {
+		if r.Result.Gbit > 0 && r.Test != "url" {
+			bulk++
+			corrupt += r.Result.Corrupt
+		}
+	}
+	if bulk > 0 {
+		fmt.Fprintf(&b, "\nBulk streams verified (download: one %d KiB block in %d; upload: CRC-32C of every byte): %d runs, %d corrupt.\n",
+			netbench.BlockSize>>10, netbench.VerifyEvery, bulk, corrupt)
+	}
 	var hasLat bool
 	for _, t := range order {
 		if len(lat[t]["container"]) > 0 {

@@ -31,11 +31,11 @@ func TestMeasurements(t *testing.T) {
 	ctx := context.Background()
 	d := 200 * time.Millisecond
 	r, err := Download(ctx, addr(Source), d)
-	if err != nil || r.Bytes == 0 || r.Gbit <= 0 {
+	if err != nil || r.Bytes == 0 || r.Gbit <= 0 || r.Corrupt != 0 {
 		t.Fatalf("download: %+v %v", r, err)
 	}
 	r, err = Upload(ctx, addr(Sink), d)
-	if err != nil || r.Bytes == 0 || r.Gbit <= 0 {
+	if err != nil || r.Bytes == 0 || r.Gbit <= 0 || r.Corrupt != 0 {
 		t.Fatalf("upload: %+v %v", r, err)
 	}
 	r, err = RoundTrips(ctx, addr(Echo), 200, 64, "")

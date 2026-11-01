@@ -10,6 +10,10 @@
 //   - pub-dl, pub-ul, pub-rr, pub-cps: the same through `docker run -p` (inbound);
 //   - url: an internet download (HTTPS), host against container.
 //
+// The bulk streams carry a seeded pattern, not zeros (internal/netbench): a download
+// checks one 64 KiB block in netbench.VerifyEvery, an upload compares the CRC-32C of
+// what it sent with the sink's. Any corrupt data fails the run.
+//
 // During each container run it records the engine's CPU time, its private working set
 // (one sample mid-run and one after) and, with -debug-pipe, its private bytes and
 // GC count; -profile saves a CPU profile of the first round of each bulk test.

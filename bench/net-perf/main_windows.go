@@ -270,13 +270,18 @@ func (b *bench) record(test, side string, round int, profile bool, f func() (net
 	}
 	b.runs = append(b.runs, rec)
 	fmt.Fprintf(os.Stderr, "%-8s %-9s round %d: %s cpu %.2f ws %.0f MB gc %d\n", test, side, round, summary(r), rec.EngineCPU, float64(rec.EngineWS)/1e6, rec.GCs)
+	if r.Corrupt != 0 {
+		return fmt.Errorf("%s (%s, round %d): %d corrupt (data that arrived different from what was sent) %s", test, side, round, r.Corrupt, r.FirstError)
+	}
 	return nil
 }
 
 func summary(r netbench.Result) string {
 	switch {
-	case r.Gbit > 0:
+	case r.Gbit > 0 && r.Name == "url":
 		return fmt.Sprintf("%.2f Gbit/s", r.Gbit)
+	case r.Gbit > 0:
+		return fmt.Sprintf("%.2f Gbit/s corrupt %d", r.Gbit, r.Corrupt)
 	case r.ConnsPS > 0:
 		return fmt.Sprintf("%.0f conn/s (%d errors %s)", r.ConnsPS, r.Errors, r.FirstError)
 	case r.N > 0:

@@ -28,6 +28,7 @@ func TestReport(t *testing.T) {
 		"300%",
 		"| cps | conn/s | 2000 |",
 		"| rr | container | 50.0 | 120 | 300 | 900 |",
+		"4 runs, 0 corrupt.",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("report lacks %q:\n%s", want, out)
