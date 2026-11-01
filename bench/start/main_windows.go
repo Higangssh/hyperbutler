@@ -172,6 +172,8 @@ func once(ctx context.Context, c *config, cfgDir string) (r Run) {
 	sctx, cancel := context.WithTimeout(ctx, c.timeout)
 	t0 := time.Now()
 	_, err = c.hb.Start(sctx, c.startArgs...)
+	// A --pipe in -start-args is only in settings.json once the first start has run.
+	d.Host = hostmon.NpipeHost(c.hb.DockerPipe())
 	for err == nil {
 		if _, err = d.Run(sctx, "info", "--format", "{{.ServerVersion}}"); err == nil {
 			break

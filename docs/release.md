@@ -205,10 +205,14 @@ met blocks the release. Changing a gate needs an ADR change, not a waiver here.
   current release, neither behind an upstream security release by more than 7 days.
 - [ ] `clients\docker.exe version` and `docker compose version` from the zip print the
   pinned versions, against the release candidate.
-- [ ] REQ-MEM-001: idle memory ≤ 400 MB (`bench/mem-idle`). Today 580 MiB; the A2b erofs
-  layout is the planned fix.
+- [ ] REQ-MEM-001: idle memory ≤ 400 MB (`bench/mem-idle`) against the release candidate.
+  2026-11-01, main at 0012298 with a local A2b image: median 313.9 MiB (329 MB; engine 19.1,
+  vmmem 289.3, vmwp 5.5 MiB), PASS. The engine's working set rose from 7.3 to 19.8 MiB over
+  the window (+21.7 MiB/h); the 24 h soak must show whether that levels off.
 - [ ] REQ-START-001 is re-measured with the release image (20 runs, warm), and the first
-  start after a host reboot is reported separately.
+  start after a host reboot is reported separately. 2026-11-01, same build and image:
+  median 1.48 s, p95 1.49 s over 20 runs (1 warm-up discarded), stop median 1.28 s, PASS.
+  Not a first start after a reboot (host up 48 h).
 
 **ADR 0006 (guest networking)**
 - [ ] Every row of the ADR 0006 acceptance gate reads "Yes" ("Gate results"), or ADR 0006
