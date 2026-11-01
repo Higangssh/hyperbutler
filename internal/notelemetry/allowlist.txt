@@ -1,0 +1,33 @@
+# Network APIs that production code may use (REQ-UX-005), one per line:
+#
+#   FILE RULE REASON
+#
+# FILE is relative to the repository root, RULE is what TestNoUnreviewedNetworkUse
+# reports, and REASON says why this use makes no request of hyperbutler's own: it
+# reaches only this machine (a pipe, an hvsock, loopback, a Unix socket in the guest),
+# or it carries the guest's traffic, which is the user's. An entry covers every use of
+# RULE in FILE, so keep files small enough that this stays meaningful.
+
+# The engine talks to the guest's dockerd (the Docker API) over hvsock. The Transport
+# literals have no Proxy (only http.DefaultTransport reads HTTP_PROXY) and their
+# DialContext ignores the address: every request goes to transport.HvsockDialer.
+internal/engine/console_windows.go net/http.Client GET /_ping to the guest dockerd over hvsock
+internal/engine/console_windows.go net/http.Transport DialContext is transport.HvsockDialer (the guest)
+internal/engine/net_windows.go net/http.Client container events and inspect from the guest dockerd over hvsock (auto-publish)
+internal/engine/net_windows.go net/http.Transport DialContext is transport.HvsockDialer (the guest)
+internal/engine/share_windows.go net/http.Client container events and list from the guest dockerd over hvsock (share pruning)
+internal/engine/share_windows.go net/http.Transport DialContext is transport.HvsockDialer (the guest)
+
+# The guest network (ADR 0006): the host side of connections and DNS queries the guest
+# makes. Only the guest's (the user's containers' and pulls') traffic goes this way;
+# bench/no-telemetry checks that the guest makes none of its own at idle.
+internal/netstack/stack.go net.Dialer dials what a guest connection or UDP flow asked for, after the Policy check
+internal/netstack/stack.go net.DefaultResolver answers the guest's DNS queries with the host resolver
+internal/netstack/hostgw.go net.Dialer host gateway: dials 127.0.0.1 or [::1] only (loopbackOnly control)
+
+# transport.TCPDialer exists for tests and debugging against a dockerd on TCP; no
+# production path constructs one.
+internal/transport/dialer.go net.Dialer TCPDialer, used only by tests
+
+# hyperbutlerd (guest) checks that dockerd answers on its Unix socket.
+guest/cmd/hyperbutlerd/daemoncfg.go net.Dialer dials /run/docker.sock ("unix") for GET /_ping
