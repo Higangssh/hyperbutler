@@ -33,7 +33,25 @@ func TestString(t *testing.T) {
 		{"jwt eyJhbGciOiJIUzI1.eyJzdWIiOiIx.c2lnbmF0dXJl end", "jwt [REDACTED] end"},
 		{"use ghp_0123456789abcdefghijABCDEFGHIJ now", "use [REDACTED] now"},
 		{"AKIAABCDEFGHIJKLMNOP", "[REDACTED]"},
+		// M-1: quoting, spacing and flag spellings.
+		{`password='` + s3 + `' x`, `password='[REDACTED]' x`},
+		{`export DOCKER_PASSWORD='` + s3 + `'`, `export DOCKER_PASSWORD='[REDACTED]'`},
+		{`password = ` + s3, `password = [REDACTED]`},
+		{`PASSWORD : ` + s3, `PASSWORD : [REDACTED]`},
+		{`token:` + s3 + ` next`, `token:[REDACTED] next`},
+		{`password: '` + s3 + `'`, `password: '[REDACTED]'`},
+		{`docker login -u bob -p ` + s3 + ` reg.example`, `docker login -u [REDACTED] -p [REDACTED] reg.example`},
+		{`docker login -p=` + s3 + ` reg`, `docker login -p=[REDACTED] reg`},
+		{`docker login --username bob --password -` + s3, `docker login --username bob --password [REDACTED]`},
+		{`--password "a b ` + s3 + `"`, `--password "[REDACTED]"`},
+		{"{\n  \"password\":\n    \"" + s3 + "\",\n  \"x\": 1\n}", "{\n  \"password\":\n    \"[REDACTED]\",\n  \"x\": 1\n}"},
+		{"\"auth\"\n  : \"" + s3 + "\"", "\"auth\"\n  : \"[REDACTED]\""},
+		{"\"token\":\n\n" + s3 + "\n", "\"token\":\n\n[REDACTED]\n"},
+		{"Authorization: Bearer ab=" + s3, "Authorization: [REDACTED]"},
+		{"got bearer ab=" + s3, "got bearer [REDACTED]"},
 		// Not secrets.
+		{`docker run -p 8080:80 -u 1000 nginx`, `docker run -p 8080:80 -u 1000 nginx`},
+		{"msg=\"reset password\"\n\"x\"", "msg=\"reset password\"\n\"x\""},
 		{`C:\Users\bob\AppData\Local\hyperbutler\logs\engine.log`, `C:\Users\bob\AppData\Local\hyperbutler\logs\engine.log`},
 		{`{"credsStore":"desktop","currentContext":"hyperbutler"}`, `{"credsStore":"desktop","currentContext":"hyperbutler"}`},
 		{`level=INFO msg="engine starting" pid=42 home=C:\h memoryMB=4096`, `level=INFO msg="engine starting" pid=42 home=C:\h memoryMB=4096`},
@@ -62,7 +80,8 @@ func BenchmarkLog(b *testing.B) {
 
 // TestLongLines: a long line of matches costs linear time, not quadratic.
 func TestLongLines(t *testing.T) {
-	for _, unit := range []string{`"token":"x",`, `token=x `, `"a":`, `"`, `\"auth\":\"x\" `, `http://a:b@`, `--token x `, `a:b@ `} {
+	for _, unit := range []string{`"token":"x",`, `token=x `, `"a":`, `"`, `\"auth\":\"x\" `, `http://a:b@`, `--token x `, `a:b@ `,
+		`password = 'x' `, `token : x `, `login -p x `, `-p `, `"password":` + "\n", `'`, `password='`} {
 		in := strings.Repeat(unit, (1<<20)/len(unit))
 		t0 := time.Now()
 		_ = String(in)

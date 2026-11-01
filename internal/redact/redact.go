@@ -5,8 +5,11 @@
 // What counts as a secret:
 //
 //   - the value of a key that names one (IsSecretKey: password, token, secret, auth,
-//     Authorization, ...), in JSON (also JSON escaped inside a string), as key=value,
-//     as "key: value", and as a "--password VALUE" flag;
+//     Authorization, ...), in JSON (also JSON escaped inside a string, and a member split
+//     across lines), as key=value, key = 'value' or "key: value" (also with a space
+//     before the colon or none after it), and as a "--password VALUE" flag;
+//   - docker login's -p and -u values, on lines with the word login only (elsewhere -p
+//     is a port);
 //   - the user information of a URL (https://user:pass@host, and user:pass@host without a
 //     scheme);
 //   - HTTP Authorization, Proxy-Authorization, Cookie and X-Registry-Auth header values;
@@ -86,18 +89,31 @@ var (
 	// Header: value, to the end of the line or a quote.
 	reHeader = regexp.MustCompile(`(?i)(?:proxy-)?authorization|x-registry-auth|x-registry-config|set-cookie|cookie|x-api-key`)
 	reHdrVal = regexp.MustCompile(`^(?:["']?[ \t]*[:=][ \t]*["']?)([^"'\r\n]*)`)
-	reBearer = regexp.MustCompile(`(?i)\bbearer[ \t]+([a-z0-9._~+/\-]+=*)`)
+	// '=' anywhere: a token is not always base64 with padding at the end only.
+	reBearer = regexp.MustCompile(`(?i)\bbearer[ \t]+([a-z0-9._~+/=\-]+)`)
 	// A JSON member: "key": "value" or "key": scalar.
 	reJSONKV = regexp.MustCompile(`"((?:[^"\\]|\\.)*)"\s*:\s*("(?:[^"\\]|\\.)*"|[^\s,}\]"]+)`)
 	// The same, JSON-escaped inside a string (a log line that quotes a JSON document).
 	reEscKV = regexp.MustCompile(`\\+"([^"\\]{1,64})\\+"\s*:\s*(\\+"[^"]*?\\+"|[^\s,}\]"\\]+)`)
-	// key=value and key="value" (slog, URL queries, environment, command lines).
-	reEqKV = regexp.MustCompile(`([A-Za-z0-9_.\-]{1,64})=("(?:[^"\\]|\\.)*"|[^\s&"',;]+)`)
-	// key: value, as in YAML or an error message.
-	reColonKV = regexp.MustCompile(`([A-Za-z0-9_.\-]{1,64}):[ \t]+([^\s"',;]+)`)
-	// --password VALUE.
-	reFlag = regexp.MustCompile(`(?i)(--?[a-z0-9\-]{1,64})[ \t]+([^\s"'-][^\s"']*)`)
-	reJWT  = regexp.MustCompile(`eyJ[A-Za-z0-9_\-]{5,}\.[A-Za-z0-9_\-]{5,}\.[A-Za-z0-9_\-]*`)
+	// key=value, key = value, key="value" and key='value' (slog, URL queries, the
+	// environment, shell and command lines: export DOCKER_PASSWORD='x').
+	reEqKV = regexp.MustCompile(`([A-Za-z0-9_.\-]{1,64})[ \t]*=[ \t]*("(?:[^"\\]|\\.)*"|'[^']*'|[^\s&"',;]+)`)
+	// key: value, key:value and key : value, as in YAML or an error message.
+	reColonKV = regexp.MustCompile(`([A-Za-z0-9_.\-]{1,64})[ \t]*:[ \t]*("(?:[^"\\]|\\.)*"|'[^']*'|[^\s"',;]+)`)
+	// --password VALUE. The value may start with '-' ("--password -x"): only a secret
+	// flag's value is redacted, so taking the next flag for one costs nothing.
+	reFlag = regexp.MustCompile(`(?i)(--?[a-z0-9\-]{1,64})[ \t]+("(?:[^"\\]|\\.)*"|'[^']*'|[^\s"']+)`)
+	// docker login's -p and -u (and -p=x, -pVALUE). Short flags mean different things to
+	// different commands (-p 8080:80 publishes a port), so this rule runs only on lines
+	// with the word login.
+	reLogin     = regexp.MustCompile(`(?i)\blogin\b`)
+	reLoginFlag = regexp.MustCompile(`(?:^|[\s"'])-[pu](?:[ \t]*=?[ \t]*)("(?:[^"\\]|\\.)*"|'[^']*'|[^\s"']+)`)
+	// A JSON member split across lines (text that is not one JSON document: a log, a
+	// truncated file): a secret key at the end of a line...
+	reTrailKey = regexp.MustCompile(`"((?:[^"\\]|\\.)*)"[ \t]*(:?)[ \t]*\r?\n?$`)
+	// ...and its value at the start of a following one.
+	reLeadVal = regexp.MustCompile(`^(?:"(?:[^"\\]|\\.)*"|[^\s,}\]"]+)`)
+	reJWT     = regexp.MustCompile(`eyJ[A-Za-z0-9_\-]{5,}\.[A-Za-z0-9_\-]{5,}\.[A-Za-z0-9_\-]*`)
 	// Tokens with a published prefix.
 	reToken = regexp.MustCompile(`\b(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|glpat-[A-Za-z0-9_\-]{20,}|dckr_pat_[A-Za-z0-9_\-]{20,}|AKIA[0-9A-Z]{16}|xox[abposr]-[A-Za-z0-9\-]{10,})`)
 )
@@ -131,6 +147,7 @@ var lineRules = []struct {
 	{hasKeyNeedle, keyed(reEqKV)},
 	{hasKeyNeedle, keyed(reColonKV)},
 	{hasKeyNeedle, keyed(reFlag)},
+	{func(raw, norm string) bool { return strings.Contains(norm, "login") && reLogin.MatchString(raw) }, quoted(reLoginFlag, 1)},
 }
 
 func hasKeyNeedle(_, norm string) bool {
@@ -190,20 +207,34 @@ func group(re *regexp.Regexp, g int) rule {
 func keyed(re *regexp.Regexp) rule {
 	return func(s string, add func(lo, hi int)) {
 		overlapping(re, s, 2, func(m []int) {
-			if !IsSecretKey(s[m[2]:m[3]]) {
-				return
-			}
-			lo, hi := m[4], m[5]
-			for lo < hi && (s[lo] == '"' || s[lo] == '\\') {
-				lo++
-			}
-			for hi > lo && (s[hi-1] == '"' || s[hi-1] == '\\') {
-				hi--
-			}
-			if hi > lo && s[lo:hi] != Mark {
-				add(lo, hi)
+			if IsSecretKey(s[m[2]:m[3]]) {
+				addValue(s, m[4], m[5], add)
 			}
 		})
+	}
+}
+
+// quoted redacts submatch g of every match of re, keeping its quotes.
+func quoted(re *regexp.Regexp, g int) rule {
+	return func(s string, add func(lo, hi int)) {
+		overlapping(re, s, g, func(m []int) {
+			if m[2*g] >= 0 {
+				addValue(s, m[2*g], m[2*g+1], add)
+			}
+		})
+	}
+}
+
+// addValue redacts s[lo:hi] without its quotes (and the backslashes of escaped ones).
+func addValue(s string, lo, hi int, add func(lo, hi int)) {
+	for lo < hi && (s[lo] == '"' || s[lo] == '\'' || s[lo] == '\\') {
+		lo++
+	}
+	for hi > lo && (s[hi-1] == '"' || s[hi-1] == '\'' || s[hi-1] == '\\') {
+		hi--
+	}
+	if hi > lo && s[lo:hi] != Mark {
+		add(lo, hi)
 	}
 }
 
@@ -215,16 +246,41 @@ func String(s string) string {
 	add := func(lo, hi int) { spans = append(spans, span{off + lo, off + hi}) }
 	whole(rePEM)(s, add)
 	// Line by line: every other rule stays within a line, and short inputs keep the
-	// regexp engine on its fast path.
+	// regexp engine on its fast path. split carries a JSON member split across lines: a
+	// secret key ended a line (needColon: without its ':'), and its value starts a later
+	// non-blank one.
+	split, needColon := false, false
 	for rest := s; rest != ""; {
 		line := rest
 		if i := strings.IndexByte(rest, '\n'); i >= 0 {
 			line = rest[:i+1]
 		}
 		norm := normalize(line)
+		if split && strings.TrimSpace(line) != "" {
+			split = false
+			v := strings.TrimLeft(line, " \t\r")
+			ok := !needColon
+			if needColon && v[0] == ':' {
+				ok, v = true, strings.TrimLeft(v[1:], " \t\r")
+				if strings.TrimSpace(v) == "" {
+					split, needColon = true, false // "key"\n:\n"value"
+				}
+			}
+			if ok && !split {
+				if m := reLeadVal.FindStringIndex(v); m != nil {
+					i := len(line) - len(v)
+					addValue(line, i+m[0], i+m[1], add)
+				}
+			}
+		}
 		for _, r := range lineRules {
 			if r.trigger(line, norm) {
 				r.run(line, add)
+			}
+		}
+		if t := strings.TrimRight(line, " \t\r\n"); t != "" && (t[len(t)-1] == '"' || t[len(t)-1] == ':') && hasKeyNeedle(line, norm) {
+			if m := reTrailKey.FindStringSubmatchIndex(line); m != nil && IsSecretKey(line[m[2]:m[3]]) {
+				split, needColon = true, m[5] == m[4]
 			}
 		}
 		off += len(line)
