@@ -15,6 +15,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
@@ -816,6 +817,19 @@ func TestHostResetPropagates(t *testing.T) {
 		case <-time.After(5 * time.Second):
 			t.Fatal("guest saw nothing")
 		}
+	}
+}
+
+// TestResetKinds: a host socket's reset is never taken for the guest's. On Linux both
+// read "connection reset by peer", and TestHostResetPropagates failed there.
+func TestResetKinds(t *testing.T) {
+	host := &net.OpError{Op: "read", Net: "tcp", Err: os.NewSyscallError("read", syscall.ECONNRESET)}
+	guest := &net.OpError{Op: "read", Net: "tcp", Err: errors.New(resetText)}
+	if guestReset(host) {
+		t.Error("a host socket's ECONNRESET is taken for a guest reset")
+	}
+	if !guestReset(guest) || hostReset(guest) {
+		t.Error("gonet's reset is not a guest reset")
 	}
 }
 

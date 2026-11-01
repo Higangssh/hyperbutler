@@ -485,8 +485,13 @@ type readerOnly struct{ io.Reader }
 var resetText = (&tcpip.ErrConnectionReset{}).String()
 
 // guestReset reports whether err, from reading the guest side, is a reset: the
-// innermost error is gonet's, with exactly gVisor's text.
+// innermost error is gonet's, with exactly gVisor's text. A host socket's error is
+// never one: on Linux ECONNRESET has the same text ("connection reset by peer"), and
+// taking a host reset for a guest one closed the guest side normally.
 func guestReset(err error) bool {
+	if errno := syscall.Errno(0); errors.As(err, &errno) {
+		return false
+	}
 	for ; err != nil; err = errors.Unwrap(err) {
 		if errors.Unwrap(err) == nil {
 			return err.Error() == resetText
