@@ -75,6 +75,22 @@ surprising. Numbers are from the maintainer's Windows 11 Home laptop unless note
 - **Evidence:** [wsl2-docker-pain-points.md](../research/wsl2-docker-pain-points.md) §8,
   [settings-and-gui.md](../research/settings-and-gui.md), [ADR 0008](../adr/0008-settings-gui-mcp.md).
 
+### 8. "Corrupted layer after rmi": we blamed fstrim, it was a buffer swap
+- **Hook:** 1 pull in 10 failed with `unexpected commit digest`, right after `docker rmi`
+  and a 2 GiB `fstrim`, and never with a 15 s pause. Everything pointed at the disk.
+- **Story:** containerd hashes a fresh ingest as it streams in, so a disk cannot change
+  that digest: the bytes were wrong before they were written. The host's link queue
+  kept a "spare" buffer for the next batch; a batch that grew too big was not handed
+  back, so the spare stayed aliased to the live queue and the next hvsock write sent
+  memory the stack was refilling. The guest trusts offloaded checksums (`NEEDS_CSUM`),
+  so TCP never noticed. The busy guest after `rmi` was only what made the queue fill.
+  A one-line fix; a CRC around each write counted 1-22 buffers changed in flight per
+  engine before it and 0 after.
+- **Evidence:** [guest-networking.md](../research/guest-networking.md) "Layer digest
+  mismatches on LAN pulls", `TestGuestLinkSpareNotLive`.
+- **Audience:** anyone writing a user-mode network stack, a virtio backend or a
+  double-buffered writer; "how to debug data corruption without guessing".
+
 ## Smaller posts and tips
 
 - **Changing daemon.json without restarting the VM:** delivered over the hvsock control

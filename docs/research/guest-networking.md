@@ -467,6 +467,86 @@ hb-dev.exe run -image OUT\image.json -bench-bytes 1073741824 [-net-offload=false
 hb-dev.exe run ... -net-stats 2s                                                     # gVisor's counters
 ```
 
+## Layer digest mismatches on LAN pulls (2026-11-01)
+
+**Symptom.** Pulling a test image from a LAN registry (a Raspberry Pi on 1 Gbit wired,
+`lanbench:1`: three random 256 MiB layers, amd64, FROM scratch), then `docker rmi`, back
+to back, failed 1 time in 10 with:
+
+```
+failed commit on ref "layer-sha256:d6e3...": commit failed: unexpected commit digest
+sha256:<random>, expected sha256:d6e3...: failed precondition
+```
+
+containerd logged `(*service).Write failed` with the right total (268517545). With a 15 s
+sleep between `rmi` and the next pull, 0 of 10 failed. Each `rmi` was followed by a
+delete-triggered `fstrim` of 1.2-2.5 GiB and a guest page-cache reclaim, so the data disk
+was the first suspect (REQ-DISK-003).
+
+**Cause: the host's queue to the guest sent a buffer it was overwriting.** It was not
+the disk. `guestLink` (`internal/netstack/link.go`) queues frames for the guest in
+`pending` and writes the whole queue with one hvsock write, while the stack keeps
+queueing into a second buffer, `spare`. After a write, the written buffer became the
+next spare only if it was not larger than about the queue bound (1 MiB plus a frame). A
+queue that grew past that under backpressure was dropped, and `spare` was left as it
+was: pointing at the array that had just become `pending`. The next write then sent
+`pending` while `enqueue` appended into the same array from offset 0. Whatever the
+Windows socket had not read yet was replaced by later frames.
+
+The guest cannot notice. In offload mode the host sends TCP segments with only the
+pseudo-header checksum (`NEEDS_CSUM`) and the guest kernel trusts them, as it trusts a
+virtio NIC. So a frame whose headers belonged to one segment and whose payload, or part
+of it, to another was accepted. The layer arrived complete, with the right size and the
+wrong digest, and containerd's commit check (it hashes the stream as it is written) was
+the first thing to see it.
+
+The queue only grows past the bound when the guest stops reading the link for a few
+milliseconds while a fast download is running, which is why the failures followed
+`rmi`: removing 1.5 GiB of snapshots and blobs, the trim and the cache reclaim keep the
+guest's vCPUs busy, and `netfwd` gets descheduled. That is consistent with the 15 s sleep
+avoiding it; the scheduling of `netfwd` itself was not measured. The bug came with the
+throughput work (d8ddbbd kept spares up to 4 MiB; 2bbd7fa lowered the bound to about
+1 MiB, which made a dropped spare, and so the alias, far more frequent).
+
+**Experiments** (same machine as above; product engine `hyperbutler start`, 4 GiB, 8
+vCPUs, containerd 2.3.7, docker 29.9.2, test home under `%TEMP%\hb-dev\integrity\`):
+
+| Experiment | Engine | Result |
+|---|---|---|
+| `pull`/`rmi -f` back to back, no sleep | before the fix | 0 of 70 failed; a trim after almost every `rmi` |
+| Same, with `netfwd` stopped (`SIGSTOP`) for 2-41 ms, then run for 1-30 ms, during the pull, on an engine that had already pulled | before | 0 of 18 |
+| Same with stalls, a fresh engine (counters below) | before, instrumented | 2 failed of 28 pulls (both `unexpected commit digest`, on layers `9ce4...` and `23d5...`) |
+| Counters per fresh engine, with stalls: aliased spares (`spare` and `pending` sharing an array at the swap) | before, instrumented | 0-42 per engine, in 9 of 10 engines; 36 and 42 in the two engines whose pull failed |
+| Same: queue writes whose buffer changed while the write was in flight (CRC before and after `Write`) | before, instrumented | 2, 22, 11 and 1 in 4 of 4 engines; the failure was in the one with 22 |
+| Same | fixed, instrumented | 0 aliased spares and 0 changed buffers in 5 engines (large queues still happen: 3-12 per engine); 0 of 10 pulls failed |
+| `pull`/`rmi -f` back to back | fixed | 0 of 40 failed |
+| Stall pulls, fresh engine per round | fixed | 0 of 20 (10 fresh engines, 2 pulls each) |
+| Three parallel `wget` of the layers in the guest, with stalls, `sha256sum` | before, instrumented | 27 of 27 matched; the queue never grew past the bound (busybox `wget` does not drive the link that hard), which is also why the earlier `wget` check passed |
+
+The aliased writes come mostly in the first pull after a start, while the queue's
+buffers are still growing; a long-running engine hits them more rarely, when the last
+frame of a full queue pushes it past its capacity.
+
+**What it was not:**
+- *Storage.* containerd hashes a fresh ingest as the bytes come in, so a disk that
+  stored them wrongly cannot change the commit digest; only a resumed ingest is re-read
+  from disk. After the failed commits here no ingest was left to resume. A storage stress
+  run on the data disk found no mismatch either: 100 random 256 MiB files written through `tee` into `sha256sum`, then re-read after `sync` and `drop_caches` and again with `dd iflag=direct`, all 300 hashes equal, while a second loop wrote and deleted 512 MiB random files (99 times), with an explicit `fstrim` after each delete in the first 60 rounds and only hyperbutlerd's own delete-triggered and periodic trims in the other 40.
+- *containerd or dockerd.* The failures follow the link's state, not the content store,
+  and stop with the link fixed. No upstream report matched this error after `rmi`.
+- *The API proxy.* It does not touch pulls.
+
+**Fix.** `writeLoop` takes the spare when it swaps buffers (`l.pending, l.spare =
+l.spare[:0], nil`), so the spare is only ever a buffer that is no longer being written,
+or nil. `TestGuestLinkSpareNotLive` replays the exact sequence (frame 18 arrived with
+frame 19's payload before the fix) and `TestGuestLinkBackpressureStress` runs free
+producers against a stalling reader (211-490 of 3000 frames corrupted before the fix,
+0 after).
+
+Still open: the earlier failing pull that took 4.2 s, faster than the line, was not
+explained; here a failed commit left no ingest behind to resume from. The receive path
+(guest to host) uses a different buffer scheme (`frame.Pump`) and was not part of this.
+
 ## Comparison
 
 | | HNS NAT (or ICS) | User-mode stack over hvsock |

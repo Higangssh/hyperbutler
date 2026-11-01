@@ -449,6 +449,13 @@ Otherwise freshly written data is under-counted for a while.
 
 ## Risks and open questions
 
+- **Layer digest mismatches after `rmi` (2026-11-01):** pulls failing with `unexpected
+  commit digest` right after a delete-triggered `fstrim` were investigated as a
+  REQ-DISK-003 problem. The cause was the network link, not the disk: see
+  [guest-networking.md](guest-networking.md) "Layer digest mismatches on LAN pulls".
+  A storage stress run on the data disk (256 MiB random files hashed on write, re-read
+  after `drop_caches` and with `O_DIRECT`, while other files were written, deleted and
+  trimmed) found 0 mismatches in 100 files.
 - **REQ-DISK-003 (integrity):** nothing here was crash-tested.
   - The spike's NBD server serves one connection at a time, and applies its requests in
     arrival order, so a trim never overtakes an earlier write. That ordering is a property of
