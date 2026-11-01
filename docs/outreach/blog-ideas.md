@@ -104,6 +104,13 @@ surprising. Numbers are from the maintainer's Windows 11 Home laptop unless note
   by itself (AuthRoot fills on demand), which is why the import runs only at boot and on
   an explicit apply: re-reading it on a reconnect would restart dockerd and every
   container.
+- **`localhost` and `127.0.0.1` can be two different servers:** Windows lets one
+  process bind `0.0.0.0:8080` (or `[::1]:8080`) while another holds `127.0.0.1:8080`. So
+  a "is this port free?" probe on the wildcard passes, the engine's `127.0.0.1` bind
+  fails, its `[::1]` bind succeeds, and `curl 127.0.0.1:8080` reaches the host program
+  while `curl localhost:8080` reaches the container. `docker run` itself succeeded.
+  Docker Desktop and a second engine side by side hit the same rule.
+  ([usage-scenarios.md](../research/usage-scenarios.md#s34-both-publish-the-same-port)).
 
 ## Still to measure before writing
 

@@ -1,7 +1,10 @@
 # Docker compatibility notes
 
 Known differences from Docker Desktop and Docker Engine on Linux (REQ-API-001). Only the
-networking, docker CLI and proxy notes exist so far.
+networking, docker CLI and proxy notes exist so far. Everyday situations (the engine
+stopped, sign-out and sleep, Docker Desktop running at the same time, other tools, other
+users, upgrades) are walked through in
+[research/usage-scenarios.md](research/usage-scenarios.md).
 
 ## host.docker.internal
 
@@ -93,6 +96,9 @@ uninstall` take the entry out.
   `cliPluginsExtraDirs`, was not checked.
 - `DOCKER_HOST` or `DOCKER_CONTEXT` in the environment overrides the selected context;
   `start` prints a note when they are set.
+- Both engines share the host's ports. A port Docker Desktop already publishes is not
+  mirrored by hyperbutler, and today only `engine.log` says so; see
+  [usage-scenarios.md, S3.4](research/usage-scenarios.md#s34-both-publish-the-same-port).
 
 **Windows on ARM64.** The release is x64 only (`hyperbutler-<tag>-windows-amd64.zip`).
 The x64 `hyperbutler.exe` and docker CLI would run under emulation on ARM64, but the guest
