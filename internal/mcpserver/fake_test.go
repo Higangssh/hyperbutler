@@ -36,6 +36,13 @@ type fakeEngine struct {
 	df         apiDF
 	pull       string // the pull answer stream
 	stats      apiStats
+	// warnings are the container create answer's Warnings.
+	warnings []string
+	// failMsg, when set, makes container actions and pulls fail with a 500 and this
+	// message, as dockerd relays a registry's or its own error.
+	failMsg string
+	// info is the /info answer (zero: a 4 GiB, 4 CPU VM).
+	info apiInfo
 }
 
 func newFakeEngine(t *testing.T) *fakeEngine {
@@ -106,6 +113,11 @@ func newFakeEngine(t *testing.T) *fakeEngine {
 		verb := r.PathValue("verb")
 		f.mu.Lock()
 		defer f.mu.Unlock()
+		if f.failMsg != "" && verb != "start" {
+			w.WriteHeader(http.StatusInternalServerError)
+			j(w, map[string]string{"message": f.failMsg})
+			return
+		}
 		switch verb {
 		case "start", "restart":
 			if verb == "start" && in.State.Running {
@@ -146,8 +158,11 @@ func newFakeEngine(t *testing.T) *fakeEngine {
 		in.State.Status = "created"
 		f.inspect[id] = in
 		f.mu.Unlock()
+		f.mu.Lock()
+		warnings := append([]string{}, f.warnings...)
+		f.mu.Unlock()
 		w.WriteHeader(http.StatusCreated)
-		j(w, map[string]any{"Id": id, "Warnings": []string{}})
+		j(w, map[string]any{"Id": id, "Warnings": warnings})
 	})
 	mux.HandleFunc("DELETE /containers/{id}", func(w http.ResponseWriter, r *http.Request) {
 		in, ok := lookup(r.PathValue("id"))
@@ -169,14 +184,30 @@ func newFakeEngine(t *testing.T) *fakeEngine {
 	mux.HandleFunc("DELETE /images/{name...}", func(w http.ResponseWriter, r *http.Request) {
 		j(w, []map[string]string{{"Untagged": r.PathValue("name")}, {"Deleted": "sha256:" + strings.Repeat("cd", 32)}})
 	})
-	mux.HandleFunc("POST /images/create", func(w http.ResponseWriter, _ *http.Request) { _, _ = io.WriteString(w, f.pull) })
+	mux.HandleFunc("POST /images/create", func(w http.ResponseWriter, _ *http.Request) {
+		f.mu.Lock()
+		fail, pull := f.failMsg, f.pull
+		f.mu.Unlock()
+		if fail != "" {
+			w.WriteHeader(http.StatusInternalServerError)
+			j(w, map[string]string{"message": fail})
+			return
+		}
+		_, _ = io.WriteString(w, pull)
+	})
 	mux.HandleFunc("GET /volumes", func(w http.ResponseWriter, _ *http.Request) {
 		j(w, map[string]any{"Volumes": f.volumes, "Warnings": nil})
 	})
 	mux.HandleFunc("DELETE /volumes/{name}", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) })
 	mux.HandleFunc("GET /system/df", func(w http.ResponseWriter, _ *http.Request) { j(w, f.df) })
 	mux.HandleFunc("GET /info", func(w http.ResponseWriter, _ *http.Request) {
-		j(w, apiInfo{ServerVersion: "29.0.0", MemTotal: 4 << 30, NCPU: 4})
+		f.mu.Lock()
+		info := f.info
+		f.mu.Unlock()
+		if info.MemTotal == 0 {
+			info = apiInfo{ServerVersion: "29.0.0", MemTotal: 4 << 30, NCPU: 4}
+		}
+		j(w, info)
 	})
 	mux.HandleFunc("POST /{kind}/prune", func(w http.ResponseWriter, r *http.Request) {
 		j(w, map[string]any{"ContainersDeleted": []string{"a", "b"}, "SpaceReclaimed": 1234})

@@ -413,7 +413,7 @@ func TestRun(t *testing.T) {
 	cs := writeSession(t, f, h, false)
 	var r struct{ ID, Name, State string }
 	callJSON(t, cs, "run", map[string]any{"image": "busybox:1.37", "name": "box", "command": []string{"sleep", "60"},
-		"env": []string{"A=1"}, "ports": []string{"8080:80", "5353:53/udp"}, "restart": "unless-stopped"}, &r)
+		"env": []string{"A=1"}, "ports": []string{"8080:80", "5353:53/udp"}, "restart": "on-failure"}, &r)
 	if r.Name != "box" || r.State != "running" || r.ID != "abababababab" {
 		t.Errorf("run = %+v", r)
 	}
@@ -422,8 +422,10 @@ func TestRun(t *testing.T) {
 		t.Fatal(err)
 	}
 	hc := body["HostConfig"].(map[string]any)
+	// HostIp "": every guest address, which the engine mirrors on Windows' 127.0.0.1
+	// and [::1] only (TestRunBindingsAreMirrored).
 	pb := fmt.Sprint(hc["PortBindings"])
-	if pb != "map[53/udp:[map[HostIp:127.0.0.1 HostPort:5353]] 80/tcp:[map[HostIp:127.0.0.1 HostPort:8080]]]" {
+	if pb != "map[53/udp:[map[HostIp: HostPort:5353]] 80/tcp:[map[HostIp: HostPort:8080]]]" {
 		t.Errorf("bindings %s", pb)
 	}
 	for _, k := range []string{"Binds", "Mounts", "Privileged", "NetworkMode", "CapAdd"} {
@@ -431,7 +433,7 @@ func TestRun(t *testing.T) {
 			t.Errorf("HostConfig has %s", k)
 		}
 	}
-	if fmt.Sprint(body["Labels"]) != "map["+mcpLabel+":run]" || fmt.Sprint(hc["RestartPolicy"]) != "map[Name:unless-stopped]" {
+	if fmt.Sprint(body["Labels"]) != "map["+mcpLabel+":run]" || fmt.Sprint(hc["RestartPolicy"]) != fmt.Sprintf("map[MaximumRetryCount:%d Name:on-failure]", maxRetries) {
 		t.Errorf("body %v", body)
 	}
 	for _, args := range []map[string]any{
@@ -459,18 +461,20 @@ func TestPull(t *testing.T) {
 {"status":"Status: Downloaded newer image for busybox:1.37"}
 `
 	var r struct {
-		Image  string
-		Status []string
+		Image         string
+		UntrustedNote string
+		UntrustedText string
 	}
 	callJSON(t, cs, "pull", map[string]any{"image": "busybox:1.37"}, &r)
-	if r.Image != "busybox:1.37" || len(r.Status) != 3 || !strings.Contains(r.Status[2], "Downloaded newer image") {
+	status := strings.Split(r.UntrustedText, "\n")
+	if r.Image != "busybox:1.37" || len(status) != 3 || !strings.Contains(status[2], "Downloaded newer image") || r.UntrustedNote == "" {
 		t.Errorf("pull = %+v", r)
 	}
 	if !slices.Contains(f.reqs(), "POST /images/create?fromImage=busybox&tag=1.37") {
 		t.Errorf("requests %v", f.reqs())
 	}
-	callJSON(t, cs, "pull", map[string]any{"image": "ghcr.io/o/n"}, &r)
-	if !slices.Contains(f.reqs(), "POST /images/create?fromImage=ghcr.io%2Fo%2Fn&tag=latest") {
+	callJSON(t, cs, "pull", map[string]any{"image": "docker.io/library/busybox"}, &r)
+	if !slices.Contains(f.reqs(), "POST /images/create?fromImage=docker.io%2Flibrary%2Fbusybox&tag=latest") {
 		t.Errorf("requests %v", f.reqs())
 	}
 	f.pull = `{"status":"Pulling"}` + "\n" + `{"error":"pull access denied for x, repository does not exist","errorDetail":{"message":"denied"}}` + "\n"
@@ -487,7 +491,8 @@ func TestConfigSet(t *testing.T) {
 	if !r.OK || !slices.Contains(h.Calls(), "config set memory --apply") {
 		t.Errorf("config_set = %+v, calls %v", r, h.Calls())
 	}
-	for _, k := range []string{"proxy.http", "PROXY.HTTPS", "ca.extraFile", "data.dir"} {
+	for _, k := range []string{"proxy.http", "PROXY.HTTPS", "ca.extraFile", "data.dir", "hostGateway.enabled", "hostGateway.ports",
+		"pipe", "ca.import", "proxy.noProxy", "autostart", "updateCheck"} {
 		s, isErr := call(t, cs, "config_set", map[string]any{"key": k, "value": "http://u:p@evil:1"})
 		if strings.Contains(s, "[REDACTED]") {
 			t.Errorf("config_set %s: the advice is redacted: %q", k, s)
@@ -500,7 +505,7 @@ func TestConfigSet(t *testing.T) {
 		t.Errorf("unknown key: %q", s)
 	}
 	for _, c := range h.Calls() {
-		if strings.Contains(c, "proxy") || strings.Contains(c, "ca.") || strings.Contains(c, "data.") || strings.Contains(c, "nope") {
+		if c != "config set memory --apply" {
 			t.Errorf("refused key reached the host: %q", c)
 		}
 	}
@@ -509,13 +514,13 @@ func TestConfigSet(t *testing.T) {
 func TestStartStop(t *testing.T) {
 	f, h := newFakeEngine(t), &fakeHost{}
 	cs := writeSession(t, f, h, false)
-	var r CommandResult
+	var r EngineCommandResult
 	callJSON(t, cs, "start", nil, &r)
-	if !strings.Contains(r.Output, "is running") {
+	if !strings.Contains(r.UntrustedText, "is running") || r.UntrustedNote == "" {
 		t.Errorf("start = %+v", r)
 	}
 	callJSON(t, cs, "stop", nil, &r)
-	if !strings.Contains(r.Output, "running container stops") {
+	if !strings.Contains(r.UntrustedText, "running container stops") {
 		t.Errorf("stop = %+v", r)
 	}
 	if c := h.Calls(); !slices.Equal(c, []string{"start", "stop"}) {

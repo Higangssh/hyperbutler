@@ -75,6 +75,23 @@ func (in *install) checkUpdate(stderr io.Writer) *updatecheck.Record {
 	return &next
 }
 
+// lastUpdate is the last check's record without making one (nil when the check is off,
+// hyperbutler is not set up, or no check was made yet).
+func (in *install) lastUpdate() *updatecheck.Record {
+	if in.settings == nil || !in.settings.UpdateChecked() {
+		return nil
+	}
+	b, err := engine.ReadFileLimit(updateRecordPath(in.l), 4<<10)
+	if err != nil {
+		return nil
+	}
+	r := updatecheck.ParseRecord(b)
+	if r.Checked.IsZero() {
+		return nil
+	}
+	return &r
+}
+
 // noteUpdate prints the notice for r, if any.
 func noteUpdate(w io.Writer, r *updatecheck.Record) {
 	if r == nil {

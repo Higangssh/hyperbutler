@@ -210,10 +210,12 @@ func collect(now time.Time) *bundle {
 		}
 	}
 
-	// status --json, exactly as the command prints it.
+	// status --json, as the command prints it, but without making the update check:
+	// diagnose makes no network request (and the MCP diagnose tool is a read tool,
+	// REQ-UX-022). The update field is the last check's record.
 	if herr == nil && settingsErr == nil {
 		var sb bytes.Buffer
-		if _, err := cmdStatus([]string{"--json"}, &sb, io.Discard); err == nil {
+		if _, err := statusCommand([]string{"--json"}, &sb, io.Discard, false); err == nil {
 			b.add("status.json", redact.JSON(sb.Bytes()))
 		} else {
 			b.skip("status.json", err.Error())

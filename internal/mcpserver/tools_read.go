@@ -10,6 +10,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -21,17 +22,20 @@ type noArgs struct{}
 func (t *toolset) addRead(s *mcp.Server) {
 	add(s, &mcp.Tool{Name: "status", Annotations: readOnly,
 		Description: "Whether the hyperbutler engine runs, and its VM, data disk, settings summary, docker context and Docker CLI: " +
-			"the same JSON document as `hyperbutler status --json` (schema 1). Works while the engine is stopped. " + noArgsDoc,
+			"the JSON document of `hyperbutler status --json` (schema 1), except that its free-text fields (state.error, state.daemonConfig.error, " +
+			"state.daemonConfig.env.error, state.hostGateway.error, state.unpublishedPorts[].reason) are moved into untrustedFields, each with its untrustedText. " +
+			"It makes no network request: the update field is the last update check, which this tool never makes. Works while the engine is stopped. " + noArgsDoc,
 	}, readTimeout, func(ctx context.Context, _ noArgs) (any, error) {
 		b, err := t.o.Host.Status(ctx)
 		if err != nil {
-			return nil, err
+			return nil, fromOther("hyperbutler status failed", err)
 		}
-		return rawJSON(b), nil
+		return statusResult(b)
 	})
 	add(s, &mcp.Tool{Name: "containers", Annotations: readOnly,
 		Description: fmt.Sprintf("The containers of the hyperbutler engine, running and stopped: name, short id, image, state, "+
-			"published ports, restart policy and Compose project. At most %d; truncated: true when there are more.", maxItems),
+			"published ports, restart policy and Compose project. At most %d; truncated: true when there are more. "+
+			"The restart policy takes one inspect per container: it is shown for the first %d, and unknown after them.", maxItems, maxInspects),
 	}, readTimeout, t.containers)
 	add(s, &mcp.Tool{Name: "logs", Annotations: readOnly,
 		Description: fmt.Sprintf("The last lines of a container's output (stdout and stderr, as `docker logs --tail`), redacted. "+
@@ -58,7 +62,7 @@ func (t *toolset) addRead(s *mcp.Server) {
 	}, readTimeout, func(ctx context.Context, _ noArgs) (any, error) {
 		b, err := t.o.Host.Settings(ctx)
 		if err != nil {
-			return nil, err
+			return nil, fromOther("hyperbutler config list failed", err)
 		}
 		return rawJSON(b), nil
 	})
@@ -68,7 +72,7 @@ func (t *toolset) addRead(s *mcp.Server) {
 	}, writeTimeout, func(ctx context.Context, _ noArgs) (any, error) {
 		b, err := t.o.Host.Diagnose(ctx)
 		if err != nil {
-			return nil, err
+			return nil, fromOther("hyperbutler diagnose failed", err)
 		}
 		return rawJSON(b), nil
 	})
@@ -186,23 +190,91 @@ func (t *toolset) containers(ctx context.Context, in containersIn) (any, error) 
 		for _, p := range c.Ports {
 			ci.Ports = append(ci.Ports, field(portText(p), &cut))
 		}
-		var ins apiInspect
-		if err := d.getJSON(ctx, "/containers/"+url.PathEscape(c.ID)+"/json", nil, &ins); err == nil {
-			ci.RestartPolicy = field(ins.HostConfig.RestartPolicy.Name, &cut)
-		} else if !isNotFound(err) { // a container removed meanwhile has none
-			return nil, err
-		}
-		if ci.RestartPolicy == "" {
-			ci.RestartPolicy = "no"
-		}
-		ci.ComesBack = ci.RestartPolicy == "always" || ci.RestartPolicy == "unless-stopped"
 		out = append(out, ci)
+	}
+	// The list has no restart policy: it takes an inspect per container. At most
+	// maxInspects of them, maxInspectsAtOnce at a time, and none once inspectBudget has
+	// passed, so a long list stays within the tool's time limit; the rest say unknown.
+	policies, err := restartPolicies(ctx, d, list, time.Now().Add(inspectBudget))
+	if err != nil {
+		return nil, err
+	}
+	note := ""
+	for i := range out {
+		p, ok := policies[i]
+		switch {
+		case !ok:
+			out[i].RestartPolicy = "unknown"
+			cut = true
+			note = fmt.Sprintf("the restart policy is known for the first %d containers only (one inspect each, within %v); docker inspect shows the others", len(policies), inspectBudget)
+			continue
+		case p == "":
+			p = "no"
+		}
+		out[i].RestartPolicy = field(p, &cut)
+		out[i].ComesBack = p == "always" || p == "unless-stopped"
 	}
 	return struct {
 		Containers []ContainerInfo `json:"containers"`
 		Total      int             `json:"total"`
 		Truncated  bool            `json:"truncated"`
-	}{out, total, cut}, nil
+		Note       string          `json:"note,omitempty"`
+	}{out, total, cut, note}, nil
+}
+
+// The bounds on the containers tool's inspects.
+const (
+	maxInspects       = 50
+	maxInspectsAtOnce = 4
+	inspectBudget     = readTimeout / 2
+)
+
+// restartPolicies inspects up to maxInspects of list's containers, from the first, and
+// returns the restart policy of each by index ("" for a container removed meanwhile).
+// An index is missing when the cap or deadline left it out. Any error other than a
+// container's 404 fails the call.
+func restartPolicies(ctx context.Context, d *dockerClient, list []apiContainer, deadline time.Time) (map[int]string, error) {
+	n := min(len(list), maxInspects)
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	var (
+		mu    sync.Mutex
+		out   = map[int]string{}
+		first error
+		wg    sync.WaitGroup
+		next  = make(chan int)
+	)
+	for range min(n, maxInspectsAtOnce) {
+		wg.Go(func() {
+			for i := range next {
+				var ins apiInspect
+				err := d.getJSON(ctx, "/containers/"+url.PathEscape(list[i].ID)+"/json", nil, &ins)
+				mu.Lock()
+				switch {
+				case err == nil:
+					out[i] = ins.HostConfig.RestartPolicy.Name
+				case isNotFound(err): // removed meanwhile: it has none
+					out[i] = ""
+				case first == nil:
+					first = err
+					cancel()
+				}
+				mu.Unlock()
+			}
+		})
+	}
+	for i := range n {
+		if time.Now().After(deadline) || ctx.Err() != nil {
+			break
+		}
+		next <- i
+	}
+	close(next)
+	wg.Wait()
+	if first != nil {
+		return nil, first
+	}
+	return out, nil
 }
 
 // --- logs ------------------------------------------------------------------------------
@@ -287,7 +359,7 @@ func (t *toolset) engineLogs(ctx context.Context, in engineLogsIn) (any, error) 
 	}
 	raw, err := t.o.Host.EngineLog(ctx, console, tail)
 	if err != nil {
-		return nil, err
+		return nil, fromOther("hyperbutler logs failed", err)
 	}
 	cut := false
 	if len(raw) > logReadMax {
@@ -408,7 +480,7 @@ func (t *toolset) hostStatus(ctx context.Context) (hostDisk, error) {
 func (t *toolset) diskUsage(ctx context.Context, _ noArgs) (any, error) {
 	h, err := t.hostStatus(ctx)
 	if err != nil {
-		return nil, err
+		return nil, fromOther("hyperbutler status failed", err)
 	}
 	r := struct {
 		Host struct {
@@ -426,7 +498,7 @@ func (t *toolset) diskUsage(ctx context.Context, _ noArgs) (any, error) {
 	}{}
 	r.Host.Disk, r.Host.DiskUsed, r.Host.DiskMax, r.Host.HostFree = h.Disk, h.DiskUsed, h.DiskMax, h.HostFree
 	if log, err := t.o.Host.EngineLog(ctx, false, 20000); err == nil {
-		if f := lastLogFields(log, "guest fstrim"); f != nil {
+		if f := lastLogFields(log, "guest fstrim"); f != nil && guestValue("time", f["time"]) && guestValue("size", f["fsFree"]) {
 			r.GuestFS = map[string]string{"reportedAt": f["time"], "free": f["fsFree"], "source": "the guest's own report (guest-reported, last fstrim)"}
 		}
 	}
@@ -488,6 +560,19 @@ func (t *toolset) diskUsage(ctx context.Context, _ noArgs) (any, error) {
 // reLogField is one key=value of a log line (log/slog's text format).
 var reLogField = regexp.MustCompile(`([A-Za-z][A-Za-z0-9_]*)=("(?:[^"\\]|\\.)*"|\S*)`)
 
+// The forms of the guest-reported values disk_usage and memory take from the engine log.
+// A value of another form is left out: the line could have been written by something
+// other than the engine (a log message quoting the guest), and only numbers and times
+// are returned outside untrustedText.
+var guestForms = map[string]*regexp.Regexp{
+	"time": regexp.MustCompile(`^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]{1,9})?(Z|[+-][0-9]{2}:[0-9]{2})$`),
+	"MiB":  regexp.MustCompile(`^[0-9]{1,12}$`),
+	"size": regexp.MustCompile(`^[0-9]{1,12}(\.[0-9]{1,3})? ?(B|KiB|MiB|GiB|TiB|PiB|EiB)$`),
+}
+
+// guestValue reports whether v has the form kind.
+func guestValue(kind, v string) bool { return guestForms[kind].MatchString(v) }
+
 // lastLogFields is the key=value fields of the engine log's last line whose message is
 // msg, or nil. Values are guest-reported where the message says so.
 func lastLogFields(log []byte, msg string) map[string]string {
@@ -526,7 +611,7 @@ type ContainerMemory struct {
 func (t *toolset) memory(ctx context.Context, _ noArgs) (any, error) {
 	h, err := t.hostStatus(ctx)
 	if err != nil {
-		return nil, err
+		return nil, fromOther("hyperbutler status failed", err)
 	}
 	r := struct {
 		ConfiguredMB int               `json:"vmConfiguredMiB,omitempty"`
@@ -537,10 +622,14 @@ func (t *toolset) memory(ctx context.Context, _ noArgs) (any, error) {
 		Note         string            `json:"note,omitempty"`
 	}{ConfiguredMB: h.MemoryMB}
 	if log, err := t.o.Host.EngineLog(ctx, false, 20000); err == nil {
-		if f := lastLogFields(log, "guest memory"); f != nil {
+		if f := lastLogFields(log, "guest memory"); f != nil && guestValue("time", f["time"]) {
 			r.Guest = map[string]string{"reportedAt": f["time"], "source": "the guest's /proc/meminfo (guest-reported)"}
 			for _, k := range []string{"totalMiB", "freeMiB", "usedMiB", "fileCacheMiB", "shmemMiB"} {
 				if v, ok := f[k]; ok {
+					if !guestValue("MiB", v) {
+						r.Truncated = true // not a number: left out
+						continue
+					}
 					r.Guest[k] = v
 				}
 			}

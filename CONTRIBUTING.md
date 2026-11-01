@@ -125,6 +125,13 @@ the PR to contain only the ADR.
 - Return errors with context (`fmt.Errorf("start vm: %w", err)`). Don't panic in library code.
 - Windows-only code goes in `_windows.go` files. Keep packages buildable on Linux where
   possible so guest-side code and tests run there too.
+- The module path matters to package initialization: `internal/mcpenv` must initialize
+  before the MCP SDK (`github.com/modelcontextprotocol/go-sdk`), which panics on a
+  malformed `MCPGODEBUG`, and Go initializes ready packages in import path order. Renaming
+  the module to a path that sorts after `github.com/modelcontextprotocol` breaks that, and
+  every hyperbutler command would crash with a stray `MCPGODEBUG=x`. The subprocess tests
+  `TestMalformedMCPGODEBUG` (`cmd/hyperbutler`) and `TestMalformedMCPGODEBUGSubprocess`
+  (`internal/mcpserver`, every platform) fail if it happens; do not skip them.
 
 ## Code of Conduct
 

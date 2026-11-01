@@ -33,16 +33,19 @@ func newDockerClient(dial func(ctx context.Context) (net.Conn, error)) *dockerCl
 func (d *dockerClient) close() { d.c.CloseIdleConnections() }
 
 // apiError is an error answer of the Docker API: its status and dockerd's message.
+// Error() is the status only: the message is dockerd's (or a registry's, relayed by it),
+// so errorText returns it in untrustedText.
 type apiError struct {
 	Status  int
 	Message string
 }
 
 func (e *apiError) Error() string {
-	if e.Message == "" {
-		return fmt.Sprintf("Docker API: %d %s", e.Status, http.StatusText(e.Status))
+	s := fmt.Sprintf("Docker API: %d %s", e.Status, http.StatusText(e.Status))
+	if e.Message != "" {
+		s += " (dockerd's message is in untrustedText)"
 	}
-	return "Docker API: " + e.Message
+	return s
 }
 
 // isNotFound reports whether err is the Docker API's 404.
@@ -75,7 +78,7 @@ func (d *dockerClient) do(ctx context.Context, method, path string, q url.Values
 	}
 	resp, err := d.c.Do(req)
 	if err != nil {
-		return nil, err
+		return nil, fromOther(method+" "+path+": the Docker API request failed", err)
 	}
 	// 304: a container start or stop found it started or stopped already.
 	if resp.StatusCode/100 != 2 && resp.StatusCode != http.StatusNotModified {

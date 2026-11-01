@@ -741,6 +741,13 @@ func (in *install) stop(timeout time.Duration, stderr io.Writer) (forced bool, t
 // --- status ---------------------------------------------------------------------------
 
 func cmdStatus(args []string, stdout, stderr io.Writer) (int, error) {
+	return statusCommand(args, stdout, stderr, true)
+}
+
+// statusCommand is `hyperbutler status`. With checkUpdate false it makes no update check
+// (no network request): the update field is the last check's record, as the file has it.
+// The MCP status tool runs it so (REQ-UX-022: a read-only MCP tool makes no request).
+func statusCommand(args []string, stdout, stderr io.Writer, checkUpdate bool) (int, error) {
 	fs := newFlagSet("status", stderr)
 	asJSON := fs.Bool("json", false, fmt.Sprintf("print JSON (schema %d)", SchemaVersion))
 	if err := parseArgs(fs, args); err != nil {
@@ -787,7 +794,10 @@ func cmdStatus(args []string, stdout, stderr io.Writer) (int, error) {
 		g := r.State.GuestFS
 		r.GuestDisk = &GuestDiskJSON{SizeBytes: g.SizeBytes, UsedBytes: g.UsedBytes(), FreeBytes: g.FreeBytes, UsedPercent: g.UsedPercent(), Updated: g.Updated}
 	}
-	upd := in.checkUpdate(stderr)
+	upd := in.lastUpdate()
+	if checkUpdate {
+		upd = in.checkUpdate(stderr)
+	}
 	r.Update = updateJSON(upd)
 	cli := findDockerCLI()
 	r.DockerCLI, r.DockerCLIBundled = cli.Path, cli.Bundled

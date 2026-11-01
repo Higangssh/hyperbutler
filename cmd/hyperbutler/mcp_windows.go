@@ -29,11 +29,22 @@ func cmdMCP(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	fs := newFlagSet("mcp", stderr)
 	allowWrite := fs.Bool("allow-write", false, "add the tools that change state: start, stop, container start/stop/restart, run, pull, config_set")
 	allowDelete := fs.Bool("allow-delete", false, "with --allow-write: add the tools that delete: container_rm, image_rm, volume_rm, prune")
+	allowPersistent := fs.Bool("allow-persistent", false, "with --allow-write: let run use the restart policies always and unless-stopped, which bring a container back at every engine start")
+	allowRegistry := fs.String("allow-registry", "", "with --allow-write: registry hosts pull may use besides Docker Hub, comma-separated, such as ghcr.io,registry.corp.example:5000 (never an IP address, localhost or *.docker.internal)")
 	if err := parseArgs(fs, args); err != nil {
 		return err
 	}
-	if *allowDelete && !*allowWrite {
+	registries, err := mcpserver.ParseRegistries(*allowRegistry)
+	if err != nil {
+		return usagef("mcp: %v", err)
+	}
+	switch {
+	case *allowDelete && !*allowWrite:
 		return usagef("mcp: %v", mcpserver.ErrDeleteNeedsWrite)
+	case *allowPersistent && !*allowWrite:
+		return usagef("mcp: %v", mcpserver.ErrPersistentNeedsWrite)
+	case len(registries) > 0 && !*allowWrite:
+		return usagef("mcp: %v", mcpserver.ErrRegistryNeedsWrite)
 	}
 	if mcpenv.Dropped != "" {
 		_, _ = fmt.Fprintf(stderr, "hyperbutler: mcp: ignoring %s=%q: not a list of key=value pairs\n", mcpenv.Key, mcpenv.Dropped)
@@ -46,6 +57,7 @@ func cmdMCP(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	}
 	o := mcpserver.Options{
 		AllowWrite: *allowWrite, AllowDelete: *allowDelete,
+		AllowPersistent: *allowPersistent, AllowRegistries: registries,
 		Host:    &mcpHost{},
 		Dial:    func(ctx context.Context, pipe string) (net.Conn, error) { return winio.DialPipeContext(ctx, pipe) },
 		Version: buildVersion(),
@@ -77,9 +89,11 @@ func captured(f func(stdout, stderr io.Writer) error) ([]byte, error) {
 	return out.Bytes(), nil
 }
 
+// Status is `status --json` without the update check: a read-only tool makes no network
+// request (REQ-UX-022). The update field is the last check's record.
 func (h *mcpHost) Status(context.Context) ([]byte, error) {
 	return captured(func(stdout, stderr io.Writer) error {
-		_, err := cmdStatus([]string{"--json"}, stdout, stderr)
+		_, err := statusCommand([]string{"--json"}, stdout, stderr, false)
 		return err
 	})
 }

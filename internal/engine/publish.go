@@ -140,6 +140,22 @@ func unpublished(id string, ports []uint16, err error, now time.Time) []Unpublis
 	return out
 }
 
+// MirroredOnStart returns the host TCP ports the engine mirrors on the host's loopback
+// when the container that inspect describes starts (the startPorts rule). It is for
+// code that creates containers through the engine (internal/mcpserver) to check, in its
+// tests, that the bindings it asks for are ones the engine mirrors.
+func MirroredOnStart(inspect []byte, guestIP netip.Addr) ([]uint16, error) {
+	_, _, ports, err := startPorts(inspect, guestIP)
+	return ports, err
+}
+
+// MirroredBinding reports whether the engine mirrors a running container's binding to
+// guest address hostIP (as docker inspect's NetworkSettings.Ports shows it) on the
+// host's loopback (the publishedPorts rule).
+func MirroredBinding(hostIP string, guestIP netip.Addr) bool {
+	return reachableBinding(hostIP, guestIP)
+}
+
 // startInspect is the subset of a container inspect the start check reads: before a
 // start, NetworkSettings.Ports is empty and the requested bindings are in HostConfig.
 type startInspect struct {
