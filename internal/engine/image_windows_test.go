@@ -3,6 +3,8 @@
 package engine
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"os"
 	"path/filepath"
@@ -59,7 +61,7 @@ func writeImage(t *testing.T) (dir, manifest string) {
 
 func TestOpenImage(t *testing.T) {
 	dir, man := writeImage(t)
-	g, err := openImage(man)
+	g, err := openImage(man, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -67,7 +69,7 @@ func TestOpenImage(t *testing.T) {
 		t.Fatalf("paths: %+v", g)
 	}
 	// While the image is held, nobody can write or delete its files, but reading works.
-	for _, name := range []string{"vmlinuz-virt", "initramfs-hyperbutler.gz", "system.vhd"} {
+	for _, name := range []string{"vmlinuz-virt", "initramfs-hyperbutler.gz", "system.vhd", image.ManifestName} {
 		p := filepath.Join(dir, name)
 		if f, err := os.OpenFile(p, os.O_WRONLY, 0); err == nil {
 			f.Close()
@@ -127,7 +129,7 @@ func TestOpenImageRejects(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			dir, man := writeImage(t)
 			mutate(t, dir)
-			if g, err := openImage(man); err == nil {
+			if g, err := openImage(man, ""); err == nil {
 				g.Close()
 				t.Fatal("accepted")
 			}
@@ -158,10 +160,94 @@ func TestOpenImageChecksFooter(t *testing.T) {
 	if err := os.WriteFile(man, enc, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if g, err := openImage(man); err == nil || !strings.Contains(err.Error(), "vhd") {
+	if g, err := openImage(man, ""); err == nil || !strings.Contains(err.Error(), "vhd") {
 		if g != nil {
 			g.Close()
 		}
 		t.Fatalf("want a footer error, got %v", err)
+	}
+}
+
+func manifestSum(t *testing.T, man string) string {
+	t.Helper()
+	b, err := os.ReadFile(man)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := sha256.Sum256(b)
+	return hex.EncodeToString(s[:])
+}
+
+// A release build boots only the image.json it was linked with (Decision 4), even when
+// a replaced set is consistent with its own manifest.
+func TestOpenImagePinned(t *testing.T) {
+	dir, man := writeImage(t)
+	pin := manifestSum(t, man)
+	g, err := openImage(man, pin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	g.Close()
+
+	// Another kernel and a manifest that matches it.
+	k := filepath.Join(dir, "vmlinuz-virt")
+	if err := os.WriteFile(k, []byte("other kernel"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	mb, _ := os.ReadFile(man)
+	m, err := image.ParseManifest(mb)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f, _ := os.Open(k)
+	m.Kernel, _ = image.Describe("vmlinuz-virt", f)
+	f.Close()
+	enc, _ := m.Encode()
+	if err := os.WriteFile(man, enc, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if g, err := openImage(man, ""); err != nil {
+		t.Fatalf("a development build must accept a consistent image: %v", err)
+	} else {
+		g.Close()
+	}
+	_, err = openImage(man, pin)
+	if err == nil {
+		t.Fatal("a pinned build accepted a replaced image")
+	}
+	for _, s := range []string{man, pin, "Extract the release zip again"} {
+		if !strings.Contains(err.Error(), s) {
+			t.Errorf("error %q does not mention %q", err, s)
+		}
+	}
+
+	// The old manifest back, with the new kernel: the pin passes, the file check fails.
+	if err := os.WriteFile(man, mb, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := openImage(man, pin); err == nil || !strings.Contains(err.Error(), "vmlinuz-virt") ||
+		!strings.Contains(err.Error(), "extract the release zip again") {
+		t.Fatalf("want a kernel mismatch naming the fix, got %v", err)
+	}
+
+	for _, bad := range []string{strings.ToUpper(pin), pin[:63], "x" + pin[1:]} {
+		if _, err := openImage(man, bad); err == nil || !strings.Contains(err.Error(), "malformed") {
+			t.Errorf("pin %q: want a malformed-pin error, got %v", bad, err)
+		}
+	}
+}
+
+// While the image is held, its directory cannot be renamed and replaced either: HCS
+// opens the kernel, initrd and system disk by path after the check.
+func TestOpenImageHoldsDirectory(t *testing.T) {
+	dir, man := writeImage(t)
+	g, err := openImage(man, manifestSum(t, man))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer g.Close()
+	if err := os.Rename(dir, dir+"-moved"); err == nil {
+		_ = os.Rename(dir+"-moved", dir)
+		t.Fatal("the image directory was renamed while the image is held")
 	}
 }

@@ -18,7 +18,7 @@ import (
 // the read-only system disk named by image.json, each checked against the manifest's
 // size and SHA-256.
 //
-// The files stay open, readable by others but not writable or deletable
+// The files and image.json stay open, readable by others but not writable or deletable
 // (FILE_SHARE_READ only), from the check until the VM is gone. So what HCS attaches is
 // what was hashed: nothing can rewrite a file between the check and the boot, nor while
 // the guest reads its system disk.
@@ -40,35 +40,56 @@ func (g *guestImage) Close() error {
 // openImage reads the manifest at path and verifies the set it names in the same
 // directory. Any mismatch (a half-copied update, a file from another build) is an
 // error: booting a stage 1 against the wrong system disk is never attempted.
-func openImage(path string) (_ *guestImage, err error) {
+//
+// A non-empty pin is the SHA-256 that image.json must have (ImagePin, Decision 4).
+// image.json is opened and held like the other files, and the bytes hashed are the
+// bytes parsed, so a replaced manifest is refused even when the files next to it match
+// it.
+func openImage(path, pin string) (_ *guestImage, err error) {
 	path, err = filepath.Abs(path)
 	if err != nil {
 		return nil, err
 	}
-	b, err := ReadFileBounded(path)
-	if err != nil {
-		return nil, fmt.Errorf("engine: guest image: %w", err)
-	}
-	m, err := image.ParseManifest(b)
-	if err != nil {
-		return nil, fmt.Errorf("engine: %s: %w", path, err)
-	}
-	dir := filepath.Dir(path)
-	g := &guestImage{man: m}
+	g := &guestImage{}
 	defer func() {
 		if err != nil {
 			_ = g.Close()
 		}
 	}()
+	fix := "rebuild or reinstall the guest image"
+	if pin != "" {
+		fix = "extract the release zip again, replacing every file"
+	}
+	mf, err := openDenyWrite(path)
+	if err != nil {
+		return nil, fmt.Errorf("engine: guest image %s: %w (%s)", path, err, fix)
+	}
+	g.files = append(g.files, mf)
+	b, err := io.ReadAll(io.LimitReader(mf, maxFileSize+1))
+	if err != nil {
+		return nil, fmt.Errorf("engine: guest image %s: %w", path, err)
+	}
+	if len(b) > maxFileSize {
+		return nil, fmt.Errorf("engine: guest image %s is larger than %d bytes (%s)", path, maxFileSize, fix)
+	}
+	if err := checkPin(pin, path, b); err != nil {
+		return nil, err
+	}
+	m, err := image.ParseManifest(b)
+	if err != nil {
+		return nil, fmt.Errorf("engine: %s: %w", path, err)
+	}
+	g.man = m
+	dir := filepath.Dir(path)
 	for i, want := range m.Files() {
 		p := filepath.Join(dir, want.Name)
 		f, err := openDenyWrite(p)
 		if err != nil {
-			return nil, fmt.Errorf("engine: guest image file %s: %w", p, err)
+			return nil, fmt.Errorf("engine: guest image file %s: %w (%s)", p, err, fix)
 		}
 		g.files = append(g.files, f)
 		if err := want.Check(f); err != nil {
-			return nil, fmt.Errorf("engine: %w (rebuild or reinstall the guest image)", err)
+			return nil, fmt.Errorf("engine: %w (%s)", err, fix)
 		}
 		switch i {
 		case 0:

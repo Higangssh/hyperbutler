@@ -228,15 +228,25 @@ func Run(ctx context.Context, cfg Config) (err error) {
 	}
 	var kpath, ipath string
 	var img *guestImage
+	pin, pinned := ImagePin()
 	if cfg.Image != "" {
 		// Held open (deny-write) until Run returns, after the VM is gone.
-		if img, err = openImage(cfg.Image); err != nil {
+		if img, err = openImage(cfg.Image, pin); err != nil {
 			return err
 		}
 		defer func() { _ = img.Close() }()
 		kpath, ipath = img.kernel, img.initrd
 		step("verified guest image %s (system disk %s)", cfg.Image, HumanSize(img.man.System.Size))
+		if pinned {
+			step("guest image matches the image.json this build was released with (sha256 %s)", pin)
+		} else {
+			log.Info("development build: no guest image hash is embedded, so the image is checked against its own image.json only")
+		}
 	} else {
+		if pinned {
+			return fmt.Errorf("engine: this hyperbutler.exe boots only the guest image it was released with (an image.json next to it); " +
+				"extract the release zip again, or use a development build for an initramfs-only image")
+		}
 		if kpath, err = filepath.Abs(cfg.KernelPath); err != nil {
 			return err
 		}
