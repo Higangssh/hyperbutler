@@ -128,7 +128,20 @@ uninstall` take the entry out.
 - Whether Docker Desktop re-selects `desktop-linux` when it starts, or rewrites
   `cliPluginsExtraDirs`, was not checked.
 - `DOCKER_HOST` or `DOCKER_CONTEXT` in the environment overrides the selected context;
-  `start` prints a note when they are set.
+  `start` and `status` print a note when they are set.
+- Another engine (REQ-UX-018): `start` looks for `\\.\pipe\dockerDesktopLinuxEngine` and
+  `\\.\pipe\docker_engine` by listing the pipe file system (`FindFirstFile`, which opens
+  no pipe and uses no instance of it), names the engine, and says which one a plain
+  `docker` now reaches and how to switch. `status` names the selected context when it is
+  not `hyperbutler` ("context: hyperbutler (not selected; docker uses
+  "desktop-linux")", `dockerContextCurrent` in `--json`). Neither changes the selection:
+  only `start` selects, as before. Tested with a pipe of its own, not with Docker Desktop.
+- Credential helpers (REQ-UX-019): `start` and `doctor` warn when `config.json`'s
+  `credsStore` or a `credHelpers` entry names a `docker-credential-<name>` that is not on
+  PATH (Docker Desktop's `desktop` after it is uninstalled), with the line to change;
+  hyperbutler never edits those keys.
+- Tools that ignore docker contexts, the `docker_engine` opt-in, and moving images and
+  volumes from Docker Desktop: [tools.md](tools.md).
 - Both engines share the host's ports. A `docker run -p` on hyperbutler for a port Docker
   Desktop already publishes fails with "Ports are not available", as on Desktop
   ([Published ports](#published-ports)). The reverse (hyperbutler first) depends on
@@ -142,6 +155,27 @@ image is x86_64 and cannot boot in an ARM64 Hyper-V VM, so ARM64 is not supporte
 Docker publishes no Windows arm64 static CLI; an arm64 release would build `docker.exe`
 from the same pinned source with `GOARCH=arm64` (compose also publishes a
 `windows-aarch64` build).
+
+## Bind sources hyperbutler does not share
+
+REQ-FS-006, [ADR 0007](adr/0007-bind-mounts.md). Code: `internal/share/bind.go`,
+`internal/share/netdrive_windows.go`.
+
+Bind mounts share folders on local drives (`C:\src`, also as `\\?\C:\src`). The API proxy
+refuses the create of any other Windows source, for `-v` and `--mount type=bind` alike,
+before dockerd sees it, so the container is not created:
+
+| Source | Docker Desktop | hyperbutler |
+|---|---|---|
+| UNC, `\\server\share\x`, `\\?\UNC\server\share\x` | not supported (*well-known*) | `Error response from daemon: hyperbutler: bind source \\server\share\x is a network path; hyperbutler shares folders on local drives only. Copy the files to a folder on a local drive (such as C:\src) and bind that, or use a named volume.` |
+| `\\wsl$\Distro\...`, `\\wsl.localhost\Distro\...` | works (the files are in WSL) | refused: `... is inside a WSL distribution ...`, with the advice to copy the files or use the engine in WSL for them |
+| a device path, `\\.\...`, `\\?\Volume{...}\...` | not checked | refused: `... is a device path ...; use a path with a drive letter` |
+| a folder on a mapped network drive (`Z:\x`, `GetDriveType` = remote in the engine's logon session) | not checked | refused: `... is on Z:, a network drive ...` |
+
+Before 0.2 such a source went to dockerd unchanged, which refused it as an invalid local
+volume name. Git Bash's `//var/run/docker.sock` (a guest path written with two slashes
+so MSYS leaves it alone) and named volumes are not affected.
+
 ## Corporate CA and proxy
 
 REQ-UX-009, [settings.md](research/settings.md#corporate-ca-and-proxy-req-ux-009).

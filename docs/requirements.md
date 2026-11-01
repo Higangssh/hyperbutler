@@ -233,7 +233,8 @@ Status of the settings requirements (2026-10-31, `hyperbutler start`; details in
   settings.json last and under the locks, and directories only when empty (a data
   directory only if start created it); `--keep-data` keeps the disk and daemon.json. An
   invalid settings.json does not block it.
-  hyperbutler creates no scheduled tasks, services or registry keys. `bench/uninstall`
+  hyperbutler creates no scheduled tasks, services or registry keys (0.2: except the
+  opt-in autostart task of REQ-UX-015, which uninstall lists and removes). `bench/uninstall`
   passed against a test installation; the MSI uninstaller is 0.2.
 
 Status of REQ-UX-004 and REQ-UX-005 (2026-11-01, for 0.1):
@@ -246,7 +247,10 @@ Status of REQ-UX-004 and REQ-UX-005 (2026-11-01, for 0.1):
   only "account" the tool mentions is the Windows account's Hyper-V Administrators
   membership (until ADR 0004's broker) and the per-VM virtual account HCS uses.
 - REQ-UX-005: met. There is no update check in 0.1 (it comes in 0.2, with its off
-  switch). Statically, `internal/notelemetry` fails `go test ./...` on any network API in
+  switch; 0.2 note: the check, REQ-UX-022, is the one request of hyperbutler's own,
+  on by default and off with `config set updateCheck false`; internal/notelemetry lists
+  it by exact count, and `bench/no-telemetry` turns it off for its run and says so, so
+  everything else it sees still counts. The bench has not been run again since). Statically, `internal/notelemetry` fails `go test ./...` on any network API in
   production code (Windows and guest) that its allowlist does not justify, on a linked
   module nobody reviewed, and on a guest init that runs a network tool or turns on
   dockerd's `metrics-addr` or OpenTelemetry export. Today's network uses are the engine's
@@ -308,6 +312,72 @@ Status of the usage requirements (2026-11-01, for 0.1; scenarios in
   runs says which one runs and points to `restart` when the folder or the version
   differs, and exits 0 as before (on the VM: a second copy in another folder, and a build
   of another version).
+
+Status of the 0.2 usage requirements (2026-11-01; checked on one machine, Windows 11 Home
+26200, no Docker Desktop):
+
+- REQ-UX-022: met. At most once a day `start` and `status` send one HTTPS GET to
+  `api.github.com/repos/Higangssh/hyperbutler/releases/latest` with only
+  `User-Agent: hyperbutler/<version>` (no cookie jar, compression off so no
+  Accept-Encoding, no identifier), 3 s timeout, `proxy.https` or this shell's
+  `HTTPS_PROXY`/`NO_PROXY`, the Windows certificate store, redirects only to https on the
+  same host. A newer release prints one line with its page; a development build (no tag,
+  a pseudo-version, `+dirty`) never prints; nothing is downloaded. The last check is
+  `update-check.json` in the state directory (`status --json`: `update`); a failure is
+  silent (a debug line with `HYPERBUTLER_DEBUG=1`) and waits for the next day too.
+  **On by default**, as REQ-UX-005 allows; `config set updateCheck false` turns it off.
+  Unit tests against a TLS test server through the check's real client (only the
+  User-Agent header, once a day, failures not retried, 404, untrusted certificate,
+  timeout, off when disabled) and `FuzzParseRelease`. On the VM, one real check: the
+  repository has no public release, GitHub answered 404, and `start` printed nothing.
+- REQ-UX-015: met in unit tests; the real task is not created yet (the maintainer runs
+  it, docs/research/settings.md). `config set autostart true` creates one task of this
+  user, `\hyperbutler autostart (<account>)`, with `schtasks /Create /XML`: this user's
+  logon, 30 s delay, least privilege, no time limit, on battery too, running
+  `conhost.exe --headless "<hyperbutler.exe>" start` so no window shows. `false` and
+  `uninstall` remove it (`scheduled-task` in the plan); `config list` (and `--json`
+  `autostart`) and `doctor` show whether it exists and starts this `hyperbutler.exe`. A
+  task that cannot be created leaves the setting unchanged. It starts the installation
+  in `%LOCALAPPDATA%\hyperbutler` only. Tests check the `schtasks` command lines and the
+  task XML through a fake scheduler; the first start mentions the setting.
+- REQ-UX-018: met for what can be checked without Docker Desktop. `start` lists the
+  pipe file system (`FindFirstFile`, no connection) for `dockerDesktopLinuxEngine` and
+  `docker_engine`, names the engine and which one a plain `docker` reaches (DOCKER_HOST,
+  DOCKER_CONTEXT, then config.json) with the command to switch; `status` names the
+  selected context when it is not `hyperbutler` (`dockerContextCurrent` in `--json`).
+  Neither changes the selection. A test makes a real pipe and checks that its server
+  sees no connection; the Docker Desktop case is unit-tested with faked pipes.
+- REQ-UX-019: met. `hyperbutler doctor [--json]` (schema 1) checks Virtual Machine
+  Platform, the HCS service, the hypervisor launch type and HCS (diagnose's checks),
+  Hyper-V Administrators, the pipe (free, ours, or taken), the docker CLI and its version,
+  the selected context, credential helpers, other engines' pipes, host and guest disk
+  space and the autostart task, each with a fix; it changes nothing and exits 1 only on
+  a failed check. `start` and `doctor` warn when `credsStore` or a `credHelpers` entry
+  names a `docker-credential-<name>` not on PATH, with the line to change ("wincred" when
+  it is on PATH, else remove the line); config.json is never edited. On the VM with
+  `"credsStore":"desktop"` in a test `DOCKER_CONFIG`, both warned. The Windows excluded
+  port ranges are not in doctor yet (the `docker run` error already names them).
+- REQ-UX-021: met (docs/tools.md): `save -o`/`load -i` between the `desktop-linux` and
+  `hyperbutler` contexts, a cmd pipe, the PowerShell 5.1 binary pipe caveat, and a
+  named volume copied with `tar` in a busybox container on each side (by cmd pipe or a
+  file). Not run against Docker Desktop.
+- REQ-API-003: met (docs/tools.md): `DOCKER_HOST` per shell and per user,
+  `~/.testcontainers.properties`, VS Code and JetBrains settings, and `config set pipe
+  \\.\pipe\docker_engine` as the opt-in, which warns when Docker Desktop is installed or
+  that pipe is served. The IDE steps are from their documentation, not run
+  (REQ-API-002's `bench/compat-tools`).
+- REQ-FS-006: met. The proxy refuses UNC (`\\server\share`, `\\?\UNC\...`), `\\wsl$` and
+  `\\wsl.localhost`, device paths and folders on a mapped network drive in `-v` and
+  `--mount`, before dockerd sees them, with why and what to do (unit tests; on the VM
+  `docker run -v \\server\share\src:/data`, `--mount source=\\wsl$\...` and
+  `-v \\.\PhysicalDrive0:/d` were refused with those messages). A mapped drive is
+  unit-tested only.
+- REQ-DISK-009: status part met. hyperbutlerd's status reports reach `state.json`
+  (`guestFs`: size, free, updated; at once for a change of 0.5% or 64 MiB, else at most
+  once a minute); `status` prints "N of M used in the VM (P%)" under `data:`, and
+  `status --json` has `guestDisk`; `start` and `doctor` warn above 90%. On the VM:
+  "328.0 KiB of 62.8 GiB used in the VM (0%)" on a new 64 GiB disk. Growing the disk is
+  later (S7.1).
 
 ## Non-goals
 

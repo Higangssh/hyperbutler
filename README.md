@@ -74,8 +74,8 @@ documents.
 | Soak (ADR 0003), `hyperbutler start`, incl. bind mounts and `-p` | 1 h, 12,827 docker commands, none failed: engine working set +0.56 MiB/h (median 80 MiB), Go heap +0.09 MiB/h, handles, threads and goroutines flat; no leak above about 5 MiB/h | 24 h, no positive trend | 1 h main gate: passed by hand. **24 h: not run.** It blocks the first release |
 
 What is missing for 0.1: the 24-hour soak, the ADR 0004 broker (until it
-ships you need Hyper-V Administrators membership, see below), `hyperbutler doctor`, and
-Compose testing. Bind mounts from Windows paths work but are not yet fast for write-heavy
+ships you need Hyper-V Administrators membership, see below), and Compose testing
+(`hyperbutler doctor` is in the tree for 0.2). Bind mounts from Windows paths work but are not yet fast for write-heavy
 trees: use a named volume for `node_modules`. [docs/release.md](docs/release.md) lists every
 release gate.
 
@@ -195,7 +195,11 @@ into the same folder.
 - Docker Desktop can run at the same time: hyperbutler serves `\\.\pipe\docker_engine_hyperbutler`,
   not Desktop's `docker_engine`, and only adds its own `hyperbutler` docker context. `start`
   selects it (and prints the one it replaced); switch back with `docker context use
-  desktop-linux`. See [docs/compat.md](docs/compat.md#the-docker-cli-and-docker-desktop).
+  desktop-linux`. `start` says when Docker Desktop's engine runs too and which one a plain
+  `docker` now reaches; `status` names the selected context when it is not `hyperbutler`.
+  See [docs/compat.md](docs/compat.md#the-docker-cli-and-docker-desktop).
+- Tools that ignore docker contexts (Testcontainers, the Docker SDKs, IDEs) and moving
+  images and volumes over from Docker Desktop: [docs/tools.md](docs/tools.md).
 
 ### Published ports and other users
 
@@ -216,6 +220,8 @@ into the same folder.
 hyperbutler config list                      # every setting: value, default, source, when it applies
 hyperbutler config set memory 8GiB           # says what restart it needs; --apply does it
 hyperbutler config set context.manage false  # do not create or select the docker context
+hyperbutler config set autostart true        # start at sign-in (one Task Scheduler task of yours)
+hyperbutler config set updateCheck false     # no daily look for a newer release on GitHub
 hyperbutler config path                      # settings.json and daemon.json
 hyperbutler restart
 
@@ -247,7 +253,7 @@ pushes: as with Docker Desktop, containers and `docker build` do not get the CA 
 proxy, so add the certificate to the image and set the proxy for builds (the docker CLI's
 `proxies` in `config.json`).
 
-`status`, `version`, `config list/get/path`, `diagnose` and `uninstall` take `--json`; every
+`status`, `version`, `config list/get/path`, `doctor`, `diagnose` and `uninstall` take `--json`; every
 document carries `"schema": 1`. See [docs/research/settings.md](docs/research/settings.md).
 
 ### AI tools (MCP)
@@ -262,6 +268,7 @@ client. See [docs/mcp.md](docs/mcp.md).
 ### Troubleshooting and uninstalling
 
 ```powershell
+hyperbutler doctor                   # what hyperbutler needs from this PC, read-only, with fixes
 hyperbutler diagnose                 # a local zip for a bug report; nothing is uploaded
 hyperbutler uninstall --dry-run      # everything hyperbutler created, and what it keeps
 hyperbutler uninstall                # removes it (--keep-data keeps images and volumes)
@@ -275,7 +282,7 @@ failed to connect to the docker API at npipe:////./pipe/docker_engine_hyperbutle
 ```
 
 Nothing listens on the pipe, so the docker CLI cannot say more. Run `hyperbutler start`
-(it does not start at sign-in), or use another engine: `docker context use
+(it starts at sign-in only with `config set autostart true`), or use another engine: `docker context use
 desktop-linux` for Docker Desktop, `docker context use default` for `DOCKER_HOST` or
 `\\.\pipe\docker_engine`. `docker context ls` shows the hint in the context's
 description. With another pipe set (`config set pipe`), the error names that pipe.

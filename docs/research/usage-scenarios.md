@@ -56,31 +56,31 @@ For each scenario:
 | S1.2 | Starting on demand when a docker command arrives | needs work (later) | REQ-START-002 (new), REQ-MEM-004 |
 | S2.1 | Closing the terminal that ran `hyperbutler start` | none | REQ-UX-001 |
 | S2.2 | Containers with `--restart` after `stop` and `start` | none | REQ-API-001 |
-| S2.3 | Windows sign-in: start automatically? | needs work | REQ-UX-015 (new) |
+| S2.3 | Windows sign-in: start automatically? | done (2026-11-01, unit tests; the real task not run yet) | REQ-UX-015 |
 | S2.4 | Sign-out, shutdown or reboot with containers running | small | REQ-PWR-003 (new) |
 | S2.5 | Fast startup | small | REQ-PWR-003 (new) |
 | S2.6 | Sleep, hibernate and resume | unknown, needs a bench | REQ-PWR-001/002, REQ-PWR-003 (new) |
 | S2.7 | `hyperbutler stop` with containers running | done (2026-11-01) | REQ-UX-017 |
 | S3.1 | Docker Desktop installed, one or both stopped | small | REQ-UX-014 (new) |
-| S3.2 | Both running: which engine does `docker` reach? | small | REQ-UX-018 (new), REQ-PLAT-004 |
-| S3.3 | Docker Desktop selects `desktop-linux` again when it starts | small | REQ-UX-018 (new) |
+| S3.2 | Both running: which engine does `docker` reach? | done (2026-11-01; Docker Desktop not run) | REQ-UX-018, REQ-PLAT-004 |
+| S3.3 | Docker Desktop selects `desktop-linux` again when it starts | done (2026-11-01; what Desktop does is still unknown) | REQ-UX-018 |
 | S3.4 | Both publish the same port | fixed (Docker Desktop not run) | REQ-NET-005 (new), REQ-NET-001 |
 | S3.5 | `host.docker.internal` differences | small (documented) | REQ-NET-004 |
-| S3.6 | Compose plugin and credential helper (`credsStore: desktop`) | small | REQ-UX-019 (new) |
-| S3.7 | Moving images and volumes from Docker Desktop | small (docs) | REQ-UX-021 (new) |
+| S3.6 | Compose plugin and credential helper (`credsStore: desktop`) | done (2026-11-01) | REQ-UX-019 |
+| S3.7 | Moving images and volumes from Docker Desktop | done (docs, 2026-11-01; not run against Desktop) | REQ-UX-021 |
 | S3.8 | WSL 2–based Docker Desktop and hyperbutler's VM at the same time | unknown, needs a bench | REQ-PLAT-004 |
 | S4.1 | PowerShell, cmd, Git Bash | small | REQ-API-001 |
 | S4.2 | VS Code Docker extension and Dev Containers | unknown, likely none | REQ-API-002 |
-| S4.3 | Testcontainers, Docker SDKs | needs work (docs) | REQ-API-002, REQ-API-003 (new) |
+| S4.3 | Testcontainers, Docker SDKs | docs done (2026-11-01); `bench/compat-tools` open | REQ-API-002, REQ-API-003 |
 | S4.4 | JetBrains IDEs | unknown | REQ-API-002 |
-| S4.5 | Tools that only know `\\.\pipe\docker_engine` | small | REQ-API-003 (new) |
+| S4.5 | Tools that only know `\\.\pipe\docker_engine` | done (2026-11-01) | REQ-API-003 |
 | S5.1 | A second Windows user on the same PC | fixed (second account not run) | REQ-UX-020 (new) |
 | S5.2 | An elevated terminal of the same user | small (unverified) | REQ-UX-020 (new) |
 | S5.3 | An elevated terminal of a different (admin) account | small | REQ-UX-020 (new) |
 | S6.1 | `config set ... --apply` that restarts dockerd | done (2026-11-01) | REQ-UX-017, REQ-UX-006 |
 | S6.2 | `config set memory ... --apply` (VM restart) | done (2026-11-01) | REQ-UX-017 |
 | S6.3 | Live settings (`hostGateway.*`) | none | REQ-NET-004 |
-| S7.1 | The data disk (guest file system) is full | needs work | REQ-DISK-009 (new), REQ-DISK-005 |
+| S7.1 | The data disk (guest file system) is full | status and warning done (2026-11-01); growing the disk later | REQ-DISK-009, REQ-DISK-005 |
 | S7.2 | The host volume is nearly full | done (2026-11-01, unit tests) | REQ-DISK-004, REQ-DISK-010 |
 | S7.3 | A container uses more memory than the VM has | none (bench open) | REQ-MEM-003 |
 | S8.1 | VPN connect or disconnect while running | none (one client tested) | REQ-NET-002 |
@@ -90,7 +90,7 @@ For each scenario:
 | S9.2 | `hyperbutler start` from a new folder while the old engine runs | done (2026-11-01) | REQ-PLAT-008 |
 | S10.1 | Paths with spaces or Korean characters | none | REQ-FS-004 |
 | S10.2 | OneDrive folders | unknown | REQ-FS-004 |
-| S10.3 | Network drives, UNC and `\\wsl$` paths | small | REQ-FS-006 (new) |
+| S10.3 | Network drives, UNC and `\\wsl$` paths | done (2026-11-01) | REQ-FS-006 |
 | S10.4 | File watching | none | REQ-FS-003 |
 | S11.1 | The VM or dockerd crashes | none | REQ-UX-003 |
 | S11.2 | The engine process is killed | none | REQ-DISK-003 |
@@ -335,7 +335,11 @@ For each scenario:
     start, so it can be found.
   - A failed autostart writes to `engine.log` and `state.json` as any start does;
     `hyperbutler status` shows it. No popup.
-- **Gap:** needs work. REQ-UX-015 (new).
+- **Done (2026-11-01):** `config set autostart true` creates the per-user task (schtasks /XML: this
+  user's logon, 30 s delay, least privilege, `conhost.exe --headless` so no console
+  shows); `false` and `uninstall` remove it; `config list` and `doctor` show it; the first
+  start mentions the setting. Unit tests only: the real task has not been created on the
+  test machine yet. REQ-UX-015.
 
 ### S2.4 Sign-out, shutdown or reboot with containers running
 
@@ -468,7 +472,7 @@ Facts from the code that the scenarios below rely on
   that the pipe exists, never connects): "Docker Desktop is running too; plain `docker`
   now uses hyperbutler. `docker context use desktop-linux` switches back." `status`
   names the selected context when it is not `hyperbutler`. Neither changes anything.
-- **Gap:** small. REQ-UX-018 (new), REQ-PLAT-004.
+- **Done (2026-11-01):** `start` names another engine by its pipe (listed, never opened) and which one plain `docker` reaches; `status` names the selected context. Docker Desktop was not run. REQ-UX-018, REQ-PLAT-004.
 
 ### S3.3 Docker Desktop selects `desktop-linux` again when it starts
 
@@ -483,7 +487,7 @@ Facts from the code that the scenarios below rely on
   background, only at `start`. `status` makes it visible (S3.2), and the docs say how to
   pin a shell with `DOCKER_CONTEXT`. `bench/coexist` (REQ-PLAT-004) records what each
   Desktop release does.
-- **Gap:** small. REQ-UX-018 (new).
+- **Done (2026-11-01):** `status` names the selected context; nothing re-selects in the background. What Docker Desktop does at its start is still unknown. REQ-UX-018.
 
 ### S3.4 Both publish the same port
 
@@ -649,7 +653,7 @@ Facts from the code that the scenarios below rely on
   pull will fail. Set it to "wincred" (docker-credential-wincred, shipped with the docker
   CLI releases) or remove the line." The user makes the change. Whether to ship
   `docker-credential-wincred.exe` in `clients\` is a separate decision.
-- **Gap:** small. REQ-UX-019 (new).
+- **Done (2026-11-01):** `start` and `doctor` warn with the fix; config.json is never edited. REQ-UX-019.
 
 ### S3.7 Moving images and volumes from Docker Desktop
 
@@ -671,7 +675,7 @@ Facts from the code that the scenarios below rely on
   Containers are recreated from their compose files, not moved. A later
   `hyperbutler import --from desktop-linux [--images] [--volumes NAME...]` could do the
   same with progress; it would talk only to the two pipes.
-- **Gap:** small (documentation). REQ-UX-021 (new).
+- **Done (2026-11-01):** docs/tools.md, with the PowerShell 5.1 caveat. Not run against Docker Desktop. REQ-UX-021.
 
 ### S3.8 WSL 2–based Docker Desktop and hyperbutler's VM together
 
@@ -743,7 +747,7 @@ then forward slashes). `hyperbutler status` prints it on the "docker:" line.
   - hyperbutler never sets `DOCKER_HOST` itself: it is user setup, and a global
     `DOCKER_HOST` would break Docker Desktop's context switching.
   - `bench/compat-tools` covers Testcontainers Java, Go and Node, as REQ-API-002 says.
-- **Gap:** needs work (documentation and the bench). REQ-API-002, REQ-API-003 (new).
+- **Docs done (2026-11-01):** docs/tools.md (`DOCKER_HOST`, `~/.testcontainers.properties`, VS Code, JetBrains). `bench/compat-tools` is open. REQ-API-002, REQ-API-003.
 
 ### S4.4 JetBrains IDEs
 
@@ -767,7 +771,7 @@ then forward slashes). `hyperbutler status` prints it on the "docker:" line.
     `Docker Desktop.exe` under `%ProgramFiles%\Docker\Docker`), because whichever starts
     second then fails. It is never switched automatically, not even when Desktop is
     absent: a later Desktop install would then fail in a confusing way.
-- **Gap:** small. REQ-API-003 (new).
+- **Done (2026-11-01):** docs/tools.md documents the opt-in; `config set pipe` warns when Docker Desktop is installed or the pipe is served. REQ-API-003.
 
 ## 5. Users and elevation
 
@@ -896,7 +900,7 @@ then forward slashes). `hyperbutler status` prints it on the "docker:" line.
 - **Intended:** `status` shows guest file system use ("data: 61.2 of 64 GiB used in the
   VM"); `start` warns above 90%. Then a `hyperbutler config set disk.size` that can grow
   (never shrink) the disk with the engine stopped, without data loss.
-- **Gap:** needs work. REQ-DISK-009 (new), REQ-DISK-005.
+- **Done for the status (2026-11-01):** `status` shows "N of M used in the VM", `start` and `doctor` warn above 90%. Growing the disk is open. REQ-DISK-009, REQ-DISK-005.
 
 ### S7.2 The host volume is nearly full
 
@@ -1035,7 +1039,9 @@ then forward slashes). `hyperbutler status` prints it on the "docker:" line.
   "bind source \\server\share\x is a network path; hyperbutler shares local drive paths
   only (map the share to a drive letter, or copy the files)". The docs say network drives
   are untested and slow.
-- **Gap:** small. REQ-FS-006 (new).
+- **Done (2026-11-01):** the proxy refuses UNC, `\\wsl$`, device paths and mapped
+  network drives (so mapping the share to a drive letter is not the way out; copying
+  the files is) with why and what to do (docs/compat.md). REQ-FS-006.
 
 ### S10.4 File watching
 
