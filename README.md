@@ -185,6 +185,10 @@ into the same folder.
   Docker's own "Ports are not available" error and names the process. A container started
   by a restart policy keeps running without its ports then, and `hyperbutler status` lists
   them with the reason. See [docs/compat.md](docs/compat.md#published-ports).
+- Each Windows user has their own engine, data disk and settings. Published ports are on
+  the machine's loopback and are shared by all users of the PC. Pipe names are shared
+  too: if `start` says the pipe is taken, give one installation its own with
+  `hyperbutler config set pipe \\.\pipe\docker_engine_<name>`.
 
 ### Settings
 

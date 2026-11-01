@@ -331,8 +331,12 @@ func CleanupOrphans(b Backend, prefix string, log *slog.Logger) int {
 	return n
 }
 
-// Describe explains an engine error code to the user, or returns "".
-func Describe(code string) string {
+// Describe explains an engine error code to the user, or returns "". pipe is the
+// Docker API pipe the engine was configured with (State.Pipe); empty means the default.
+func Describe(code, pipe string) string {
+	if pipe == "" {
+		pipe = transport.DefaultPipeName
+	}
 	switch code {
 	case CodeHCSAccessDenied:
 		return strings.TrimSpace(fmt.Sprintf(`
@@ -349,12 +353,28 @@ after that, and hyperbutler never asks for it.
 A later release replaces this with a small HCS access broker service (ADR 0004), so
 that standard users need no group membership.`, os.Getenv("USERNAME")))
 	case CodePipeInUse:
-		return `Another program already serves the Docker API pipe \\.\pipe\docker_engine_hyperbutler.
-Stop it, or check with: Get-ChildItem \\.\pipe\ | Where-Object Name -like 'docker*'`
+		return describePipeInUse(pipe)
 	case CodeDataDisk:
 		return "The data disk could not be used. `hyperbutler delete` removes it and starts over (all images, containers and volumes are lost)."
 	case CodeVMExited:
 		return "The VM stopped on its own. `hyperbutler logs --console` shows why."
 	}
 	return ""
+}
+
+// describePipeInUse is Describe(CodePipeInUse) for pipe (REQ-UX-020, proposed). Pipe
+// names are machine-wide, so the likely holder is another hyperbutler engine: another
+// Windows user's, or another installation's of this user. Both make the listen fail
+// with "Access is denied" (measured for the second; the pipe's DACL admits only its
+// owner, so the first fails the same way).
+func describePipeInUse(pipe string) string {
+	return `Another program already serves the Docker API pipe ` + pipe + `.
+Pipe names are shared by everyone on this PC, so another Windows user's hyperbutler
+engine, or another hyperbutler installation of yours, may hold it (Windows says
+"Access is denied" for both). Stop that engine, or give this installation a pipe of
+its own and start again:
+
+    hyperbutler config set pipe \\.\pipe\docker_engine_<name>
+
+To see the Docker pipes: Get-ChildItem \\.\pipe\ | Where-Object Name -like 'docker*'`
 }

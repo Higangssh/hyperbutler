@@ -74,7 +74,7 @@ For each scenario:
 | S4.3 | Testcontainers, Docker SDKs | needs work (docs) | REQ-API-002, REQ-API-003 (new) |
 | S4.4 | JetBrains IDEs | unknown | REQ-API-002 |
 | S4.5 | Tools that only know `\\.\pipe\docker_engine` | small | REQ-API-003 (new) |
-| S5.1 | A second Windows user on the same PC | **needs work** | REQ-UX-020 (new) |
+| S5.1 | A second Windows user on the same PC | fixed (second account not run) | REQ-UX-020 (new) |
 | S5.2 | An elevated terminal of the same user | small (unverified) | REQ-UX-020 (new) |
 | S5.3 | An elevated terminal of a different (admin) account | small | REQ-UX-020 (new) |
 | S6.1 | `config set ... --apply` that restarts dockerd | small | REQ-UX-017 (new), REQ-UX-006 |
@@ -710,7 +710,15 @@ then forward slashes). `hyperbutler status` prints it on the "docker:" line.
     published ports are shared;
   - later, consider making the default pipe name per user. It costs nothing, because
     clients use the context, which is per user too.
-- **Gap:** **needs work** (a bug and a missing message). REQ-UX-020 (new).
+- **Fixed** *(verified on VM, 2026-11-01, with a second installation of the same user)*:
+  the explanation names the configured pipe (`\\.\pipe\docker_engine_hbportfix` in the
+  test), says that another Windows user's engine or another installation may hold it
+  (Windows says "Access is denied" for both), and gives the fix
+  `hyperbutler config set pipe \\.\pipe\docker_engine_<name>`. The README says that each
+  user has their own engine and that published ports and pipe names are shared. A second
+  Windows account was not tried, and the per-user default pipe name is still a later
+  idea.
+- **Gap:** none left but the later idea. REQ-UX-020 (new).
 
 ### S5.2 An elevated terminal of the same user
 
@@ -994,10 +1002,10 @@ the GUI, "later" after that.
 | REQ-DISK-009 | `status` shows how full the guest file system is, `start` warns above 90%, and the data disk can be grown without losing data. | later (status: 0.2) | S7.1 |
 | REQ-START-002 | Opt-in standby: the engine serves the pipe with the VM off and boots it on the first API connection within REQ-MEM-004's 3 s. Built with REQ-MEM-004. | later | S1.2 |
 
-Two smaller findings to fix without a requirement:
+Two smaller findings to fix without a requirement (both fixed since):
 
-- `Describe(CodePipeInUse)` names `\\.\pipe\docker_engine_hyperbutler` even when another
-  pipe is configured (`internal/engine/serve_windows.go:348-349`, S5.1).
+- `Describe(CodePipeInUse)` named `\\.\pipe\docker_engine_hyperbutler` even when another
+  pipe was configured (S5.1). It now names the configured pipe.
 - The port probe bound `0.0.0.0:P` and `[::]:P` for a moment, which can raise a Windows
   Firewall prompt for `hyperbutler.exe`. It now reads the TCP listener tables and opens
   no socket (S3.4).

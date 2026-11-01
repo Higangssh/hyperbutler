@@ -470,12 +470,24 @@ func engineError(st *engine.State) error {
 	return &engineErr{code: st.ErrorCode, msg: st.Error}
 }
 
+// pipeOf is the Docker API pipe the failed engine used: state.json's, else the
+// configured one.
+func (in *install) pipeOf(st *engine.State) string {
+	if st != nil && st.Pipe != "" {
+		return st.Pipe
+	}
+	if in.settings != nil {
+		return in.settings.PipeName()
+	}
+	return ""
+}
+
 // explainFailure prints err and, for known causes, what to do about it.
 func (in *install) explainFailure(err error, st *engine.State, stderr io.Writer) error {
 	_, _ = fmt.Fprintln(stderr, "hyperbutler: start failed:", err)
 	var ee *engineErr
 	if errors.As(err, &ee) {
-		if d := engine.Describe(ee.code); d != "" {
+		if d := engine.Describe(ee.code, in.pipeOf(st)); d != "" {
 			_, _ = fmt.Fprintln(stderr)
 			_, _ = fmt.Fprintln(stderr, d)
 		}

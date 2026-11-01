@@ -242,7 +242,7 @@ func collect(now time.Time) *bundle {
 	if st != nil && st.Phase == engine.PhaseFailed {
 		b.addJSON("last-start-failure.json", map[string]any{
 			"phase": st.Phase, "error": st.Error, "errorCode": st.ErrorCode,
-			"explanation": engine.Describe(st.ErrorCode), "updated": st.Updated,
+			"explanation": engine.Describe(st.ErrorCode, st.Pipe), "updated": st.Updated,
 		})
 	} else {
 		b.skip("last-start-failure.json", "the last run did not fail")
