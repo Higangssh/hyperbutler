@@ -35,6 +35,7 @@ func cmdImport(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	allVolumes := fs.Bool("all-volumes", false, "import every local volume")
 	overwrite := fs.Bool("overwrite-volumes", false, "replace a hyperbutler volume of the same name whose content differs")
 	allowLive := fs.Bool("allow-live-volumes", false, "copy volumes that running Docker Desktop containers mount (the copy may be inconsistent)")
+	forceSpace := fs.Bool("force-space", false, "start the copy even when it does not look like it fits in the VM's data disk or on the host volume")
 	dryRun := fs.Bool("dry-run", false, "only list what there is and what would be copied")
 	asJSON := fs.Bool("json", false, "print JSON (schema "+fmt.Sprint(SchemaVersion)+")")
 	// For tests: another engine's pipe stands in for Docker Desktop's.
@@ -132,6 +133,19 @@ func cmdImport(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 			_, _ = fmt.Fprintln(stdout, "Nothing picked; nothing was copied.")
 			return nil
 		}
+	}
+
+	space, err := in.importSpaceFor(plan, sel)
+	if err != nil {
+		return err
+	}
+	if err := space.check(); err != nil && !*forceSpace {
+		return err
+	} else if err != nil {
+		_, _ = fmt.Fprintf(stderr, "hyperbutler: warning: %v (going on: --force-space)\n", err)
+	}
+	if space.unknown > 0 && !*asJSON {
+		_, _ = fmt.Fprintf(stderr, "hyperbutler: note: Docker Desktop gave no size for %s, which the space check does not count\n", countText(space.unknown, "volume"))
 	}
 
 	res, err := im.Run(ctx, plan, sel, pr.event)

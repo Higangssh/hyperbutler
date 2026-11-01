@@ -142,6 +142,13 @@ splits it into two arguments.)
   in Docker Desktop first, so the copy is consistent. `--allow-live-volumes` copies
   anyway and warns that the copy may be inconsistent. The command never stops anything
   itself.
+- **Free space.** Before copying, the planned bytes (the sizes of the new images and of
+  the volumes to copy) plus a 10% margin must fit in the free space the VM's data disk
+  last reported (the `guestFs` report `status` prints under `data:`) and on the host
+  volume of `data.vhdx`, above the 5 GiB the free-space guard keeps. Otherwise the
+  import is refused before anything is copied, saying which one is short; `--force-space`
+  starts it anyway. A volume Docker Desktop gives no size for is not counted (a note
+  says so), and a place whose free space is not known is not checked.
 - **One at a time.** Each import removes the helpers it finds left over, so a second one
   in the same installation while one runs (a dry run too) refuses at once: "another
   import is running" (`import.lock` in the state directory).
