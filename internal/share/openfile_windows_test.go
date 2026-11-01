@@ -216,7 +216,9 @@ func TestNoOpenUnlinkWhileOpen(t *testing.T) {
 	os.Mkdir(filepath.Join(dir, "sub"), 0o755)
 	p := filepath.Join(dir, "sub", "f.txt")
 	os.WriteFile(p, []byte("old data"), 0o644)
-	s, c, root := newTestServer(t, dir, Options{NoWatch: true, FileIdle: time.Millisecond}, nil)
+	// FileIdle must outlast the gap between a READ and the unlink or rename that pins its
+	// handle; at 1 ms a slow scheduler closed the handle first, about 1 run in 200.
+	s, c, root := newTestServer(t, dir, Options{NoWatch: true, FileIdle: 100 * time.Millisecond}, nil)
 	sub := c.mustLookup(root, "sub")
 	en := c.mustLookup(sub.node, "f.txt")
 	if e := c.write(en.node, 0, 0, []byte("o")); e != 0 { // in use: a cached handle
@@ -231,7 +233,7 @@ func TestNoOpenUnlinkWhileOpen(t *testing.T) {
 	if n, pins := s.CachedFiles(); n != 1 || pins != 1 {
 		t.Fatalf("cached %d pinned %d", n, pins)
 	}
-	time.Sleep(20 * time.Millisecond) // longer than FileIdle: pins stay
+	time.Sleep(250 * time.Millisecond) // longer than FileIdle: pins stay
 	if e, b := c.read(en.node, 0, 0, 100); e != 0 || string(b) != "old data" {
 		t.Fatalf("read of the unlinked open file: %d %q", e, b)
 	}
@@ -263,7 +265,7 @@ func TestNoOpenUnlinkWhileOpen(t *testing.T) {
 	if got, _ := os.ReadFile(filepath.Join(dir, "b")); string(got) != "replacement" {
 		t.Fatalf("host b is %q", got)
 	}
-	time.Sleep(20 * time.Millisecond)
+	time.Sleep(250 * time.Millisecond) // longer than FileIdle: the pin stays
 	if e, got := c.read(b.node, 0, 0, 100); e != 0 || string(got) != "original" {
 		t.Fatalf("replaced open file reads %d %q", e, got)
 	}
