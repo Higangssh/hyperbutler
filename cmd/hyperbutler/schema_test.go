@@ -96,6 +96,13 @@ func TestSchemaFields(t *testing.T) {
 		"state.hostGateway", "state.hostGateway.address", "state.hostGateway.enabled", "state.hostGateway.ports",
 		"state.hostGateway.reloads", "state.hostGateway.error",
 	})
+	checkKeys(t, "diagnose", DiagnoseJSON{Schema: 1, File: "f", Files: []string{"a"}, Missing: []DiagnoseMissing{{Name: "n", Reason: "r"}}},
+		[]string{"schema", "file", "files", "missing", "missing[].name", "missing[].reason"})
+	it := []UninstallItem{{Kind: "file", Path: "p", Detail: "d"}}
+	checkKeys(t, "uninstall", UninstallJSON{Schema: 1, Home: "h", DryRun: true, KeepData: true, Items: it, Kept: it, Failed: it, Notes: []string{"n"}},
+		[]string{"schema", "home", "dryRun", "keepData", "items", "kept", "failed", "notes",
+			"items[].kind", "items[].path", "items[].detail", "kept[].kind", "kept[].path", "kept[].detail",
+			"failed[].kind", "failed[].path", "failed[].detail"})
 }
 
 // TestSchemaAlwaysThere: the fields a script keys on are present even when empty.
@@ -107,6 +114,9 @@ func TestSchemaAlwaysThere(t *testing.T) {
 		"status":  {StatusJSON{}, []string{"schema", "running", "setUp", "home", "dockerContextSelected", "daemonJson", "daemonJsonExists"}},
 		"version": {VersionJSON{}, []string{"schema", "version", "goVersion", "os", "arch", "imagePinned"}},
 		"list":    {ConfigListJSON{}, []string{"schema", "settingsFile", "keys"}},
+		// Items is [] (not null) when nothing is left; the commands always set it.
+		"diagnose":  {DiagnoseJSON{Files: []string{}}, []string{"schema", "file", "files"}},
+		"uninstall": {UninstallJSON{Items: []UninstallItem{}}, []string{"schema", "home", "dryRun", "keepData", "items"}},
 	} {
 		got := jsonKeys(t, c.v)
 		for _, w := range c.want {

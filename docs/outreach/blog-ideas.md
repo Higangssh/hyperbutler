@@ -90,6 +90,12 @@ surprising. Numbers are from the maintainer's Windows 11 Home laptop unless note
   becomes `System.Object[]`, and the tool silently did nothing.
 - **A LAN test on a 100 Mbit adapter:** both paths hit 94 Mbit/s, so it proved only "no
   loss at this speed" (the cheap USB-C hub's RTL8152 chip).
+- **What a crashed VM leaves on your files:** HcsGrantVmAccess adds
+  `NT VIRTUAL MACHINE\<runtime id>` (S-1-5-83-1-...) before the VM exists, because the
+  runtime id is a name-based GUID; a crash leaves the entry behind, and
+  HcsRevokeVmAccess also drops the shared worker-capability entry other VMs added.
+  `hyperbutler uninstall` finds stale entries by matching them against live compute
+  systems. `bench/uninstall`.
 
 ## Still to measure before writing
 

@@ -81,6 +81,47 @@ type ConfigPathJSON struct {
 	DataDir      string `json:"dataDir"`
 }
 
+// DiagnoseJSON is `hyperbutler diagnose --json`: the zip written and what is in it.
+type DiagnoseJSON struct {
+	Schema int      `json:"schema"`
+	File   string   `json:"file"`  // absolute path of the zip
+	Files  []string `json:"files"` // the entries of the zip, in order
+	// Missing names what could not be included, and why (a log not written yet, no
+	// failed start).
+	Missing []DiagnoseMissing `json:"missing,omitempty"`
+}
+
+// DiagnoseMissing is one file diagnose did not include.
+type DiagnoseMissing struct {
+	Name   string `json:"name"`
+	Reason string `json:"reason"`
+}
+
+// UninstallJSON is `hyperbutler uninstall --json` (with --dry-run: what it would do).
+type UninstallJSON struct {
+	Schema   int    `json:"schema"`
+	Home     string `json:"home"` // the installation's state directory
+	DryRun   bool   `json:"dryRun"`
+	KeepData bool   `json:"keepData"`
+	// Items is what was removed (or would be, in a dry run); empty when no trace is left.
+	Items []UninstallItem `json:"items"`
+	// Kept is what stays on purpose: hyperbutler.exe, the data disk with --keep-data,
+	// a directory that holds other files, a docker context that is not this install's.
+	Kept []UninstallItem `json:"kept,omitempty"`
+	// Failed is what could not be removed; Detail says why.
+	Failed []UninstallItem `json:"failed,omitempty"`
+	Notes  []string        `json:"notes,omitempty"`
+}
+
+// UninstallItem is one thing hyperbutler created. Kind is engine, vm, acl,
+// docker-context, file or dir; Path is the file, directory, compute system id or
+// context name.
+type UninstallItem struct {
+	Kind   string `json:"kind"`
+	Path   string `json:"path"`
+	Detail string `json:"detail,omitempty"`
+}
+
 func versionInfo() VersionJSON {
 	v := VersionJSON{Schema: SchemaVersion, Version: "(devel)", GoVersion: runtime.Version(), OS: runtime.GOOS, Arch: runtime.GOARCH}
 	v.ImageManifest, v.ImagePinned = engine.ImagePin()

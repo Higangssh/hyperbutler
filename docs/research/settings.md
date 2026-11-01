@@ -170,8 +170,8 @@ takes one), and a reconnect during an apply in a real guest (unit-tested).
 
 ## --json (REQ-UX-008)
 
-`status`, `version`, `config list`, `config get` and `config path` take `--json`. `diagnose`
-does not exist yet. Every document is one object with `"schema": 1`. Within a schema version
+`status`, `version`, `config list`, `config get`, `config path`, `diagnose` and `uninstall`
+take `--json`. Every document is one object with `"schema": 1`. Within a schema version
 fields are only added; removing or renaming one means a new version.
 `cmd/hyperbutler/schema_test.go` pins every field name, so a change fails the tests.
 
@@ -189,6 +189,23 @@ fields are only added; removing or renaming one means a new version.
 - `config get KEY`: `schema` and one item: `key`, `value`, `default`, `source`, `type`,
   `apply` (`live`, `restart-dockerd`, `restart-vm`, `first-start`), `description`.
 - `config path`: `schema`, `home`, `settingsFile`, `daemonJson`, `dataDir`.
+- `diagnose`: `schema`, `file` (the zip, absolute), `files` (its entries, in order) and
+  `missing` (`name`, `reason`) for what could not be included. The zip holds
+  `summary.txt`, `version.json`, `status.json`, `settings.json`, `daemon.json`,
+  `daemon.applied.json`, `state.json`, `disk.json`, `logs/engine.log(.1)`,
+  `logs/console.log(.1)` (the last 4 MiB of each), `last-start-failure.json`, `host.json`
+  (Windows build and edition, Hyper-V Administrators, computecore.dll, HCS services,
+  hypervisor launch type, CPU virtualization features, compute systems, free space; no
+  shell, DISM or elevation), `docker-contexts.json` (meta.json only, never TLS material),
+  `docker-config.json` and `files.json` (size, SHA-256, BOM and CRLF of each original
+  JSON file). Every file goes through `internal/redact`: values of secret keys (`auth`,
+  `password`, `token`, `identitytoken`, ...), URL user information, Authorization,
+  Proxy-Authorization, Cookie and X-Registry-Auth headers, Bearer tokens, JWTs, PEM
+  private keys. Paths stay. The zip is created new (never over a file) with an ACL for
+  the user, SYSTEM and Administrators.
+- `uninstall`: `schema`, `home`, `dryRun`, `keepData`, `items` (`kind`, `path`, `detail`;
+  `[]` when no trace is left), and when there are any `kept`, `failed` and `notes`. Kinds:
+  `engine`, `vm`, `acl`, `docker-context`, `file`, `dir`.
 
 ## Tests and fuzzing
 
@@ -219,7 +236,6 @@ fields are only added; removing or renaming one means a new version.
 
 ## Open
 
-- `diagnose --json` (with `diagnose`).
 - `config edit`, `config daemon edit`, `config reset` (0.2 per the settings plan).
 - A LAN registry on a second machine (`-Registry`).
 - Admin policy and locked keys (later).

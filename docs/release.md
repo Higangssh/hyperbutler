@@ -224,6 +224,12 @@ met blocks the release. Changing a gate needs an ADR change, not a waiver here.
 **Requirements**
 - [ ] REQ-UX-002: the zip is ≤ 150 MB (`package.ps1` enforces it). Record the size in the
   table above.
+- [ ] REQ-UX-010: `bench/uninstall` passes with the released `hyperbutler.exe` and image,
+  against a test installation (it sets its own HYPERBUTLER_HOME, data directory, pipe and
+  DOCKER_CONFIG under `%TEMP%\hb-dev\uninstall`):
+  `powershell -File bench\uninstall\run.ps1 -Hyperbutler ... -Docker ... -ImageDir ...`.
+  Afterwards `uninstall --dry-run` lists nothing and the docker context is gone.
+  2026-11-01, development build on Windows 11 Home 26200: all 28 checks passed.
 - [ ] REQ-UX-001: on a clean Windows 11 Home account, the README Quick Start works as
   written: unzip, PATH (with `clients\`, since a clean account has no docker CLI),
   `hyperbutler start`, `docker run --rm hello-world`, `docker compose version`,

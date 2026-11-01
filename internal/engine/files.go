@@ -230,6 +230,10 @@ type Settings struct {
 	// HostGatewayPorts limits the host gateway to these ports (netstack.ParsePortList
 	// syntax, "5432,8000-8100"); empty means every port.
 	HostGatewayPorts string `json:"hostGatewayPorts,omitempty"`
+	// PreviousContext is the docker context that was selected when `hyperbutler start`
+	// first selected its own ("default" for docker's default), so `hyperbutler
+	// uninstall` can select it again (REQ-UX-010). Not a user setting.
+	PreviousContext string `json:"previousDockerContext,omitempty"`
 }
 
 // HostGateway is the host gateway setting of s. The ports were checked by Validate.
@@ -337,6 +341,9 @@ func (s *Settings) Validate() error {
 	}
 	if _, err := netstack.ParsePortList(s.HostGatewayPorts); err != nil {
 		return fmt.Errorf("settings: host gateway ports: %w", err)
+	}
+	if len(s.PreviousContext) > 256 || !utf8.ValidString(s.PreviousContext) || strings.ContainsRune(s.PreviousContext, 0) {
+		return errors.New("settings: previous docker context name too long or not UTF-8")
 	}
 	return nil
 }

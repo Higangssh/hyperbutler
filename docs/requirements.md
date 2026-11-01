@@ -204,8 +204,18 @@ Status of the settings requirements (2026-10-31, `hyperbutler start`; details in
   effect; `config daemon apply` restarts dockerd only (same VM, same guest boot, 1.9 s).
   `bench/daemon-json` ran against an HTTP registry at a non-loopback guest address; a
   registry on a second LAN machine is not tested yet.
-- REQ-UX-008: met for `status`, `config list/get/path` and `version` (`"schema": 1`, field
-  names pinned by tests). `diagnose` does not exist yet.
+- REQ-UX-008: met for `status`, `config list/get/path`, `version`, `diagnose` and
+  `uninstall` (`"schema": 1`, field names pinned by tests). `hyperbutler diagnose` writes a
+  local zip (logs, status, settings, daemon.json, state, host and virtualization facts,
+  docker contexts) and uploads nothing; secrets go through `internal/redact` (unit and fuzz
+  tests).
+- REQ-UX-010: met on one machine (2026-11-01). `uninstall --dry-run` lists the engine, the
+  installation's compute systems, VM access entries a crashed engine left, the docker
+  context (the one selected before hyperbutler's is selected again), the data disk,
+  settings, state, logs and daemon.json; `uninstall` removes them by name, settings.json
+  last, and directories only when empty; `--keep-data` keeps the disk and daemon.json.
+  hyperbutler creates no scheduled tasks, services or registry keys. `bench/uninstall`
+  passed against a test installation; the MSI uninstaller is 0.2.
 
 Status of REQ-UX-004 and REQ-UX-005 (2026-11-01, for 0.1):
 

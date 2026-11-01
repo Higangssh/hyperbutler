@@ -9,7 +9,7 @@
 
 > A lightweight, Docker-compatible container runtime for Windows that doesn't need WSL.
 
-**Status: early development, pre-0.1.** `hyperbutler start`, `stop`, `status`, `logs` and `delete`
+**Status: early development, pre-0.1.** `hyperbutler start`, `stop`, `status`, `logs`, `delete`, `diagnose` and `uninstall`
 work end to end on Windows 11 Home, and the stock Windows `docker` CLI runs containers
 against it. No release has been published yet. Until one is, build from source
 ([CONTRIBUTING.md](CONTRIBUTING.md)). Idle memory meets the 0.1 target but not yet the 1.0
@@ -199,13 +199,27 @@ HTTP:
 { "insecure-registries": ["192.168.1.20:5000"] }
 ```
 
-`status`, `version` and `config list/get/path` take `--json`; every document carries
-`"schema": 1`. See [docs/research/settings.md](docs/research/settings.md).
+`status`, `version`, `config list/get/path`, `diagnose` and `uninstall` take `--json`; every
+document carries `"schema": 1`. See [docs/research/settings.md](docs/research/settings.md).
 
-`hyperbutler delete` removes the VM state and the data disk, with all images, containers and
-volumes. To uninstall, run `hyperbutler delete`, remove the folder and its PATH entries, and
-`docker context rm hyperbutler`. `delete` also takes `clients\cli-plugins` out of the docker
-CLI's `config.json`.
+### Troubleshooting and uninstalling
+
+```powershell
+hyperbutler diagnose                 # a local zip for a bug report; nothing is uploaded
+hyperbutler uninstall --dry-run      # everything hyperbutler created, and what it keeps
+hyperbutler uninstall                # removes it (--keep-data keeps images and volumes)
+```
+
+`diagnose` redacts passwords, tokens, registry auth and proxy credentials, but keeps paths
+(with your user name): look through the zip before you attach it. `uninstall` stops
+hyperbutler, removes its state, data disk, logs and docker context (selecting the context
+you used before), and leaves anything it did not create. It asks for confirmation; where
+input is not a Windows console (Git Bash, mintty, VS Code tasks) pass `--yes`. It does not
+remove the hyperbutler folder or its PATH entry: delete those yourself.
+
+`hyperbutler delete` removes only the VM state and the data disk, with all images,
+containers and volumes, and keeps the settings. Both `delete` and `uninstall` take
+`clients\cli-plugins` out of the docker CLI's `config.json`.
 
 ### Reaching the host from a container
 

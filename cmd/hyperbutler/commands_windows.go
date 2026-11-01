@@ -173,7 +173,7 @@ func cmdStart(args []string, stdout, stderr io.Writer) error {
 			_, _ = fmt.Fprintln(stderr, "hyperbutler: --debug-pipe and --memlimit apply at the next start; the running engine is unchanged")
 		}
 		if !*noContext && in.settings.ContextManaged() {
-			selectContext(st.Pipe, stdout, stderr)
+			in.selectContext(st.Pipe, stdout, stderr)
 		}
 		return nil
 	}
@@ -200,7 +200,7 @@ func cmdStart(args []string, stdout, stderr io.Writer) error {
 		_, _ = fmt.Fprintf(stderr, "hyperbutler: daemon.json: %s\n", printable([]byte(st.Daemon.Error)))
 	}
 	if !*noContext && in.settings.ContextManaged() {
-		selectContext(st.Pipe, stdout, stderr)
+		in.selectContext(st.Pipe, stdout, stderr)
 	}
 	checkDockerCLI(findDockerCLI(), stdout, stderr)
 	return nil
