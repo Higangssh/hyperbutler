@@ -46,6 +46,20 @@ func TestImportUsage(t *testing.T) {
 	if code := run([]string{"import", "-h"}, &out, &errb); code != 0 || strings.Contains(errb.String(), "from-pipe") {
 		t.Errorf("help: %d %q", code, errb.String())
 	}
+	// PowerShell splits an unquoted comma list into two arguments: say so (L10).
+	for _, args := range [][]string{
+		{"import", "--from-desktop", "--volume", "pgdata", "cache"},
+		{"import", "--from-desktop", "--image=busybox", "alpine"},
+	} {
+		errb.Reset()
+		if code := run(args, &out, &errb); code != 2 || !strings.Contains(errb.String(), `In PowerShell, quote it`) {
+			t.Errorf("%v: %d %q", args, code, errb.String())
+		}
+	}
+	errb.Reset()
+	if code := run([]string{"import", "--from-desktop", "--all-images", "x"}, &out, &errb); code != 2 || strings.Contains(errb.String(), "PowerShell") {
+		t.Errorf("no list flag: %d %q", code, errb.String())
+	}
 }
 
 func TestWriteResult(t *testing.T) {

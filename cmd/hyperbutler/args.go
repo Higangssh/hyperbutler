@@ -81,9 +81,36 @@ func parseArgs(fs *flag.FlagSet, args []string) error {
 		return &flagError{err}
 	}
 	if fs.NArg() != 0 {
-		return usagef("%s: unexpected argument %q", fs.Name(), fs.Arg(0))
+		return usagef("%s: unexpected argument %q%s", fs.Name(), fs.Arg(0), listHint(fs, args[:len(args)-fs.NArg()]))
 	}
 	return nil
+}
+
+// listHint is a hint for a positional argument right after a flag that takes a comma
+// list: PowerShell passes an unquoted --volume a,b as two arguments.
+func listHint(fs *flag.FlagSet, before []string) string {
+	listFlag := func(arg string) *flag.Flag {
+		if !strings.HasPrefix(arg, "-") {
+			return nil
+		}
+		name, _, _ := strings.Cut(strings.TrimLeft(arg, "-"), "=")
+		if f := fs.Lookup(name); f != nil && strings.Contains(f.Usage, "comma-separated") {
+			return f
+		}
+		return nil
+	}
+	var f *flag.Flag
+	n := len(before)
+	if n >= 1 && strings.Contains(before[n-1], "=") {
+		f = listFlag(before[n-1]) // --volume=a b
+	}
+	if f == nil && n >= 2 && !strings.Contains(before[n-2], "=") {
+		f = listFlag(before[n-2]) // --volume a b
+	}
+	if f == nil {
+		return ""
+	}
+	return fmt.Sprintf(` (a comma list after --%[1]s? In PowerShell, quote it: "--%[1]s=a,b")`, f.Name)
 }
 
 // usageError is a command line no command can run: an argument too many or missing,
