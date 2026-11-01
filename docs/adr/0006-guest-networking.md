@@ -190,6 +190,18 @@ not exist on Windows. Instead:
     fit an IPv4 packet. gVisor does not verify checksums on this link
     (`CapabilityRXChecksumOffload`, as before): it terminates every packet and forwards
     none.
+  - **Integrity.** Frames are trusted without a checksum in both directions: the guest
+    kernel takes `NEEDS_CSUM` segments as it would from a virtio NIC, and gVisor does not
+    verify what the guest sends. hvsock delivers the bytes it is given, so a frame is
+    only as intact as the buffers it passes through on both ends, and a buffer reused
+    while it is still being written corrupts payloads silently (the layer digest
+    mismatches of 2026-11-01, `docs/research/guest-networking.md`). Tests guard buffer
+    ownership instead: `TestLinkIntegrityUnderStalls` streams seeded data both ways
+    through the real link and `frame.Pump` with a stalling hvsock and checks SHA-256 at
+    both ends and every frame on arrival in the fake guest; `linkCheck` asserts that the
+    queue, the buffer in flight and the spare never share an array; `TestPump` and
+    netfwd's relay tests check whole frames with stalled consumers; and `bench/net-perf`
+    verifies its bulk streams (`corrupt` must be 0). A per-frame CRC is not implemented.
   - **Plain mode** (`-net-offload=false`, or a guest image whose netfwd dials). The
     guest dials the host's listener and sends bare Ethernet frames of at most the MTU.
   - A stack keeps the mode of its first link. TCP endpoints created on an offload link

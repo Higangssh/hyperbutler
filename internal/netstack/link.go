@@ -265,8 +265,13 @@ func (n *Stack) deliverVnet(b []byte) {
 		limit = frame.EthernetHeaderLen + frame.MaxIPv4Packet
 	}
 	// The checksum may be partial (NEEDS_CSUM): the NIC has CapabilityRXChecksumOffload,
-	// so gVisor does not verify it. Nothing on this link can corrupt a frame, and the
-	// stack terminates every packet rather than forwarding it.
+	// so gVisor does not verify it. Frames on this link are trusted without a checksum in
+	// both directions: hvsock delivers the bytes it was given, so a frame is only as
+	// intact as the buffers it passed through on both ends, and a buffer reused while it
+	// was still being written corrupts payloads silently (ADR 0006, "Integrity"). Tests
+	// guard buffer ownership instead: TestLinkIntegrityUnderStalls, linkCheck, frame's
+	// TestPump and netfwd's relay tests. The stack terminates every packet rather than
+	// forwarding it.
 	n.deliver(eth, limit)
 }
 
