@@ -323,8 +323,12 @@ follows `status.firstStart` (no data disk and no state.json yet) rather than whe
 settings.json exists, since the picker creates that file.
 
 Errors show the translated explanation, the stable code (`HB-VM-001`, ...) and "Copy the
-English original". Doctor's summaries and container status texts (`Up 10 seconds`) are
-dockerd's or the CLI's English and are shown as such under translated titles.
+English original". Doctor's checks carry a catalog key and its values for each summary
+and fix (`msg`, `fixMsg`, `args` in `doctor --json`), so the first-run list and Help
+show them in the window's language; a check without one (a raw HCS error, an unreadable
+config.json) shows the CLI's English. The bridge passes only keys shaped
+`doctor.<...>` and at most 8 cleaned values. Container status texts (`Up 10 seconds`)
+are dockerd's English and are shown as such under translated titles.
 
 Tests: `TestCatalogComplete` (every key in every language, same placeholders, the plural
 forms each language uses, no markup), `TestPageKeys` (every key the page and the host
@@ -477,8 +481,8 @@ processes and now runs 5, and the loader is no longer the 2021 one.
 
 - Narrator review; a dark palette (`prefers-color-scheme`); moving between monitors with
   different DPI.
-- Container status, doctor summaries and the update note are English (dockerd's or the
-  CLI's text).
+- Container status, the doctor checks that report a raw error, and the update note are
+  English (dockerd's or the CLI's text).
 - Storage is read-only (cleanup is the CLI's `docker system prune` for now); images and
   volumes have no actions yet.
 - The Start-menu shortcut without a console flash (a windowsgui stub), with the MSI.

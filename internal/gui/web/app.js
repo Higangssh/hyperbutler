@@ -740,11 +740,19 @@
   }
 
   // --- help -------------------------------------------------------------------------------
+  // checkText is a doctor sentence in the window's language (a catalog key the host
+  // named, with its values), or the CLI's English where the catalog has none.
+  function checkText(key, args, english) {
+    const a = args || {};
+    if (key && (key + "#other") in M) return tp(key, Number(a.n) || 0, a);
+    if (key && key in M) return t(key, a);
+    return english;
+  }
   function checkItem(c, detail) {
     const mark = { ok: "✓", info: "i", warn: "!", fail: "×" }[c.status] || "i";
     const title = ("doctor." + c.id) in M ? t("doctor." + c.id) : c.id;
-    const txt = h("div", { class: "txt" }, h("span", { text: title }), h("span", { class: "sub small", text: c.summary }));
-    if (detail && c.fix && c.status !== "ok") txt.append(h("span", { class: "sub small", text: c.fix }));
+    const txt = h("div", { class: "txt" }, h("span", { text: title }), h("span", { class: "sub small", text: checkText(c.msg, c.args, c.summary) }));
+    if (detail && c.fix && c.status !== "ok") txt.append(h("span", { class: "sub small", text: checkText(c.fixMsg, c.args, c.fix) }));
     return h("li", { class: "chk" }, h("span", { class: "mark " + c.status, "aria-label": t("check." + c.status), role: "img", text: mark }), txt);
   }
   async function runDoctor() {

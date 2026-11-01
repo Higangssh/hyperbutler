@@ -1,6 +1,7 @@
 package bridge
 
 import (
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -209,7 +210,8 @@ func MakeSettings(l schema.ConfigList) SettingsView {
 var ApplyTimes = []config.ApplyTime{config.ApplyLive, config.ApplyDockerd, config.ApplyVM, config.ApplyFirstStart}
 
 // DoctorView is doctor's checks. Summary and Fix are the CLI's English text; the page
-// shows a translated title by ID where its catalog has one.
+// shows a translated title by ID, and Msg and FixMsg with Args where its catalog has
+// those sentences.
 type DoctorView struct {
 	OK     bool          `json:"ok"`
 	Checks []CheckResult `json:"checks"`
@@ -221,6 +223,41 @@ type CheckResult struct {
 	Status  string `json:"status"` // ok, info, warn, fail
 	Summary string `json:"summary"`
 	Fix     string `json:"fix,omitempty"`
+	// Msg and FixMsg are catalog keys ("doctor.pipe.free"), Args their values.
+	Msg    string            `json:"msg,omitempty"`
+	FixMsg string            `json:"fixMsg,omitempty"`
+	Args   map[string]string `json:"args,omitempty"`
+}
+
+// reCheckKey is a catalog key a check may name; reCheckArg an argument name.
+var (
+	reCheckKey = regexp.MustCompile(`^doctor\.[a-z][a-zA-Z0-9.-]{0,63}$`)
+	reCheckArg = regexp.MustCompile(`^[a-z][a-zA-Z0-9]{0,15}$`)
+)
+
+// checkKey is k when it is a catalog key a check may name, else empty.
+func checkKey(k string) string {
+	if reCheckKey.MatchString(k) {
+		return k
+	}
+	return ""
+}
+
+// doctorArgs keeps at most 8 well-named arguments, cleaned like the summary.
+func doctorArgs(in map[string]string) map[string]string {
+	if len(in) == 0 {
+		return nil
+	}
+	out := map[string]string{}
+	for k, v := range in {
+		if len(out) == 8 {
+			break
+		}
+		if reCheckArg.MatchString(k) {
+			out[k] = dockerapi.Clip(dockerapi.CleanText(redact.String(v), false), 512)
+		}
+	}
+	return out
 }
 
 // MakeDoctor is the view of a doctor result.
@@ -238,7 +275,8 @@ func MakeDoctor(r schema.Doctor) DoctorView {
 		}
 		v.Checks = append(v.Checks, CheckResult{ID: field(c.ID), Status: st,
 			Summary: dockerapi.Clip(dockerapi.CleanText(redact.String(c.Summary), true), 2048),
-			Fix:     dockerapi.Clip(dockerapi.CleanText(redact.String(c.Fix), true), 2048)})
+			Fix:     dockerapi.Clip(dockerapi.CleanText(redact.String(c.Fix), true), 2048),
+			Msg:     checkKey(c.Msg), FixMsg: checkKey(c.FixMsg), Args: doctorArgs(c.Args)})
 	}
 	return v
 }

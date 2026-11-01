@@ -36,6 +36,15 @@ const guestFullPercent = 90
 // pauses the VM long before the volume is full (REQ-DISK-004).
 const hostLowFree = 5 << 30
 
+// msgArgs pairs the names and values a check's catalog sentence fills in.
+func msgArgs(kv ...string) map[string]string {
+	m := make(map[string]string, len(kv)/2)
+	for i := 0; i+1 < len(kv); i += 2 {
+		m[kv[i]] = kv[i+1]
+	}
+	return m
+}
+
 func cmdDoctor(args []string, stdout, stderr io.Writer) error {
 	fs := newFlagSet("doctor", stderr)
 	asJSON := fs.Bool("json", false, fmt.Sprintf("print JSON (schema %d)", SchemaVersion))
@@ -91,9 +100,10 @@ func runDoctor(in *install) DoctorJSON {
 	if member, err := inHyperVAdmins(); err == nil && !member {
 		add(DoctorCheck{ID: "hyperv-admins", Status: doctorFail,
 			Summary: "your sign-in token is not a member of Hyper-V Administrators, so HCS refuses to create the VM",
-			Fix:     `An administrator runs: net localgroup "Hyper-V Administrators" <you> /add` + "\nthen sign out and back in (README, Prerequisites)."})
+			Fix:     `An administrator runs: net localgroup "Hyper-V Administrators" <you> /add` + "\nthen sign out and back in (README, Prerequisites).",
+			Msg:     "doctor.hyperv-admins.no", FixMsg: "doctor.fix.hypervAdmins"})
 	} else if err == nil {
-		add(DoctorCheck{ID: "hyperv-admins", Status: doctorOK, Summary: "your sign-in token is a member of Hyper-V Administrators"})
+		add(DoctorCheck{ID: "hyperv-admins", Status: doctorOK, Summary: "your sign-in token is a member of Hyper-V Administrators", Msg: "doctor.hyperv-admins.ok"})
 	}
 
 	st, _ := engine.LoadState(in.l)
@@ -128,52 +138,62 @@ func virtualizationChecks(v map[string]any) []DoctorCheck {
 	const fixVMP = "In an elevated PowerShell: dism.exe /online /enable-feature /featurename:VirtualMachinePlatform /all /norestart\nthen reboot (README, Prerequisites)."
 	var out []DoctorCheck
 	if s, _ := v["computecore"].(string); s != "loadable" {
-		out = append(out, DoctorCheck{ID: "vm-platform", Status: doctorFail, Summary: "Virtual Machine Platform is not enabled (computecore.dll " + s + ")", Fix: fixVMP})
+		out = append(out, DoctorCheck{ID: "vm-platform", Status: doctorFail, Summary: "Virtual Machine Platform is not enabled (computecore.dll " + s + ")", Fix: fixVMP,
+			Msg: "doctor.vm-platform.off", FixMsg: "doctor.fix.vmp", Args: msgArgs("state", s)})
 	} else {
-		out = append(out, DoctorCheck{ID: "vm-platform", Status: doctorOK, Summary: "Virtual Machine Platform is enabled (computecore.dll loads)"})
+		out = append(out, DoctorCheck{ID: "vm-platform", Status: doctorOK, Summary: "Virtual Machine Platform is enabled (computecore.dll loads)", Msg: "doctor.vm-platform.ok"})
 	}
 	services, _ := v["services"].(map[string]any)
 	switch s := services["vmcompute"].(type) {
 	case string:
 		if s == "absent" {
-			out = append(out, DoctorCheck{ID: "hcs-service", Status: doctorFail, Summary: "the Host Compute Service (vmcompute) is not installed", Fix: fixVMP})
+			out = append(out, DoctorCheck{ID: "hcs-service", Status: doctorFail, Summary: "the Host Compute Service (vmcompute) is not installed", Fix: fixVMP,
+				Msg: "doctor.hcs-service.absent", FixMsg: "doctor.fix.vmp"})
 		}
 	case map[string]any:
 		if n, _ := s["start"].(uint64); n == 4 {
 			out = append(out, DoctorCheck{ID: "hcs-service", Status: doctorFail, Summary: "the Host Compute Service (vmcompute) is disabled",
-				Fix: "An administrator sets its startup type back to Manual (services.msc, Hyper-V Host Compute Service)."})
+				Fix: "An administrator sets its startup type back to Manual (services.msc, Hyper-V Host Compute Service).",
+				Msg: "doctor.hcs-service.disabled", FixMsg: "doctor.fix.hcsDisabled"})
 		} else {
-			out = append(out, DoctorCheck{ID: "hcs-service", Status: doctorOK, Summary: "the Host Compute Service (vmcompute) is installed"})
+			out = append(out, DoctorCheck{ID: "hcs-service", Status: doctorOK, Summary: "the Host Compute Service (vmcompute) is installed", Msg: "doctor.hcs-service.ok"})
 		}
 	}
 	if n, ok := v["hypervisorLaunchType"].(uint64); ok && n == 0 {
 		out = append(out, DoctorCheck{ID: "hypervisor", Status: doctorFail, Summary: "the hypervisor is set not to start (hypervisorlaunchtype off)",
-			Fix: "In an elevated PowerShell: bcdedit /set hypervisorlaunchtype auto\nthen reboot."})
+			Fix: "In an elevated PowerShell: bcdedit /set hypervisorlaunchtype auto\nthen reboot.",
+			Msg: "doctor.hypervisor.off", FixMsg: "doctor.fix.hypervisor"})
 	}
 	switch cs := v["computeSystems"].(type) {
 	case string:
 		out = append(out, DoctorCheck{ID: "hcs", Status: doctorFail, Summary: cs,
-			Fix: "Check the lines above (Virtual Machine Platform, Hyper-V Administrators), and that virtualization is on in the firmware."})
+			Fix:    "Check the lines above (Virtual Machine Platform, Hyper-V Administrators), and that virtualization is on in the firmware.",
+			FixMsg: "doctor.fix.hcs"})
 	case []string:
-		out = append(out, DoctorCheck{ID: "hcs", Status: doctorOK, Summary: fmt.Sprintf("HCS answers (%d compute systems)", len(cs))})
+		out = append(out, DoctorCheck{ID: "hcs", Status: doctorOK, Summary: fmt.Sprintf("HCS answers (%d compute systems)", len(cs)),
+			Msg: "doctor.hcs.ok", Args: msgArgs("n", fmt.Sprint(len(cs)))})
 	}
 	return out
 }
 
 // pipeCheck says whether the Docker API pipe is free, this installation's, or taken.
 func pipeCheck(pipe string, up bool, st *engine.State) DoctorCheck {
-	c := DoctorCheck{ID: "pipe"}
+	c := DoctorCheck{ID: "pipe", Args: msgArgs("pipe", pipe)}
 	exists := pipeExists(pipe)
 	switch {
 	case up && st != nil && st.Phase.Live() && strings.EqualFold(st.Pipe, pipe):
 		c.Status, c.Summary = doctorOK, fmt.Sprintf("%s is served by this hyperbutler (engine pid %d)", pipe, st.PID)
+		c.Msg, c.Args["pid"] = "doctor.pipe.ours", fmt.Sprint(st.PID)
 	case exists && up:
 		c.Status, c.Summary = doctorInfo, fmt.Sprintf("%s exists and hyperbutler is running (starting, or with another pipe until a restart)", pipe)
+		c.Msg = "doctor.pipe.starting"
 	case exists:
 		c.Status, c.Summary = doctorFail, pipe+" is in use by another program, so hyperbutler start fails with pipe-in-use"
 		c.Fix = `Stop that program, or give hyperbutler another pipe: hyperbutler config set pipe \\.\pipe\docker_engine_hyperbutler2`
+		c.Msg, c.FixMsg = "doctor.pipe.taken", "doctor.fix.pipeTaken"
 	default:
 		c.Status, c.Summary = doctorOK, pipe+" is free"
+		c.Msg = "doctor.pipe.free"
 	}
 	return c
 }
@@ -181,11 +201,13 @@ func pipeCheck(pipe string, up bool, st *engine.State) DoctorCheck {
 func cliCheck(cli dockerCLI) DoctorCheck {
 	c := DoctorCheck{ID: "docker-cli"}
 	if cli.Path == "" {
-		c.Status, c.Summary = doctorWarn, "no docker CLI on PATH"
+		c.Status, c.Summary, c.Msg = doctorWarn, "no docker CLI on PATH", "doctor.docker-cli.none"
 		if cli.Bundled != "" {
+			c.FixMsg, c.Args = "doctor.fix.cliBundled", msgArgs("dir", filepath.Dir(cli.Bundled))
 			c.Fix = "hyperbutler comes with one, " + cli.Bundled + "; add its folder to your PATH, or for this shell:\n" + pathAdvice(filepath.Dir(cli.Bundled))
 		} else {
 			c.Fix = "Install a docker CLI (19.03 or later), or use the one in the hyperbutler release zip (clients\\docker.exe)."
+			c.FixMsg = "doctor.fix.cliInstall"
 		}
 		return c
 	}
@@ -194,14 +216,23 @@ func cliCheck(cli dockerCLI) DoctorCheck {
 		which = "bundled"
 	}
 	major, minor, ok := cliVersion(cli.Path)
+	// The catalog has one sentence per place: bundled, or found on PATH.
+	where := "Path"
+	if cli.usesBundled() {
+		where = "Bundled"
+	}
+	c.Args = msgArgs("path", cli.Path, "version", fmt.Sprintf("%d.%d", major, minor), "min", minCLIVersion)
 	switch {
 	case !ok:
 		c.Status, c.Summary = doctorInfo, fmt.Sprintf("%s (%s); its version is unknown", cli.Path, which)
+		c.Msg = "doctor.docker-cli.unknown" + where
 	case cliTooOld(major, minor):
 		c.Status, c.Summary = doctorFail, fmt.Sprintf("%s (%s) is version %d.%d; hyperbutler's Docker Engine needs %s or later", cli.Path, which, major, minor, minCLIVersion)
 		c.Fix = "Put a newer docker CLI first on PATH (the one in the release zip's clients\\ folder)."
+		c.Msg, c.FixMsg = "doctor.docker-cli.old"+where, "doctor.fix.cliNewer"
 	default:
 		c.Status, c.Summary = doctorOK, fmt.Sprintf("%s (%s, %d.%d)", cli.Path, which, major, minor)
+		c.Msg = "doctor.docker-cli.ok" + where
 	}
 	return c
 }
@@ -214,17 +245,22 @@ func contextCheck(in *install, store dockerctx.Store, pipe string) DoctorCheck {
 		c.Fix = "Fix or remove " + store.ConfigPath() + "; docker commands fail on it too."
 		return c
 	}
+	c.Args = msgArgs("what", t.What, "name", contextName)
 	switch {
 	case t.Ours:
 		c.Status, c.Summary = doctorOK, "plain docker uses hyperbutler ("+t.What+")"
+		c.Msg = "doctor.docker-context.ours"
 	case in.settings != nil && !in.settings.ContextManaged():
 		c.Status, c.Summary = doctorInfo, "plain docker uses "+t.What+"; context.manage is off, so hyperbutler start does not select its context"
+		c.Msg = "doctor.docker-context.unmanaged"
 	case t.FromEnv:
 		c.Status, c.Summary = doctorWarn, "plain docker in this shell uses "+t.What+", not hyperbutler"
 		c.Fix = "Remove DOCKER_HOST or DOCKER_CONTEXT from this shell, or use docker --context " + contextName + " ..."
+		c.Msg, c.FixMsg = "doctor.docker-context.env", "doctor.fix.contextEnv"
 	default:
 		c.Status, c.Summary = doctorWarn, "plain docker uses "+t.What+", not hyperbutler"
 		c.Fix = "hyperbutler start selects the " + contextName + " context, or: docker context use " + contextName
+		c.Msg, c.FixMsg = "doctor.docker-context.other", "doctor.fix.contextUse"
 	}
 	return c
 }
@@ -283,9 +319,10 @@ func credCheck(store dockerctx.Store) DoctorCheck {
 		}
 		c.Status, c.Summary, c.Fix = doctorWarn, strings.Join(msgs, " "), strings.Join(fixes, "\n")
 	case n == 0:
-		c.Status, c.Summary = doctorOK, "config.json names no credential helper"
+		c.Status, c.Summary, c.Msg = doctorOK, "config.json names no credential helper", "doctor.credential-helper.none"
 	default:
 		c.Status, c.Summary = doctorOK, fmt.Sprintf("the %d %s config.json names %s on PATH", n, plural(n, "credential helper", "credential helpers"), plural(n, "is", "are"))
+		c.Msg, c.Args = "doctor.credential-helper.some", msgArgs("n", fmt.Sprint(n))
 	}
 	return c
 }
@@ -308,39 +345,44 @@ func warnCredHelpers(stderr io.Writer) {
 func otherEnginesCheck(pipe string) DoctorCheck {
 	others := otherEngines(pipe)
 	if len(others) == 0 {
-		return DoctorCheck{ID: "other-engines", Status: doctorOK, Summary: "no other Docker engine's pipe exists"}
+		return DoctorCheck{ID: "other-engines", Status: doctorOK, Summary: "no other Docker engine's pipe exists", Msg: "doctor.other-engines.none"}
 	}
 	var s []string
 	for _, e := range others {
 		s = append(s, e.Who+" ("+e.Pipe+")")
 	}
 	return DoctorCheck{ID: "other-engines", Status: doctorInfo, Summary: "another Docker engine is running: " + strings.Join(s, ", ") +
-		"; plain docker reaches whichever context is selected, and the engines share the host's ports"}
+		"; plain docker reaches whichever context is selected, and the engines share the host's ports",
+		Msg: "doctor.other-engines.some", Args: msgArgs("list", strings.Join(s, ", "))}
 }
 
 func diskChecks(in *install, st *engine.State, up bool) []DoctorCheck {
 	var out []DoctorCheck
 	dir := in.l.Data
 	if f, err := vm.FreeBytes(nearestDir(dir)); err == nil {
-		c := DoctorCheck{ID: "host-disk", Status: doctorOK, Summary: fmt.Sprintf("%s free on the volume of %s", engine.HumanSize(f), dir)}
+		c := DoctorCheck{ID: "host-disk", Status: doctorOK, Summary: fmt.Sprintf("%s free on the volume of %s", engine.HumanSize(f), dir),
+			Msg: "doctor.host-disk.free", Args: msgArgs("free", engine.HumanSize(f), "dir", dir)}
 		if f < hostLowFree {
 			c.Status = doctorWarn
 			c.Fix = "Free space on that volume: the VM is paused when it runs out (REQ-DISK-004). docker system prune frees the guest's share."
+			c.FixMsg = "doctor.fix.hostLow"
 		}
 		out = append(out, c)
 	}
 	switch {
 	case up && st != nil && st.Phase.Live() && st.GuestFS != nil:
 		g := st.GuestFS
-		c := DoctorCheck{ID: "guest-disk", Status: doctorOK, Summary: guestFSLine(g)}
+		c := DoctorCheck{ID: "guest-disk", Status: doctorOK, Summary: guestFSLine(g), Msg: "doctor.guest-disk.used",
+			Args: msgArgs("used", engine.HumanSize(g.UsedBytes()), "size", engine.HumanSize(g.SizeBytes), "pct", fmt.Sprintf("%.0f", g.UsedPercent()))}
 		if g.UsedPercent() > guestFullPercent {
 			c.Status, c.Fix = doctorWarn, "docker system prune (and docker builder prune) frees space; growing the data disk is not supported yet."
+			c.FixMsg = "doctor.fix.guestFull"
 		}
 		out = append(out, c)
 	case up:
-		out = append(out, DoctorCheck{ID: "guest-disk", Status: doctorInfo, Summary: "the guest has not reported its file system yet"})
+		out = append(out, DoctorCheck{ID: "guest-disk", Status: doctorInfo, Summary: "the guest has not reported its file system yet", Msg: "doctor.guest-disk.waiting"})
 	default:
-		out = append(out, DoctorCheck{ID: "guest-disk", Status: doctorInfo, Summary: "known while hyperbutler runs"})
+		out = append(out, DoctorCheck{ID: "guest-disk", Status: doctorInfo, Summary: "known while hyperbutler runs", Msg: "doctor.guest-disk.stopped"})
 	}
 	return out
 }

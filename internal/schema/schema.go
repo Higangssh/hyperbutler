@@ -92,12 +92,17 @@ type Doctor struct {
 }
 
 // DoctorCheck is one check: ID names it ("pipe", "credential-helper", ...), Status is
-// ok, info, warn or fail, and Fix says what to do when it is not ok.
+// ok, info, warn or fail, and Fix says what to do when it is not ok. Msg and FixMsg name
+// the GUI catalog sentences ("doctor.pipe.free") that say Summary and Fix in the
+// window's language, filled in with Args; they are empty where only English exists.
 type DoctorCheck struct {
-	ID      string `json:"id"`
-	Status  string `json:"status"`
-	Summary string `json:"summary"`
-	Fix     string `json:"fix,omitempty"`
+	ID      string            `json:"id"`
+	Status  string            `json:"status"`
+	Summary string            `json:"summary"`
+	Fix     string            `json:"fix,omitempty"`
+	Msg     string            `json:"msg,omitempty"`
+	FixMsg  string            `json:"fixMsg,omitempty"`
+	Args    map[string]string `json:"args,omitempty"`
 }
 
 // GuardPause is a pause by the free-space guard: the host volume, its free space as

@@ -466,6 +466,21 @@ func autostartCheck(in *install) DoctorCheck {
 		c.Status = doctorOK
 	case a.Exists && !a.ThisExe, wanted && !a.Exists:
 		c.Status, c.Fix = doctorWarn, "hyperbutler config set autostart true (or false)"
+		c.FixMsg = "doctor.fix.autostart"
+	}
+	// The same cases as describeAutostart; an error stays English only.
+	switch {
+	case a.Error != "" && !a.Exists:
+	case !a.Exists && wanted:
+		c.Msg, c.Args = "doctor.autostart.missing", msgArgs("task", a.Task)
+	case !a.Exists:
+		c.Msg = "doctor.autostart.none"
+	case !a.ThisExe:
+		c.Msg, c.Args = "doctor.autostart.otherExe", msgArgs("task", a.Task, "command", a.Command)
+	case !wanted:
+		c.Msg, c.Args = "doctor.autostart.unwanted", msgArgs("task", a.Task)
+	default:
+		c.Msg, c.Args = "doctor.autostart.on", msgArgs("task", a.Task, "command", a.Command)
 	}
 	return c
 }
