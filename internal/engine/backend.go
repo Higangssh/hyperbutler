@@ -19,6 +19,9 @@ type Backend interface {
 	List(owner string) ([]vm.Summary, error)
 	// GrantAccess lets the worker process of compute system id open path.
 	GrantAccess(id, path string) error
+	// RuntimeIDOf is the runtime id compute system id will have, before it exists: its
+	// VM account (vm.AccountSID) is what GrantAccess adds to a file.
+	RuntimeIDOf(id string) (guid.GUID, error)
 	// RevokeAccess undoes GrantAccess.
 	RevokeAccess(id, path string) error
 }

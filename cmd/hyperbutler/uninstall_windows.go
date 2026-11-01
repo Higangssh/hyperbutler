@@ -13,22 +13,13 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Microsoft/go-winio/pkg/guid"
+
 	"github.com/Higangssh/hyperbutler/guest/image"
 	"github.com/Higangssh/hyperbutler/internal/engine"
 	"github.com/Higangssh/hyperbutler/internal/engine/dockerctx"
 	"github.com/Higangssh/hyperbutler/internal/transport"
 	"github.com/Higangssh/hyperbutler/internal/vm"
-)
-
-// Kinds of UninstallItem.
-const (
-	uninstallEngine  = "engine"         // the running engine process, stopped first
-	uninstallVM      = "vm"             // an HCS compute system of this installation
-	uninstallACL     = "acl"            // a VM account's access entry on a disk file
-	uninstallContext = "docker-context" // the "hyperbutler" docker context
-	uninstallPlugins = "docker-plugins" // the bundled cli-plugins entry in the docker CLI's config.json
-	uninstallFile    = "file"
-	uninstallDir     = "dir" // removed only when empty
 )
 
 // uninstallNotes say what uninstall never touches, in every output.
@@ -141,11 +132,12 @@ func (in *install) planUninstall(keepData, up bool) *uninstallPlan {
 		}
 	}
 
-	dataDirs := in.dataDirs(st)
-	if !up {
-		in.planACLs(p, st, keepData, dataDirs)
+	if in.settingsErr != nil {
+		p.notes = append(p.notes, fmt.Sprintf("settings.json is invalid (%v): it is removed with the rest, and the data disk is looked for where the last engine had it (state.json) and in %s.", in.settingsErr, l.Home))
 	}
-	in.planContext(p)
+	dataDirs := in.dataDirs(st)
+	in.planACLs(p, st, keepData, up, dataDirs)
+	in.planContext(p, st)
 	in.planPlugins(p)
 
 	// Files, by name, in the order they are removed: the data disk first, settings.json
@@ -195,8 +187,13 @@ func (in *install) planUninstall(keepData, up bool) *uninstallPlan {
 	}
 
 	// Directories: logs, the data directories and the state directory, each only if
-	// nothing else would be left in it. An empty leftover directory is listed too.
+	// nothing else would be left in it. An empty leftover directory is listed too. A
+	// data directory outside the state directory goes only if start created it.
 	dirs := []string{l.LogDir()}
+	created := ""
+	if in.settings != nil {
+		created = in.settings.CreatedDataDir
+	}
 	for _, d := range dataDirs {
 		if !engine.SamePath(d, l.Home) {
 			dirs = append(dirs, d)
@@ -210,6 +207,11 @@ func (in *install) planUninstall(keepData, up bool) *uninstallPlan {
 		}
 		if why := protectedDir(d); why != "" {
 			p.keep(uninstallDir, d, why+"; only hyperbutler's files in it are removed")
+			continue
+		}
+		if !engine.SamePath(d, l.Home) && !engine.SamePath(d, l.LogDir()) && (created == "" || !engine.SamePath(d, created)) {
+			p.keep(uninstallDir, d, "a data directory hyperbutler did not create (or that an older hyperbutler created without recording it); "+
+				"only hyperbutler's files in it are removed: delete the directory yourself if you do not need it")
 			continue
 		}
 		others := leftovers(d, removed)
@@ -231,10 +233,16 @@ func (in *install) planUninstall(keepData, up bool) *uninstallPlan {
 // planACLs lists the VM access entries (HcsGrantVmAccess, NT VIRTUAL MACHINE\<id>) a
 // crashed engine left on files that stay: the guest's system disk (in the image the
 // last engine ran, and next to hyperbutler.exe), and the data disk with --keep-data. A
-// deleted file takes its entries with it. The last engine's VM is revoked through HCS;
-// entries of compute systems that no longer exist, of any earlier crash, are removed
-// from the DACL. Entries of a compute system that exists are in use and stay.
-func (in *install) planACLs(p *uninstallPlan, st *engine.State, keepData bool, dataDirs []string) {
+// deleted file takes its entries with it.
+//
+// Only this installation's VMs' entries go: the last engine's VM (revoked through HCS)
+// and the earlier ones in state.json's pastRuntimeIds, which the engine records before
+// each grant. Any other VM account is left alone, even when no compute system has it:
+// another installation sharing the system disk grants access before it creates its VM,
+// and another Windows user's VMs are not in this user's list. Entries of a compute
+// system that exists are in use and stay. While the engine runs (up), its own VM's
+// entries are revoked as it stops, and the rest is planned again after that.
+func (in *install) planACLs(p *uninstallPlan, st *engine.State, keepData, up bool, dataDirs []string) {
 	var files []string
 	if keepData {
 		for _, d := range dataDirs {
@@ -248,11 +256,26 @@ func (in *install) planACLs(p *uninstallPlan, st *engine.State, keepData bool, d
 		files = append(files, systemDisk(filepath.Dir(exe)))
 	}
 	lastSID := ""
-	if st != nil && st.VMID != "" && st.RuntimeID != "" {
-		lastSID, _ = vmSID(st.RuntimeID)
+	owned := map[string]bool{}
+	if st != nil {
+		for _, rid := range st.PastRuntimeIDs {
+			if sid, err := runtimeSID(rid); err == nil {
+				owned[sid] = true
+			}
+		}
+		if st.VMID != "" && st.RuntimeID != "" {
+			if sid, err := runtimeSID(st.RuntimeID); err == nil {
+				lastSID, owned[sid] = sid, true
+			}
+		}
+	}
+	later := ""
+	if up {
+		later = "; checked again after the engine stops"
 	}
 	live, liveErr := liveVMSIDs()
 	seen := map[string]bool{}
+	foreign := 0
 	for _, f := range files {
 		if f == "" || seen[strings.ToLower(f)] || !exists(f) {
 			continue
@@ -267,18 +290,44 @@ func (in *install) planACLs(p *uninstallPlan, st *engine.State, keepData bool, d
 			switch {
 			case live[sid]:
 				continue // a compute system that exists uses it
+			case up && sid == lastSID:
+				continue // the running engine's VM: revoked as it stops
+			case !owned[sid]:
+				foreign++
+				p.keep(uninstallACL, f, "access of "+sid+", a VM this installation did not record; left alone")
 			case sid == lastSID:
-				p.add(planned{UninstallItem: UninstallItem{Kind: uninstallACL, Path: f, Detail: "access of " + sid + " (VM " + st.VMID + ", whose engine did not shut down); revoked"}, vmID: st.VMID, sid: sid})
-			case liveErr != nil:
-				// Without the list of existing compute systems an entry may be in use.
+				p.add(planned{UninstallItem: UninstallItem{Kind: uninstallACL, Path: f, Detail: "access of " + sid + " (VM " + st.VMID + ", whose engine did not shut down); revoked" + later}, vmID: st.VMID, sid: sid})
 			default:
-				p.add(planned{UninstallItem: UninstallItem{Kind: uninstallACL, Path: f, Detail: "access of " + sid + " (a VM that no longer exists); removed"}, sid: sid})
+				p.add(planned{UninstallItem: UninstallItem{Kind: uninstallACL, Path: f, Detail: "access of " + sid + " (an earlier VM of this installation that no longer exists); removed" + later}, sid: sid})
 			}
 		}
 	}
-	if liveErr != nil {
-		p.notes = append(p.notes, "Could not list compute systems, so VM access entries other than the last engine's are left: "+liveErr.Error())
+	if foreign > 0 {
+		p.notes = append(p.notes, fmt.Sprintf("%d VM access entr%s on these files belong to VMs this installation did not record: another installation that shares the guest image "+
+			"may be starting one, another Windows user may run one, or an older hyperbutler left it. They are left alone.", foreign, plural(foreign, "y", "ies")))
 	}
+	if liveErr != nil {
+		p.notes = append(p.notes, "Could not list Hyper-V compute systems ("+liveErr.Error()+"); only entries of this installation's own VMs are removed.")
+	}
+	if up {
+		p.notes = append(p.notes, "The engine is running: its VM's access entries are revoked as it stops, and the access entries are checked again after that.")
+	}
+}
+
+func plural(n int, one, many string) string {
+	if n == 1 {
+		return one
+	}
+	return many
+}
+
+// runtimeSID is the VM account of runtime id rid.
+func runtimeSID(rid string) (string, error) {
+	g, err := guid.FromString(rid)
+	if err != nil {
+		return "", err
+	}
+	return vm.AccountSID(g), nil
 }
 
 // planContext lists the docker context, if hyperbutler created it for this
@@ -313,15 +362,18 @@ func removePluginDir(dir string) error {
 	return store.RemovePluginDir(dir)
 }
 
-func (in *install) planContext(p *uninstallPlan) {
+func (in *install) planContext(p *uninstallPlan, st *engine.State) {
 	store, err := dockerctx.DefaultStore()
 	if err != nil {
 		return
 	}
 	c, err := store.Get(contextName)
 	pipe := transport.DefaultPipeName
-	if in.settings != nil {
+	switch {
+	case in.settings != nil:
 		pipe = in.settings.PipeName()
+	case st != nil && st.Pipe != "":
+		pipe = st.Pipe // settings.json is gone or invalid: the last engine's pipe
 	}
 	switch {
 	case errors.Is(err, os.ErrNotExist):
@@ -339,17 +391,26 @@ func (in *install) planContext(p *uninstallPlan) {
 	detail := "in " + store.Dir
 	if cur, err := store.Current(); err == nil && cur == contextName {
 		p.restoreCtx = true
+		recorded := ""
+		if in.settings != nil {
+			recorded = in.settings.PreviousContext
+		}
 		prev := ""
-		if in.settings != nil && in.settings.PreviousContext != "" && in.settings.PreviousContext != "default" {
-			if _, err := store.Get(in.settings.PreviousContext); err == nil {
-				prev = in.settings.PreviousContext
+		if recorded != "" && recorded != "default" {
+			if _, err := store.Get(recorded); err == nil {
+				prev = recorded
 			}
 		}
 		p.restore = prev
-		if prev == "" {
-			detail += "; selected, so docker goes back to the default context"
-		} else {
-			detail += fmt.Sprintf("; selected, so docker goes back to %q, selected before hyperbutler", prev)
+		switch {
+		case prev != "":
+			detail += fmt.Sprintf("; selected, so docker goes back to %q, the context hyperbutler start last replaced", prev)
+		case recorded == "default":
+			detail += "; selected, so docker goes back to the default context, which hyperbutler start last replaced"
+		case recorded != "":
+			detail += fmt.Sprintf("; selected, so docker goes back to the default context (%q, which hyperbutler start last replaced, no longer exists)", recorded)
+		default:
+			detail += "; selected, so docker goes back to the default context (no earlier context is recorded)"
 		}
 	}
 	p.add(planned{UninstallItem: UninstallItem{Kind: uninstallContext, Path: contextName, Detail: detail}})
@@ -357,8 +418,9 @@ func (in *install) planContext(p *uninstallPlan) {
 
 // selectContext selects hyperbutler's docker context (the function below) and records
 // in settings.json the context it replaced, so uninstall can select that one again.
-// Only the first switch is recorded: later ones replace the user's choice of
-// hyperbutler.
+// Every switch from another context is recorded: if the user went back to Docker
+// Desktop's context and start replaced it again, that is the one to restore. A start
+// that finds hyperbutler's context already selected keeps the record.
 func (in *install) selectContext(pipe string, stdout, stderr io.Writer) {
 	before := ""
 	store, err := dockerctx.DefaultStore()
@@ -366,14 +428,14 @@ func (in *install) selectContext(pipe string, stdout, stderr io.Writer) {
 		before, err = store.Current()
 	}
 	selectContext(pipe, stdout, stderr)
-	if err != nil || before == contextName || in.settings == nil || in.settings.PreviousContext != "" {
+	if before == "" {
+		before = "default"
+	}
+	if err != nil || before == contextName || in.settings == nil || in.settings.PreviousContext == before {
 		return
 	}
 	if after, err := store.Current(); err != nil || after != contextName {
 		return
-	}
-	if before == "" {
-		before = "default"
 	}
 	s := *in.settings
 	s.PreviousContext = before
@@ -477,7 +539,7 @@ func cmdUninstall(args []string, stdin io.Reader, stdout, stderr io.Writer) erro
 	if err := parseArgs(fs, args); err != nil {
 		return err
 	}
-	in, err := openInstall()
+	in, err := openInstallLenient()
 	if err != nil {
 		return err
 	}
@@ -593,7 +655,7 @@ func cmdUninstall(args []string, stdin io.Reader, stdout, stderr io.Writer) erro
 			} else if strings.HasPrefix(strings.ToLower(it.Path), strings.ToLower(in.l.LogDir()+`\`)) {
 				timeout = logRemoveTimeout
 			}
-			err = removeVisible(it.Path, timeout, stderr)
+			err = uninstallRemove(it.Path, timeout, stderr)
 		case it.Kind == uninstallDir:
 			deferred = append(deferred, it)
 			continue
@@ -604,24 +666,38 @@ func cmdUninstall(args []string, stdin io.Reader, stdout, stderr io.Writer) erro
 		}
 		r.Items = append(r.Items, it.UninstallItem)
 	}
-	// The lock files, settings.json (only if everything else went: it is what tells a
-	// later uninstall where the rest is), then the directories (os.Remove never recurses,
-	// so only empty ones go).
+	// settings.json (only if everything else went: it is what tells a later uninstall
+	// where the rest is), then the directories (os.Remove never recurses, so only empty
+	// ones go). All of it under both locks, so that a start waiting for them finds either
+	// the whole installation or none of it; only the lock files, and the state directory
+	// that holds them, go after the locks are released.
+	ok := len(r.Failed) == 0
+	finish := func(items []planned) {
+		for _, it := range items {
+			if !ok && (it.last || it.Kind == uninstallDir) {
+				r.Kept = append(r.Kept, UninstallItem{Kind: it.Kind, Path: it.Path, Detail: "kept because something else could not be removed; run hyperbutler uninstall again"})
+				continue
+			}
+			if err := uninstallRemove(it.Path, fileRemoveTimeout, stderr); err != nil {
+				fail(it.UninstallItem, err)
+				continue
+			}
+			r.Items = append(r.Items, it.UninstallItem)
+		}
+	}
+	var locked, unlocked []planned
+	for _, it := range deferred {
+		if in.holdsLock(it) {
+			unlocked = append(unlocked, it)
+		} else {
+			locked = append(locked, it)
+		}
+	}
+	finish(locked)
 	_ = lk.Unlock()
 	_ = ops.Unlock()
 	lkHeld, opsHeld = false, false
-	ok := len(r.Failed) == 0
-	for _, it := range deferred {
-		if !ok && (it.last || it.Kind == uninstallDir) {
-			r.Kept = append(r.Kept, UninstallItem{Kind: it.Kind, Path: it.Path, Detail: "kept because something else could not be removed; run hyperbutler uninstall again"})
-			continue
-		}
-		if err := removeVisible(it.Path, fileRemoveTimeout, stderr); err != nil {
-			fail(it.UninstallItem, err)
-			continue
-		}
-		r.Items = append(r.Items, it.UninstallItem)
-	}
+	finish(unlocked)
 	if err := printUninstall(stdout, *asJSON, r); err != nil {
 		return err
 	}
@@ -631,11 +707,29 @@ func cmdUninstall(args []string, stdin io.Reader, stdout, stderr io.Writer) erro
 	return nil
 }
 
+// holdsLock reports whether it is a lock file, or a directory that holds one: those go
+// only after the locks are released.
+func (in *install) holdsLock(it planned) bool {
+	for _, lf := range []string{in.l.LockPath(), in.l.OpsLockPath()} {
+		if strings.EqualFold(it.Path, lf) || (it.Kind == uninstallDir && engine.SamePath(it.Path, filepath.Dir(lf))) {
+			return true
+		}
+	}
+	return false
+}
+
+// Seams for the tests: how uninstall removes a file or an empty directory, and revokes
+// a VM's access through HCS.
+var (
+	uninstallRemove = removeVisible
+	revokeVMAccess  = vm.RevokeVMAccess
+)
+
 // revokeACE removes a VM account's access entry: through HCS for a known compute system
 // id (which also removes the worker capability entry it added), else from the DACL.
 func revokeACE(it planned) error {
 	if it.vmID != "" {
-		if err := vm.RevokeVMAccess(it.vmID, it.Path); err != nil {
+		if err := revokeVMAccess(it.vmID, it.Path); err != nil {
 			return revokeSID(it.Path, it.sid)
 		}
 		if sids, err := vmACEs(it.Path); err == nil {

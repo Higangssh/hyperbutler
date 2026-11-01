@@ -41,20 +41,36 @@ const (
 type install struct {
 	l        engine.Layout
 	settings *engine.Settings
+	// lenient: an invalid settings.json is taken as none, and settingsErr says why
+	// (uninstall only, which must work without it).
+	lenient     bool
+	settingsErr error
 }
 
-func openInstall() (*install, error) {
+func openInstall() (*install, error) { return loadInstall(false) }
+
+// openInstallLenient is openInstall for uninstall: an invalid settings.json is treated
+// like a missing one, and the data directory is the last engine's (state.json).
+func openInstallLenient() (*install, error) { return loadInstall(true) }
+
+func loadInstall(lenient bool) (*install, error) {
 	home, err := engine.DefaultHome()
 	if err != nil {
 		return nil, err
 	}
-	in := &install{l: engine.Layout{Home: home, Data: home}}
+	in := &install{l: engine.Layout{Home: home, Data: home}, lenient: lenient}
 	s, err := engine.LoadSettings(in.l)
 	switch {
 	case err == nil:
 		in.settings = s
 		in.l.Data = s.DataDir
-	case !errors.Is(err, os.ErrNotExist):
+	case errors.Is(err, os.ErrNotExist):
+	case lenient:
+		in.settingsErr = err
+		if st, serr := engine.LoadState(in.l); serr == nil && st.DataDir != "" {
+			in.l.Data = st.DataDir
+		}
+	default:
 		return nil, fmt.Errorf("%w (fix or delete %s)", err, in.l.SettingsPath())
 	}
 	return in, nil
@@ -62,11 +78,35 @@ func openInstall() (*install, error) {
 
 // reload reads the settings again (after taking the ops lock).
 func (in *install) reload() error {
-	fresh, err := openInstall()
+	fresh, err := loadInstall(in.lenient)
 	if err != nil {
 		return err
 	}
 	*in = *fresh
+	return nil
+}
+
+// createDataDir creates a data directory outside the state directory that does not
+// exist yet, and records in settings.json that hyperbutler made it
+// (Settings.CreatedDataDir): uninstall removes that one, never a directory the user
+// named that was already there.
+func (in *install) createDataDir() error {
+	d := in.settings.DataDir
+	if engine.SamePath(d, in.l.Home) {
+		return nil
+	}
+	if _, err := os.Lstat(d); err == nil || !errors.Is(err, os.ErrNotExist) {
+		return nil // there already (or not ours to judge): the engine reports a bad one
+	}
+	if err := engine.MkdirPrivate(d); err != nil {
+		return fmt.Errorf("create the data directory: %w", err)
+	}
+	s := *in.settings
+	s.CreatedDataDir = d
+	if err := engine.SaveSettings(in.l, &s); err != nil {
+		return err
+	}
+	in.settings = &s
 	return nil
 }
 
@@ -178,6 +218,9 @@ func cmdStart(args []string, stdout, stderr io.Writer) error {
 		return nil
 	}
 	in.noteCrash(stderr)
+	if err := in.createDataDir(); err != nil {
+		return err
+	}
 
 	cmd, err := spawnEngine(in, kernel, initrd, manifest, dcfg)
 	if err != nil {

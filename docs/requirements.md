@@ -210,10 +210,13 @@ Status of the settings requirements (2026-10-31, `hyperbutler start`; details in
   docker contexts) and uploads nothing; secrets go through `internal/redact` (unit and fuzz
   tests).
 - REQ-UX-010: met on one machine (2026-11-01). `uninstall --dry-run` lists the engine, the
-  installation's compute systems, VM access entries a crashed engine left, the docker
-  context (the one selected before hyperbutler's is selected again), the data disk,
-  settings, state, logs and daemon.json; `uninstall` removes them by name, settings.json
-  last, and directories only when empty; `--keep-data` keeps the disk and daemon.json.
+  installation's compute systems, VM access entries a crashed engine of this installation
+  left (state.json records each VM's runtime id before it is granted access; other VMs'
+  entries stay), the docker context (the one the last start replaced is selected again),
+  the data disk, settings, state, logs and daemon.json; `uninstall` removes them by name,
+  settings.json last and under the locks, and directories only when empty (a data
+  directory only if start created it); `--keep-data` keeps the disk and daemon.json. An
+  invalid settings.json does not block it.
   hyperbutler creates no scheduled tasks, services or registry keys. `bench/uninstall`
   passed against a test installation; the MSI uninstaller is 0.2.
 

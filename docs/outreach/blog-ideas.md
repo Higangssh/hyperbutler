@@ -94,8 +94,11 @@ surprising. Numbers are from the maintainer's Windows 11 Home laptop unless note
   `NT VIRTUAL MACHINE\<runtime id>` (S-1-5-83-1-...) before the VM exists, because the
   runtime id is a name-based GUID; a crash leaves the entry behind, and
   HcsRevokeVmAccess also drops the shared worker-capability entry other VMs added.
-  `hyperbutler uninstall` finds stale entries by matching them against live compute
-  systems. `bench/uninstall`.
+  Matching entries against live compute systems is not enough: another installation
+  sharing the image has granted its VM access before creating it, and another user's VMs
+  are invisible. So the engine learns its VM's runtime id before the grant (a probe grant
+  on a scratch file), records it in state.json, and `hyperbutler uninstall` removes only
+  those. `bench/uninstall`.
 - **Your Windows trusts CAs Linux has never heard of:** 18 of the 29 valid roots in a
   stock Windows 11 store are missing from Alpine's Mozilla bundle, and the store changes
   by itself (AuthRoot fills on demand), which is why the import runs only at boot and on

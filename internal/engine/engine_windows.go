@@ -108,6 +108,10 @@ type Config struct {
 	// line (development harness features such as the network bench).
 	ExtraServices []vm.Service
 	ExtraCmdLine  string
+	// OnGrant, if set, is called before the VM is first given access to a file, with
+	// the runtime id it will have (Backend.RuntimeIDOf), so that the access entry is on
+	// record before it exists: a crash between the grant and Create leaves it behind.
+	OnGrant func(vmID string, runtimeID guid.GUID)
 	// OnCreated, if set, is called once the compute system exists.
 	OnCreated func(vmID string, runtimeID guid.GUID)
 	// OnReady, if set, is called once dockerd answers, before the pipe is served. If it
@@ -194,6 +198,25 @@ func (c *Config) defaults() {
 	}
 	if c.Backend == nil {
 		c.Backend = HCSBackend{}
+	}
+}
+
+// granter returns cfg.Backend.GrantAccess for cfg.VMID that, before the first grant,
+// learns the VM's runtime id and reports it to OnGrant. A runtime id that cannot be
+// learned is logged and the grant goes ahead: OnCreated reports the id once the VM
+// exists, and only a crash in between leaves an entry nobody recorded.
+func (c *Config) granter() func(path string) error {
+	announced := false
+	return func(path string) error {
+		if !announced {
+			announced = true
+			if rid, err := c.Backend.RuntimeIDOf(c.VMID); err != nil {
+				c.Logger.Warn("cannot learn the VM's runtime id before granting it access", "vm", c.VMID, "err", err)
+			} else if c.OnGrant != nil {
+				c.OnGrant(c.VMID, rid)
+			}
+		}
+		return c.Backend.GrantAccess(c.VMID, path)
 	}
 }
 
@@ -288,6 +311,7 @@ func Run(ctx context.Context, cfg Config) (err error) {
 	}
 
 	var disk *dataDisk
+	grant := cfg.granter()
 	cmdline := cfg.CmdLine + HashTableArgs(cfg.MemoryMB) + netArgs + shareArgs + cfg.ExtraCmdLine
 	if cfg.DaemonConfig != nil {
 		cmdline += " hyperbutler.daemoncfg=1"
@@ -301,7 +325,7 @@ func Run(ctx context.Context, cfg Config) (err error) {
 			step("created data disk %s (%s, sparse, 1 MiB blocks)", disk.path, FormatSize(disk.meta.SizeBytes))
 		}
 		// The VM worker runs as a per-VM virtual account; it needs an ACE on the VHDX.
-		if err := cfg.Backend.GrantAccess(cfg.VMID, disk.path); err != nil {
+		if err := grant(disk.path); err != nil {
 			return err
 		}
 		defer func() {
@@ -321,7 +345,7 @@ func Run(ctx context.Context, cfg Config) (err error) {
 	}
 	if img != nil {
 		// The system disk, read-only at the hypervisor: the guest cannot change it.
-		if err := cfg.Backend.GrantAccess(cfg.VMID, img.system); err != nil {
+		if err := grant(img.system); err != nil {
 			return err
 		}
 		defer func() {

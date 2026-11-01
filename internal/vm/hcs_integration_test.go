@@ -43,6 +43,12 @@ func TestIntegrationHvSocketServiceTable(t *testing.T) {
 	b := make([]byte, 8)
 	_, _ = rand.Read(b)
 	id := "hyperbutler-test-" + hex.EncodeToString(b)
+	// The runtime id is known before the compute system exists (it is checked against
+	// the real one below).
+	predicted, err := ProbeRuntimeID(id)
+	if err != nil {
+		t.Fatal(err)
+	}
 	consolePipe := `\\.\pipe\` + id + "-com1"
 	sys, err := Create(id, &Config{
 		// The prototype init writes to /dev/console, so it gets a COM port.
@@ -90,6 +96,9 @@ func TestIntegrationHvSocketServiceTable(t *testing.T) {
 	vmid, err := sys.RuntimeID()
 	if err != nil {
 		t.Fatal(err)
+	}
+	if vmid != predicted {
+		t.Fatalf("runtime id %s, ProbeRuntimeID said %s", vmid, predicted)
 	}
 	dialOnce := func(port uint32, timeout time.Duration) (net.Conn, error) {
 		ctx, cancel := context.WithTimeout(context.Background(), timeout)

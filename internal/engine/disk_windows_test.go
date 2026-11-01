@@ -140,6 +140,7 @@ func (f *fakeMachine) counts() (p, r, t int) {
 type fakeBackend struct {
 	list   []vm.Summary
 	opened map[string]*fakeMachine
+	calls  []string
 }
 
 func (b *fakeBackend) Create(string, *vm.Config) (Machine, error) { return nil, errors.New("no") }
@@ -157,8 +158,15 @@ func (b *fakeBackend) List(owner string) ([]vm.Summary, error) {
 	}
 	return out, nil
 }
-func (b *fakeBackend) GrantAccess(string, string) error  { return nil }
+func (b *fakeBackend) GrantAccess(id, path string) error {
+	b.calls = append(b.calls, "grant "+id+" "+path)
+	return nil
+}
 func (b *fakeBackend) RevokeAccess(string, string) error { return nil }
+func (b *fakeBackend) RuntimeIDOf(id string) (guid.GUID, error) {
+	b.calls = append(b.calls, "runtime id "+id)
+	return guid.NewV5(guid.GUID{}, []byte(id))
+}
 
 func TestCleanupOrphans(t *testing.T) {
 	l := Layout{Home: `C:\h`}

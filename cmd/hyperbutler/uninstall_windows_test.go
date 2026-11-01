@@ -38,7 +38,11 @@ func fakeInstall(t *testing.T, home, dataDir, dockerCfg string) engine.Layout {
 	if err := engine.MkdirPrivate(home); err != nil {
 		t.Fatal(err)
 	}
-	if err := engine.SaveSettings(l, &engine.Settings{DataDir: dataDir, DiskSize: engine.DefaultDiskSize}); err != nil {
+	s := &engine.Settings{DataDir: dataDir, DiskSize: engine.DefaultDiskSize}
+	if !engine.SamePath(dataDir, home) {
+		s.CreatedDataDir = dataDir // as start records it
+	}
+	if err := engine.SaveSettings(l, s); err != nil {
 		t.Fatal(err)
 	}
 	if err := engine.SaveState(l, &engine.State{Phase: engine.PhaseFailed, PID: 1, PIDCreated: 1, Pipe: transport.DefaultPipeName, DataDir: dataDir,

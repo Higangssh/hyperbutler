@@ -113,9 +113,22 @@ type UninstallJSON struct {
 	Notes  []string        `json:"notes,omitempty"`
 }
 
-// UninstallItem is one thing hyperbutler created. Kind is engine, vm, acl,
-// docker-context, file or dir; Path is the file, directory, compute system id or
-// context name.
+// Kinds of UninstallItem.
+const (
+	uninstallEngine  = "engine"         // the running engine process, stopped first
+	uninstallVM      = "vm"             // an HCS compute system of this installation
+	uninstallACL     = "acl"            // a VM account's access entry on a disk file
+	uninstallContext = "docker-context" // the "hyperbutler" docker context
+	uninstallPlugins = "docker-plugins" // the bundled cli-plugins entry in the docker CLI's config.json
+	uninstallFile    = "file"
+	uninstallDir     = "dir" // removed only when empty
+)
+
+// uninstallKinds are every Kind, in the order docs/research/settings.md lists them.
+var uninstallKinds = []string{uninstallEngine, uninstallVM, uninstallACL, uninstallContext, uninstallPlugins, uninstallFile, uninstallDir}
+
+// UninstallItem is one thing hyperbutler created. Kind is one of uninstallKinds; Path
+// is the file, directory, compute system id, context name or plugin directory.
 type UninstallItem struct {
 	Kind   string `json:"kind"`
 	Path   string `json:"path"`

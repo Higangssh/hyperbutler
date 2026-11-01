@@ -65,13 +65,18 @@ type State struct {
 	Phase   Phase `json:"phase"`
 	// PID and PIDCreated identify the engine process. PIDCreated is its creation time
 	// (FILETIME, 100 ns units), so a reused PID is never taken for the engine.
-	PID        int       `json:"pid"`
-	PIDCreated int64     `json:"pidCreated"`
-	VMID       string    `json:"vmId,omitempty"`
-	RuntimeID  string    `json:"runtimeId,omitempty"`
-	Pipe       string    `json:"pipe"`
-	DataDir    string    `json:"dataDir"`
-	Started    time.Time `json:"started"`
+	PID        int    `json:"pid"`
+	PIDCreated int64  `json:"pidCreated"`
+	VMID       string `json:"vmId,omitempty"`
+	RuntimeID  string `json:"runtimeId,omitempty"`
+	// PastRuntimeIDs are the runtime ids of this installation's VMs, the newest last
+	// (at most MaxPastRuntimeIDs): each is recorded before the VM is given access to a
+	// file, and carried from start to start. `hyperbutler uninstall` removes the access
+	// entries of these VMs only, never of a VM another installation or user runs.
+	PastRuntimeIDs []string  `json:"pastRuntimeIds,omitempty"`
+	Pipe           string    `json:"pipe"`
+	DataDir        string    `json:"dataDir"`
+	Started        time.Time `json:"started"`
 	// ReadyMillis is the time from Started until dockerd answered, 0 before that.
 	ReadyMillis int64     `json:"readyMillis,omitempty"`
 	Updated     time.Time `json:"updated"`
@@ -116,6 +121,31 @@ func (h *HostGatewayState) Validate() error {
 
 const stateVersion = 1
 
+// MaxPastRuntimeIDs bounds State.PastRuntimeIDs. A VM's access entry is normally
+// revoked as it stops; only crashes leave one, so 16 starts cover far more than the
+// entries any one file collects.
+const MaxPastRuntimeIDs = 16
+
+// RecordRuntimeID adds rid (lowercase) to PastRuntimeIDs, or moves it to the end, and
+// drops the oldest beyond MaxPastRuntimeIDs.
+func (s *State) RecordRuntimeID(rid string) {
+	rid = strings.ToLower(rid)
+	if rid == "" || !validToken(rid, 40, true) {
+		return
+	}
+	out := make([]string, 0, len(s.PastRuntimeIDs)+1)
+	for _, id := range s.PastRuntimeIDs {
+		if id != rid {
+			out = append(out, id)
+		}
+	}
+	out = append(out, rid)
+	if len(out) > MaxPastRuntimeIDs {
+		out = out[len(out)-MaxPastRuntimeIDs:]
+	}
+	s.PastRuntimeIDs = out
+}
+
 const (
 	maxErrorLen = 4096
 	maxVMIDLen  = 64
@@ -143,10 +173,17 @@ func (s *State) Validate() error {
 		return fmt.Errorf("state: bad VM id %q", s.VMID)
 	case s.RuntimeID != "" && !validToken(s.RuntimeID, 40, true):
 		return fmt.Errorf("state: bad runtime id %q", s.RuntimeID)
+	case len(s.PastRuntimeIDs) > MaxPastRuntimeIDs:
+		return fmt.Errorf("state: %d past runtime ids, at most %d", len(s.PastRuntimeIDs), MaxPastRuntimeIDs)
 	case s.DataDir != "" && !filepath.IsAbs(s.DataDir):
 		return fmt.Errorf("state: data dir %q is not absolute", s.DataDir)
 	case s.ImageDir != "" && (!filepath.IsAbs(s.ImageDir) || len(s.ImageDir) > 1024 || !utf8.ValidString(s.ImageDir) || strings.ContainsRune(s.ImageDir, 0)):
 		return fmt.Errorf("state: bad image dir %q", s.ImageDir)
+	}
+	for _, id := range s.PastRuntimeIDs {
+		if id == "" || !validToken(id, 40, true) {
+			return fmt.Errorf("state: bad past runtime id %q", id)
+		}
 	}
 	if s.Pipe != "" {
 		if err := transport.ValidatePipeName(s.Pipe); err != nil {
@@ -235,6 +272,11 @@ type Settings struct {
 	// first selected its own ("default" for docker's default), so `hyperbutler
 	// uninstall` can select it again (REQ-UX-010). Not a user setting.
 	PreviousContext string `json:"previousDockerContext,omitempty"`
+	// CreatedDataDir is the data directory `hyperbutler start` created because it did not
+	// exist, so `hyperbutler uninstall` removes it (when empty) and never a directory the
+	// user made. Empty for the state directory and in settings from before it was
+	// recorded. Not a user setting.
+	CreatedDataDir string `json:"createdDataDir,omitempty"`
 	// CAImport says whether the guest's dockerd trusts the CA certificates of the
 	// Windows root stores too (REQ-UX-009); nil means yes.
 	CAImport *bool `json:"caImport,omitempty"`
@@ -359,6 +401,9 @@ func (s *Settings) Validate() error {
 	}
 	if len(s.PreviousContext) > 256 || !utf8.ValidString(s.PreviousContext) || strings.ContainsRune(s.PreviousContext, 0) {
 		return errors.New("settings: previous docker context name too long or not UTF-8")
+	}
+	if s.CreatedDataDir != "" && (!filepath.IsAbs(s.CreatedDataDir) || len(s.CreatedDataDir) > 1024 || !utf8.ValidString(s.CreatedDataDir) || strings.ContainsRune(s.CreatedDataDir, 0)) {
+		return fmt.Errorf("settings: created data dir %q must be an absolute path", s.CreatedDataDir)
 	}
 	if s.CAExtraFile != "" && (!filepath.IsAbs(s.CAExtraFile) || len(s.CAExtraFile) > 1024 || !utf8.ValidString(s.CAExtraFile) || strings.ContainsRune(s.CAExtraFile, 0)) {
 		return fmt.Errorf("settings: CA file %q must be an absolute path", s.CAExtraFile)

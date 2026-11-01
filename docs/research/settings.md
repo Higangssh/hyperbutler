@@ -322,7 +322,7 @@ fields are only added; removing or renaming one means a new version.
   SHA-256 of that image's `image.json` (ADR 0005, Decision 4).
 - `status`: `schema`, `running`, `setUp`, `home`, `dockerContextSelected`, `daemonJson`,
   `daemonJsonExists`, and when known `state` (the engine's state.json, with `daemonConfig`,
-  `imageDir` and `hostGateway`: `address`, `enabled`, `ports`, `reloads`, `error`), `dataDir`, `disk`, `diskHostBytes`, `diskSizeBytes`, `hostFreeBytes`,
+  `imageDir`, `pastRuntimeIds` (this installation's last 16 VM runtime ids) and `hostGateway`: `address`, `enabled`, `ports`, `reloads`, `error`), `dataDir`, `disk`, `diskHostBytes`, `diskSizeBytes`, `hostFreeBytes`,
   `memoryMB`, `cpus`, `dockerContext`, `dockerCli` (the docker.exe a plain `docker` runs:
   the first on PATH) and `dockerCliBundled` (the one next to `hyperbutler.exe`). The exit
   code is 3 when hyperbutler is not running.
@@ -351,7 +351,7 @@ fields are only added; removing or renaming one means a new version.
   says the zip is not private.
 - `uninstall`: `schema`, `home`, `dryRun`, `keepData`, `items` (`kind`, `path`, `detail`;
   `[]` when no trace is left), and when there are any `kept`, `failed` and `notes`. Kinds:
-  `engine`, `vm`, `acl`, `docker-context`, `file`, `dir`.
+  `engine`, `vm`, `acl`, `docker-context`, `docker-plugins`, `file`, `dir`.
 
 ## Tests and fuzzing
 

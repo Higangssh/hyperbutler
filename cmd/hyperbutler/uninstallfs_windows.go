@@ -3,7 +3,6 @@
 package main
 
 import (
-	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
@@ -12,7 +11,6 @@ import (
 	"time"
 	"unsafe"
 
-	"github.com/Microsoft/go-winio/pkg/guid"
 	"golang.org/x/sys/windows"
 
 	"github.com/Higangssh/hyperbutler/internal/vm"
@@ -20,47 +18,8 @@ import (
 
 // --- VM access entries ----------------------------------------------------------------
 
-// vmSIDPrefix starts the account of every VM worker process: NT VIRTUAL MACHINE\<id>.
-const vmSIDPrefix = "S-1-5-83-1-"
-
-// vmSID is the account of the VM worker process of the compute system whose runtime id
-// is runtimeID: S-1-5-83-1- and the GUID's bytes as four little-endian 32-bit numbers.
-func vmSID(runtimeID string) (string, error) {
-	g, err := guid.FromString(runtimeID)
-	if err != nil {
-		return "", err
-	}
-	b := g.ToWindowsArray()
-	return fmt.Sprintf("%s%d-%d-%d-%d", vmSIDPrefix,
-		binary.LittleEndian.Uint32(b[0:]), binary.LittleEndian.Uint32(b[4:]), binary.LittleEndian.Uint32(b[8:]), binary.LittleEndian.Uint32(b[12:])), nil
-}
-
 // vmACEs returns the VM accounts (S-1-5-83-1-...) that path's DACL names.
-func vmACEs(path string) ([]string, error) {
-	sd, err := windows.GetNamedSecurityInfo(path, windows.SE_FILE_OBJECT, windows.DACL_SECURITY_INFORMATION)
-	if err != nil {
-		return nil, err
-	}
-	dacl, _, err := sd.DACL()
-	if err != nil || dacl == nil {
-		return nil, err
-	}
-	var out []string
-	seen := map[string]bool{}
-	for i := uint32(0); i < uint32(dacl.AceCount); i++ {
-		var ace *windows.ACCESS_ALLOWED_ACE
-		if err := windows.GetAce(dacl, i, &ace); err != nil {
-			return nil, err
-		}
-		// Allowed and denied entries share this layout; the SID starts at SidStart.
-		s := (*windows.SID)(unsafe.Pointer(&ace.SidStart)).String()
-		if strings.HasPrefix(s, vmSIDPrefix) && !seen[s] {
-			seen[s] = true
-			out = append(out, s)
-		}
-	}
-	return out, nil
-}
+func vmACEs(path string) ([]string, error) { return vm.AccountsOnFile(path) }
 
 // revokeSID removes every entry for sid from path's DACL, keeping the DACL's
 // protection (inheritance) as it is.
@@ -95,9 +54,11 @@ func revokeSID(path, sid string) error {
 	return windows.SetNamedSecurityInfo(path, windows.SE_FILE_OBJECT, info, nil, nil, acl, nil)
 }
 
-// liveVMSIDs returns the VM accounts of every compute system that exists now, of any
-// owner: their access entries are in use.
-func liveVMSIDs() (map[string]bool, error) {
+// liveVMSIDs returns the VM accounts of every compute system this user can see now, of
+// any owner: their access entries are in use. (A variable for the tests.)
+var liveVMSIDs = hcsLiveVMSIDs
+
+func hcsLiveVMSIDs() (map[string]bool, error) {
 	list, err := vm.List("")
 	if err != nil {
 		return nil, err
@@ -113,9 +74,7 @@ func liveVMSIDs() (map[string]bool, error) {
 		if err != nil {
 			return nil, fmt.Errorf("compute system %s: %w", s.ID, err)
 		}
-		if sid, err := vmSID(rid.String()); err == nil {
-			live[sid] = true
-		}
+		live[vm.AccountSID(rid)] = true
 	}
 	return live, nil
 }
@@ -127,6 +86,14 @@ func liveVMSIDs() (map[string]bool, error) {
 // (minutes for a large one). After a few seconds it says on w what it waits for. A file
 // still in use at the end is reported with the processes that hold it.
 func removeVisible(p string, timeout time.Duration, w io.Writer) error {
+	// A read-only file is refused with ERROR_ACCESS_DENIED, which waiting would never
+	// change: say so at once. The attribute is the user's to clear.
+	if pp, err := windows.UTF16PtrFromString(p); err == nil {
+		if a, err := windows.GetFileAttributes(pp); err == nil && a&windows.FILE_ATTRIBUTE_READONLY != 0 && a&windows.FILE_ATTRIBUTE_DIRECTORY == 0 {
+			return fmt.Errorf("%s is read-only (its Read-only attribute is set), so it cannot be removed; "+
+				"clear the attribute (attrib -r \"%s\") if you mean to remove it, and run hyperbutler uninstall again", p, p)
+		}
+	}
 	deadline := time.Now().Add(timeout)
 	said := false
 	for start := time.Now(); ; {

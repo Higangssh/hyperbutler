@@ -3,6 +3,8 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"reflect"
 	"sort"
 	"strings"
@@ -78,7 +80,7 @@ func TestSchemaFields(t *testing.T) {
 		[]string{"schema", "home", "settingsFile", "daemonJson", "dataDir"})
 
 	st := &engine.State{
-		Version: 1, Phase: engine.PhaseRunning, PID: 1, PIDCreated: 2, VMID: "hyperbutler-x", RuntimeID: "r", Pipe: "p", DataDir: "d",
+		Version: 1, Phase: engine.PhaseRunning, PID: 1, PIDCreated: 2, VMID: "hyperbutler-x", RuntimeID: "r", PastRuntimeIDs: []string{"r"}, Pipe: "p", DataDir: "d",
 		Started: now, ReadyMillis: 1, Updated: now, Error: "e", ErrorCode: "c", ImageDir: "i",
 		Daemon: &engine.DaemonState{Generation: 1, Applies: 1, Source: engine.DaemonFile, SHA256: "h", Bytes: 2, Restarted: true, Error: "e", Updated: now,
 			Env: &engine.EnvState{HTTPProxy: "http://u:***@p:1", HTTPSProxy: "http://p:1", NoProxy: "localhost", CAImport: true, CACerts: 3, CASkipped: 7,
@@ -92,7 +94,7 @@ func TestSchemaFields(t *testing.T) {
 	}, []string{
 		"schema", "running", "setUp", "home", "state", "dataDir", "disk", "diskHostBytes", "diskSizeBytes", "hostFreeBytes",
 		"memoryMB", "cpus", "dockerContext", "dockerContextSelected", "daemonJson", "daemonJsonExists", "dockerCli", "dockerCliBundled",
-		"state.version", "state.phase", "state.pid", "state.pidCreated", "state.vmId", "state.runtimeId", "state.pipe",
+		"state.version", "state.phase", "state.pid", "state.pidCreated", "state.vmId", "state.runtimeId", "state.pastRuntimeIds", "state.pipe",
 		"state.dataDir", "state.started", "state.readyMillis", "state.updated", "state.error", "state.errorCode", "state.imageDir",
 		"state.daemonConfig", "state.daemonConfig.generation", "state.daemonConfig.applies", "state.daemonConfig.source",
 		"state.daemonConfig.sha256", "state.daemonConfig.bytes", "state.daemonConfig.restarted", "state.daemonConfig.error",
@@ -113,6 +115,26 @@ func TestSchemaFields(t *testing.T) {
 		[]string{"schema", "home", "dryRun", "keepData", "items", "kept", "failed", "notes",
 			"items[].kind", "items[].path", "items[].detail", "kept[].kind", "kept[].path", "kept[].detail",
 			"failed[].kind", "failed[].path", "failed[].detail"})
+}
+
+// TestUninstallKinds pins the values of uninstall's item kinds, which scripts match on,
+// and checks that settings.md lists every one.
+func TestUninstallKinds(t *testing.T) {
+	want := []string{"engine", "vm", "acl", "docker-context", "docker-plugins", "file", "dir"}
+	if !reflect.DeepEqual(uninstallKinds, want) {
+		t.Fatalf("uninstall kinds %q, want %q: a kind is part of schema %d", uninstallKinds, want, SchemaVersion)
+	}
+	doc, err := os.ReadFile(filepath.Join("..", "..", "docs", "research", "settings.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var quoted []string
+	for _, k := range want {
+		quoted = append(quoted, "`"+k+"`")
+	}
+	if line := "Kinds: " + strings.Join(quoted, ", ") + "."; !strings.Contains(strings.Join(strings.Fields(string(doc)), " "), line) {
+		t.Errorf("docs/research/settings.md does not list the uninstall kinds as %q", line)
+	}
 }
 
 // TestSchemaAlwaysThere: the fields a script keys on are present even when empty.

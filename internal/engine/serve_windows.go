@@ -92,6 +92,11 @@ func Serve(opts ServeOptions) error {
 		Pipe: opts.Pipe, DataDir: l.Data, Started: time.Now().UTC().Truncate(time.Millisecond),
 		ImageDir: imageDir,
 	}}
+	// The VMs of earlier runs, whose access entries uninstall may still find.
+	if prev, err := LoadState(l); err == nil {
+		pub.st.PastRuntimeIDs = prev.PastRuntimeIDs
+		pub.st.RecordRuntimeID(prev.RuntimeID) // a state.json from before the history
+	}
 	if err := pub.save(); err != nil {
 		return err
 	}
@@ -223,6 +228,7 @@ func Serve(opts ServeOptions) error {
 	}
 	defer func() { _ = console.Close() }()
 
+	var predicted string // the runtime id OnGrant recorded
 	runErr := Run(ctx, Config{
 		KernelPath: opts.KernelPath, InitrdPath: opts.InitrdPath, Image: opts.Image,
 		MemoryMB: opts.Settings.Memory(), CPUs: opts.Settings.CPUCount(runtime.NumCPU()),
@@ -230,8 +236,19 @@ func Serve(opts ServeOptions) error {
 		Disk: l, DiskSize: opts.Settings.DiskSize,
 		Net: opts.Net, ConsoleLog: console, Logger: log, Backend: opts.Backend,
 		DaemonConfig: dc,
+		OnGrant: func(_ string, rid guid.GUID) {
+			predicted = strings.ToLower(rid.String())
+			pub.update(func(s *State) { s.RecordRuntimeID(predicted) })
+		},
 		OnCreated: func(id string, rid guid.GUID) {
-			pub.update(func(s *State) { s.VMID, s.RuntimeID = id, strings.ToLower(rid.String()) })
+			actual := strings.ToLower(rid.String())
+			if predicted != "" && predicted != actual {
+				log.Warn("the VM's runtime id differs from the one its access was granted for", "predicted", predicted, "actual", actual)
+			}
+			pub.update(func(s *State) {
+				s.VMID, s.RuntimeID = id, actual
+				s.RecordRuntimeID(actual)
+			})
 		},
 		OnReady: func(_ context.Context, r *Running) error {
 			if r.Stack != nil {

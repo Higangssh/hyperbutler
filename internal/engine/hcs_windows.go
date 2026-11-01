@@ -2,7 +2,11 @@
 
 package engine
 
-import "github.com/Higangssh/hyperbutler/internal/vm"
+import (
+	"github.com/Microsoft/go-winio/pkg/guid"
+
+	"github.com/Higangssh/hyperbutler/internal/vm"
+)
 
 // HCSBackend calls HCS (computecore.dll) directly from this process.
 type HCSBackend struct{}
@@ -23,6 +27,7 @@ func (HCSBackend) Open(id string) (Machine, error) {
 	return s, nil
 }
 
-func (HCSBackend) List(owner string) ([]vm.Summary, error) { return vm.List(owner) }
-func (HCSBackend) GrantAccess(id, path string) error       { return vm.GrantVMAccess(id, path) }
-func (HCSBackend) RevokeAccess(id, path string) error      { return vm.RevokeVMAccess(id, path) }
+func (HCSBackend) List(owner string) ([]vm.Summary, error)  { return vm.List(owner) }
+func (HCSBackend) GrantAccess(id, path string) error        { return vm.GrantVMAccess(id, path) }
+func (HCSBackend) RevokeAccess(id, path string) error       { return vm.RevokeVMAccess(id, path) }
+func (HCSBackend) RuntimeIDOf(id string) (guid.GUID, error) { return vm.ProbeRuntimeID(id) }
