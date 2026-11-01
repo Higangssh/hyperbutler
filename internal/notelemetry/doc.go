@@ -13,9 +13,10 @@
 //     net.Lookup* functions, the net/http client (Client, Transport, Get, ...),
 //     httputil's reverse proxy, crypto/tls, net/smtp and net/rpc dialing, miekg/dns's
 //     client, raw socket connects outside AF_VSOCK and AF_UNIX, exec of network tools
-//     (curl, wget, ...), the WinHTTP, WinINet and URLMon DLLs, and URL literals naming
-//     any host but the local Docker API ("docker"), the debug endpoint ("diag") or
-//     loopback. Calls whose arguments are literally local (net.Dial("unix", ...), a
+//     (curl, wget, ...) or of a program named at run time (the engine, dockerd, the
+//     user's docker.exe: code this scan cannot see), the WinHTTP, WinINet and URLMon
+//     DLLs, and URL literals naming any host but the local Docker API ("docker"), the
+//     debug endpoint ("diag") or loopback. Calls whose arguments are literally local (net.Dial("unix", ...), a
 //     loopback address, unix.Connect to a SockaddrVM) pass on their own.
 //   - Every other finding needs a line in allowlist.txt, which names the file, the
 //     API and why the use cannot leave the machine on its own (it dials an hvsock or a

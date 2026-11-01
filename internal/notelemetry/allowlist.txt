@@ -24,10 +24,15 @@ internal/engine/share_windows.go net/http.Transport DialContext is transport.Hvs
 internal/netstack/stack.go net.Dialer dials what a guest connection or UDP flow asked for, after the Policy check
 internal/netstack/stack.go net.DefaultResolver answers the guest's DNS queries with the host resolver
 internal/netstack/hostgw.go net.Dialer host gateway: dials 127.0.0.1 or [::1] only (loopbackOnly control)
-
-# transport.TCPDialer exists for tests and debugging against a dockerd on TCP; no
-# production path constructs one.
-internal/transport/dialer.go net.Dialer TCPDialer, used only by tests
+#
+# On Windows, net.DefaultResolver hands each lookup to the DNS Client service
+# (Dnscache, in svchost), which sends the packets, and for single-label names may also
+# try LLMNR, mDNS and NetBIOS. Those packets are not the engine's sockets; they happen
+# only for names the guest asked for, which the engine's flow log records.
 
 # hyperbutlerd (guest) checks that dockerd answers on its Unix socket.
 guest/cmd/hyperbutlerd/daemoncfg.go net.Dialer dials /run/docker.sock ("unix") for GET /_ping
+
+# Programs started by a name known only at run time run code this scan cannot see.
+cmd/hyperbutler/commands_windows.go exec:computed starts the engine: this executable (os.Executable)
+guest/cmd/hyperbutlerd/main_linux.go exec:computed dockerd --validate on a new daemon.json; dockerd validates and exits

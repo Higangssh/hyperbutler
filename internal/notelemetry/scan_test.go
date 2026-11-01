@@ -36,6 +36,7 @@ func f(ctx context.Context) {
 	_ = "http://docker/_ping"
 	_ = "http://127.0.0.1:8080/"
 	_ = "wininet.dll"
+	_ = exec.Command(ctx.Value("bin").(string)).Run()
 	_ = h.MethodGet
 }
 `
@@ -73,6 +74,7 @@ func TestScanGoFindsViolations(t *testing.T) {
 		"pkg/p.go:24: golang.org/x/sys/unix.Connect",
 		"pkg/p.go:25: exec:curl",
 		"pkg/p.go:29: dll:wininet.dll",
+		"pkg/p.go:30: exec:computed",
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("findings:\n%q\nwant:\n%q", got, want)

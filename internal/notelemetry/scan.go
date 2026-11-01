@@ -171,6 +171,10 @@ func scanFile(fset *token.FileSet, rel string, f *ast.File) []Finding {
 						if networkTools[tool] {
 							add(n.Pos(), "exec:"+tool)
 						}
+					} else {
+						// A program named at run time (this executable, dockerd, the
+						// user's docker.exe) runs code this scan cannot see.
+						add(n.Pos(), "exec:computed")
 					}
 				}
 				return true
