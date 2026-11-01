@@ -63,6 +63,18 @@ func cmdImport(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 		return usagef("import: say what to import: --image, --all-images, --volume or --all-volumes (--dry-run lists what there is)")
 	}
 
+	in, err := openInstall()
+	if err != nil {
+		return err
+	}
+	// A dry run takes it too: its plan removes left-over helpers, and compares volumes
+	// with helpers of its own.
+	lock, err := in.importLock()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = lock.Unlock() }()
+
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	stopSignals := cancelOnInterrupt(cancel, stderr)

@@ -184,6 +184,7 @@ func (in *install) planUninstall(keepData, up bool) *uninstallPlan {
 	}
 	addFile(l.LockPath(), "")
 	addFile(l.OpsLockPath(), "")
+	addFile(l.ImportLockPath(), "")
 	for _, f := range append([]string{l.SettingsPath()}, tmpSiblings(l.SettingsPath())...) {
 		addFile(f, "settings; removed last")
 	}

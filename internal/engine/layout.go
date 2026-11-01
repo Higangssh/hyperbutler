@@ -59,6 +59,11 @@ func (l Layout) ConsoleLogPath() string {
 	return filepath.Join(l.LogDir(), "console.log")
 }
 
+// ImportLockPath is held by `import --from-desktop` for its whole run: each import
+// removes the helper containers it finds left over, so two at once would remove each
+// other's.
+func (l Layout) ImportLockPath() string { return filepath.Join(l.Home, "import.lock") }
+
 // DaemonConfigPath is the user's daemon.json for the guest's dockerd (REQ-UX-007).
 // hyperbutler reads it and never writes it.
 func (l Layout) DaemonConfigPath() string { return filepath.Join(l.Home, "daemon.json") }

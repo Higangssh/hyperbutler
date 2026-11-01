@@ -142,6 +142,9 @@ splits it into two arguments.)
   in Docker Desktop first, so the copy is consistent. `--allow-live-volumes` copies
   anyway and warns that the copy may be inconsistent. The command never stops anything
   itself.
+- **One at a time.** Each import removes the helpers it finds left over, so a second one
+  in the same installation while one runs (a dry run too) refuses at once: "another
+  import is running" (`import.lock` in the state directory).
 - **Verification.** After loading an image every tag must name the same image id in
   hyperbutler. A volume is hashed as it streams (entry names, types, permission bits,
   owners, sizes, link targets, contents); the hash must equal the one recorded before the
@@ -220,7 +223,8 @@ a second run copied 0 bytes and exited 0; the source's images, volumes, volume m
 - **Leftover helpers.** Removed on every path (deferred, on a context that outlives a
   cancel, 30 s each); a failure to remove is printed with the `docker rm` line; a kill is
   cleaned up by the next run, and the check after the run lists any helper still there.
-  Two imports at the same time could remove each other's helpers; run one at a time.
+  Two imports at the same time could remove each other's helpers, so the second one of
+  an installation refuses while the first runs (`import.lock`).
 - **Partial imports.** A failed or canceled load removes the tags it added and the image
   if it was not there; a failed, canceled or mismatching volume copy removes the volume
   it created. A kill between creating a volume in hyperbutler and creating its helper (one
