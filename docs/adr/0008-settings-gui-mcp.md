@@ -179,6 +179,11 @@ check found the WebView2 Runtime connecting to its experimentation service on ev
 after the first with a profile; no browser argument stops that, and the window removes the
 profile's `Local State` before each start, after which no run held a socket (docs/gui.md).
 
+After the second review (2026-11-02, 20 runs): median 82.0 MiB, 5 processes (the
+compositor and the network service run in the browser process), first paint 491 ms warm;
+after every screen median 90.6 MiB (was 99.2). WebRTC is removed from the page by a guard
+script, measured with `bench/footprint -check-webrtc` (docs/gui.md).
+
 Toolkit notes:
 
 - **DPI:** both spikes are per-monitor DPI aware (v2). WebView2 scales the page by

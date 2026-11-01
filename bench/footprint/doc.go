@@ -15,7 +15,13 @@
 // so the numbers are the window's own. The state directory is HYPERBUTLER_HOME, as for
 // the CLI; use a test one.
 //
+// -check-layout shows every screen (the pseudo-locale layout check), so its sample is
+// the after-every-screen figure. -check-webrtc has the page try a WebRTC connection (a
+// STUN server on 127.0.0.1:3478, in the page and in a new frame) and fails if any
+// process of the window opens a socket meanwhile. -detail prints each process.
+//
 //	footprint -hb %TEMP%\hb-dev\gui\bin\hyperbutler.exe -runs 50
 //	footprint -hb ... -runs 1 -lang pseudo -check-layout
+//	footprint -hb ... -runs 3 -check-webrtc
 //	footprint -shot-pid PID -out shot.png     (a PrintWindow screenshot of a window)
 package main
