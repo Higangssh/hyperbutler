@@ -14,7 +14,9 @@
 //     (guest/internal/policy.Cache).
 //
 // With -daemon-config it installs the host's daemon.json there (REQ-UX-007) and restarts
-// dockerd on request, through the init (see dockerdConfig).
+// dockerd on request, through the init (see dockerdConfig). With -dockerd-env it also
+// installs dockerd's proxy environment and the host's extra CA certificates
+// (REQ-UX-009, see dockerdEnv).
 //
 // With -share-port it also keeps the host's bind-mount file system (ADR 0007) mounted
 // at -share-mount: a FUSE relay over AF_VSOCK to the host's share server, redialled with
@@ -72,6 +74,8 @@ type options struct {
 	shareQueues            int
 	daemonConfig           string
 	dockerdBin             string
+	dockerdEnv             string
+	caBundle, caStock      string
 }
 
 func main() {
@@ -110,13 +114,17 @@ func main() {
 	flag.IntVar(&o.shareQueues, "share-queues", 4, "connections to the share server (1 to 8)")
 	flag.StringVar(&o.daemonConfig, "daemon-config", "", "install the host's daemon.json at this path and restart dockerd on request (the init must support it; empty = off)")
 	flag.StringVar(&o.dockerdBin, "dockerd", "/usr/bin/dockerd", "dockerd, for --validate")
+	flag.StringVar(&o.dockerdEnv, "dockerd-env", "", "with -daemon-config: install the host's dockerd environment (proxies, CA certificates) as KEY=VALUE lines at this path (the init must support it; empty = off)")
+	flag.StringVar(&o.caBundle, "ca-bundle", "/run/hyperbutler/ca-certificates.crt", "with -dockerd-env: where the combined CA bundle goes")
+	flag.StringVar(&o.caStock, "ca-stock", "/etc/ssl/certs/ca-certificates.crt", "with -dockerd-env: the image's stock CA bundle")
 	flag.IntVar(&o.shutdownPID, "shutdown-pid", 1, "on a host shutdown request, send SIGTERM to this process (the init, which stops dockerd and powers off); 0 disables the feature")
 	flag.Parse()
 	if flag.NArg() != 0 || o.port > math.MaxUint32-1 || (o.file != "") != (o.dev != "") ||
 		((o.file != "" || !o.trimOff) && o.mount == "") || o.interval <= 0 ||
 		(o.cacheMethod != "reclaim" && o.cacheMethod != "drop") ||
 		o.sharePort > math.MaxUint32-1 || o.shareQueues < 1 || o.shareQueues > 8 || o.shareMount == "" || o.shareMount[0] != '/' ||
-		(o.daemonConfig != "" && (o.daemonConfig[0] != '/' || o.shutdownPID <= 0)) {
+		(o.daemonConfig != "" && (o.daemonConfig[0] != '/' || o.shutdownPID <= 0)) ||
+		(o.dockerdEnv != "" && (o.daemonConfig == "" || !absPath(o.dockerdEnv) || !absPath(o.caBundle) || !absPath(o.caStock))) {
 		flag.Usage()
 		os.Exit(2)
 	}
@@ -202,7 +210,7 @@ func newDaemon(o options) (*daemon, error) {
 	}
 	if o.daemonConfig != "" {
 		dir := filepath.Dir(o.daemonConfig)
-		if err := os.MkdirAll(dir, 0o755); err != nil {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
 			return nil, err
 		}
 		pid := o.shutdownPID
@@ -229,6 +237,10 @@ func newDaemon(o options) (*daemon, error) {
 		// waiting for a restart nobody asks for.
 		_ = os.Remove(d.dcfg.hold)
 		d.features |= guestctl.FeatureDaemonConfig
+		if o.dockerdEnv != "" {
+			d.dcfg.denv = &dockerdEnv{env: o.dockerdEnv, bundle: o.caBundle, stock: o.caStock}
+			d.features |= guestctl.FeatureDockerdEnv
+		}
 	}
 	return d, nil
 }
@@ -524,6 +536,14 @@ func (h *connHandler) Shutdown() error {
 // ApplyDaemonConfig installs the host's daemon.json and, if asked, restarts dockerd.
 func (h *connHandler) ApplyDaemonConfig(ctx context.Context, data []byte, restart bool) guestctl.DaemonResult {
 	return h.d.dcfg.apply(ctx, data, restart)
+}
+
+func absPath(p string) bool { return p != "" && p[0] == '/' }
+
+// ApplyDockerdEnv installs the host's dockerd environment and restarts dockerd when it
+// changed.
+func (h *connHandler) ApplyDockerdEnv(ctx context.Context, data []byte, restart bool) guestctl.EnvResult {
+	return h.d.dcfg.applyEnv(ctx, data, restart)
 }
 
 func (h *connHandler) Trim(context.Context) guestctl.TrimResult {

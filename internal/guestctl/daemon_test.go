@@ -167,3 +167,81 @@ func TestDaemonServerChecksTransfer(t *testing.T) {
 		t.Fatal("server accepted a chunk with a gap")
 	}
 }
+
+// envHandler also installs dockerd environments.
+type envHandler struct {
+	*daemonHandler
+	envs [][]byte
+}
+
+func (h *envHandler) ApplyDockerdEnv(_ context.Context, data []byte, restart bool) EnvResult {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.envs = append(h.envs, bytes.Clone(data))
+	h.restarts = append(h.restarts, restart)
+	return EnvResult(h.res)
+}
+
+func TestEnvMessages(t *testing.T) {
+	for _, m := range []Msg{
+		EnvChunk{Offset: 0, Data: []byte("{}")},
+		EnvChunk{Offset: MaxDockerdEnv - 1, Data: []byte("x")},
+		EnvCommit{Size: MaxDockerdEnv, Flags: DaemonRestart},
+		EnvResult{Code: DaemonRejected, Message: "bad"},
+	} {
+		f, err := Encode(5, m)
+		if err != nil {
+			t.Fatalf("%#v: %v", m, err)
+		}
+		seq, got, err := Decode(f[4:], dirOf(m))
+		if err != nil || seq != 5 || !reflect.DeepEqual(got, m) {
+			t.Fatalf("got %d %#v %v, want %#v", seq, got, err, m)
+		}
+	}
+	for _, m := range []Msg{
+		EnvChunk{}, EnvChunk{Offset: MaxDockerdEnv, Data: []byte("x")},
+		EnvCommit{Size: MaxDockerdEnv + 1}, EnvCommit{Flags: 2}, EnvResult{Code: 9},
+	} {
+		if _, err := Encode(1, m); err == nil {
+			t.Errorf("Encode(%#v) succeeded", m)
+		}
+	}
+}
+
+// TestEnvTransfer sends a 1 MiB environment while a daemon.json transfer interleaves:
+// each lands in its own buffer.
+func TestEnvTransfer(t *testing.T) {
+	h := &envHandler{daemonHandler: &daemonHandler{fakeHandler: &fakeHandler{}, res: DaemonResult{Flags: DaemonChanged}}}
+	c, _ := startPairHandler(t, h, &Server{Features: FeatureDaemonConfig | FeatureDockerdEnv})
+	ctx := context.Background()
+	big := bytes.Repeat([]byte("0123456789abcdef"), MaxDockerdEnv/16)
+	var wg sync.WaitGroup
+	wg.Add(2)
+	var envErr, dcErr error
+	go func() { defer wg.Done(); _, envErr = c.DockerdEnv(ctx, big, false) }()
+	go func() { defer wg.Done(); _, dcErr = c.DaemonConfig(ctx, []byte(`{"debug":true}`), true) }()
+	wg.Wait()
+	if envErr != nil || dcErr != nil {
+		t.Fatal(envErr, dcErr)
+	}
+	if _, err := c.DockerdEnv(ctx, nil, true); err != nil {
+		t.Fatal(err)
+	}
+	h.mu.Lock()
+	if len(h.envs) != 2 || !bytes.Equal(h.envs[0], big) || len(h.envs[1]) != 0 {
+		t.Fatalf("environments of %d bytes", len(h.envs))
+	}
+	if len(h.got) != 1 || string(h.got[0]) != `{"debug":true}` {
+		t.Fatalf("daemon.json %q", h.got)
+	}
+	h.mu.Unlock()
+	if _, err := c.DockerdEnv(ctx, make([]byte, MaxDockerdEnv+1), false); err == nil {
+		t.Fatal("an oversized environment was sent")
+	}
+	// A guest without the feature is not asked.
+	c2, _ := startPairHandler(t, h, &Server{Features: FeatureDaemonConfig})
+	var re *RefusedError
+	if _, err := c2.DockerdEnv(ctx, []byte("{}"), false); !errors.As(err, &re) || re.Code != ErrUnsupported {
+		t.Fatalf("err = %v", err)
+	}
+}

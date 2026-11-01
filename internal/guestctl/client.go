@@ -87,6 +87,7 @@ type Client struct {
 	suspended bool
 
 	daemonMu chan struct{} // one daemon.json transfer at a time
+	envMu    chan struct{} // one dockerd environment transfer at a time
 
 	wake   chan struct{} // the writer has work
 	reqs   chan []byte
@@ -109,7 +110,7 @@ func NewClient(ctx context.Context, conn net.Conn, cfg ClientConfig) (*Client, e
 		conn: conn, cfg: cfg, pending: make(map[uint32]*call),
 		wake: make(chan struct{}, 1), reqs: make(chan []byte, cfg.MaxInflight),
 		closed: make(chan struct{}), done: make(chan struct{}),
-		daemonMu: make(chan struct{}, 1),
+		daemonMu: make(chan struct{}, 1), envMu: make(chan struct{}, 1),
 	}
 	stop := context.AfterFunc(ctx, func() { _ = conn.SetDeadline(time.Now()) })
 	defer stop()
@@ -279,6 +280,39 @@ func (c *Client) DaemonConfig(ctx context.Context, data []byte, restart bool) (D
 		return DaemonResult{}, err
 	}
 	return m.(DaemonResult), nil
+}
+
+// DockerdEnv sends data as dockerd's environment (an encoded dockerenv.Doc; empty: none)
+// and waits for the guest's verdict, like DaemonConfig. The guest restarts dockerd when
+// the environment changed while dockerd runs, and with restart in any case.
+func (c *Client) DockerdEnv(ctx context.Context, data []byte, restart bool) (EnvResult, error) {
+	if len(data) > MaxDockerdEnv {
+		return EnvResult{}, fmt.Errorf("guestctl: dockerd environment of %d bytes is over the %d byte limit", len(data), MaxDockerdEnv)
+	}
+	if c.hello.Features&FeatureDockerdEnv == 0 {
+		return EnvResult{}, &RefusedError{Code: ErrUnsupported}
+	}
+	select {
+	case c.envMu <- struct{}{}:
+	case <-ctx.Done():
+		return EnvResult{}, ctx.Err()
+	}
+	defer func() { <-c.envMu }()
+	for off := 0; off < len(data); off += DaemonChunkData {
+		end := min(off+DaemonChunkData, len(data))
+		if err := c.post(ctx, EnvChunk{Offset: uint32(off), Data: data[off:end]}); err != nil {
+			return EnvResult{}, err
+		}
+	}
+	commit := EnvCommit{Size: uint32(len(data)), SHA256: sha256.Sum256(data)} //nolint:gosec // G115: len(data) <= MaxDockerdEnv, checked on entry
+	if restart {
+		commit.Flags |= DaemonRestart
+	}
+	m, err := c.request(ctx, commit, REnv, 0)
+	if err != nil {
+		return EnvResult{}, err
+	}
+	return m.(EnvResult), nil
 }
 
 // post queues a message that gets no reply, in order with requests.
@@ -527,6 +561,8 @@ func requestFor(reply Type) Type {
 		return TShutdown
 	case RDaemon:
 		return TDaemonCommit
+	case REnv:
+		return TEnvCommit
 	}
 	return 0
 }

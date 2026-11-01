@@ -68,6 +68,10 @@ func (f *fakeInit) start() {
 	f.gen++
 	b, _ := os.ReadFile(f.d.path)
 	f.running = !bytes.Contains(b, []byte("bad"))
+	if f.d.denv != nil { // a "dockerd" that does not start with this proxy
+		e, _ := os.ReadFile(f.d.denv.env)
+		f.running = f.running && !bytes.Contains(e, []byte("fail.invalid"))
+	}
 	if err := os.WriteFile(f.d.gen, fmt.Appendf(nil, "%d %d\n", f.gen, 100+f.gen), 0o600); err != nil {
 		f.t.Error(err)
 	}

@@ -247,9 +247,14 @@ fi
 # closed until the host's first budget arrives, so dockerd waits for that (bounded).
 # hyperbutlerd installs the host's daemon.json here and the init starts dockerd with it.
 RUNDIR=/run/hyperbutler
-mkdir -p "$RUNDIR"
+# 0700: dockerd.env can hold proxy credentials (only root reads it).
+mkdir -p -m 0700 "$RUNDIR"
 DAEMON_JSON=$RUNDIR/daemon.json
-HYPERBUTLERD_DAEMON="-daemon-config $DAEMON_JSON"
+# dockerd's environment (REQ-UX-009): the host's proxy settings and, in SSL_CERT_FILE, a
+# CA bundle with the CA certificates imported from Windows. hyperbutlerd writes both
+# before daemon.ready, so the first dockerd starts with them.
+DOCKERD_ENV=$RUNDIR/dockerd.env
+HYPERBUTLERD_DAEMON="-daemon-config $DAEMON_JSON -dockerd-env $DOCKERD_ENV -ca-bundle $RUNDIR/ca-certificates.crt"
 if [ -d /sys/bus/vmbus ]; then
 	rm -f /run/hyperbutlerd.ready
 	(while :; do
@@ -334,8 +339,20 @@ start_dockerd() {
 	# host.docker.internal (REQ-NET-004): --add-host NAME:host-gateway maps to the host
 	# stack's host gateway address, which forwards to the Windows host's loopback.
 	[ -n "$HOSTGW" ] && set -- "$@" "--host-gateway-ip=$HOSTGW"
-	dockerd --host=unix:///run/docker.sock --iptables=false --ip6tables=false \
-		--shutdown-timeout=10 --log-level="$LOGLEVEL" "$@" >/dev/console 2>&1 &
+	# The environment goes to this dockerd only: a subshell exports the known names
+	# from dockerd.env (never evaluated as shell code) and execs dockerd, so $! is
+	# dockerd's PID. Traps are reset in the subshell.
+	(
+		if [ -f "$DOCKERD_ENV" ]; then
+			while IFS= read -r kv; do
+				case "$kv" in
+				HTTP_PROXY=* | HTTPS_PROXY=* | NO_PROXY=* | SSL_CERT_FILE=*) export "$kv" ;;
+				esac
+			done <"$DOCKERD_ENV"
+		fi
+		exec dockerd --host=unix:///run/docker.sock --iptables=false --ip6tables=false \
+			--shutdown-timeout=10 --log-level="$LOGLEVEL" "$@" >/dev/console 2>&1
+	) &
 	DOCKERD=$!
 	GEN=$((GEN + 1))
 	echo "$GEN $DOCKERD" >"$RUNDIR/dockerd.gen.new" && mv -f "$RUNDIR/dockerd.gen.new" "$RUNDIR/dockerd.gen"

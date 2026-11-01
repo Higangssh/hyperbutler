@@ -46,6 +46,15 @@ type DaemonConfigurer interface {
 	ApplyDaemonConfig(ctx context.Context, data []byte, restart bool) DaemonResult
 }
 
+// EnvConfigurer is implemented by a Handler that can install a dockerd environment
+// (internal/dockerenv.Doc, encoded). Server calls ApplyDockerdEnv like
+// ApplyDaemonConfig, one at a time per connection, independently of daemon.json
+// commits: the Handler serializes the two. The guest daemon advertises
+// FeatureDockerdEnv only with such a Handler.
+type EnvConfigurer interface {
+	ApplyDockerdEnv(ctx context.Context, data []byte, restart bool) EnvResult
+}
+
 // Server serves one host connection at a time (the guest daemon closes the previous one
 // when a new one arrives).
 type Server struct {
@@ -182,10 +191,12 @@ func (s *Server) ServeConn(ctx context.Context, conn net.Conn) error {
 		}
 	}()
 
-	var trimBusy, cacheBusy, daemonBusy bool
+	var trimBusy, cacheBusy, daemonBusy, envBusy bool
 	var busyMu sync.Mutex
 	// daemonBuf collects the chunks of the daemon.json transfer in progress.
 	var daemonBuf []byte
+	// envBuf collects the chunks of the dockerd environment transfer in progress.
+	var envBuf []byte
 	run := func(busy *bool, seq uint32, req Type, fn func() Msg) {
 		busyMu.Lock()
 		if *busy {
@@ -279,6 +290,31 @@ func (s *Server) ServeConn(ctx context.Context, conn net.Conn) error {
 			}
 			restart := v.Flags&DaemonRestart != 0
 			run(&daemonBusy, seq, TDaemonCommit, func() Msg { return dc.ApplyDaemonConfig(ctx, data, restart) })
+		case EnvChunk:
+			if v.Offset == 0 {
+				envBuf = envBuf[:0]
+			}
+			if int(v.Offset) != len(envBuf) {
+				return fmt.Errorf("%w: env chunk at %d, want %d", ErrMalformed, v.Offset, len(envBuf))
+			}
+			envBuf = append(envBuf, v.Data...) // validate bounds the total
+		case EnvCommit:
+			data := envBuf
+			envBuf = nil
+			if v.Size == 0 {
+				data = nil
+			}
+			ec, ok := s.Handler.(EnvConfigurer)
+			if s.Features&FeatureDockerdEnv == 0 || !ok {
+				send(seq, ErrorReply{Code: ErrUnsupported, Request: TEnvCommit})
+				continue
+			}
+			if len(data) != int(v.Size) || sha256.Sum256(data) != v.SHA256 {
+				send(seq, EnvResult{Code: DaemonBadTransfer, Message: fmt.Sprintf("received %d bytes, the commit says %d or another hash", len(data), v.Size)})
+				continue
+			}
+			restart := v.Flags&DaemonRestart != 0
+			run(&envBusy, seq, TEnvCommit, func() Msg { return ec.ApplyDockerdEnv(ctx, data, restart) })
 		default: // a second Hello
 			return fmt.Errorf("%w: unexpected %v", ErrMalformed, m.Type())
 		}

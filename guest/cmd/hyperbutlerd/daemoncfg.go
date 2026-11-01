@@ -48,7 +48,10 @@ type dockerdConfig struct {
 	pollEvery time.Duration
 	// ping checks that dockerd answers (GET /_ping on sock if nil).
 	ping func(ctx context.Context) error
+	// denv, if set, are the files of dockerd's environment (applyEnv).
+	denv *dockerdEnv
 
+	// mu serializes daemon.json and environment changes: one dockerd restart at a time.
 	mu        sync.Mutex
 	readyDone bool
 }

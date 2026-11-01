@@ -39,6 +39,12 @@ func fuzzSeedFrames() [][]byte {
 		DaemonResult{Code: DaemonRejected, Flags: DaemonChanged, Duration: time.Second, Message: "unknown key"},
 		DaemonResult{Code: DaemonOK, Flags: DaemonChanged | DaemonRestarted, Message: string(bytes.Repeat([]byte{'m'}, MaxDaemonMessage))},
 		ErrorReply{Code: ErrBusy, Request: TDaemonCommit},
+		EnvChunk{Offset: 0, Data: []byte(`{"httpProxy":"http://p:1"}`)},
+		EnvChunk{Offset: MaxDockerdEnv - DaemonChunkData, Data: bytes.Repeat([]byte{'x'}, DaemonChunkData)},
+		EnvCommit{Size: 26, Flags: DaemonRestart, SHA256: sha256.Sum256([]byte(`{"httpProxy":"http://p:1"}`))},
+		EnvCommit{},
+		EnvResult{Code: DaemonRolledBack, Flags: DaemonChanged | DaemonRestarted, Duration: time.Second, Message: "dockerd exited"},
+		ErrorReply{Code: ErrUnsupported, Request: TEnvCommit},
 	)
 	var out [][]byte
 	for i, m := range msgs {
@@ -262,12 +268,20 @@ func (fuzzAddr) String() string  { return "fuzz" }
 type recHandler struct {
 	mu                          sync.Mutex
 	budgets, lost, trims, cache int
-	daemons                     int
-	daemonData                  [][]byte
+	daemons, envs               int
+	daemonData, envData         [][]byte
 	status                      Status
 	trim                        TrimResult
 	cacheRes                    CacheResult
 	daemonRes                   DaemonResult
+}
+
+func (h *recHandler) ApplyDockerdEnv(_ context.Context, data []byte, _ bool) EnvResult {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.envs++
+	h.envData = append(h.envData, data)
+	return EnvResult(h.daemonRes)
 }
 
 func (h *recHandler) ApplyDaemonConfig(_ context.Context, data []byte, _ bool) DaemonResult {
@@ -316,6 +330,12 @@ func FuzzServeConn(f *testing.F) {
 	badCommit, _ := Encode(15, DaemonCommit{Size: uint32(len(cfg))})
 	gap, _ := Encode(16, DaemonChunk{Offset: 9, Data: cfg})
 	remove, _ := Encode(17, DaemonCommit{SHA256: sha256.Sum256(nil)})
+	env := []byte(`{"httpProxy":"http://p:1"}`)
+	envChunk, _ := Encode(18, EnvChunk{Data: env})
+	envCommit, _ := Encode(19, EnvCommit{Size: uint32(len(env)), Flags: DaemonRestart, SHA256: sha256.Sum256(env)})
+	// The two transfers interleaved.
+	f.Add(append(append(append(append(bytes.Clone(hello), envChunk...), chunk...), envCommit...), commit...), byte(FeatureDaemonConfig|FeatureDockerdEnv), byte(0))
+	f.Add(append(append(bytes.Clone(hello), envChunk...), envCommit...), byte(FeatureDaemonConfig), byte(0))
 	transfer := append(append(bytes.Clone(hello), chunk...), commit...)
 	f.Add(transfer, byte(FeatureDaemonConfig), byte(0))
 	f.Add(append(bytes.Clone(transfer), commit...), byte(FeatureDaemonConfig), byte(0))
@@ -361,8 +381,8 @@ func FuzzServeConn(f *testing.F) {
 		elapsed := time.Since(start)
 
 		h.mu.Lock()
-		lost, budgets, trims, caches, daemons := h.lost, h.budgets, h.trims, h.cache, h.daemons
-		daemonData := h.daemonData
+		lost, budgets, trims, caches, daemons, envs := h.lost, h.budgets, h.trims, h.cache, h.daemons, h.envs
+		daemonData, envData := h.daemonData, h.envData
 		h.mu.Unlock()
 		if lost != 1 {
 			t.Fatalf("ConnLost called %d times", lost)
@@ -374,7 +394,7 @@ func FuzzServeConn(f *testing.F) {
 		reqSeqs := map[uint32]map[Type]bool{}
 		// commits are the hashes of the daemon.json commits; every file the handler got
 		// must match one of them.
-		commits := map[[32]byte]bool{}
+		commits, envCommits := map[[32]byte]bool{}, map[[32]byte]bool{}
 		helloOK := false
 		var helloSeq uint32
 		nReq := 0
@@ -402,6 +422,9 @@ func FuzzServeConn(f *testing.F) {
 			if c, ok := m.(DaemonCommit); ok {
 				commits[c.SHA256] = true
 			}
+			if c, ok := m.(EnvCommit); ok {
+				envCommits[c.SHA256] = true
+			}
 			if m.Type() != TBudget {
 				if reqSeqs[seq] == nil {
 					reqSeqs[seq] = map[Type]bool{}
@@ -412,8 +435,16 @@ func FuzzServeConn(f *testing.F) {
 		if !helloOK && (budgets != 0 || trims != 0 || caches != 0) {
 			t.Fatalf("handler called without a valid hello: budgets %d trims %d caches %d", budgets, trims, caches)
 		}
-		if budgets+trims+caches+daemons > nReq {
-			t.Fatalf("%d handler calls for %d requests", budgets+trims+caches+daemons, nReq)
+		if budgets+trims+caches+daemons+envs > nReq {
+			t.Fatalf("%d handler calls for %d requests", budgets+trims+caches+daemons+envs, nReq)
+		}
+		if envs > 0 && features&byte(FeatureDockerdEnv) == 0 {
+			t.Fatal("dockerd environment applied without FeatureDockerdEnv")
+		}
+		for _, d := range envData {
+			if len(d) > MaxDockerdEnv || !envCommits[sha256.Sum256(d)] {
+				t.Fatalf("handler got %d environment bytes that match no commit", len(d))
+			}
 		}
 		if daemons > 0 && features&byte(FeatureDaemonConfig) == 0 {
 			t.Fatal("daemon.json applied without FeatureDaemonConfig")
@@ -460,7 +491,7 @@ func FuzzServeConn(f *testing.F) {
 				if !ok {
 					t.Fatalf("%v with seq %d answers no request", m.Type(), seq)
 				}
-				req := map[Type]Type{RTrim: TTrim, RCache: TCacheTrim, RPong: TPing, RDaemon: TDaemonCommit, RShutdown: TShutdown}[m.Type()]
+				req := map[Type]Type{RTrim: TTrim, RCache: TCacheTrim, RPong: TPing, RDaemon: TDaemonCommit, REnv: TEnvCommit, RShutdown: TShutdown}[m.Type()]
 				if e, isErr := m.(ErrorReply); isErr {
 					req = e.Request
 				}
@@ -509,7 +540,7 @@ func (g *fakeGuest) drain() {
 	}
 }
 
-var replyTypes = [...]Type{RTrim, RCache, RPong, RError, RStatus, RHello, RDaemon}
+var replyTypes = [...]Type{RTrim, RCache, RPong, RError, RStatus, RHello, RDaemon, REnv}
 
 func (g *fakeGuest) run(script []byte) (closed bool) {
 	next := func() (byte, bool) {
@@ -549,11 +580,11 @@ func (g *fakeGuest) run(script []byte) (closed bool) {
 			typ := replyTypes[int(k&0x7)%len(replyTypes)]
 			if k&0x08 == 0 && len(host) >= HeaderLen {
 				// Answer with the type the host frame asks for.
-				if want, ok := map[Type]Type{TTrim: RTrim, TCacheTrim: RCache, TPing: RPong, TDaemonCommit: RDaemon}[Type(host[1])]; ok {
+				if want, ok := map[Type]Type{TTrim: RTrim, TCacheTrim: RCache, TPing: RPong, TDaemonCommit: RDaemon, TEnvCommit: REnv}[Type(host[1])]; ok {
 					typ = want
 				}
 			}
-			size := map[Type]int{RTrim: 24, RCache: 32, RPong: 8, RError: 8, RStatus: statusPayloadSize, RHello: 16, RDaemon: 16 + MaxDaemonMessage}[typ]
+			size := map[Type]int{RTrim: 24, RCache: 32, RPong: 8, RError: 8, RStatus: statusPayloadSize, RHello: 16, RDaemon: 16 + MaxDaemonMessage, REnv: 16 + MaxDaemonMessage}[typ]
 			body := make([]byte, HeaderLen+size)
 			body[0] = Version
 			body[1] = byte(typ)
@@ -591,7 +622,7 @@ func (g *fakeGuest) run(script []byte) (closed bool) {
 				case RStatus:
 					p[0] %= 4
 					clear(p[1:6])
-				case RDaemon:
+				case RDaemon, REnv:
 					clear(p[0:3])
 					p[3] %= 5
 					p[4] %= 4

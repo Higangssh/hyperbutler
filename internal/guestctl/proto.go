@@ -3,8 +3,9 @@
 //
 // The host dials; the guest daemon (guest/cmd/hyperbutlerd) listens and accepts the host CID
 // only. The host sends the free-space guard budget (internal/spaceguard), trim and
-// cache-trim requests, pings, the request for an orderly guest shutdown, and the user's
-// daemon.json (REQ-UX-007, see DaemonChunk). The guest answers requests and pushes a
+// cache-trim requests, pings, the request for an orderly guest shutdown, the user's
+// daemon.json (REQ-UX-007, see DaemonChunk) and dockerd's environment: proxies and
+// imported CA certificates (REQ-UX-009, see EnvChunk). The guest answers requests and pushes a
 // periodic status report.
 //
 // # Trust
@@ -73,6 +74,10 @@ const (
 	// so far (and restarts dockerd if asked). Chunks get no reply.
 	TDaemonChunk  Type = 0x07
 	TDaemonCommit Type = 0x08
+	// TEnvChunk and TEnvCommit do the same for dockerd's environment
+	// (internal/dockerenv.Doc). Chunks get no reply.
+	TEnvChunk  Type = 0x09
+	TEnvCommit Type = 0x0a
 )
 
 // Guest to host.
@@ -87,6 +92,7 @@ const (
 	// when it is done; the host watches for that, not for another message.
 	RShutdown Type = 0x87
 	RDaemon   Type = 0x88 // reply to TDaemonCommit
+	REnv      Type = 0x89 // reply to TEnvCommit
 )
 
 func (t Type) String() string {
@@ -107,6 +113,10 @@ func (t Type) String() string {
 		return "daemon-chunk"
 	case TDaemonCommit:
 		return "daemon-commit"
+	case TEnvChunk:
+		return "env-chunk"
+	case TEnvCommit:
+		return "env-commit"
 	case RHello:
 		return "hello-reply"
 	case RStatus:
@@ -123,6 +133,8 @@ func (t Type) String() string {
 		return "shutdown-accepted"
 	case RDaemon:
 		return "daemon-result"
+	case REnv:
+		return "env-result"
 	}
 	return fmt.Sprintf("type(0x%02x)", uint8(t))
 }
@@ -183,8 +195,11 @@ const (
 	// FeatureDaemonConfig: the guest installs a host-sent daemon.json and restarts
 	// dockerd on request.
 	FeatureDaemonConfig Features = 1 << 4
-	knownFeatures                = FeatureGuard | FeatureTrim | FeatureCacheTrim | FeatureShutdown | FeatureDaemonConfig
-	statusPayloadSize            = 8 + 17*8
+	// FeatureDockerdEnv: the guest installs a host-sent dockerd environment (proxies,
+	// CA certificates) and restarts dockerd when it changes.
+	FeatureDockerdEnv Features = 1 << 5
+	knownFeatures              = FeatureGuard | FeatureTrim | FeatureCacheTrim | FeatureShutdown | FeatureDaemonConfig | FeatureDockerdEnv
+	statusPayloadSize          = 8 + 17*8
 )
 
 // GuardState is the guest guard's view of its budget.
@@ -329,6 +344,33 @@ const (
 	knownResultFlags                   = DaemonChanged | DaemonRestarted
 )
 
+// The dockerd environment transfer works like the daemon.json transfer, with its own
+// message types, its own buffer in the guest and a larger limit (a CA bundle is up to
+// about 1 MiB, some 4500 chunks). It may interleave with a daemon.json transfer; the
+// guest applies one change to dockerd at a time.
+const (
+	// MaxDockerdEnv bounds an encoded environment (internal/dockerenv.MaxDoc).
+	MaxDockerdEnv = 1 << 20
+)
+
+// EnvChunk is part of a dockerd environment.
+type EnvChunk struct {
+	Offset uint32
+	Data   []byte // 1..DaemonChunkData bytes
+}
+
+// EnvCommit installs the environment chunks sent since the last EnvCommit. Flags are
+// those of a DaemonCommit.
+type EnvCommit struct {
+	Size   uint32
+	Flags  DaemonCommitFlags
+	SHA256 [32]byte
+}
+
+// EnvResult answers an EnvCommit, with the codes and flags of a DaemonResult
+// (DaemonRejected: the guest refused the document).
+type EnvResult DaemonResult
+
 // DaemonResult answers a DaemonCommit. Message is guest text (dockerd's complaint, for
 // example) and untrusted: the host shows it escaped.
 type DaemonResult struct {
@@ -354,6 +396,9 @@ func (ErrorReply) Type() Type       { return RError }
 func (DaemonChunk) Type() Type      { return TDaemonChunk }
 func (DaemonCommit) Type() Type     { return TDaemonCommit }
 func (DaemonResult) Type() Type     { return RDaemon }
+func (EnvChunk) Type() Type         { return TEnvChunk }
+func (EnvCommit) Type() Type        { return TEnvCommit }
+func (EnvResult) Type() Type        { return REnv }
 
 func (Hello) size() int            { return 4 }
 func (Budget) size() int           { return 24 }
@@ -371,6 +416,9 @@ func (ErrorReply) size() int       { return 8 }
 func (DaemonChunk) size() int      { return 8 + DaemonChunkData }
 func (DaemonCommit) size() int     { return 40 }
 func (DaemonResult) size() int     { return 16 + MaxDaemonMessage }
+func (EnvChunk) size() int         { return 8 + DaemonChunkData }
+func (EnvCommit) size() int        { return 40 }
+func (EnvResult) size() int        { return 16 + MaxDaemonMessage }
 
 var be = binary.BigEndian
 
@@ -444,6 +492,10 @@ func (m DaemonCommit) put(b []byte) {
 	b[4] = byte(m.Flags)
 	copy(b[8:], m.SHA256[:])
 }
+
+func (m EnvChunk) put(b []byte)  { DaemonChunk(m).put(b) }
+func (m EnvCommit) put(b []byte) { DaemonCommit(m).put(b) }
+func (m EnvResult) put(b []byte) { DaemonResult(m).put(b) }
 
 func (m DaemonResult) put(b []byte) {
 	be.PutUint32(b, uint32(m.Code))
@@ -519,6 +571,18 @@ func validate(m Msg) error {
 		if v.Code > maxDaemonCode || v.Flags&^knownResultFlags != 0 || len(v.Message) > MaxDaemonMessage || v.Duration < 0 {
 			return fmt.Errorf("%w: daemon result", ErrMalformed)
 		}
+	case EnvChunk:
+		if len(v.Data) == 0 || len(v.Data) > DaemonChunkData || uint64(v.Offset)+uint64(len(v.Data)) > MaxDockerdEnv {
+			return fmt.Errorf("%w: env chunk of %d bytes at %d", ErrMalformed, len(v.Data), v.Offset)
+		}
+	case EnvCommit:
+		if v.Size > MaxDockerdEnv || v.Flags&^knownCommitFlags != 0 {
+			return fmt.Errorf("%w: env commit", ErrMalformed)
+		}
+	case EnvResult:
+		if err := validate(DaemonResult(v)); err != nil {
+			return fmt.Errorf("%w: env result", ErrMalformed)
+		}
 	case TrimRequest, CacheTrimRequest, Ping, Pong, ShutdownRequest, ShutdownAccepted:
 	default:
 		return fmt.Errorf("%w: unknown message %T", ErrMalformed, m)
@@ -526,9 +590,11 @@ func validate(m Msg) error {
 	return nil
 }
 
-// requestType reports the host types an ErrorReply may refuse. Hello and daemon chunks
-// get no reply.
-func requestType(t Type) bool { return t >= TBudget && t <= TShutdown || t == TDaemonCommit }
+// requestType reports the host types an ErrorReply may refuse. Hello and chunks get no
+// reply.
+func requestType(t Type) bool {
+	return t >= TBudget && t <= TShutdown || t == TDaemonCommit || t == TEnvCommit
+}
 
 // Append appends the frame for m with sequence number seq to dst.
 func Append(dst []byte, seq uint32, m Msg) ([]byte, error) {
@@ -633,6 +699,12 @@ func decodePayload(t Type, p []byte, dir Direction) (Msg, error) {
 		m = DaemonCommit{}
 	case dir == FromGuest && t == RDaemon:
 		m = DaemonResult{}
+	case dir == FromHost && t == TEnvChunk:
+		m = EnvChunk{}
+	case dir == FromHost && t == TEnvCommit:
+		m = EnvCommit{}
+	case dir == FromGuest && t == REnv:
+		m = EnvResult{}
 	default:
 		return nil, fmt.Errorf("%w: type %v not valid in this direction", ErrMalformed, t)
 	}
@@ -656,6 +728,24 @@ func decodePayload(t Type, p []byte, dir Direction) (Msg, error) {
 	}
 	bad := fmt.Errorf("%w: %v padding or flag bits set", ErrMalformed, t)
 	switch m.(type) {
+	case EnvChunk:
+		c, err := decodePayload(TDaemonChunk, p, FromHost)
+		if err != nil {
+			return nil, bad
+		}
+		return EnvChunk(c.(DaemonChunk)), nil
+	case EnvCommit:
+		c, err := decodePayload(TDaemonCommit, p, FromHost)
+		if err != nil {
+			return nil, bad
+		}
+		return EnvCommit(c.(DaemonCommit)), nil
+	case EnvResult:
+		r, err := decodePayload(RDaemon, p, FromGuest)
+		if err != nil {
+			return nil, bad
+		}
+		return EnvResult(r.(DaemonResult)), nil
 	case Hello:
 		return Hello{Min: be.Uint16(p), Max: be.Uint16(p[2:])}, nil
 	case Budget:
