@@ -121,9 +121,8 @@ func (d *dockerdConfig) applyEnv(ctx context.Context, data []byte, restart bool)
 		res.Flags |= guestctl.DaemonChanged
 		logf("dockerd environment: installed (%s; %d CA certificates beyond the stock bundle)", describeEnv(doc), added)
 	}
-	gen, _, err := readGen(d.gen)
-	boot := errors.Is(err, fs.ErrNotExist)
-	if err != nil && !boot {
+	gen, boot, err := d.dockerdGen()
+	if err != nil {
 		return fail(guestctl.DaemonFailed, "%v", err)
 	}
 	if boot {

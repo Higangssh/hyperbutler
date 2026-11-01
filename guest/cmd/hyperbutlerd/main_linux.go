@@ -216,11 +216,12 @@ func newDaemon(o options) (*daemon, error) {
 		pid := o.shutdownPID
 		bin := o.dockerdBin
 		d.dcfg = &dockerdConfig{
-			path:  o.daemonConfig,
-			ready: filepath.Join(dir, "daemon.ready"),
-			gen:   filepath.Join(dir, "dockerd.gen"),
-			hold:  filepath.Join(dir, "dockerd.hold"),
-			sock:  "/run/docker.sock",
+			path:     o.daemonConfig,
+			ready:    filepath.Join(dir, "daemon.ready"),
+			gen:      filepath.Join(dir, "dockerd.gen"),
+			hold:     filepath.Join(dir, "dockerd.hold"),
+			starting: filepath.Join(dir, "dockerd.starting"),
+			sock:     "/run/docker.sock",
 			validate: func(ctx context.Context, path string) (string, error) {
 				out, err := exec.CommandContext(ctx, bin, "--validate", "--config-file="+path).CombinedOutput()
 				if err != nil {

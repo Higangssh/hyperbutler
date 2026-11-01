@@ -287,6 +287,10 @@ if [ -d /sys/bus/vmbus ]; then
 		fi
 	fi
 fi
+# From here on a missing dockerd.gen means dockerd is being started, not that it has yet
+# to be: what hyperbutlerd installs now may come too late for this dockerd, so it
+# restarts dockerd for it (after a daemon-config-timeout).
+: >"$RUNDIR/dockerd.starting"
 
 # The root is the erofs system disk, a real mount, so runc uses pivot_root(2): no
 # DOCKER_RAMDISK (which the initramfs-only prototype needed).

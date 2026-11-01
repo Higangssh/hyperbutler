@@ -169,6 +169,60 @@ func TestDockerdEnvAndDaemonConfigSerialized(t *testing.T) {
 	}
 }
 
+// startingInit is a fakeInit whose init timed out waiting for daemon.ready: it has
+// created its starting marker and starts dockerd after delay.
+func startingInit(t *testing.T, delay time.Duration) *fakeInit {
+	f := envInit(t, false, newCA(t, "stock"))
+	f.d.starting = filepath.Join(filepath.Dir(f.d.path), "dockerd.starting")
+	if err := os.WriteFile(f.d.starting, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if delay > 0 {
+		done := make(chan struct{})
+		t.Cleanup(func() { <-done })
+		go func() {
+			defer close(done)
+			time.Sleep(delay)
+			f.start()
+		}()
+	}
+	return f
+}
+
+// TestDockerdStartingIsNotBoot (review L-C): once the init has passed its boot wait and
+// is starting dockerd, what arrives is not installed for a dockerd that has yet to
+// start (it may have read the files already): both the environment and daemon.json wait
+// for that dockerd and restart it.
+func TestDockerdStartingIsNotBoot(t *testing.T) {
+	ctx := context.Background()
+	f := startingInit(t, 30*time.Millisecond)
+	r := f.d.applyEnv(ctx, encodeDoc(t, dockerenv.Doc{HTTPProxy: "http://proxy:3128"}), false)
+	if r.Code != guestctl.DaemonOK || r.Flags != guestctl.DaemonChanged|guestctl.DaemonRestarted || f.restarts != 1 || f.gen != 2 {
+		t.Fatalf("environment: %#v, %d restarts, gen %d", r, f.restarts, f.gen)
+	}
+	f2 := startingInit(t, 30*time.Millisecond)
+	r2 := f2.d.apply(ctx, []byte(`{"debug":true}`), false)
+	if r2.Code != guestctl.DaemonOK || r2.Flags != guestctl.DaemonChanged|guestctl.DaemonRestarted || f2.restarts != 1 {
+		t.Fatalf("daemon.json: %#v, %d restarts", r2, f2.restarts)
+	}
+	// Nothing changed: nothing to restart for, but it still waited for the dockerd.
+	if r := f2.d.apply(ctx, []byte(`{"debug":true}`), false); r.Code != guestctl.DaemonOK || r.Flags != 0 || f2.restarts != 1 {
+		t.Fatalf("unchanged: %#v", r)
+	}
+	// The init never gets dockerd going: a failure after upTimeout, not a boot install.
+	f3 := startingInit(t, 0)
+	f3.d.upTimeout = 20 * time.Millisecond
+	if r := f3.d.applyEnv(ctx, encodeDoc(t, dockerenv.Doc{HTTPProxy: "http://proxy:1"}), false); r.Code != guestctl.DaemonFailed || !strings.Contains(r.Message, "starting dockerd") {
+		t.Fatalf("never started: %#v", r)
+	}
+	// Without the marker it is boot, as before: installed, no restart.
+	f4 := envInit(t, false, newCA(t, "stock"))
+	f4.d.starting = filepath.Join(filepath.Dir(f4.d.path), "dockerd.starting")
+	if r := f4.d.applyEnv(ctx, encodeDoc(t, dockerenv.Doc{HTTPProxy: "http://proxy:1"}), false); r.Code != guestctl.DaemonOK || r.Flags != guestctl.DaemonChanged || f4.restarts != 0 {
+		t.Fatalf("boot: %#v", r)
+	}
+}
+
 // TestDockerdEnvAfterBoot: an environment that arrives after daemon.json settled (an
 // engine that sent it late, or the init's boot wait timed out) is never reported as in
 // effect while dockerd runs without it: dockerd is restarted with it. The engine sends

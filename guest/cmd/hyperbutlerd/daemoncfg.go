@@ -34,6 +34,10 @@ type dockerdConfig struct {
 	gen   string // the init's dockerd generation file
 	hold  string // see above
 	sock  string // dockerd's API socket
+	// starting is created by the init right before it first starts dockerd: once it
+	// exists, a missing gen means dockerd is being started, not that it has yet to be
+	// (see dockerdGen).
+	starting string
 
 	// validate runs `dockerd --validate --config-file=path`; it returns dockerd's
 	// complaint on failure.
@@ -84,9 +88,8 @@ func (d *dockerdConfig) apply(ctx context.Context, data []byte, restart bool) (r
 		res.Flags |= guestctl.DaemonChanged
 		logf("daemon.json: installed %d bytes", len(data))
 	}
-	gen, _, err := readGen(d.gen)
-	boot := errors.Is(err, fs.ErrNotExist) // dockerd has not started yet
-	if err != nil && !boot {
+	gen, boot, err := d.dockerdGen()
+	if err != nil {
 		return fail(guestctl.DaemonFailed, "%v", err)
 	}
 	// A changed file on a running dockerd takes effect only with a restart: never
@@ -101,6 +104,11 @@ func (d *dockerdConfig) apply(ctx context.Context, data []byte, restart bool) (r
 	// At boot the init starts dockerd once the ready file exists. If it starts with a
 	// new file, watch it come up as after a restart: a file that dockerd --validate
 	// passes can still keep dockerd from starting, and that must not power the VM off.
+	// This watch cannot tell why dockerd did not come up: the environment installed
+	// just before (applyEnv, which has no boot watch of its own) could be the cause,
+	// and the rollback below would then remove a good daemon.json. Neither a proxy
+	// variable nor a CA bundle keeps dockerd from starting, and both are checked on the
+	// host and here, so the file is the likely cause.
 	watch := restart || boot && changed && len(data) > 0
 	if !watch {
 		d.markReady()
@@ -236,6 +244,36 @@ func (d *dockerdConfig) waitUp(ctx context.Context, gen uint64) (uint64, error) 
 		case <-ctx.Done():
 			return max(g, gen), ctx.Err()
 		case <-time.After(d.pollEvery):
+		}
+	}
+}
+
+// dockerdGen returns the generation of the running dockerd, or boot when the init has
+// not started one yet. Once the init's starting marker exists, a missing generation
+// file means dockerd is being started (the init's boot wait for daemon.ready timed
+// out): that is not boot, since files installed now may come too late for it, so
+// dockerdGen waits (bounded by upTimeout, not by the connection: see apply) for the
+// generation and the caller restarts dockerd to apply them.
+func (d *dockerdConfig) dockerdGen() (gen uint64, boot bool, err error) {
+	gen, _, err = readGen(d.gen)
+	if !errors.Is(err, fs.ErrNotExist) {
+		return gen, false, err
+	}
+	if d.starting == "" {
+		return 0, true, nil
+	}
+	if _, serr := os.Stat(d.starting); errors.Is(serr, fs.ErrNotExist) {
+		return 0, true, nil
+	}
+	deadline := time.Now().Add(d.upTimeout)
+	for {
+		time.Sleep(d.pollEvery)
+		gen, _, err = readGen(d.gen)
+		if !errors.Is(err, fs.ErrNotExist) {
+			return gen, false, err
+		}
+		if time.Now().After(deadline) {
+			return 0, false, fmt.Errorf("the init is starting dockerd, but no dockerd generation within %v", d.upTimeout)
 		}
 	}
 }
