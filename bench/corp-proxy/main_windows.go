@@ -11,6 +11,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"net"
 	"net/http"
 	"os"
 	"os/exec"
@@ -111,8 +112,9 @@ func main() {
 	}
 	defer cleanup()
 
-	// 1. The proxy, no CA.
+	// 1. The proxy, no CA (but ca.import, the default, on).
 	hb("config", "unset", "ca.extraFile")
+	hb("config", "unset", "ca.import")
 	r1 := hb("config", "set", "proxy.http", proxyURL)
 	r2 := hb("config", "set", "proxy.https", proxyURL)
 	check("set proxy.http and proxy.https", r1.code == 0 && r2.code == 0, r1.out+r2.out)
@@ -120,6 +122,9 @@ func main() {
 	check("apply with the proxy", r.code == 0, r.out)
 	r = hb("config", "set", "hostGateway.enabled", "false")
 	check("hostGateway.enabled false refused under a loopback proxy", r.code != 0 && strings.Contains(r.out, "loopback"), r.out)
+	_, port, _ := net.SplitHostPort(p.addr())
+	r = hb("config", "set", "proxy.https", "http://corpuser:"+pw+"@[::1]:"+port)
+	check("a proxy on [::1] refused: the host gateway connects to 127.0.0.1", r.code != 0 && strings.Contains(r.out, "bind the relay to 127.0.0.1"), r.out)
 	dk("rmi", "-f", *image)
 	before := p.stats()
 	r = dk("pull", *image)
@@ -141,7 +146,10 @@ func main() {
 	check("the pull went through the proxy, inspected", after.TLSOK > before.TLSOK && after.Req > before.Req, fmt.Sprintf("%+v", after))
 	check("the proxy's credentials were accepted", after.AuthFailed == before.AuthFailed, fmt.Sprintf("%d failures", after.AuthFailed))
 
-	// 3. In the guest and in containers.
+	// 3. The requirement's own path: a root of the Windows store (ca.import), not the file.
+	checkStoreRoot(dk, hb, *image)
+
+	// 4. In the guest and in containers.
 	gw := dk("run", "--rm", "--privileged", "--pid=host", *image, "nsenter", "-t", "1", "-m", "--", "sh", "-c",
 		"stat -c '%a %n' /run/hyperbutler /run/hyperbutler/dockerd.env; cut -d= -f1 /run/hyperbutler/dockerd.env; grep -c '@192.168.127.254:' /run/hyperbutler/dockerd.env; grep -c 'hyperbutler bench' /run/hyperbutler/ca-certificates.crt || true")
 	check("guest: dockerd.env 0600 in a 0700 directory", strings.Contains(gw.out, "700 /run/hyperbutler\n") && strings.Contains(gw.out, "600 /run/hyperbutler/dockerd.env"), gw.out)
@@ -153,7 +161,7 @@ func main() {
 	info := dk("info", "--format", "{{.HTTPSProxy}}")
 	check("docker info shows the proxy masked", info.code == 0 && strings.Contains(info.out, "192.168.127.254") && !strings.Contains(info.out, pw), info.out)
 
-	// 4. Nothing printed or stored shows the password.
+	// 5. Nothing printed or stored shows the password.
 	hb("config", "list")
 	hb("config", "list", "--json")
 	hb("config", "get", "proxy.https")
@@ -174,7 +182,7 @@ func main() {
 	shown := run(*hbExe, "config", "get", "--show-secrets", "proxy.https")
 	check("config get --show-secrets shows it", strings.TrimSpace(shown.out) == proxyURL, "")
 
-	// 5. Back to no proxy.
+	// 6. Back to no proxy.
 	cleanup()
 	r = hb("config", "daemon", "apply")
 	check("apply without the proxy", r.code == 0, r.out)

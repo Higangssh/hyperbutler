@@ -200,8 +200,8 @@ HTTP:
 ```
 
 Behind a corporate proxy, dockerd trusts the CA certificates of the Windows root stores
-(`ca.import`, on by default; a PEM file can be added with `ca.extraFile`), and takes a
-proxy:
+(`ca.import`, on by default; a PEM file can be added with `ca.extraFile`, which is copied
+when it is set, so set it again after the file changes), and takes a proxy:
 
 ```powershell
 hyperbutler config set proxy.https http://proxy.corp:3128

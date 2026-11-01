@@ -194,8 +194,22 @@ hyperbutler config daemon apply                  # or --apply on the last set
   (`CertOpenStore`, `CertEnumCertificatesInStore`). It never changes a store. It keeps a
   certificate only if it parses, is a CA (basic constraints CA:TRUE, or a self-issued
   version 1 root without basic constraints), is within its validity period, and is not in
-  `CurrentUser\Disallowed` or `LocalMachine\Disallowed`; duplicates are dropped by the
-  SHA-256 of the DER. `ca.extraFile` certificates come first and need only parse.
+  `CurrentUser\Disallowed` or `LocalMachine\Disallowed`. Both matches are by the
+  certificate's hash (thumbprint), as Windows matches them: the whole certificate, not its
+  key or subject, so a reissued certificate with the same key is not caught; duplicates
+  are dropped the same way (SHA-256 of the DER). `ca.extraFile` certificates come first and
+  need only parse, but the Disallowed stores apply to them too.
+- **`ca.extraFile` is copied when it is set.** `config set ca.extraFile PATH` follows
+  every link and junction in the path without opening their targets, refuses a UNC or
+  device path, a mapped network drive and a link to any of them, checks the PEM, and
+  copies it to `ca-extra.pem` in the state directory (atomically, with a DACL for the
+  current user only). settings.json keeps the path as given, for display, and the copy's
+  SHA-256. Boot and `config daemon apply` read only the copy, so the original is never read
+  then (it can be gone, or on a share that hangs). After the file changes, set it again.
+  If settings.json was edited by hand to name another file, the copy is still used and
+  `state.daemonConfig.env.error` says it is not the one recorded; without a copy, nothing is
+  read and the error says to set it again. `unset` removes the copy, and so does
+  `uninstall`.
   Intermediate stores (`CA`) are not read: an entry there is a cache, not a trust
   decision, and Go would treat it as a trust anchor. On this machine: 70 certificates in
   the stores, 29 kept (29 duplicates, 12 expired), 7 ms; 18 of the 29 are not in Alpine's
@@ -217,12 +231,19 @@ hyperbutler config daemon apply                  # or --apply on the last set
 - **NO_PROXY** is the user's list plus what a proxy elsewhere can never reach:
   `localhost,127.0.0.1,::1,192.168.127.0/24,host.docker.internal,gateway.docker.internal,192.168.127.254`
   and the hosts of daemon.json's `insecure-registries` and `registry-mirrors`. Only when a
-  proxy is set.
+  proxy is set. The user's list is at most 4096 bytes; the list dockerd gets may be 1 KiB
+  longer, so the defaults always fit with it, and registries that would not fit are left
+  out, counted in `env.error`.
 - **A proxy on this host's loopback** (a local NTLM or Kerberos relay such as px or cntlm,
   which is how such proxies are used without Docker Desktop's Business-only support) is
   rewritten to the host gateway address, `192.168.127.254`, which forwards to Windows'
   `127.0.0.1` (REQ-NET-004). `config set proxy.*` and `hostGateway.*` refuse a combination
-  where the host gateway is off or does not forward the proxy's port.
+  where the host gateway is off or does not forward the proxy's port. Only `localhost` and
+  `127.0.0.1` are rewritten: the gateway connects to `127.0.0.1` and falls back to `[::1]`
+  only when that refuses, so a proxy given as `[::1]` or another `127.x` address would get
+  whatever listens on `127.0.0.1` with that port, credentials included. `config set`
+  refuses those ("bind the relay to 127.0.0.1"); a relay that listens on `[::1]` only
+  still works as `localhost`.
 - **Containers and builds** are not changed, as in Docker Desktop: its docs say to add a
   corporate CA to an image and run `update-ca-certificates`, and its proxy settings are for
   pulls, not for what runs in a container. To give containers and `docker build` a proxy,
@@ -255,13 +276,19 @@ valid values, canonical bytes), writes `dockerd.env` (KEY=VALUE lines) and the b
   and sends it before daemon.json, so the init's one readiness gate (`daemon.ready`,
   which the daemon.json commit creates) covers both, and `start` waits for both. On the
   VM: `dockerd environment: installed` at 0.38 s, `daemon-config-ready` at 0.40 s, and the
-  first dockerd (generation 1) had `SSL_CERT_FILE` and the proxy.
+  first dockerd (generation 1) had `SSL_CERT_FILE` and the proxy. Right after that gate
+  (or its 30 s timeout) the init creates `/run/hyperbutler/dockerd.starting`; from then on
+  hyperbutlerd treats a missing `dockerd.gen` as a dockerd being started, not one yet to
+  start: it waits for its generation and restarts it for a changed daemon.json or
+  environment, which a dockerd that had read the files already would otherwise miss.
 - **Restarts only when asked.** A changed environment on a running dockerd restarts it
   (never reported as in effect without), so only `config daemon apply` and `config set
   ... --apply` build a new one. On a control reconnect (sleep and resume, a hyperbutlerd
   restart) the engine sends what is in effect, not a new import: the stores change on
   their own (AuthRoot fills on demand, Group Policy refreshes), and a restart stops every
-  container. An apply restarts dockerd once: for the environment if it changed, otherwise
+  container. What the build reported about that environment (a certificate file or store
+  that could not be read) is reported again; only a delivery's own error is cleared.
+  An apply restarts dockerd once: for the environment if it changed, otherwise
   for daemon.json; twice only when both changed.
 - **Rollback:** the environment shares daemon.json's lock, hold file and 90 s watch in the
   guest; a dockerd that does not come back is restarted with the previous environment
@@ -288,10 +315,13 @@ as the guest sees them), `noProxy`, `caImport`, `caCerts`, `caSkipped`, `caStats
 ### End to end (`bench/corp-proxy`, 2026-11-01)
 
 The bench runs its own TLS-inspecting proxy on `127.0.0.1` (Basic credentials required),
-with a root CA made for the run. It never touches a certificate store: the CA reaches
-hyperbutler through `ca.extraFile`, which takes the same path as the store's
-certificates from the CertSet on. The proxy dials Docker Hub itself. 21 of 21 checks
-passed on the guest image built from this tree:
+with a root CA made for the run. It never changes a certificate store: the proxy's CA
+reaches hyperbutler through `ca.extraFile`. The store's own path is checked apart, with
+`ca.import` on: the bench reads `LocalMachine\Root` and the guest's stock Alpine bundle,
+picks the roots that CertSet would import and the stock bundle lacks, and looks for them
+(by SHA-256 of the DER) in the guest's `/run/hyperbutler/ca-certificates.crt`. The proxy
+dials Docker Hub itself. 21 of 21 checks passed on the guest image built from this tree;
+after the review fixes below, 25 of 25 (2026-11-01, a guest image built from that tree):
 
 | Check | Result |
 |---|---|
@@ -299,6 +329,8 @@ passed on the guest image built from this tree:
 | `hostGateway.enabled false` with that proxy | refused: on loopback, needs the host gateway |
 | `docker pull busybox:1.37` without the CA | fails, `x509: certificate signed by unknown authority`; the proxy saw `CONNECT registry-1.docker.io:443` and a refused handshake |
 | `ca.extraFile` = the proxy's CA, `--apply` | dockerd restarted (1.3 s); the pull works in 2.9 s through the proxy: 4 CONNECTs, 4 inspected TLS sessions, 15 requests, no 407 |
+| `ca.import` on: `LocalMachine\Root` against the guest | 35 roots, 18 importable and not among the stock bundle's 118; the one picked (`2399561127a57125...`) and the other 17 are in the combined bundle; `caStats.added` > 0 |
+| `proxy.https` = `http://...@[::1]:PORT` | refused: bind the relay to 127.0.0.1 |
 | guest | `dockerd.env` 0600 in a 0700 directory; `HTTP(S)_PROXY` at `192.168.127.254`, `NO_PROXY`, `SSL_CERT_FILE` |
 | containers | no proxy variables; `/proc/cmdline` without the proxy |
 | the password | in none of: `config list/get/set` output, `status [--json]`, state.json, engine.log, console.log, `docker info`; `--show-secrets` shows it |
@@ -307,7 +339,10 @@ passed on the guest image built from this tree:
 Also on the VM: the store import itself (29 roots sent, 18 added beyond the stock bundle);
 the boot path above; and a forced reconnect (hyperbutlerd killed in the guest, the init
 restarted it) after the CA file changed on disk: the engine re-sent the environment in
-effect, dockerd kept generation 5 and its PID, the bundle's hash did not change.
+effect, dockerd kept generation 5 and its PID, the bundle's hash did not change. After
+the fixes: `ca.extraFile` set, the original deleted, `hyperbutler restart`: the copy was
+used (1 certificate, no error), and `ca-extra.pem` has one ACE, the user's; `uninstall
+--dry-run` lists it, `config unset` removes it.
 
 ## --json (REQ-UX-008)
 
@@ -374,7 +409,12 @@ fields are only added; removing or renaming one means a new version.
   guest. New fuzz targets, 20-45 s each: `dockerenv` FuzzProxyURL 0.15M (one false alarm
   in the property, fixed), FuzzDecode 0.32M, FuzzNoProxy 3.6M; `config` FuzzSet 1.9M
   with the new keys and a no-password-shown property; `guestctl` FuzzServeConn 0.66M,
-  FuzzDecode, FuzzClient with the new messages. All passed.
+  FuzzDecode, FuzzClient with the new messages. All passed. After the second review:
+  `engine` FuzzBuildDockerdEnvNoProxy (any accepted `proxy.noProxy` with any daemon.json
+  registries gives a valid document with the proxy and the whole user list), 30 s, 76k
+  execs, passed; its seeds fail without the larger document limit. `go test -race` for the guest
+  packages, `dockerenv` and `guestctl` in a golang:1.27 container on the guest, and the
+  init's reader test under dash and BusyBox (golang:1.27-alpine).
 
 ## Adversarial review (REQ-UX-009)
 
@@ -390,8 +430,22 @@ fields are only added; removing or renaming one means a new version.
 | 1 low | A store with absurdly many or large entries. | Bounded per store, per certificate and in total; duplicates are dropped before parsing. |
 | 2 low | A root that Windows restricts with properties (enhanced key usage set on the store entry, or a disabled flag) is still imported; only the `Disallowed` stores and the certificate's own fields are honored. | **Open**, as in Docker Desktop as far as we know. |
 | 3 low | At boot, a new environment that keeps dockerd from starting is not watched like a daemon.json: with no previous one, the VM would power off. The proxy and certificate values are checked on the host and again in the guest, and neither a proxy variable nor a CA bundle stops dockerd from starting (an unreadable bundle gives an empty pool, not an exit). | **Accepted** for 0.1; a running dockerd is watched and rolled back. |
-| 4 low | `ca.extraFile` on a local drive can still be a link to a network path; it is read at each boot and apply. | **Open**; UNC and device paths are refused. |
+| 4 low | `ca.extraFile` on a local drive can still be a link to a network path; it is read at each boot and apply. | **Fixed** by M-C below. |
 | 5 low | dockerd's environment is readable through `/proc` by a `--privileged --pid=host` container, which is root on the guest anyway. | **Accepted.** |
+
+A second adversarial review of the fixed feature:
+
+| ID | Finding | Outcome | Test |
+|---|---|---|---|
+| M-A | A `proxy.noProxy` near its 4096-byte limit, with the defaults and the registries added, failed `Doc.Validate`; the "cannot happen" branch then dropped the whole environment, certificates included, while state.json still showed the proxy and `caStats.added`. | **Fixed:** the document's NO_PROXY may be 1 KiB longer than the user's list, so the defaults always fit; registries that do not are left out and counted. The impossible branch now keeps the certificates, clears the proxy in the state and says why. | `TestBuildDockerdEnv` (a 4090-byte list), `TestSettleDoc`, `FuzzBuildDockerdEnvNoProxy` |
+| M-B | `bench/corp-proxy` measured `ca.extraFile`, not the requirement's path (a root of the Windows store, `ca.import`). | **Fixed:** the bench picks a `LocalMachine\Root` root that the guest's stock bundle lacks, checks the combined bundle holds it (and every other such root), and that `caStats.added` > 0. Read-only. | `bench/corp-proxy` (25 of 25 on the VM) |
+| M-C | The `ca.extraFile` path check was bypassable (a link or junction to a share, a mapped drive), and the file was read at every boot and apply with no timeout. | **Fixed:** copy at `config set` (links resolved without opening their targets; UNC, device paths and network drives refused), only the copy is read at boot; its hash is in settings.json. | `TestResolveLocal` (injected resolver: junction and link to UNC, `\??\UNC\`, volumes, network drive, loops), `TestResolveLocalReal` (a real junction; a real symbolic link to UNC where the account may create one), `TestCAExtraFileCopy`, `TestBuildDockerdEnvCACopy`, `TestSaveCAExtra` |
+| L-A | `ca.extraFile` certificates bypassed the Disallowed stores, which were read only with `ca.import`. | **Fixed:** `wincert.LoadDisallowed` runs first, whatever `ca.import` says; matching is by certificate hash, as in Windows (doc wording fixed). | `TestBuildDockerdEnvDisallowedExtraFile` |
+| L-B | A reconnect erased a build-time error (a certificate file that could not be read) from the state while that environment stayed in effect. | **Fixed:** the build's error is kept with the environment in effect and reported again on a reconnect. | `TestDockerdEnvReconnectKeepsBuildError` |
+| L-C | When the init's 30 s gate timed out, a daemon.json or environment arriving while dockerd was being started was installed as at boot, though dockerd might have read the files already. | **Fixed:** the init creates `dockerd.starting` after the gate; then `apply` and `applyEnv` wait for dockerd's generation and restart it for a change. | `TestDockerdStartingIsNotBoot` |
+| L-D | At boot, daemon.json's watch could blame and roll back a good daemon.json for a dockerd that the environment kept from starting. | **Documented** in a comment at the watch: neither a proxy variable nor a CA bundle stops dockerd, and both are checked on both sides. | (comment) |
+| L-E | A `[::1]` (or other `127.x`) loopback proxy was rewritten to the host gateway, which connects to `127.0.0.1`: the wrong service, with the credentials. | **Fixed:** refused by `config set` ("bind the relay to 127.0.0.1"), and not rewritten; `localhost` stays supported (the gateway falls back to `[::1]` on a refusal). | `TestCheckProxyReachOtherLoopback`, `TestRewriteLoopback`, `TestProxyKeys`; the bench |
+| L-F | Missing tests: NO_PROXY merge keeping `Validate` true, the init's reading of `dockerd.env`, wincert's per-store limit and error paths. | **Fixed:** the M-A fuzz target; the init's own reader run in sh (dash and BusyBox) on the Go writer's output, `sh -n` of the init, and a format contract test on every OS; wincert tests on an in-memory (`CERT_STORE_PROV_MEMORY`) store. The per-store limit was off by one (a store with exactly the limit was reported as over), fixed. | `FuzzBuildDockerdEnvNoProxy`, `TestInitReadsDockerdEnv`, `TestDockerdEnvContract`, `TestEnumStoreLimit`, `TestEnumStoreOversized`, `TestEnumStoreErrors` |
 
 ## Adversarial review (REQ-UX-006, REQ-UX-007)
 
