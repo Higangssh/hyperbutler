@@ -122,6 +122,9 @@ type Config struct {
 	// OnGuardPause, if set, is called when the free-space guard pauses the VM, while it
 	// stays paused and the free space changes, and with nil when it resumes it.
 	OnGuardPause func(*GuardPauseState)
+	// OnGuestFS, if set, is called with the guest data file system's size and free
+	// space when they changed enough to show (guestFSThrottle; REQ-DISK-009).
+	OnGuestFS func(*GuestFSState)
 }
 
 // ErrDone ends Run cleanly from OnReady.
@@ -468,11 +471,17 @@ func Run(ctx context.Context, cfg Config) (err error) {
 	}
 	var guard *hostGuard
 	gs := &guestStats{log: log}
+	var fsThrottle guestFSThrottle
 	sup.Config.OnStatus = func(s guestctl.Status) {
 		if guard != nil {
 			guard.onStatus(s)
 		}
 		gs.onStatus(s)
+		if cfg.OnGuestFS != nil && disk != nil {
+			if st, ok := fsThrottle.next(s.FSSize, s.FSFree, time.Now()); ok {
+				cfg.OnGuestFS(st)
+			}
+		}
 	}
 	if disk != nil {
 		if guard, err = newHostGuard(cfg.Guard, m, sup, disk, log); err != nil {

@@ -103,6 +103,27 @@ type State struct {
 	ExecutableVersion string `json:"executableVersion,omitempty"`
 	// GuardPause is set while the free-space guard keeps the VM paused (REQ-DISK-010).
 	GuardPause *GuardPauseState `json:"guardPause,omitempty"`
+	// GuestFS is the guest file system on the data disk as hyperbutlerd last reported
+	// it (REQ-DISK-009): guest-reported, for display only.
+	GuestFS *GuestFSState `json:"guestFs,omitempty"`
+}
+
+// GuestFSState is the size and free space of the guest's data file system.
+type GuestFSState struct {
+	SizeBytes uint64    `json:"sizeBytes"`
+	FreeBytes uint64    `json:"freeBytes"`
+	Updated   time.Time `json:"updated"`
+}
+
+// UsedBytes is the space in use.
+func (g *GuestFSState) UsedBytes() uint64 { return g.SizeBytes - min(g.FreeBytes, g.SizeBytes) }
+
+// UsedPercent is the share in use, 0 to 100.
+func (g *GuestFSState) UsedPercent() float64 {
+	if g.SizeBytes == 0 {
+		return 0
+	}
+	return float64(g.UsedBytes()) * 100 / float64(g.SizeBytes)
 }
 
 // UnpublishedPort is one port in State.UnpublishedPorts.
@@ -235,6 +256,8 @@ func (s *State) Validate() error {
 		return fmt.Errorf("state: bad executable version %q", s.ExecutableVersion)
 	case s.GuardPause != nil && (s.GuardPause.Volume == "" || len(s.GuardPause.Volume) > 1024 || !printableText(s.GuardPause.Volume)):
 		return fmt.Errorf("state: bad paused volume %q", s.GuardPause.Volume)
+	case s.GuestFS != nil && (s.GuestFS.SizeBytes == 0 || s.GuestFS.FreeBytes > s.GuestFS.SizeBytes):
+		return errors.New("state: guest file system free space out of range")
 	}
 	for _, id := range s.PastRuntimeIDs {
 		if id == "" || !validToken(id, 40, true) {
@@ -373,7 +396,16 @@ type Settings struct {
 	HTTPProxy  string `json:"httpProxy,omitempty"`
 	HTTPSProxy string `json:"httpsProxy,omitempty"`
 	NoProxy    string `json:"noProxy,omitempty"`
+	// UpdateCheck says whether `start` and `status` ask GitHub at most once a day
+	// whether a newer release exists (REQ-UX-022); nil means yes.
+	UpdateCheck *bool `json:"updateCheck,omitempty"`
+	// Autostart records that `config set autostart true` asked for the sign-in task
+	// (REQ-UX-015). The task in Task Scheduler is what starts the engine.
+	Autostart bool `json:"autostart,omitempty"`
 }
+
+// UpdateChecked reports whether the update check is on.
+func (s *Settings) UpdateChecked() bool { return s.UpdateCheck == nil || *s.UpdateCheck }
 
 // CAImported reports whether the Windows root stores are imported.
 func (s *Settings) CAImported() bool { return s.CAImport == nil || *s.CAImport }

@@ -273,6 +273,9 @@ func Serve(opts ServeOptions) error {
 		OnGuardPause: func(p *GuardPauseState) {
 			pub.update(func(s *State) { s.GuardPause = p })
 		},
+		OnGuestFS: func(g *GuestFSState) {
+			pub.update(func(s *State) { s.GuestFS = g })
+		},
 	})
 	live.attach(nil) // the stack is closed
 	if runErr != nil {
