@@ -21,6 +21,7 @@ package main
 
 import (
 	"errors"
+	"flag"
 	"fmt"
 	"io"
 	"os"
@@ -54,8 +55,13 @@ const exitNotRunning = 3
 
 func run(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
-		_, _ = fmt.Fprint(stderr, usageText)
-		return 2
+		// Launched on its own (Explorer, a shortcut): show the status and offer a start
+		// (REQ-UX-016). From a shell: the usage, which is not an error.
+		if ownsConsole() {
+			return newLauncher(stdout, stderr).run()
+		}
+		_, _ = fmt.Fprint(stdout, usageText)
+		return 0
 	}
 	var err error
 	code := 0
@@ -87,6 +93,12 @@ func run(args []string, stdout, stderr io.Writer) int {
 	default:
 		_, _ = fmt.Fprintf(stderr, "hyperbutler: unknown command %q\n\n%s", args[0], usageText)
 		return 2
+	}
+	if fe := (*flagError)(nil); errors.As(err, &fe) {
+		if errors.Is(err, flag.ErrHelp) {
+			return 0
+		}
+		return 2 // the flag set printed the problem and the flags
 	}
 	if errors.Is(err, errUsage) {
 		_, _ = fmt.Fprint(stderr, usageText)

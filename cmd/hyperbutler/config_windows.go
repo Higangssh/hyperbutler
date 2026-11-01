@@ -283,7 +283,7 @@ func configSet(verb string, args []string, stdout, stderr io.Writer) error {
 	}
 	unlock()
 	_, _ = fmt.Fprintln(stdout, "Restarting the VM (--apply).")
-	return restart(*imageDir, 2*time.Minute, stdout, stderr)
+	return restart(*imageDir, 2*time.Minute, "the VM restarts", stdout, stderr)
 }
 
 // reloadLive asks the running engine to apply the live settings it uses (hostGateway.*)
@@ -424,6 +424,7 @@ func daemonApply(args []string, stdout, stderr io.Writer) error {
 	if st.Daemon != nil {
 		gen = st.Daemon.Applies
 	}
+	noteContainers(st, stdout, "dockerd restarts", "when it is up again")
 	if err := engine.RequestDaemonApply(st.PID, st.PIDCreated); err != nil {
 		return err
 	}
@@ -532,7 +533,7 @@ func cmdRestart(args []string, stdout, stderr io.Writer) error {
 	if err := parseArgs(fs, args); err != nil {
 		return err
 	}
-	return restart(*imageDir, *timeout, stdout, stderr)
+	return restart(*imageDir, *timeout, "hyperbutler restart", stdout, stderr)
 }
 
 // restartImageDir is the image directory a restart without --image-dir uses: the one
@@ -552,8 +553,8 @@ func restartImageDir(stateDir, exeDir string, pinned bool, check func(dir string
 }
 
 // restart stops hyperbutler if it runs and starts it again, with the same guest image
-// unless imageDir says otherwise.
-func restart(imageDir string, timeout time.Duration, stdout, stderr io.Writer) error {
+// unless imageDir says otherwise. what names the restart in the container list.
+func restart(imageDir string, timeout time.Duration, what string, stdout, stderr io.Writer) error {
 	in, err := openInstall()
 	if err != nil {
 		return err
@@ -569,7 +570,7 @@ func restart(imageDir string, timeout time.Duration, stdout, stderr io.Writer) e
 			}
 		}
 	}
-	if err := cmdStop(nil, stdout, stderr); err != nil {
+	if err := stopCommand(nil, stdout, stderr, what); err != nil {
 		return err
 	}
 	startArgs := []string{"--timeout", timeout.String()}

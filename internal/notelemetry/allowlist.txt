@@ -19,6 +19,12 @@ internal/engine/net_windows.go net/http.Transport 1 DialContext is transport.Hvs
 internal/engine/share_windows.go net/http.Client 3 container events and list from the guest dockerd over hvsock (share pruning): the client and the two functions it is passed to
 internal/engine/share_windows.go net/http.Transport 1 DialContext is transport.HvsockDialer (the guest)
 
+# Before a stop or restart the CLI lists the running containers (REQ-UX-017) through the
+# engine's Docker API pipe on this machine. The Transport has no Proxy and its
+# DialContext ignores the address: every request goes to winio.DialPipeContext.
+cmd/hyperbutler/containers_windows.go net/http.Client 2 GET /containers/json and inspect over the engine's local named pipe: the client and getJSON's parameter
+cmd/hyperbutler/containers_windows.go net/http.Transport 1 DialContext is winio.DialPipeContext (a local named pipe)
+
 # The guest network (ADR 0006): the host side of connections and DNS queries the guest
 # makes. Only the guest's (the user's containers' and pulls') traffic goes this way;
 # bench/no-telemetry checks that the guest makes none of its own at idle.

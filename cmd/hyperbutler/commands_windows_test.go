@@ -37,14 +37,26 @@ func runCLI(t *testing.T, args ...string) (int, string, string) {
 
 func TestCLIUsage(t *testing.T) {
 	testHome(t)
-	if code, _, _ := runCLI(t); code != 2 {
-		t.Fatalf("no args: exit %d", code)
+	setOwnsConsole(t, false)
+	// From a shell, no arguments asks for the usage, which is not an error (REQ-UX-016).
+	if code, out, _ := runCLI(t); code != 0 || !strings.Contains(out, "Usage:") {
+		t.Fatalf("no args: exit %d, %q", code, out)
 	}
 	if code, _, e := runCLI(t, "frobnicate"); code != 2 || !strings.Contains(e, "unknown command") {
 		t.Fatalf("unknown command: %d %q", code, e)
 	}
 	if code, out, _ := runCLI(t, "version"); code != 0 || !strings.HasPrefix(out, "hyperbutler ") {
 		t.Fatalf("version: %d %q", code, out)
+	}
+	// A bad flag is a usage error (2), whichever command; -h is not an error.
+	for _, cmd := range []string{"stop", "start", "restart", "config list", "uninstall"} {
+		args := append(strings.Fields(cmd), "--bogus")
+		if code, _, e := runCLI(t, args...); code != 2 || !strings.Contains(e, "flag provided but not defined") {
+			t.Fatalf("%s --bogus: exit %d, %q", cmd, code, e)
+		}
+	}
+	if code, _, _ := runCLI(t, "stop", "-h"); code != 0 {
+		t.Fatalf("stop -h: exit %d", code)
 	}
 	if code, _, _ := runCLI(t, "stop", "extra"); code != 1 {
 		t.Fatalf("stop with an argument: exit %d", code)

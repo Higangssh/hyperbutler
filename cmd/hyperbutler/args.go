@@ -52,7 +52,7 @@ func parseInterspersed(fs *flag.FlagSet, args []string) ([]string, error) {
 	var pos []string
 	for {
 		if err := fs.Parse(args); err != nil {
-			return nil, err
+			return nil, &flagError{err}
 		}
 		rest := fs.Args()
 		if len(rest) == 0 {
@@ -67,11 +67,18 @@ func parseInterspersed(fs *flag.FlagSet, args []string) ([]string, error) {
 	}
 }
 
+// flagError is a flag the flag set refused (or -h), which it already printed with the
+// command's flags. run exits 2 for it (0 for -h).
+type flagError struct{ err error }
+
+func (e *flagError) Error() string { return e.err.Error() }
+func (e *flagError) Unwrap() error { return e.err }
+
 // parseArgs parses args into fs and rejects positional arguments, which no hyperbutler
 // command takes.
 func parseArgs(fs *flag.FlagSet, args []string) error {
 	if err := fs.Parse(args); err != nil {
-		return err
+		return &flagError{err}
 	}
 	if fs.NArg() != 0 {
 		return fmt.Errorf("%s: unexpected argument %q", fs.Name(), fs.Arg(0))

@@ -88,11 +88,17 @@ func TestSchemaFields(t *testing.T) {
 				SHA256:  "h", Restarted: true, Error: "e"}},
 		HostGateway:      &engine.HostGatewayState{Address: "192.168.127.254", Enabled: true, Ports: "all", Reloads: 1, Error: "e"},
 		UnpublishedPorts: []engine.UnpublishedPort{{Container: "0123456789ab", Port: 8080, Reason: "r", Since: now}},
+		Executable:       "x", ExecutableVersion: "v",
+		GuardPause: &engine.GuardPauseState{Volume: "C:", FreeBytes: 1, ResumeAtBytes: 2, Since: now},
 	}
 	checkKeys(t, "status", StatusJSON{
 		Schema: 1, Running: true, SetUp: true, Home: "h", State: st, DataDir: "d", Disk: "x", DiskUsed: 1, DiskMax: 2, HostFree: 3,
 		MemoryMB: 4, CPUs: 5, Context: "c", ContextSel: true, DaemonJSON: "j", DaemonJSONExists: true, DockerCLI: "d", DockerCLIBundled: "b",
+		GuardPause: &GuardPauseJSON{Volume: "C:", FreeBytes: 1, ResumeAtBytes: 2, Since: now},
 	}, []string{
+		"guardPause", "guardPause.volume", "guardPause.freeBytes", "guardPause.resumeAtBytes", "guardPause.since",
+		"state.executable", "state.executableVersion",
+		"state.guardPause", "state.guardPause.volume", "state.guardPause.freeBytes", "state.guardPause.resumeAtBytes", "state.guardPause.since",
 		"schema", "running", "setUp", "home", "state", "dataDir", "disk", "diskHostBytes", "diskSizeBytes", "hostFreeBytes",
 		"memoryMB", "cpus", "dockerContext", "dockerContextSelected", "daemonJson", "daemonJsonExists", "dockerCli", "dockerCliBundled",
 		"state.version", "state.phase", "state.pid", "state.pidCreated", "state.vmId", "state.runtimeId", "state.pastRuntimeIds", "state.pipe",

@@ -6,6 +6,7 @@ import (
 	"io"
 	"runtime"
 	"runtime/debug"
+	"time"
 
 	"github.com/Higangssh/hyperbutler/internal/config"
 	"github.com/Higangssh/hyperbutler/internal/engine"
@@ -57,6 +58,17 @@ type StatusJSON struct {
 	// is one; DockerCLIBundled is the one next to hyperbutler.exe, when there is one.
 	DockerCLI        string `json:"dockerCli,omitempty"`
 	DockerCLIBundled string `json:"dockerCliBundled,omitempty"`
+	// GuardPause is set while the free-space guard keeps the VM paused (REQ-DISK-010).
+	GuardPause *GuardPauseJSON `json:"guardPause,omitempty"`
+}
+
+// GuardPauseJSON is a pause by the free-space guard: the host volume, its free space as
+// status measured it, the free space at which the VM resumes, and since when.
+type GuardPauseJSON struct {
+	Volume        string    `json:"volume"`
+	FreeBytes     uint64    `json:"freeBytes"`
+	ResumeAtBytes uint64    `json:"resumeAtBytes"`
+	Since         time.Time `json:"since"`
 }
 
 // ConfigListJSON is `hyperbutler config list --json`.
@@ -152,6 +164,24 @@ func versionInfo() VersionJSON {
 		}
 	}
 	return v
+}
+
+// buildVersion is this build's version as state.json records it and start compares it
+// (REQ-PLAT-008): the release version, or for a source build "(devel)" with the VCS
+// revision, so two development builds from different commits differ.
+func buildVersion() string {
+	v := versionInfo()
+	s := v.Version
+	if s == "(devel)" && v.Revision != "" {
+		s += " " + v.Revision[:min(12, len(v.Revision))]
+		if v.Modified {
+			s += "+modified"
+		}
+	}
+	if len(s) > 128 {
+		s = s[:128]
+	}
+	return s
 }
 
 func cmdVersion(args []string, stdout, stderr io.Writer) error {

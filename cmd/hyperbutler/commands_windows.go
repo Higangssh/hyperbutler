@@ -36,6 +36,14 @@ const (
 	engineLogMax = 4 << 20
 )
 
+const (
+	// contextDescription is what `docker context ls` shows for hyperbutler's context
+	// (REQ-UX-014).
+	contextDescription = "hyperbutler engine; run `hyperbutler start` if docker cannot connect"
+	// desktopContext is Docker Desktop's context, named in the stop note when it exists.
+	desktopContext = "desktop-linux"
+)
+
 // install is one hyperbutler installation: its layout and settings (nil before the first
 // start).
 type install struct {
@@ -209,6 +217,11 @@ func cmdStart(args []string, stdout, stderr io.Writer) error {
 		}
 		p.Close()
 		_, _ = fmt.Fprintf(stdout, "hyperbutler is already running (engine pid %d, %s).\n", st.PID, st.Phase)
+		if exe, err := os.Executable(); err == nil {
+			if s := otherEngine(st, exe, buildVersion()); s != "" {
+				_, _ = fmt.Fprintln(stdout, s)
+			}
+		}
 		if dcfg.DebugPipe != "" || memLimitSet {
 			_, _ = fmt.Fprintln(stderr, "hyperbutler: --debug-pipe and --memlimit apply at the next start; the running engine is unchanged")
 		}
@@ -247,6 +260,22 @@ func cmdStart(args []string, stdout, stderr io.Writer) error {
 	}
 	checkDockerCLI(findDockerCLI(), stdout, stderr)
 	return nil
+}
+
+// otherEngine says so when the running engine st is another hyperbutler.exe or another
+// version than this one, exe at version (REQ-PLAT-008), and points to restart. It is
+// empty when they are the same, or the engine is from a release that did not record it.
+func otherEngine(st *engine.State, exe, version string) string {
+	if st.Executable == "" || engine.SamePath(st.Executable, exe) && st.ExecutableVersion == version {
+		return ""
+	}
+	running := st.ExecutableVersion
+	if running == "" {
+		running = "(unknown version)"
+	}
+	return fmt.Sprintf("hyperbutler %s from %s is running; this is %s from %s.\n"+
+		"Run `hyperbutler restart` from this folder to switch to this one.",
+		printable([]byte(running)), printable([]byte(filepath.Dir(st.Executable))), version, filepath.Dir(exe))
 }
 
 // applySettings creates settings.json on the first start and records start's flags,
@@ -523,7 +552,7 @@ func selectContext(pipe string, stdout, stderr io.Writer) {
 		return
 	}
 	host := npipeHost(pipe)
-	if err := store.Ensure(contextName, host, "hyperbutler (managed by hyperbutler.exe)"); err != nil {
+	if err := store.Ensure(contextName, host, contextDescription); err != nil {
 		if errors.Is(err, dockerctx.ErrNotOurs) {
 			_, _ = fmt.Fprintf(stderr, "hyperbutler: a docker context named %q already exists and was not created by hyperbutler; it was left alone.\n"+
 				"        Use DOCKER_HOST=%s, or remove that context (docker context rm %s) and run hyperbutler start again.\n", contextName, host, contextName)
@@ -561,6 +590,13 @@ func selectContext(pipe string, stdout, stderr io.Writer) {
 // --- stop -----------------------------------------------------------------------------
 
 func cmdStop(args []string, stdout, stderr io.Writer) error {
+	return stopCommand(args, stdout, stderr, "")
+}
+
+// stopCommand is `hyperbutler stop`, and the stop of a restart when restarting names it
+// ("hyperbutler restart"): then the containers come back after the restart, and there
+// is no note about docker commands failing until the next start.
+func stopCommand(args []string, stdout, stderr io.Writer, restarting string) error {
 	fs := newFlagSet("stop", stderr)
 	timeout := fs.Duration("timeout", 45*time.Second, "how long to wait for the orderly shutdown before killing the engine")
 	if err := parseArgs(fs, args); err != nil {
@@ -580,6 +616,15 @@ func cmdStop(args []string, stdout, stderr io.Writer) error {
 	if err := in.reload(); err != nil {
 		return err
 	}
+	if up, _ := in.running(); up {
+		if st, err := engine.LoadState(in.l); err == nil && st.Phase.Live() {
+			if restarting == "" {
+				noteContainers(st, stdout, "hyperbutler stop", "at the next start")
+			} else {
+				noteContainers(st, stdout, restarting, "after the restart")
+			}
+		}
+	}
 	forced, took, err := in.stop(*timeout, stderr)
 	if errors.Is(err, errNotRunning) {
 		_, _ = fmt.Fprintln(stdout, "hyperbutler is not running.")
@@ -593,7 +638,33 @@ func cmdStop(args []string, stdout, stderr io.Writer) error {
 		how = "killed after the orderly shutdown timed out"
 	}
 	_, _ = fmt.Fprintf(stdout, "hyperbutler stopped: %s in %.1f s.\n", how, took.Seconds())
+	if restarting == "" {
+		stoppedNote(stdout)
+	}
 	return nil
+}
+
+// stoppedNote says, after a stop, that docker commands fail until the next start and
+// how to use another engine meanwhile (REQ-UX-014): the docker CLI's own error names
+// only the pipe.
+func stoppedNote(stdout io.Writer) {
+	selected, desktop := false, false
+	if store, err := dockerctx.DefaultStore(); err == nil {
+		cur, _ := store.Current()
+		selected = cur == contextName
+		_, derr := store.Get(desktopContext)
+		desktop = derr == nil
+	}
+	if !selected {
+		_, _ = fmt.Fprintf(stdout, "docker commands that use the %q context fail until `hyperbutler start`.\n", contextName)
+		return
+	}
+	other := "docker context use default"
+	if desktop {
+		other = "docker context use " + desktopContext + " (Docker Desktop), or " + other
+	}
+	_, _ = fmt.Fprintf(stdout, "docker commands fail until `hyperbutler start`: the %q docker context is still selected.\n"+
+		"To use another engine meanwhile: %s.\n", contextName, other)
 }
 
 var errNotRunning = errors.New("not running")
@@ -686,6 +757,7 @@ func cmdStatus(args []string, stdout, stderr io.Writer) (int, error) {
 			r.ContextSel = cur == contextName
 		}
 	}
+	r.GuardPause = guardPauseStatus(r.State, r.Running, r.HostFree)
 	cli := findDockerCLI()
 	r.DockerCLI, r.DockerCLIBundled = cli.Path, cli.Bundled
 	code := 0
@@ -708,6 +780,7 @@ func cmdStatus(args []string, stdout, stderr io.Writer) (int, error) {
 		_, _ = fmt.Fprintln(stdout, ")")
 		_, _ = fmt.Fprintf(stdout, "  docker:  %s\n", npipeHost(st.Pipe))
 		_, _ = fmt.Fprintf(stdout, "  vm:      %s\n", st.VMID)
+		writeEngineStatus(stdout, r)
 	case r.Running:
 		_, _ = fmt.Fprintln(stdout, "hyperbutler: starting")
 	case st != nil && st.Phase.Live():
@@ -1020,9 +1093,15 @@ func cmdEngine(args []string, stderr io.Writer) (int, error) {
 	log.Info("go memory limit", "bytes", debug.SetMemoryLimit(-1), "configured", dcfg.MemoryLimit, "env", os.Getenv("GOMEMLIMIT"))
 	log.Info("engine starting", "pid", os.Getpid(), "home", *home, "data", s.DataDir, "memoryMB", s.Memory(), "cpus", s.CPUCount(runtime.NumCPU()))
 	hg := s.HostGateway() // REQ-NET-004; changed later through the settings event
+	// This executable, recorded in state.json; empty if unknown (REQ-PLAT-008).
+	exe, err := os.Executable()
+	if err != nil || !filepath.IsAbs(exe) || len(exe) > 1024 {
+		exe = ""
+	}
 	err = engine.Serve(engine.ServeOptions{
 		Home: *home, Settings: s, KernelPath: *kernel, InitrdPath: *initrd, Image: *manifest,
 		Pipe: s.PipeName(), Net: engine.NetConfig{AutoPublish: true, HostGateway: &hg}, Logger: log,
+		Executable: exe, Version: buildVersion(),
 	})
 	if engine.ErrorCode(err) == engine.CodeAlreadyRunning {
 		return 3, err
