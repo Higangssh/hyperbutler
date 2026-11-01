@@ -60,7 +60,7 @@ func parseFlags() (*config, error) {
 	fs := flag.NewFlagSet("mem-reclaim", flag.ContinueOnError)
 	fs.StringVar(&c.hb.Exe, "hyperbutler", "", "hyperbutler.exe to measure (required)")
 	fs.StringVar(&c.hb.Home, "home", "", "HYPERBUTLER_HOME of a bench installation (required; never the user's)")
-	fs.StringVar(&c.hb.ImageDir, "image-dir", "", "guest image directory (--image-dir; default next to hyperbutler.exe)")
+	fs.StringVar(&c.hb.ImageDir, "image-dir", "", "guest image directory (--image-dir; default the image folder next to hyperbutler.exe)")
 	fs.StringVar(&c.docker, "docker", "", "stock docker.exe (required)")
 	fs.StringVar(&c.guest, "guest", "", "prebuilt linux/amd64 bench/mem-guest (default: go build it)")
 	fs.StringVar(&c.work, "work", "", "working directory for the guest binary and image tar (default: a new temp dir)")

@@ -23,7 +23,7 @@ import (
 type Hyperbutler struct {
 	Exe      string // hyperbutler.exe
 	Home     string // HYPERBUTLER_HOME; required, so a bench never uses the user's install
-	ImageDir string // --image-dir; empty: next to Exe
+	ImageDir string // --image-dir; empty: the image folder next to Exe
 }
 
 // Layout is the installation's file layout.

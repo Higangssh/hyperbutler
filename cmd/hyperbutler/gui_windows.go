@@ -58,7 +58,7 @@ func cmdGUI(args []string, stdout, stderr io.Writer) error {
 	var o guiOptions
 	fs.BoolVar(&o.wait, "wait", false, "run the window in this process and return when it closes (default: start it and return at once)")
 	fs.StringVar(&o.lang, "lang", "", `the window's language this time: en, ko, or "pseudo" for layout checks (default: gui.language, then Windows)`)
-	fs.StringVar(&o.imageDir, "image-dir", "", "the guest image for a start from the window (default: the one the engine ran last, then next to hyperbutler.exe)")
+	fs.StringVar(&o.imageDir, "image-dir", "", "the guest image for a start from the window (default: the one the engine ran last, then the image folder next to hyperbutler.exe)")
 	fs.StringVar(&o.data, "data", "", `the window's browser profile (default: "gui" in the state directory)`)
 	fs.BoolVar(&o.reportPaint, "report-paint", false, "print a line at the first paint (bench/footprint)")
 	fs.BoolVar(&o.checkLayout, "check-layout", false, "with --report-paint: check every screen for text that overflows its box and print the result (the pseudo-locale layout check)")
@@ -237,7 +237,7 @@ func (h *guiHost) engineArgs(op bridge.EngineOp) ([]string, string, error) {
 }
 
 // startImageDir is the guest image a start uses: --image-dir, else the one the engine
-// ran last (as restart picks it), else none (next to hyperbutler.exe).
+// ran last (as restart picks it), else none (the image folder next to hyperbutler.exe).
 func (h *guiHost) startImageDir() string {
 	if h.imageDir != "" {
 		return h.imageDir
@@ -251,7 +251,7 @@ func (h *guiHost) startImageDir() string {
 		return ""
 	}
 	_, pinned := engine.ImagePin()
-	if dir, ignored := restartImageDir(st.ImageDir, exeDir(), pinned, engine.CheckImageDirPin); ignored == nil {
+	if dir, ignored := restartImageDir(st.ImageDir, defaultImageDir(), pinned, engine.CheckImageDirPin); ignored == nil {
 		return dir
 	}
 	return ""

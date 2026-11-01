@@ -154,7 +154,7 @@ func (h *mcpHost) Start(context.Context) (string, error) {
 		// The guest image the engine last ran, as restart picks it.
 		if st, err := engine.LoadState(in.l); err == nil && st.ImageDir != "" {
 			_, pinned := engine.ImagePin()
-			if dir, ignored := restartImageDir(st.ImageDir, exeDir(), pinned, engine.CheckImageDirPin); ignored == nil && dir != "" {
+			if dir, ignored := restartImageDir(st.ImageDir, defaultImageDir(), pinned, engine.CheckImageDirPin); ignored == nil && dir != "" {
 				args = append(args, "--image-dir", dir)
 			}
 		}

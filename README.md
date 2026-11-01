@@ -127,7 +127,8 @@ Get-FileHash .\hyperbutler-*-windows-amd64.zip -Algorithm SHA256   # compare wit
 gh attestation verify .\hyperbutler-*-windows-amd64.zip --repo Higangssh/hyperbutler   # optional
 
 # 2. Unpack it into a fixed folder and put that folder on your user PATH (once). Keep the
-#    files together: hyperbutler.exe looks for the guest image next to itself.
+#    folders together: hyperbutler.exe boots the guest image in the image\ folder next to
+#    it. Leave image\ alone; Explorer offers to mount system.vhd if you double-click it.
 $dir = "$env:LOCALAPPDATA\Programs\hyperbutler"
 Expand-Archive .\hyperbutler-*-windows-amd64.zip -DestinationPath $env:TEMP\hyperbutler-new -Force
 New-Item -ItemType Directory -Force $dir | Out-Null
@@ -168,16 +169,18 @@ without arguments in a window of its own (`Start-Process -Wait`, `start /wait`, 
 scheduled task, `wt.exe hyperbutler`) can set `HYPERBUTLER_NO_LAUNCHER=1` to get the
 commands at once instead of the window.
 
-To upgrade, run `hyperbutler stop`, repeat step 2 without the PATH lines, and `hyperbutler start`. The
-data disk in `%LOCALAPPDATA%\hyperbutler` is kept. Upgrades across releases are not tested yet
+To upgrade, run `hyperbutler stop`, repeat step 2 without the PATH lines (it replaces every
+file, `image\` included), and `hyperbutler start`. The data disk in `%LOCALAPPDATA%\hyperbutler` is kept. Upgrades across releases are not tested yet
 (there has been no release). `hyperbutler status` shows which `hyperbutler.exe` the running
 engine is and its version. `hyperbutler start` while an engine from another folder or
 another version runs says so; `hyperbutler restart` from the new folder switches to it.
 
 A release `hyperbutler.exe` boots only the guest image files it was released with, the
-ones next to it; `hyperbutler version` shows the `image.json` hash it expects. If it
-refuses them (a half-copied upgrade, a file from another version), extract the zip again
-into the same folder.
+ones in `image\` next to it; `hyperbutler version` shows the `image.json` hash it expects.
+If it refuses them (a half-copied upgrade, a file from another version), extract the zip
+again into an empty folder. Image files directly next to `hyperbutler.exe` are not used:
+`hyperbutler start` names them (an archive extracted over an older layout leaves them)
+so you can delete them.
 
 ### The docker CLI, compose and Docker Desktop
 

@@ -292,7 +292,7 @@ func Run(ctx context.Context, cfg Config) (err error) {
 		}
 	} else {
 		if pinned {
-			return fmt.Errorf("engine: this hyperbutler.exe boots only the guest image it was released with (an image.json next to it); " +
+			return fmt.Errorf("engine: this hyperbutler.exe boots only the guest image it was released with (image\\image.json next to it); " +
 				"extract the release zip again, or use a development build for an initramfs-only image")
 		}
 		if kpath, err = filepath.Abs(cfg.KernelPath); err != nil {

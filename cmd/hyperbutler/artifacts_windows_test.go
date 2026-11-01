@@ -5,6 +5,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -44,5 +45,40 @@ func TestGuestArtifacts(t *testing.T) {
 	}
 	if _, _, m, err := guestArtifacts(odd); err == nil || m != "" {
 		t.Fatalf("a directory was taken for the manifest: %q %v", m, err)
+	}
+}
+
+// Without --image-dir, the image is the image folder next to the executable, and image
+// files directly next to it (an older layout) are named in the error.
+func TestMissingImageError(t *testing.T) {
+	touch := func(dir, name string) {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if d := defaultImageDir(); filepath.Base(d) != imageDirName || filepath.Dir(d) != exeDir() {
+		t.Fatalf("defaultImageDir() = %q, exe in %q", d, exeDir())
+	}
+
+	root := t.TempDir()
+	dir := filepath.Join(root, imageDirName)
+	err := missingImageError(dir)
+	if err == nil || !strings.Contains(err.Error(), filepath.Join(dir, "image.json")) || !strings.Contains(err.Error(), "Extract the release zip again") ||
+		strings.Contains(err.Error(), "where this hyperbutler does not look") {
+		t.Fatalf("no image: %v", err)
+	}
+
+	touch(root, "system.vhd")
+	touch(root, "image.json")
+	err = missingImageError(dir)
+	if err == nil || !strings.Contains(err.Error(), "image.json, system.vhd") && !strings.Contains(err.Error(), "system.vhd, image.json") ||
+		!strings.Contains(err.Error(), "into an empty folder") {
+		t.Fatalf("old layout: %v", err)
+	}
+	if got := looseImageFiles(root); len(got) != 2 {
+		t.Fatalf("looseImageFiles = %q", got)
+	}
+	if got := looseImageFiles(dir); len(got) != 0 {
+		t.Fatalf("looseImageFiles of a missing folder = %q", got)
 	}
 }

@@ -423,7 +423,10 @@ fails the build when one is missing (Follow-up 6).
 Decision 1 is now built and measured under HCS. Numbers and method are in
 [docs/research/idle-memory.md](../research/idle-memory.md).
 
-**Layout.** One image directory holds four files, all release artifacts (never git):
+**Layout.** One image directory holds four files, all release artifacts (never git). In the
+release zip it is the `image\` folder next to `hyperbutler.exe`, which `hyperbutler start`
+uses without `--image-dir` (2026-11-02: not the exe's own folder, where Explorer shows
+`system.vhd` as a disk image and a double-click offers to mount it):
 
 | File | What | Size |
 |---|---|---|

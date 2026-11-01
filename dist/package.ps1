@@ -9,6 +9,10 @@
 # guest-sources.tar from the same run; it is published as a separate release asset, and
 # SOURCE-OFFER.txt in the zip names it by file name and SHA-256.
 #
+# The image files go into image\ in the zip, not next to hyperbutler.exe: Explorer shows
+# system.vhd as a disk image there, and a double-click offers to mount it. hyperbutler.exe
+# looks for its image in the image\ folder next to it.
+#
 # The SHA-256 of image.json (as copied into the zip) is linked into hyperbutler.exe
 # (-X ...engine.pinnedManifest), so the release binary boots only that image (ADR 0005,
 # Decision 4).
@@ -38,7 +42,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory)] [string]$ImageDir,
-    # The ADR 0005 A2b image: hyperbutler.exe boots it from the folder it is in.
+    # The ADR 0005 A2b image: hyperbutler.exe boots it from image\ next to it.
     [string[]]$ImageFiles = @('vmlinuz-virt', 'initramfs-stage1.gz', 'system.vhd', 'image.json'),
     [string]$SourceBundle = '',
     [string]$ReleaseUrl = '',
@@ -136,16 +140,20 @@ try {
     } else { Warn "$sumsFile is missing; the image files cannot be checked against the build" }
     $imageLines = @()
     $pin = ''
+    # The folder hyperbutler.exe looks in (imageDirName in cmd/hyperbutler).
+    $imageSub = 'image'
+    $imageStage = Join-Path $stage $imageSub
+    New-Item -ItemType Directory -Force $imageStage | Out-Null
     foreach ($f in $ImageFiles) {
         if ($f -notmatch '^[A-Za-z0-9][A-Za-z0-9._-]*$') { Fail "bad image file name: $f" }
         $src = Join-Path $ImageDir $f
         if (-not (Test-Path -LiteralPath $src -PathType Leaf)) { Fail "guest image file $src not found" }
-        $dst = Join-Path $stage $f
+        $dst = Join-Path $imageStage $f
         Copy-Item -LiteralPath $src $dst
         $h = Sha256 $dst
         if ($imgSums.Count -and $imgSums[$f] -ne $h) { Fail "$f does not match the image SHA256SUMS" }
         if ($f -eq 'image.json') { $pin = $h }
-        $imageLines += "  $h  $f"
+        $imageLines += "  $h  $imageSub/$f"
     }
     if (-not $pin) { Warn 'no image.json among -ImageFiles; hyperbutler.exe is not pinned to a guest image' }
 
@@ -483,7 +491,10 @@ try {
         'A Docker-compatible container runtime for Windows that does not use WSL.',
         '',
         'Quick start (no installer, no admin rights for these steps):',
-        '  1. Keep all files of this archive in one folder, for example %LOCALAPPDATA%\Programs\hyperbutler.',
+        '  1. Extract the whole archive into one folder, for example %LOCALAPPDATA%\Programs\hyperbutler,',
+        '     and keep its subfolders: hyperbutler.exe boots the guest image in image\ next to it.',
+        '     Leave the files in image\ alone (Windows offers to mount system.vhd). To upgrade,',
+        '     run hyperbutler stop and extract the new archive there, replacing every file.',
         '  2. Add that folder to your user PATH. If you have no docker CLI yet, add its',
         '     clients\ subfolder too: it holds docker.exe and cli-plugins\docker-compose.exe.',
         '  3. hyperbutler start',
@@ -554,8 +565,10 @@ try {
     $sizeLine = '{0}: {1:N1} MB zipped ({2:N0} bytes), {3:N1} MB unpacked; REQ-UX-002 limit {4:N0} MB' -f `
         "$name.zip", ($zipBytes / 1MB), $zipBytes, ($rawBytes / 1MB), ($MaxBytes / 1MB)
     Write-Host $sizeLine
-    Get-ChildItem -LiteralPath $stage -File | Sort-Object Length -Descending |
-        ForEach-Object { Write-Host ('  {0,12:N0}  {1}' -f $_.Length, $_.Name) }
+    # The largest files, in any folder (the image is in image\).
+    $all | ForEach-Object { [pscustomobject]@{ Rel = $_.Rel; Length = (Get-Item -LiteralPath $_.Full).Length } } |
+        Sort-Object Length -Descending | Select-Object -First 8 |
+        ForEach-Object { Write-Host ('  {0,12:N0}  {1}' -f $_.Length, $_.Rel) }
     if ($zipBytes -gt $MaxBytes) { Fail "the zip is over REQ-UX-002's limit: $zipBytes > $MaxBytes bytes" }
 
     if ($env:GITHUB_OUTPUT) {

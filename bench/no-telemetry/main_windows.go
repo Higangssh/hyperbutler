@@ -50,7 +50,7 @@ func parseFlags() (*config, error) {
 	fs := flag.NewFlagSet("no-telemetry", flag.ContinueOnError)
 	fs.StringVar(&c.hb.Exe, "hyperbutler", "", "hyperbutler.exe to check (required)")
 	fs.StringVar(&c.hb.Home, "home", "", "HYPERBUTLER_HOME of a bench installation (required; never the user's)")
-	fs.StringVar(&c.hb.ImageDir, "image-dir", "", "guest image directory (--image-dir; default next to hyperbutler.exe)")
+	fs.StringVar(&c.hb.ImageDir, "image-dir", "", "guest image directory (--image-dir; default the image folder next to hyperbutler.exe)")
 	fs.StringVar(&c.docker, "docker", "", "stock docker.exe (required)")
 	fs.StringVar(&c.dockerCfg, "docker-config", "", "DOCKER_CONFIG for the docker CLI (default: a new temporary directory)")
 	fs.StringVar(&c.image, "image", "busybox:1.37", "image of the container that runs in the window; pulled first (not counted) if missing")

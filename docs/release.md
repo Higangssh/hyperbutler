@@ -24,7 +24,7 @@ The zip has one top-level folder:
 | File | Notes |
 |---|---|
 | `hyperbutler.exe` | `CGO_ENABLED=0 go build -trimpath -buildvcs=true -ldflags "-s -w -buildid= -X ...engine.pinnedManifest=<sha256 of image.json>"`. The version is the tag, taken from Git by the Go toolchain; `package.ps1` fails if `go version -m hyperbutler.exe` reports anything else, or if `hyperbutler.exe version --json` does not report the image pin |
-| `vmlinuz-virt`, `initramfs-stage1.gz`, `system.vhd`, `image.json` | The guest image (ADR 0005 A2b), from the guest-image job. `hyperbutler start` finds them next to `hyperbutler.exe`, checks `image.json` against the SHA-256 linked into `hyperbutler.exe` and the other files against `image.json` (ADR 0005, Decision 4). `package.ps1 -ImageFiles` names them |
+| `image/vmlinuz-virt`, `image/initramfs-stage1.gz`, `image/system.vhd`, `image/image.json` | The guest image (ADR 0005 A2b), from the guest-image job. In `image\`, not next to `hyperbutler.exe`, where Explorer shows `system.vhd` as a disk image and a double-click offers to mount it. `hyperbutler start` finds them in the `image\` folder next to `hyperbutler.exe` (`--image-dir` names another), says to extract the zip again if they are missing there and names any left directly next to `hyperbutler.exe` by an older layout, checks `image.json` against the SHA-256 linked into `hyperbutler.exe` and the other files against `image.json` (ADR 0005, Decision 4). `package.ps1 -ImageFiles` names them |
 | `clients/docker.exe`, `clients/cli-plugins/docker-compose.exe` | The docker CLI and the compose plugin, built by `package.ps1` from the docker/cli and docker/compose source modules pinned in `dist/clients.lock` (module proxy, sum.golang.org and the lock's `h1:` hash; upstream build tags and version flags, `CGO_ENABLED=0 -trimpath`). Not next to `hyperbutler.exe`, so they never shadow a docker CLI on PATH ([compat.md](compat.md#the-docker-cli-and-docker-desktop)). Their license texts are in `THIRD-PARTY/clients/` |
 | `LICENSE`, `NOTICE` | hyperbutler's own |
 | `THIRD-PARTY/` | License texts of every Go module linked into `hyperbutler.exe`, the guest binaries or the bundled clients, of the Go standard library, and of every guest package (from the upstream sources), with an index in `README.txt`. The docker/cli and docker/compose LICENSE and NOTICE files (Apache-2.0 §4(a), (d)) are in `THIRD-PARTY/clients/<name>/` |
@@ -286,8 +286,8 @@ met blocks the release. Changing a gate needs an ADR change, not a waiver here.
   OK), restart and stop all passed; the GUI opened in Korean from Explorer. Before the
   account joined Hyper-V Administrators, `start` failed at once, as expected; its
   message was not captured. Recheck with the release zip. Found on the way: the image
-  files (`system.vhd`) sit next to `hyperbutler.exe`, and a double-click on
-  `system.vhd` asks Windows to mount it.
+  files (`system.vhd`) sat next to `hyperbutler.exe`, and a double-click on
+  `system.vhd` asked Windows to mount it. Fixed: they are in `image\` now.
 - [ ] REQ-UX-005: `bench/no-telemetry` passes against the release candidate (default
   5 minute idle, fresh `-home`), and `internal/notelemetry` is green in CI. 2026-11-01:
   PASS on two runs, nothing seen outside the bench's own pull.

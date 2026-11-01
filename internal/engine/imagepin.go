@@ -58,7 +58,7 @@ func checkPin(pin, path string, b []byte) error {
 			where = "the guest image folder is " + filepath.Dir(path) // a test binary or another host
 		}
 		return fmt.Errorf("engine: %s is not the guest image this hyperbutler.exe was built with (sha256 %s, expected %s; %s). "+
-			"Extract the release zip again into one folder, replacing every file, and keep hyperbutler.exe next to its image; "+
+			"Extract the release zip again into an empty folder, and keep hyperbutler.exe next to its image\\ folder; "+
 			"to boot another image, use a development build", path, got, pin, where)
 	}
 	return nil

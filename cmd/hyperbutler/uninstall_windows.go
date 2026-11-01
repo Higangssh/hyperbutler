@@ -244,7 +244,8 @@ func (in *install) planUninstall(keepData, up bool) *uninstallPlan {
 
 // planACLs lists the VM access entries (HcsGrantVmAccess, NT VIRTUAL MACHINE\<id>) a
 // crashed engine left on files that stay: the guest's system disk (in the image the
-// last engine ran, and next to hyperbutler.exe), and the data disk with --keep-data. A
+// last engine ran, and in the image folder next to hyperbutler.exe), and the data disk
+// with --keep-data. A
 // deleted file takes its entries with it.
 //
 // Only this installation's VMs' entries go: the last engine's VM (revoked through HCS)
@@ -264,8 +265,8 @@ func (in *install) planACLs(p *uninstallPlan, st *engine.State, keepData, up boo
 	if st != nil {
 		files = append(files, systemDisk(st.ImageDir))
 	}
-	if exe, err := os.Executable(); err == nil {
-		files = append(files, systemDisk(filepath.Dir(exe)))
+	if d := defaultImageDir(); d != "" {
+		files = append(files, systemDisk(d))
 	}
 	lastSID := ""
 	owned := map[string]bool{}

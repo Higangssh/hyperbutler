@@ -558,9 +558,10 @@ func cmdRestart(args []string, stdout, stderr io.Writer) error {
 // release build boots only the image it is pinned to, so an image there that fails
 // check (engine.CheckImageDirPin: after a side-by-side upgrade, the old folder's) would
 // only be refused: the restart then uses the build's own image (""), and says why
-// (ignored). An image that passes is kept, wherever it is.
-func restartImageDir(stateDir, exeDir string, pinned bool, check func(dir string) error) (dir string, ignored error) {
-	if !pinned || stateDir == "" || (exeDir != "" && engine.SamePath(stateDir, exeDir)) {
+// (ignored). An image that passes is kept, wherever it is. ownDir is the build's own
+// image folder (defaultImageDir).
+func restartImageDir(stateDir, ownDir string, pinned bool, check func(dir string) error) (dir string, ignored error) {
+	if !pinned || stateDir == "" || (ownDir != "" && engine.SamePath(stateDir, ownDir)) {
 		return stateDir, nil
 	}
 	if err := check(stateDir); err != nil {
@@ -580,10 +581,10 @@ func restart(imageDir string, timeout time.Duration, what string, stdout, stderr
 		if st, err := engine.LoadState(in.l); err == nil && st.ImageDir != "" {
 			_, pinned := engine.ImagePin()
 			var ignored error
-			imageDir, ignored = restartImageDir(st.ImageDir, exeDir(), pinned, engine.CheckImageDirPin)
+			imageDir, ignored = restartImageDir(st.ImageDir, defaultImageDir(), pinned, engine.CheckImageDirPin)
 			if ignored != nil {
 				_, _ = fmt.Fprintf(stderr, "hyperbutler: the engine ran the guest image in %s, which this release build does not boot (%v);\n"+
-					"        restarting with the image released with it, next to it in %s. Pass --image-dir to choose another.\n", st.ImageDir, ignored, exeDir())
+					"        restarting with the image released with it, in %s. Pass --image-dir to choose another.\n", st.ImageDir, ignored, defaultImageDir())
 			}
 		}
 	}

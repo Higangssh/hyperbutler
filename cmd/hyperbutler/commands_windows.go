@@ -33,6 +33,11 @@ const (
 	kernelName  = "vmlinuz-virt"
 	initrdName  = "initramfs-hyperbutler.gz"
 
+	// imageDirName is the folder next to hyperbutler.exe that holds the release's guest
+	// image (dist/package.ps1). Not the exe's own folder: Explorer shows system.vhd there
+	// as a disk image, and a double-click offers to mount it.
+	imageDirName = "image"
+
 	// engineLogMax is when engine.log is rotated, at the next start.
 	engineLogMax = 4 << 20
 )
@@ -170,7 +175,7 @@ func (in *install) liveState() (*engine.State, *engine.Process, error) {
 func cmdStart(args []string, stdout, stderr io.Writer) error {
 	fs := newFlagSet("start", stderr)
 	dataDir := fs.String("data", "", "where the data disk lives; chosen on the first start (default: the state directory)")
-	imageDir := fs.String("image-dir", "", "directory with "+kernelName+" and "+initrdName+" (default: next to hyperbutler.exe)")
+	imageDir := fs.String("image-dir", "", "guest image directory, with "+image.ManifestName+" (or "+kernelName+" and "+initrdName+`) (default: the image\ folder next to hyperbutler.exe)`)
 	memory := fs.String("memory", "", "guest memory, such as 4GiB or 4096 (MiB); kept for later starts")
 	cpus := fs.Int("cpus", 0, "virtual CPUs; kept for later starts")
 	var diskSize sizeFlag
@@ -217,6 +222,12 @@ func cmdStart(args []string, stdout, stderr io.Writer) error {
 	kernel, initrd, manifest, err := guestArtifacts(*imageDir)
 	if err != nil {
 		return err
+	}
+	if d := exeDir(); *imageDir == "" && d != "" {
+		if old := looseImageFiles(d); len(old) > 0 {
+			_, _ = fmt.Fprintf(stderr, "hyperbutler: %s next to hyperbutler.exe in %s are left from an older archive and not used (the guest image is in %s\\); "+
+				"delete them, or extract the release zip into an empty folder\n", strings.Join(old, ", "), d, imageDirName)
+		}
 	}
 
 	if up, err := in.running(); err != nil {
@@ -363,16 +374,30 @@ func (in *install) applySettings(dataDir, memory string, cpus int, diskSize size
 	return nil
 }
 
-// guestArtifacts finds the guest image in dir. A directory with an image.json (ADR
-// 0005: kernel, stage-1 initramfs and system disk) is used through that manifest, which
-// the engine verifies; one without it is an initramfs-only image.
+// releaseImageFiles are the guest image files of the release zip (dist/package.ps1's
+// $ImageFiles), which it puts in imageDirName.
+var releaseImageFiles = []string{kernelName, "initramfs-stage1.gz", "system.vhd", image.ManifestName}
+
+// defaultImageDir is the image folder next to hyperbutler.exe, or "" if unknown.
+func defaultImageDir() string {
+	if d := exeDir(); d != "" {
+		return filepath.Join(d, imageDirName)
+	}
+	return ""
+}
+
+// guestArtifacts finds the guest image in dir, by default the image folder next to
+// hyperbutler.exe. A directory with an image.json (ADR 0005: kernel, stage-1 initramfs
+// and system disk) is used through that manifest, which the engine verifies; one without
+// it is an initramfs-only image.
 func guestArtifacts(dir string) (kernel, initrd, manifest string, err error) {
-	if dir == "" {
+	explicit := dir != ""
+	if !explicit {
 		exe, err := os.Executable()
 		if err != nil {
 			return "", "", "", err
 		}
-		dir = filepath.Dir(exe)
+		dir = filepath.Join(filepath.Dir(exe), imageDirName)
 	}
 	dir, err = filepath.Abs(dir)
 	if err != nil {
@@ -384,10 +409,39 @@ func guestArtifacts(dir string) (kernel, initrd, manifest string, err error) {
 	kernel, initrd = filepath.Join(dir, kernelName), filepath.Join(dir, initrdName)
 	for _, p := range []string{kernel, initrd} {
 		if !isRegular(p) {
+			if !explicit {
+				return "", "", "", missingImageError(dir)
+			}
 			return "", "", "", fmt.Errorf("guest image file %s not found; pass --image-dir with %s, or with %s and %s (built by guest/prototype/build.ps1)", p, image.ManifestName, kernelName, initrdName)
 		}
 	}
 	return kernel, initrd, "", nil
+}
+
+// missingImageError explains a start without --image-dir that finds no image in dir, the
+// image folder next to hyperbutler.exe. Image files next to hyperbutler.exe itself are
+// from an older layout (an archive extracted over an older folder leaves them there).
+func missingImageError(dir string) error {
+	m := filepath.Join(dir, image.ManifestName)
+	if old := looseImageFiles(filepath.Dir(dir)); len(old) > 0 {
+		return fmt.Errorf("guest image file %s not found. The image files %s are directly in %s, next to hyperbutler.exe, "+
+			"where an older archive put them and this hyperbutler does not look: extract the release zip again into an empty folder "+
+			"(it puts the guest image in %s\\), or pass --image-dir", m, strings.Join(old, ", "), filepath.Dir(dir), imageDirName)
+	}
+	return fmt.Errorf("guest image file %s not found: hyperbutler.exe boots the guest image in the %s folder next to it. "+
+		"Extract the release zip again with all its folders, or pass --image-dir with %s, or with %s and %s (built by guest/prototype/build.ps1)",
+		m, imageDirName, image.ManifestName, kernelName, initrdName)
+}
+
+// looseImageFiles lists the release image files directly in dir.
+func looseImageFiles(dir string) []string {
+	var found []string
+	for _, n := range releaseImageFiles {
+		if isRegular(filepath.Join(dir, n)) {
+			found = append(found, n)
+		}
+	}
+	return found
 }
 
 func isRegular(p string) bool {
