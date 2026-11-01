@@ -390,7 +390,9 @@ Status of the 0.2 usage requirements (2026-11-01; checked on one machine, Window
   unit-tested only.
 - REQ-DISK-009: status part met. hyperbutlerd's status reports reach `state.json`
   (`guestFs`: size, free, updated; at once for a change of 0.5% or 64 MiB, else at most
-  once a minute); `status` prints "N of M used in the VM (P%)" under `data:`, and
+  once a minute; never a report made while the guest guard fails closed before its first
+  budget, whose reservation holds all free space and once made a first start warn
+  "62.8 GiB of 62.8 GiB used in the VM (100%)"); `status` prints "N of M used in the VM (P%)" under `data:`, and
   `status --json` has `guestDisk`; `start` and `doctor` warn above 90%. On the VM:
   "328.0 KiB of 62.8 GiB used in the VM (0%)" on a new 64 GiB disk. Growing the disk is
   later (S7.1).

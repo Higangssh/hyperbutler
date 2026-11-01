@@ -478,7 +478,7 @@ func Run(ctx context.Context, cfg Config) (err error) {
 		}
 		gs.onStatus(s)
 		if cfg.OnGuestFS != nil && disk != nil {
-			if st, ok := fsThrottle.next(s.FSSize, s.FSFree, time.Now()); ok {
+			if st, ok := fsThrottle.next(s.Guard, s.FSSize, s.FSFree, time.Now()); ok {
 				cfg.OnGuestFS(st)
 			}
 		}
@@ -696,7 +696,13 @@ type guestStats struct {
 
 func (g *guestStats) onStatus(s guestctl.Status) {
 	if g.seen && s.Trims > g.trims {
-		g.log.Info("guest fstrim", "trims", s.Trims, "trimmed", HumanSize(s.Trimmed-min(s.Trimmed, g.trimmed)), "fsFree", HumanSize(s.FSFree))
+		args := []any{"trims", s.Trims, "trimmed", HumanSize(s.Trimmed - min(s.Trimmed, g.trimmed))}
+		// While the guard fails closed its reservation holds the free space: no fsFree,
+		// which readers of this line (the MCP disk tool) take as the guest's free space.
+		if !failingClosed(s.Guard) && s.FSSize != 0 {
+			args = append(args, "fsFree", HumanSize(s.FSFree))
+		}
+		g.log.Info("guest fstrim", args...)
 	}
 	if g.seen && s.CacheTrims > g.cacheTrims {
 		g.log.Info("guest page-cache reclaim", "reclaims", s.CacheTrims, "freed", HumanSize(s.CacheFreed-min(s.CacheFreed, g.cacheFreed)), "memFree", HumanSize(s.MemFree))

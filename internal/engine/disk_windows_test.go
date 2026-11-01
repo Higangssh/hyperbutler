@@ -271,3 +271,20 @@ func TestHostGuardFailsClosed(t *testing.T) {
 		t.Fatal("an unreadable volume did not pause")
 	}
 }
+
+// TestGuestStatsFstrimFailClosed: the trim the guest guard runs before failing closed
+// must not log the reservation-filled free space as the guest's fsFree.
+func TestGuestStatsFstrimFailClosed(t *testing.T) {
+	var buf strings.Builder
+	g := &guestStats{log: slog.New(slog.NewTextHandler(&buf, nil))}
+	g.onStatus(guestctl.Status{Guard: guestctl.GuardNoBudget})
+	g.onStatus(guestctl.Status{Guard: guestctl.GuardNoBudget, FSSize: 64 << 30, FSFree: 16 << 20, Trims: 1, Trimmed: 62 << 30})
+	if s := buf.String(); !strings.Contains(s, `msg="guest fstrim"`) || strings.Contains(s, "fsFree") {
+		t.Fatalf("fail-closed trim logged as:\n%s", s)
+	}
+	buf.Reset()
+	g.onStatus(guestctl.Status{Guard: guestctl.GuardOK, FSSize: 64 << 30, FSFree: 60 << 30, Trims: 2, Trimmed: 63 << 30})
+	if s := buf.String(); !strings.Contains(s, `fsFree="60.0 GiB"`) {
+		t.Fatalf("trim under a budget logged as:\n%s", s)
+	}
+}
