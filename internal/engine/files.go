@@ -367,6 +367,10 @@ type Settings struct {
 	// ManageContext says whether `hyperbutler start` creates and selects the
 	// "hyperbutler" docker context; nil means yes.
 	ManageContext *bool `json:"manageContext,omitempty"`
+	// FrameCheck says whether every frame between the engine and the guest carries a
+	// CRC-32C (ADR 0006, "Integrity"); nil means yes. Off only trades that safety for
+	// a few percent of throughput on multi-Gbit/s local paths.
+	FrameCheck *bool `json:"frameCheck,omitempty"`
 	// HostGatewayEnabled says whether containers reach this host's loopback as
 	// host.docker.internal (REQ-NET-004); nil means yes, as in Docker Desktop.
 	HostGatewayEnabled *bool `json:"hostGatewayEnabled,omitempty"`
@@ -450,6 +454,9 @@ func (s *Settings) CPUCount(hostCPUs int) int {
 
 // ContextManaged reports whether start manages the docker context.
 func (s *Settings) ContextManaged() bool { return s.ManageContext == nil || *s.ManageContext }
+
+// FrameChecked reports whether the guest link's per-frame CRC is on.
+func (s *Settings) FrameChecked() bool { return s.FrameCheck == nil || *s.FrameCheck }
 
 // DefaultEngineMemoryLimit is the engine's Go soft memory limit when settings.json sets
 // none. The engine's live heap is a few MiB (ADR 0003), so the limit acts only on

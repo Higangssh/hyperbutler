@@ -250,6 +250,23 @@ var Keys = []*Key{
 		unset: func(s *engine.Settings, _ Env) error { s.ManageContext = nil; return nil },
 	},
 	{
+		Name: "network.frameCheck", Type: "bool", Apply: ApplyVM,
+		Description: "whether every frame between the engine and the VM carries a CRC-32C, so corruption is dropped and resent instead of delivered; off gains a few percent on multi-Gbit/s local paths",
+		def:         func(Env) string { return "true" },
+		get: func(s *engine.Settings, _ Env) (string, bool) {
+			return strconv.FormatBool(s.FrameChecked()), s.FrameCheck != nil
+		},
+		set: func(s *engine.Settings, v string, _ Env) error {
+			b, err := ParseBool(v)
+			if err != nil {
+				return err
+			}
+			s.FrameCheck = &b
+			return nil
+		},
+		unset: func(s *engine.Settings, _ Env) error { s.FrameCheck = nil; return nil },
+	},
+	{
 		Name: "autostart", Type: "bool", Apply: ApplyLive,
 		Description: "whether hyperbutler starts when you sign in to Windows: config set creates (or removes) one Task Scheduler task of yours, no admin needed",
 		def:         func(Env) string { return "false" },
@@ -601,8 +618,9 @@ func Equal(a, b *engine.Settings) bool {
 	ac.HostGatewayEnabled, bc.HostGatewayEnabled = nil, nil
 	ac.CAImport, bc.CAImport = nil, nil
 	ac.UpdateCheck, bc.UpdateCheck = nil, nil
+	ac.FrameCheck, bc.FrameCheck = nil, nil
 	return ac == bc && sameBool(a.ManageContext, b.ManageContext) && sameBool(a.HostGatewayEnabled, b.HostGatewayEnabled) &&
-		sameBool(a.CAImport, b.CAImport) && sameBool(a.UpdateCheck, b.UpdateCheck)
+		sameBool(a.CAImport, b.CAImport) && sameBool(a.UpdateCheck, b.UpdateCheck) && sameBool(a.FrameCheck, b.FrameCheck)
 }
 
 // Names returns the key names, sorted, for usage text.

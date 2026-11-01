@@ -216,7 +216,10 @@ not exist on Windows. Instead:
     - *Modes.* `NetConfig.CRC`, in `hyperbutler-dev run -net-crc on|off|strict`, which
       passes `hyperbutler.netcrc=0` or `=strict` to the guest. `off` is version 1, kept
       only to measure the cost; `strict` ends the link at a mismatch on both sides, so
-      tests and benches fail loudly. `hyperbutler start` always runs `on`.
+      tests and benches fail loudly. `hyperbutler start` runs `on` unless the user sets
+      `network.frameCheck false` (2026-11-01: the CRC cost 2.5-11% on multi-Gbit/s local
+      paths, above the 5% the maintainer allowed, so the opt-out became a setting; the
+      default stays on, and MCP cannot change it).
     - *Cost.* The CRC runs at 33 GB/s on the test laptop (`BenchmarkCRC`). `bench/net-perf`,
       4 engine boots alternating on, off, on, off, medians of 5 rounds of 5 s (container
       Gbit/s, on / off): dl 8.38, 8.05 / 8.76, 8.26; ul 7.81, 7.76 / 8.74, 8.08; pub-dl

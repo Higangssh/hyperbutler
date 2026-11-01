@@ -32,6 +32,7 @@ hyperbutler restart
 | `data.dir` | a local `X:\` path | the state directory | first start (fixed once the disk exists) |
 | `pipe` | `\\.\pipe\NAME` | `\\.\pipe\docker_engine_hyperbutler` | VM restart |
 | `context.manage` | bool | true | at once (the next `start`) |
+| `network.frameCheck` | bool | true | VM restart (a CRC-32C on every engine-guest frame; off gains a few percent on multi-Gbit/s local paths, ADR 0006 "Integrity") |
 | `engine.memoryLimit` | GOMEMLIMIT syntax or `off` | 256MiB | VM restart |
 | `hostGateway.enabled` | bool | true | at once (the running engine, no restart) |
 | `hostGateway.ports` | port list (`5432,8000-8100`) or `all` | all | at once (the running engine, no restart) |

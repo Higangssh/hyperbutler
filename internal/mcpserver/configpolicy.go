@@ -35,6 +35,7 @@ var configPolicy = map[string]configRule{
 	"hostGateway.ports":   {false, "it chooses which of this machine's loopback ports containers reach, and applies at once"},
 	"autostart":           {false, "it creates a Task Scheduler task that runs at every sign-in"},
 	"updateCheck":         {false, "whether hyperbutler makes its one network request is a network-policy choice for the user, in either direction"},
+	"network.frameCheck":  {false, "turning it off trades data integrity for throughput, a choice that is the user's"},
 }
 
 // configSetRefused says why a key cannot be set over MCP, or is empty.

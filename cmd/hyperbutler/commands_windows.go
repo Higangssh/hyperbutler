@@ -1159,7 +1159,7 @@ func cmdEngine(args []string, stderr io.Writer) (int, error) {
 	}
 	err = engine.Serve(engine.ServeOptions{
 		Home: *home, Settings: s, KernelPath: *kernel, InitrdPath: *initrd, Image: *manifest,
-		Pipe: s.PipeName(), Net: engine.NetConfig{AutoPublish: true, HostGateway: &hg}, Logger: log,
+		Pipe: s.PipeName(), Net: engine.NetConfig{AutoPublish: true, HostGateway: &hg, CRC: frameCheckMode(s)}, Logger: log,
 		Executable: exe, Version: buildVersion(),
 	})
 	if engine.ErrorCode(err) == engine.CodeAlreadyRunning {
