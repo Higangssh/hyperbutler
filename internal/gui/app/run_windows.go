@@ -117,8 +117,10 @@ type state struct {
 	cancel  context.CancelFunc
 	visible atomic.Bool
 	closing bool
-	// stopping is set while the window waits for a canceled import before it closes.
+	// stopping is set while the window waits for a canceled import before it closes,
+	// until stopBy at the latest.
 	stopping bool
+	stopBy   time.Time
 }
 
 var st *state
@@ -285,8 +287,14 @@ func Run(o Options) int {
 // the process does not end under them.
 func (s *state) drain() {
 	s.d.CancelImport()
-	if !s.d.Wait(importStopGrace) {
-		s.o.Log(fmt.Sprintf("background work did not end within %v; exiting anyway", importStopGrace))
+	// One grace in all: a close that already waited for the import (askClose) waits
+	// only for what is left of it.
+	grace := importStopGrace
+	if !s.stopBy.IsZero() {
+		grace = max(time.Until(s.stopBy), time.Second)
+	}
+	if !s.d.Wait(grace) {
+		s.o.Log(fmt.Sprintf("background work did not end within %v; exiting anyway", grace.Round(time.Millisecond)))
 	}
 }
 
@@ -309,8 +317,11 @@ func (s *state) askClose(hwnd uintptr) bool {
 	s.d.CancelImport()
 	setWindowText(hwnd, s.o.Title+" - "+s.o.StoppingText)
 	s.event("closing")
+	s.stopBy = time.Now().Add(importStopGrace)
 	go func() {
+		t0 := time.Now()
 		ok := s.d.WaitImport(importStopGrace)
+		s.o.Log(fmt.Sprintf("the import stopped after %v (in time: %v)", time.Since(t0).Round(time.Millisecond), ok))
 		s.disp.post(func() {
 			if !ok {
 				s.o.Log(fmt.Sprintf("the import did not stop within %v; closing anyway", importStopGrace))
