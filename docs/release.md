@@ -145,7 +145,7 @@ met blocks the release. Changing a gate needs an ADR change, not a waiver here.
   handles, threads or goroutines. Attach the report. Since 2026-11-01 the engine's
   private working set and private bytes are judged with `heap_released` added back
   (`ws_private_adj`, `private_bytes_adj`; ADR 0003, guardrail 3).
-  - 1 h main gate, 2026-11-01, main at e232f5c, local A2b image, with bind mounts and a
+  - 1 h main gate, 2026-11-01, engine built from main at 0012298 (the commits after it to e232f5c change only benches, tests and docs), local A2b image, with bind mounts and a
     published port: 12327 docker commands, 0 failed. **FAIL on the raw private working
     set** (`ws_private`, judged at the time: +3.4 MiB over the 50 min window against an
     allowed 2.0 MiB). The adjusted metric was flat: re-judged from the CSV
@@ -161,7 +161,7 @@ met blocks the release. Changing a gate needs an ADR change, not a waiver here.
     (1.27 MiB) were flat after the warm-up, the growth was inside Go's heap arenas being
     recommitted, and `private_bytes + heap_released` went from 93.77 to 93.80 MiB over
     the window. Not a leak; the 24 h run is still the release gate.
-  - 45 min run, 2026-11-01, with bind mounts and a published port, 10 min warm-up (35 min window): 9160 docker commands, 0 failed.
+  - 45 min run, 2026-11-01, the same engine build and image, with bind mounts and a published port, 10 min warm-up (35 min window): 9160 docker commands, 0 failed.
     **FAIL on the raw private working set** (+3.6 MiB against an allowed 2.0 MiB), the
     rest passed. Re-judged from the CSV: `ws_private_adj` +0.54 MiB against 2.25 MiB,
     `private_bytes_adj` +0.07 MiB against 4.69 MiB: **pass**.
