@@ -44,6 +44,8 @@ Usage:
 
 State lives in %LOCALAPPDATA%\hyperbutler (override with HYPERBUTLER_HOME).
 Run "hyperbutler COMMAND -h" for a command's flags.
+Without arguments in a window of its own (Explorer, a shortcut) it shows the status and
+offers a start; HYPERBUTLER_NO_LAUNCHER=1 prints this usage instead.
 `
 
 func main() {
@@ -56,8 +58,9 @@ const exitNotRunning = 3
 func run(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
 		// Launched on its own (Explorer, a shortcut): show the status and offer a start
-		// (REQ-UX-016). From a shell: the usage, which is not an error.
-		if ownsConsole() {
+		// (REQ-UX-016). From a shell, or with HYPERBUTLER_NO_LAUNCHER=1: the usage,
+		// which is not an error.
+		if !launcherDisabled() && ownsConsole() {
 			return newLauncher(stdout, stderr).run()
 		}
 		_, _ = fmt.Fprint(stdout, usageText)

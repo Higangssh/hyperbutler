@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"time"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
@@ -18,7 +19,11 @@ import (
 // offers to start a stopped engine, instead of flashing the usage in a window that
 // closes at once. From a shell it prints the usage, as before.
 
-var procGetConsoleProcessList = windows.NewLazySystemDLL("kernel32.dll").NewProc("GetConsoleProcessList")
+var (
+	launcherKernel32          = windows.NewLazySystemDLL("kernel32.dll")
+	procGetConsoleProcessList = launcherKernel32.NewProc("GetConsoleProcessList")
+	procGetConsoleWindow      = launcherKernel32.NewProc("GetConsoleWindow")
+)
 
 // consoleProcesses is how many processes share this process's console (0 without one).
 func consoleProcesses() int {
@@ -27,13 +32,44 @@ func consoleProcesses() int {
 	return int(n)
 }
 
-// ownsConsole reports whether the console was created for this process alone, as
-// Explorer and shortcuts do; a shell sharing it makes the count 2 or more. A variable,
-// so tests can choose either path.
-var ownsConsole = func() bool { return consoleProcesses() == 1 }
+// consoleWindowVisible reports whether this process's console has a window on screen.
+// A console started hidden (Start-Process -WindowStyle Hidden, a scheduled task that
+// runs whether or not the user is signed in, CREATE_NO_WINDOW) has none, or a hidden
+// one.
+func consoleWindowVisible() bool {
+	hwnd, _, _ := procGetConsoleWindow.Call()
+	return hwnd != 0 && windows.IsWindowVisible(windows.HWND(hwnd))
+}
+
+// noLauncherEnv names the variable that turns the launcher off: with it set to 1,
+// hyperbutler.exe with no arguments prints the usage wherever it runs.
+const noLauncherEnv = "HYPERBUTLER_NO_LAUNCHER"
+
+// ownsConsole reports whether hyperbutler.exe runs in a console window of its own, as
+// Explorer and shortcuts make one: the console was created for this process alone (a
+// shell sharing it makes the count 2 or more), its window is visible, and stdout is
+// that console (not redirected to a file or a pipe). Start-Process -Wait, start /wait,
+// a scheduled task the user sees, a VS Code "process" task and wt.exe hyperbutler make
+// such a window too, so the launcher's waits end on their own (launcherCloseWait,
+// launcherStartWait), and HYPERBUTLER_NO_LAUNCHER=1 turns it off. A variable, so tests
+// can choose either path.
+var ownsConsole = func() bool {
+	return consoleProcesses() == 1 && consoleWindowVisible() && isConsole(os.Stdout)
+}
+
+// launcherDisabled reports whether HYPERBUTLER_NO_LAUNCHER=1 turns the launcher off.
+func launcherDisabled() bool { return os.Getenv(noLauncherEnv) == "1" }
 
 // launcherInput is the launcher's input (os.Stdin; replaced in tests).
 var launcherInput = func() io.Reader { return os.Stdin }
+
+const (
+	// launcherCloseWait bounds "Press Enter to close.": a window nobody reads closes
+	// on its own.
+	launcherCloseWait = time.Minute
+	// launcherStartWait bounds "Press Enter to start": no answer starts nothing.
+	launcherStartWait = 5 * time.Minute
+)
 
 // launcher is the interactive no-arguments mode. Its fields are the seams the tests
 // replace.
@@ -45,18 +81,54 @@ type launcher struct {
 	interactive func(io.Reader) bool
 	status      func(stdout, stderr io.Writer) (int, error)
 	start       func(stdout, stderr io.Writer) error
+	// closeWait and startWait bound the waits for Enter (launcherCloseWait,
+	// launcherStartWait).
+	closeWait, startWait time.Duration
 }
 
 func newLauncher(stdout, stderr io.Writer) *launcher {
 	return &launcher{
 		stdin: launcherInput(), stdout: stdout, stderr: stderr, interactive: isConsole,
-		status: func(o, e io.Writer) (int, error) { return cmdStatus(nil, o, e) },
-		start:  func(o, e io.Writer) error { return cmdStart(nil, o, e) },
+		status:    func(o, e io.Writer) (int, error) { return cmdStatus(nil, o, e) },
+		start:     func(o, e io.Writer) error { return cmdStart(nil, o, e) },
+		closeWait: launcherCloseWait, startWait: launcherStartWait,
 	}
 }
 
 const launcherKeepsRunning = "hyperbutler keeps running after this window closes, until `hyperbutler stop` or sign-out.\n" +
 	"In a terminal: docker run hello-world, hyperbutler status, hyperbutler stop."
+
+// errNoAnswer is a wait for Enter that ran out of time.
+var errNoAnswer = errors.New("no answer")
+
+// readLine waits up to d for a line from in. When the time runs out it returns
+// errNoAnswer and leaves the read running: the process exits right after.
+func readLine(in *bufio.Reader, d time.Duration) error {
+	got := make(chan error, 1)
+	go func() {
+		_, err := in.ReadString('\n')
+		got <- err
+	}()
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case err := <-got:
+		return err
+	case <-t.C:
+		return errNoAnswer
+	}
+}
+
+// waitText is d in words: "5 minutes", or d itself when it is not whole minutes.
+func waitText(d time.Duration) string {
+	switch {
+	case d == time.Minute:
+		return "1 minute"
+	case d > time.Minute && d%time.Minute == 0:
+		return fmt.Sprintf("%d minutes", d/time.Minute)
+	}
+	return d.String()
+}
 
 // run shows the status and acts on it; it returns the exit code.
 func (l *launcher) run() int {
@@ -71,7 +143,9 @@ func (l *launcher) run() int {
 	wait := func() {
 		if in != nil {
 			_, _ = fmt.Fprint(l.stdout, "Press Enter to close.")
-			_, _ = in.ReadString('\n')
+			if readLine(in, l.closeWait) != nil {
+				_, _ = fmt.Fprintln(l.stdout)
+			}
 		}
 	}
 	_, _ = fmt.Fprintln(l.stdout)
@@ -89,9 +163,12 @@ func (l *launcher) run() int {
 		return 0
 	}
 	_, _ = fmt.Fprint(l.stdout, "Press Enter to start hyperbutler, or close this window.")
-	if _, err := in.ReadString('\n'); err != nil {
+	if err := readLine(in, l.startWait); err != nil {
 		_, _ = fmt.Fprintln(l.stdout)
-		return 0 // no answer (the input closed): start nothing
+		if errors.Is(err, errNoAnswer) {
+			_, _ = fmt.Fprintf(l.stdout, "No answer in %s: hyperbutler was not started.\n", waitText(l.startWait))
+		}
+		return 0 // no answer (the time ran out, or the input closed): start nothing
 	}
 	if err := l.start(l.stdout, l.stderr); err != nil {
 		l.printErr(err)

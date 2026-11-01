@@ -195,7 +195,7 @@ Status on the reference machine (2026-10-31, `hyperbutler-dev` with the user-mod
 | REQ-UX-012 | MCP server for AI tools. | `hyperbutler mcp` serves the Model Context Protocol over stdio and exits with its client, so it adds no resident process. Read-only tools by default (status, containers, logs, images, disk and memory use, settings, diagnose); tools that change state need `--allow-write`, and deletions need their own flag. Secrets are redacted from what it returns (`bench/mcp` and a review). | P1 | A17 |
 | REQ-UX-013 | The GUI speaks the user's language; logs stay English. | Every GUI string comes from a message catalog. English and Korean ship with the first GUI, and Japanese and Simplified Chinese by 1.0. The language follows Windows and can be overridden. Logs, `diagnose`, CLI output and MCP responses stay English. Each GUI error shows a stable error code and can copy its English original ([ADR 0008](adr/0008-settings-gui-mcp.md) "Languages"; a catalog completeness test and a pseudo-locale layout check). | P1 | A17 |
 | REQ-UX-014 | A stopped engine is explained. | `stop` says docker commands fail until `start` and how to switch context. The context description says to run `hyperbutler start`. The README quotes the CLI's error with the fix. | P0 | S1.1 S3.1 |
-| REQ-UX-016 | Launching the exe does something useful. | Launched without a console of its own (Explorer, a shortcut), `hyperbutler.exe` shows the status, offers to start a stopped engine on Enter, says the engine outlives the window, and waits before closing. Usage without arguments exits 0. From 0.2 it opens the GUI; the GUI never starts the engine unless asked (a Start button, or an opt-in setting), and closing it never stops the engine. | P0 (console), P1 (GUI) | S0.1 S0.2 S0.3 |
+| REQ-UX-016 | Launching the exe does something useful. | Launched with a console of its own (a new console window, as from Explorer or a shortcut), `hyperbutler.exe` shows the status, offers to start a stopped engine on Enter, says the engine outlives the window, and waits before closing, for a bounded time. Usage without arguments exits 0. From 0.2 it opens the GUI; the GUI never starts the engine unless asked (a Start button, or an opt-in setting), and closing it never stops the engine. | P0 (console), P1 (GUI) | S0.1 S0.2 S0.3 |
 | REQ-UX-017 | No surprise container stops. | Before any stop or restart of the VM or dockerd (`stop`, `restart`, `--apply`, `config daemon apply`), hyperbutler lists the running containers that will stop and which will come back (restart policy). | P0 | S2.7 S6.1 S6.2 |
 | REQ-UX-020 | A taken pipe is explained. | When the Docker API pipe is taken, the error names the configured pipe, says another user's or installation's engine may hold it, and gives the `config set pipe` fix. The README says each Windows user has their own engine and that published ports are shared. | P0 | S5.1 S5.2 S5.3 |
 
@@ -271,14 +271,17 @@ Status of the usage requirements (2026-11-01, for 0.1; scenarios in
   "hyperbutler engine; run `hyperbutler start` if docker cannot connect", shown by
   `docker context ls` (CLI 29.9.2, on the VM); `start` updates the description of an
   existing context. The README's troubleshooting quotes the CLI's pipe error with the fix.
-- REQ-UX-016: console part met. With no arguments and a console of its own
-  (`GetConsoleProcessList` returns 1), `hyperbutler.exe` shows the status, offers
-  "Press Enter to start hyperbutler, or close this window." when stopped, says the engine
-  keeps running after the window closes, and waits for Enter. It never reads an input
-  that is not a console. From a shell it prints the usage and exits 0 (unknown commands
-  and bad flags exit 2). Unit tests through a seam; on the VM in a hidden console of its
-  own made with `CREATE_NEW_CONSOLE` and Enter typed into it, engine stopped and
-  running. The GUI part is 0.2.
+- REQ-UX-016: console part met. With no arguments and a console of its own (a new
+  console window: `GetConsoleProcessList` returns 1, the console window is visible and
+  stdout is the console), `hyperbutler.exe` shows the status, offers "Press Enter to
+  start hyperbutler, or close this window." when stopped, says the engine keeps running
+  after the window closes, and waits for Enter. The waits are bounded: the start prompt
+  gives up after 5 minutes (it says so, starts nothing and exits 0), "Press Enter to
+  close." after 1 minute. `HYPERBUTLER_NO_LAUNCHER=1` prints the usage instead. It never
+  reads an input that is not a console. From a shell it prints the usage and exits 0
+  (every usage error exits 2). Unit tests through a seam; on the VM in a console of its
+  own made with `CREATE_NEW_CONSOLE` and Enter typed into it, engine stopped and running,
+  and through `Start-Process -Wait` (see usage-scenarios.md S0.1). The GUI part is 0.2.
 - REQ-UX-017: met. `stop`, `restart`, `config daemon apply` and a `config set --apply`
   that restarts dockerd or the VM list the running containers first (name, image, what
   happens), from the engine's Docker API over its pipe, and go on without asking; an API
@@ -288,7 +291,7 @@ Status of the usage requirements (2026-11-01, for 0.1; scenarios in
   (these commands have no `--json`).
 - REQ-DISK-010: met in unit tests. A pause by the free-space guard is in `state.json`
   (`guardPause`: volume, free space, free space to resume, since), refreshed while paused
-  and removed on resume; `status` prints "paused:  C: has 900.0 MiB free; it resumes at
+  (at most every 2 s, for a change of 1 MiB or more) and removed on resume; `status` prints "paused:  C: has 900.0 MiB free; it resumes at
   1.2 GiB free (...)" and `status --json` has `guardPause` with the free space measured
   then. Not run against a full volume (that needs a mounted test VHD, so admin).
 - REQ-PLAT-008: met. `state.json` records the engine's `executable` and

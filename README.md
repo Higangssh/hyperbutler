@@ -161,7 +161,12 @@ is the request. After `stop`, docker commands fail until the next `hyperbutler s
 
 Double-clicking `hyperbutler.exe` in Explorer (or a shortcut to it) opens a window with
 the status. If hyperbutler is stopped, Enter starts it; the engine keeps running after
-the window closes. From a terminal, `hyperbutler` with no arguments prints the commands.
+the window closes. Nobody answering starts nothing: the start prompt gives up after
+5 minutes, and "Press Enter to close." after 1 minute. From a terminal, `hyperbutler`
+with no arguments prints the commands. Scripts and tools that start `hyperbutler.exe`
+without arguments in a window of its own (`Start-Process -Wait`, `start /wait`, a
+scheduled task, `wt.exe hyperbutler`) can set `HYPERBUTLER_NO_LAUNCHER=1` to get the
+commands at once instead of the window.
 
 To upgrade, run `hyperbutler stop`, repeat step 2 without the PATH lines, and `hyperbutler start`. The
 data disk in `%LOCALAPPDATA%\hyperbutler` is kept. Upgrades across releases are not tested yet

@@ -6,8 +6,10 @@ import (
 	"bytes"
 	"errors"
 	"io"
+	"os"
 	"strings"
 	"testing"
+	"time"
 )
 
 func setOwnsConsole(t *testing.T, own bool) {
@@ -40,6 +42,7 @@ func newFakeLauncher(code int, input string, interactive bool, startErr error) *
 	f := &fakeLauncher{in: &countingReader{r: strings.NewReader(input)}}
 	f.launcher = &launcher{
 		stdin: f.in, stdout: &f.out, stderr: &f.errb,
+		closeWait: 10 * time.Second, startWait: 10 * time.Second,
 		interactive: func(io.Reader) bool { return interactive },
 		status: func(o, _ io.Writer) (int, error) {
 			if f.starts > 0 {
@@ -126,6 +129,90 @@ func TestLauncherNeverReadsNonConsole(t *testing.T) {
 		if strings.Contains(f.out.String(), "Press Enter") {
 			t.Fatalf("asked for Enter without a console:\n%s", f.out.String())
 		}
+	}
+}
+
+// stuckReader is a console nobody types into: Read blocks until the test ends.
+type stuckReader struct{ release chan struct{} }
+
+func newStuckReader(t *testing.T) *stuckReader {
+	r := &stuckReader{release: make(chan struct{})}
+	t.Cleanup(func() { close(r.release) })
+	return r
+}
+
+func (r *stuckReader) Read([]byte) (int, error) {
+	<-r.release
+	return 0, io.EOF
+}
+
+// Review M2: a window nobody answers (Start-Process -Wait, a scheduled task, a VS Code
+// task: they make a console of its own too) does not keep the process forever. With a
+// running engine, "Press Enter to close." gives up after closeWait and exits 0; with a
+// stopped one, the start prompt gives up after startWait, says so, starts nothing and
+// exits 0.
+func TestLauncherWaitsEnd(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		code   int
+		prompt string
+		said   string
+	}{
+		{"running", 0, "Press Enter to close.", ""},
+		{"stopped", exitNotRunning, "Press Enter to start hyperbutler, or close this window.", "No answer in 50ms: hyperbutler was not started."},
+	} {
+		f := newFakeLauncher(tc.code, "", true, nil)
+		f.stdin = newStuckReader(t)
+		f.closeWait, f.startWait = 50*time.Millisecond, 50*time.Millisecond
+		done := make(chan int, 1)
+		go func() { done <- f.run() }()
+		select {
+		case code := <-done:
+			if code != 0 || f.starts != 0 {
+				t.Fatalf("%s: exit %d, %d starts", tc.name, code, f.starts)
+			}
+		case <-time.After(10 * time.Second):
+			t.Fatalf("%s: still waiting for Enter", tc.name)
+		}
+		out := f.out.String()
+		if !strings.Contains(out, tc.prompt) || !strings.Contains(out, tc.said) {
+			t.Errorf("%s: output:\n%s", tc.name, out)
+		}
+	}
+	if s := waitText(launcherStartWait); s != "5 minutes" {
+		t.Errorf("waitText(launcherStartWait) = %q", s)
+	}
+	if launcherCloseWait != time.Minute || waitText(launcherCloseWait) != "1 minute" {
+		t.Errorf("launcherCloseWait %s", launcherCloseWait)
+	}
+}
+
+// Review M2: HYPERBUTLER_NO_LAUNCHER=1 prints the usage even in a console of its own.
+func TestRunNoLauncherEnv(t *testing.T) {
+	testHome(t)
+	setOwnsConsole(t, true)
+	prev := launcherInput
+	launcherInput = func() io.Reader { return strings.NewReader("\n") }
+	t.Cleanup(func() { launcherInput = prev })
+	t.Setenv(noLauncherEnv, "1")
+	if code, out, _ := runCLI(t); code != 0 || !strings.Contains(out, "Usage:") || strings.Contains(out, "not set up yet") ||
+		!strings.Contains(out, noLauncherEnv) {
+		t.Fatalf("%s=1: exit %d, %q", noLauncherEnv, code, out)
+	}
+	t.Setenv(noLauncherEnv, "0")
+	if code, out, _ := runCLI(t); code != 0 || strings.Contains(out, "Usage:") {
+		t.Fatalf("%s=0: exit %d, %q", noLauncherEnv, code, out)
+	}
+}
+
+// A hidden console window, or stdout that is not the console, is not a window of its
+// own; the test process has neither a console of its own nor a visible one here.
+func TestOwnsConsoleChecks(t *testing.T) {
+	if consoleProcesses() == 1 && consoleWindowVisible() && isConsole(os.Stdout) {
+		t.Skip("the test runs in a visible console of its own")
+	}
+	if ownsConsole() {
+		t.Fatal("ownsConsole without a visible console of its own")
 	}
 }
 

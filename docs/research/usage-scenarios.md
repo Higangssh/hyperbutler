@@ -135,11 +135,36 @@ For each scenario:
   `Press Enter to start hyperbutler, or close this window.`; after the start, or for a
   running engine, it says the engine keeps running after the window closes and waits for
   Enter (`cmd/hyperbutler/launcher_windows.go`). It never reads an input that is not a
-  console. From a shell it prints the usage on stdout and exits 0; unknown commands and
-  bad flags exit 2. *Verified on VM*: started in a hidden console of its own through
+  console. From a shell it prints the usage on stdout and exits 0; every usage error
+  (an unknown command or subcommand, a bad flag, an argument too many or missing)
+  exits 2. *Verified on VM*: started in a hidden console of its own through
   `CreateProcess` with `CREATE_NEW_CONSOLE` and no standard handles (as Explorer does),
   with Enter typed into the console, both with the engine running and stopped; the
   engine it started was still running after the window closed.
+- **Review M2 (2026-11-01):** a console of its own is not only Explorer's.
+  `Start-Process -Wait`, `start /wait`, a Task Scheduler task, a VS Code `"type":
+  "process"` task and `wt.exe hyperbutler` also give hyperbutler.exe a console with one
+  process, and a console stdin, so a script could wait on the launcher forever. A probe
+  on the reference machine printed what each one looks like from inside: `Start-Process
+  -Wait`, `start /wait`, `wt.exe` (its pseudo-console window) and Explorer all had one
+  console process, a **visible** console window and console stdin and stdout; only
+  `Start-Process -WindowStyle Hidden` had a hidden one. So the window check below
+  separates hidden and redirected starts, not the visible ones, and the time limits are
+  what keeps those from waiting forever. Now:
+  - the launcher needs a visible console window (`GetConsoleWindow`, `IsWindowVisible`)
+    and stdout on the console, besides `GetConsoleProcessList` returning 1;
+  - `HYPERBUTLER_NO_LAUNCHER=1` prints the usage instead (README, `--help`);
+  - "Press Enter to close." gives up after 1 minute; "Press Enter to start" after
+    5 minutes, says "No answer in 5 minutes: hyperbutler was not started." and exits 0.
+
+  *Verified on VM* with the test installation: `Start-Process -Wait hyperbutler.exe`
+  exited 0 after 60.5 s with the engine running (the visible window's close wait) and
+  after 301.2 s with it stopped, starting nothing (`status` still said stopped); with `-WindowStyle Hidden`,
+  with stdout redirected (`-RedirectStandardOutput`), and with
+  `HYPERBUTLER_NO_LAUNCHER=1`, it printed the usage and exited 0 in about 1 s (the
+  `Start-Process` round trip). Telling a script's visible window from Explorer's would
+  need the parent process (Explorer is the parent of a double-click and of a shortcut);
+  that is not done.
 
 ### S0.2 A Start-menu or desktop shortcut
 
@@ -535,6 +560,43 @@ Facts from the code that the scenarios below rely on
   whose `0.0.0.0:P` bind may succeed next to hyperbutler's loopback listeners. Random
   ports (`-P`) are not checked before the start, only published all-or-nothing after
   it.
+- **Review M1 and L3 (2026-11-01):** the tables miss a port no socket holds but Windows
+  refuses: Hyper-V and WinNAT reserve ranges (`netsh int ipv4 show excludedportrange
+  protocol=tcp`), where a bind fails with `WSAEACCES`. The start check let such a start
+  through, and the publish after it failed with nothing published. When the tables say
+  a port is free, the check now also binds `127.0.0.1:P` and `[::1]:P` (never a
+  wildcard) and closes them at once; a failed bind refuses the start with Docker's
+  wording and the bind error, and for `WSAEACCES` with `(Windows reserves this port: it
+  is in an excluded port range ...)` and the `netsh` command. The same bind catches a
+  host port another container of this engine publishes (two containers may publish one
+  host port on different guest addresses, and both map to the host's loopback): the
+  reason then ends `(another container of this engine publishes host port P)`, not a
+  generic bind error. Unit tests through a seam on the bind. On the reference machine
+  the only excluded ranges were 5357 and 50000-50059, the latter marked "administered".
+  Loopback binds of 50000, 50001 and 50030 **succeeded** there (administered
+  exclusions did not refuse a bind on this build), so `docker run -p 50000:80` ran and
+  was published, correctly; 5357 is held by the System process (http.sys, PID 4) on
+  `[::]`, so `docker run -p 5357:80` failed through the tables (exit 125, `... (another
+  program, process 4, listens on 0.0.0.0:5357)`). A range that refuses the bind (one
+  WinNAT reserves for Hyper-V) was not available without changing the system's
+  exclusions, so the `WSAEACCES` message is checked only in the unit test.
+- **Cost of the start check** *(verified on VM)*: `docker start` of a stopped container
+  with one published port (`busybox httpd`, `-p 18090:80`), timed from the docker CLI,
+  2 warm-up starts and then 20 (or 40) per round, stopped with `docker stop -t 0` and a
+  1.5 s pause between starts. Medians, engine built with the check turned off, with
+  the table lookup only (the check before review M1) and with the full check:
+
+  | Round | No check | Tables only | Full check | Full minus none |
+  |---|---|---|---|---|
+  | 1 (20 starts) | 195.5 ms | 194.4 ms | 197.9 ms | +2.4 ms |
+  | 2 (20 starts) | 188.1 ms | 187.7 ms | 208.1 ms | +20.0 ms |
+  | 3 (40 starts) | 192.6 ms | | 197.5 ms | +4.9 ms |
+
+  The difference is within the spread between rounds (the means differ by 2 to 16 ms;
+  every round had one start of about 620 ms). In process, the port part of the check
+  takes 0.04 ms for the table lookup and 0.37 ms with the two loopback binds (Go
+  benchmark, 200 runs); the rest is the container inspect it asks dockerd for over
+  hvsock.
 - **Gap:** none found in hyperbutler (Docker Desktop not run). REQ-NET-005 (new),
   REQ-NET-001.
 
@@ -848,8 +910,8 @@ then forward slashes). `hyperbutler status` prints it on the "docker:" line.
 - **Gap:** small. REQ-DISK-004, REQ-DISK-010 (new).
 - **Done (2026-11-01, unit tests):** the guard reports each pause to the engine, which
   writes `guardPause` into `state.json` (volume, free space, the free space it resumes
-  at, since when), refreshes it while paused when the free space moves by 1 MiB or more,
-  and removes it on resume. `status` prints "paused:  C: has 900.0 MiB free; it resumes
+  at, since when), refreshes it while paused when the free space moves by 1 MiB or more
+  and 2 s have passed since the last refresh (review M3), and removes it on resume. `status` prints "paused:  C: has 900.0 MiB free; it resumes
   at 1.2 GiB free (...)" with the free space it measures itself, and `status --json`
   has `guardPause`. Tested with a fake free-space reading (`TestHostGuardReportsPause`);
   not run on a full volume, which needs a mounted test VHD and so admin.
@@ -1037,7 +1099,7 @@ the GUI, "later" after that.
 | REQ-NET-005 | A published port is mirrored on `127.0.0.1` and `[::1]` together or not at all. A port held by any host socket, wildcard or specific, is reported to the user: `docker run` fails with Docker's "Ports are not available" wording, and `status` lists ports a restart policy could not publish. | 0.1 | S3.4 |
 | REQ-UX-020 | When the Docker API pipe is taken, the error names the configured pipe, says whether another user's or installation's engine may hold it, and gives the `config set pipe` fix. The README says each Windows user has their own engine and that published ports are shared. | 0.1 | S5.1, S5.2, S5.3 |
 | REQ-UX-014 | A stopped engine is explained where the user is. `stop` says docker commands fail until `start` and how to switch context. The context description says to run `hyperbutler start`. The README quotes the CLI's error with the fix. | 0.1 | S1.1, S3.1 |
-| REQ-UX-016 | Launched without a console of its own (Explorer, a shortcut), `hyperbutler.exe` shows the status, offers to start a stopped engine on Enter, says the engine outlives the window, and waits before closing. From 0.2 it opens the GUI. The GUI never starts the engine unless asked (a Start button, or an opt-in setting), and closing it never stops the engine. Usage without arguments exits 0. | 0.1 (console), 0.2 (GUI) | S0.1, S0.2, S0.3 |
+| REQ-UX-016 | Launched with a console of its own (a new console window, as from Explorer or a shortcut), `hyperbutler.exe` shows the status, offers to start a stopped engine on Enter, says the engine outlives the window, and waits before closing. From 0.2 it opens the GUI. The GUI never starts the engine unless asked (a Start button, or an opt-in setting), and closing it never stops the engine. Usage without arguments exits 0. | 0.1 (console), 0.2 (GUI) | S0.1, S0.2, S0.3 |
 | REQ-UX-017 | Before any stop or restart of the VM or dockerd (`stop`, `restart`, `--apply`, `config daemon apply`), hyperbutler lists the running containers that will stop and which will come back. | 0.1 | S2.7, S6.1, S6.2 |
 | REQ-DISK-010 | A VM paused by the free-space guard is shown in `state.json` and `status`, with the volume and the free space needed to resume. | 0.1 | S7.2 |
 | REQ-PLAT-008 | `start` from a different folder or version than the running engine says so and points to `restart`. `state.json` records the engine's executable path and version. | 0.1 | S9.1, S9.2 |
@@ -1059,6 +1121,19 @@ Two smaller findings to fix without a requirement (both fixed since):
   Firewall prompt for `hyperbutler.exe`. It now reads the TCP listener tables and opens
   no socket (S3.4).
 
+An adversarial review of the port, launcher and usage changes (2026-11-01) found these;
+all are fixed, each with a regression test:
+
+| ID | Finding | Outcome | Test |
+|---|---|---|---|
+| M1 | A port in a Windows excluded port range is in no listener table, so the start check passed it and the publish failed with `WSAEACCES`, nothing published (S3.4). | Fixed: after the tables, the check binds `127.0.0.1:P` and `[::1]:P` and closes them; a failed bind refuses the start with Docker's wording, and `WSAEACCES` adds an excluded-range hint with the `netsh` command. compat.md has a row. | `TestHostPortFreeExcludedRange` (`internal/engine`) |
+| M2 | The launcher took `Start-Process -Wait`, `start /wait`, scheduled and VS Code tasks and `wt.exe hyperbutler` for Explorer and could wait on a script forever (S0.1). | Fixed: it also needs a visible console window and stdout on the console; `HYPERBUTLER_NO_LAUNCHER=1` turns it off; the close wait ends after 1 minute and the start prompt after 5 (exit 0, nothing started). Visible windows from scripts still get the launcher, for those times. REQ-UX-016's wording fixed ("with a console of its own"). | `TestLauncherWaitsEnd`, `TestRunNoLauncherEnv`, `TestOwnsConsoleChecks` (`cmd/hyperbutler`) |
+| M3 | While the guard held the VM paused, a free space swinging by a MiB rewrote `state.json` on every 100 ms tick (S7.2). | Fixed: re-reported only after a change of 1 MiB or more **and** 2 s since the last report; pause and resume at once. | `TestHostGuardPauseReportRate` (`internal/engine`) |
+| L1 | An argument too many or missing and an unknown `config` subcommand exited 1, a bad flag 2. | Fixed: every usage error exits 2. | `TestCLIUsage` (`cmd/hyperbutler`) |
+| L2 | `otherEngine` compared the engine's executable as a path string, so an 8.3 name or a hard link of the same file was "another engine" (S9.2). | Fixed: `os.SameFile` when both exist, `engine.SamePath` otherwise. | `TestOtherEngineSameFile` (`cmd/hyperbutler`) |
+| L3 | Two containers publishing one host port on different guest addresses: the second was refused with a reason that did not say the holder is the engine itself. | Fixed: "another container of this engine publishes host port P"; a container whose own listeners are still open is not refused by them. | `TestHostPortFreeOwnListener` (`internal/engine`), `TestCheckStartOwnPort` |
+| L4 | The start check ran under the proxy's serve context, so a client that gave up kept the check's dockerd inspect running. | Fixed: a per-connection context, cancelled when the connection is torn down or, during the check, when a named-pipe client has disconnected. | `TestStartCheckEndsWithClient` (`internal/transport`) |
+
 ## How it was checked
 
 On 2026-11-01, on the reference machine (Windows 11 Home 26200), with this tree built as
@@ -1079,6 +1154,10 @@ directories were deleted afterwards. The runs:
   non-loopback address by the test itself.
 - A second test installation with the same pipe name (S5.1).
 - A bind mount from a folder named `한글 폴더`, and a UNC source (S10.1, S10.3).
+- For the review fixes, a second test installation under `%TEMP%\hb-dev\rv\` with its
+  own pipe (`docker_engine_hbrv`) and `--no-context`: `docker run -p` on the excluded
+  ports, `Start-Process -Wait` on `hyperbutler.exe` without arguments, and the start
+  check's cost (S0.1, S3.4).
 
 Not run: anything with Docker Desktop, WSL, a second Windows account, elevation, sleep or
 sign-out, Compose, and the third-party tools in section 4.
