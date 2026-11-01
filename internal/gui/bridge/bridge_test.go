@@ -508,7 +508,7 @@ func (f *fakeImporter) Check(context.Context, []string) error {
 func (f *fakeImporter) Plan(context.Context) (ImportPlan, error) {
 	return ImportPlan{Items: []ImportItem{{ID: "image:a", Kind: "image", Name: "a", Status: ImportNew},
 		{ID: "image:b", Kind: "image", Name: "b", Status: ImportDone, Detail: DetailImageAlready, Note: "in hyperbutler with the same id and tags"},
-		{ID: "image:c", Kind: "image", Name: "c", Status: ImportConflict, Detail: DetailImageConflict, Args: map[string][]string{"tags": {"c:1‮", "c:2"}, "Bad Arg": {"x"}}, Note: "hyperbutler has c:1, c:2 as another image"},
+		{ID: "image:c", Kind: "image", Name: "c", Status: ImportConflict, Detail: DetailImageConflict, Args: map[string][]string{"tags": {"c:1\u202e", "c:2"}, "Bad Arg": {"x"}}, Note: "hyperbutler has c:1, c:2 as another image"},
 		{ID: "volume:v", Kind: "volume", Name: "v", Status: "some-new-state", Detail: "import.detail.made.up", Note: "a reason"}},
 		Notes: []string{"an interrupted import left a helper"}}, nil
 }
@@ -596,7 +596,7 @@ type slowImporter struct {
 }
 
 func (f *slowImporter) Run(ctx context.Context, _ []string, progress func(ImportProgress)) (ImportResult, error) {
-	progress(ImportProgress{Running: true, Current: "evil‮exe.gpj"})
+	progress(ImportProgress{Running: true, Current: "evil\u202eexe.gpj"})
 	close(f.started)
 	<-ctx.Done()
 	time.Sleep(300 * time.Millisecond)
