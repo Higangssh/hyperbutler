@@ -86,6 +86,9 @@ under the project's license.
   powershell -ExecutionPolicy Bypass -File dist\package.ps1 -ImageDir $env:TEMP\guest -Snapshot
   ```
 
+  It builds the bundled docker CLI and compose from `dist/clients.lock`, which needs the
+  Go module proxy (or a filled module cache); `-NoClients` leaves them out.
+
   To run the same checks locally:
 
   ```powershell

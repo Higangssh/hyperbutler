@@ -5,7 +5,9 @@ name: Release
 # docs/release.md (soak, host-full, etc.), which hosted runners cannot run.
 #
 #   guest-image  canonical guest image + GPL source bundle (strict: signed inputs only)
-#   package      hyperbutler.exe and the portable zip (dist/package.ps1), on Windows
+#   package      hyperbutler.exe (pinned to the guest image's image.json), the docker CLI
+#                and compose built from dist/clients.lock, and the portable zip
+#                (dist/package.ps1), on Windows
 #   sbom         SPDX SBOM of the zip contents (syft), with no write permissions
 #   publish      SHA256SUMS, build provenance attestation, draft release
 #

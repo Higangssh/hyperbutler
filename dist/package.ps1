@@ -2,24 +2,37 @@
 # folder to PATH, run `hyperbutler start`.
 #
 #   pwsh -File dist\package.ps1 -ImageDir DIR [-SourceBundle FILE] [-ReleaseUrl URL]
-#        [-ImageFiles a,b] [-Version vX.Y.Z] [-Out DIR] [-Snapshot]
+#        [-ImageFiles a,b] [-Version vX.Y.Z] [-Out DIR] [-NoClients] [-Snapshot]
 #
 # -ImageDir is the guest-image artifact (.github/workflows/guest-image.yml): the image
 # files, SHA256SUMS, guest-inputs.tsv, BUILDINFO.txt and licenses/. -SourceBundle is the
 # guest-sources.tar from the same run; it is published as a separate release asset, and
 # SOURCE-OFFER.txt in the zip names it by file name and SHA-256.
 #
+# The SHA-256 of image.json (as copied into the zip) is linked into hyperbutler.exe
+# (-X ...engine.pinnedManifest), so the release binary boots only that image (ADR 0005,
+# Decision 4).
+#
+# The docker CLI and the compose plugin (clients\ in the zip) are built here from the
+# source modules pinned in dist/clients.lock: fetched through the Go module proxy,
+# checked against sum.golang.org and against the lock's own h1: hash, and built with
+# their upstream build tags and version flags, CGO_ENABLED=0, -trimpath. Their
+# dependencies are checked against the source's own go.sum. -NoClients leaves them out
+# (-Snapshot only).
+#
 # Without -Snapshot (the release workflow), every check is fatal: a clean tree, a tag
 # version that hyperbutler.exe reports itself, image hashes that match the artifact's
-# SHA256SUMS, guest license texts, a source bundle, and REQ-UX-002's 150 MB limit.
-# -Snapshot relaxes the first five for local dry runs and marks the zip as not for
-# redistribution. The size limit always applies.
+# SHA256SUMS, an image.json to pin, guest license texts, a source bundle, the bundled
+# clients, and REQ-UX-002's 150 MB limit. -Snapshot relaxes all but the last for local
+# dry runs and marks the zip as not for redistribution. The client source pins and the
+# size limit always apply.
 #
 # Reproducibility: CGO_ENABLED=0, -trimpath, -buildvcs=true (the version comes from the
-# git tag, as `git describe` sees it), -ldflags "-s -w -buildid=", GOTOOLCHAIN=local, and
-# zip entries in ordinal order with the commit time as their timestamp. The same commit
-# and Go version give the same hyperbutler.exe; the zip also depends on the .NET deflate
-# implementation, so compare hyperbutler.exe, not the zip, across machines.
+# git tag, as `git describe` sees it), -ldflags "-s -w -buildid= -X <image pin>",
+# GOTOOLCHAIN=local, and zip entries in ordinal order with the commit time as their
+# timestamp. The same commit, Go version and guest image give the same hyperbutler.exe;
+# the zip also depends on the .NET deflate implementation, so compare hyperbutler.exe,
+# not the zip, across machines.
 
 [CmdletBinding()]
 param(
@@ -30,6 +43,8 @@ param(
     [string]$ReleaseUrl = '',
     [string]$Version = '',
     [string]$Out = '',
+    [string]$ClientLock = '',   # default: clients.lock next to this script
+    [switch]$NoClients,
     [switch]$Snapshot,
     [long]$MaxBytes = 150MB   # REQ-UX-002: the installer is at most 150 MB
 )
@@ -82,6 +97,31 @@ try {
     New-Item -ItemType Directory -Force $stage | Out-Null
     Write-Host "packaging $name from $commit"
 
+    # --- guest image ------------------------------------------------------------------------
+    # Copied first and checked as copied: the zip carries these bytes, and hyperbutler.exe
+    # pins the image.json among them.
+    $imgSums = @{}
+    $sumsFile = Join-Path $ImageDir 'SHA256SUMS'
+    if (Test-Path $sumsFile) {
+        foreach ($l in Get-Content $sumsFile) {
+            if ($l -match '^([0-9a-f]{64}) [ *](.+)$') { $imgSums[$Matches[2]] = $Matches[1] }
+        }
+    } else { Warn "$sumsFile is missing; the image files cannot be checked against the build" }
+    $imageLines = @()
+    $pin = ''
+    foreach ($f in $ImageFiles) {
+        if ($f -notmatch '^[A-Za-z0-9][A-Za-z0-9._-]*$') { Fail "bad image file name: $f" }
+        $src = Join-Path $ImageDir $f
+        if (-not (Test-Path -LiteralPath $src -PathType Leaf)) { Fail "guest image file $src not found" }
+        $dst = Join-Path $stage $f
+        Copy-Item -LiteralPath $src $dst
+        $h = Sha256 $dst
+        if ($imgSums.Count -and $imgSums[$f] -ne $h) { Fail "$f does not match the image SHA256SUMS" }
+        if ($f -eq 'image.json') { $pin = $h }
+        $imageLines += "  $h  $f"
+    }
+    if (-not $pin) { Warn 'no image.json among -ImageFiles; hyperbutler.exe is not pinned to a guest image' }
+
     # --- hyperbutler.exe -------------------------------------------------------------------------
     $exe = Join-Path $stage 'hyperbutler.exe'
     # The icon and version resource (cmd/hyperbutler/winres), stamped with this version. The
@@ -93,8 +133,17 @@ try {
     try {
         $env:GOOS = 'windows'; $env:GOARCH = 'amd64'; $env:CGO_ENABLED = '0'
         $env:GOTOOLCHAIN = 'local'; $env:GOFLAGS = '-mod=readonly'
-        Exec go build -trimpath -buildvcs=true -ldflags '-s -w -buildid=' -o $exe ./cmd/hyperbutler | Out-Null
+        $ldflags = '-s -w -buildid='
+        if ($pin) { $ldflags += " -X github.com/Higangssh/hyperbutler/internal/engine.pinnedManifest=$pin" }
+        Exec go build -trimpath -buildvcs=true -ldflags $ldflags -o $exe ./cmd/hyperbutler | Out-Null
         $goVersion = (Exec go version) | Select-Object -First 1
+        # The pin as the binary reports it: a renamed variable would make -X a silent no-op.
+        if ($env:PROCESSOR_ARCHITECTURE -eq 'AMD64') {
+            $vj = (Exec $exe version --json) -join "`n" | ConvertFrom-Json
+            if ([bool]$vj.imagePinned -ne [bool]$pin -or ($pin -and $vj.imageManifestSha256 -ne $pin)) {
+                Fail "hyperbutler.exe reports image pin '$($vj.imageManifestSha256)', expected '$pin'"
+            }
+        } else { Warn "cannot run the amd64 hyperbutler.exe here to check its image pin" }
         $goroot = (Exec go env GOROOT) | Select-Object -First 1
 
         # What the binary says about itself: its own version and the modules linked in.
@@ -151,23 +200,140 @@ try {
         $env:GOOS, $env:GOARCH, $env:CGO_ENABLED, $env:GOTOOLCHAIN, $env:GOFLAGS = $saved
     }
 
-    # --- guest image ------------------------------------------------------------------------
-    $imgSums = @{}
-    $sumsFile = Join-Path $ImageDir 'SHA256SUMS'
-    if (Test-Path $sumsFile) {
-        foreach ($l in Get-Content $sumsFile) {
-            if ($l -match '^([0-9a-f]{64}) [ *](.+)$') { $imgSums[$Matches[2]] = $Matches[1] }
+    # --- Windows clients: docker CLI and compose plugin, built from source ---------------
+    # In clients\, not next to hyperbutler.exe: the folder the README puts on PATH holds no
+    # docker.exe, so a docker CLI installed later is never shadowed by this one.
+    $clientLines = @()
+    if ($NoClients) {
+        Warn '-NoClients: the zip has no docker CLI'
+    } else {
+        if (-not $ClientLock) { $ClientLock = Join-Path $dist 'clients.lock' }
+        $want = @{ 'docker-cli' = 'clients/docker.exe'; 'docker-compose' = 'clients/cli-plugins/docker-compose.exe' }
+        $entries = @()
+        foreach ($l in Get-Content $ClientLock) {
+            if ($l -match '^\s*(#|$)') { continue }
+            $c = -split $l
+            if ($c.Count -ne 5 -or -not $want.ContainsKey($c[0]) -or $c[2] -notmatch '^h1:[A-Za-z0-9+/]{43}=$' -or
+                $c[3] -notmatch '^[0-9a-f]{40}$' -or $c[4] -notmatch '^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$') { Fail "bad line in ${ClientLock}: $l" }
+            if ($c[1] -notmatch '^([a-z0-9.-]+(/[A-Za-z0-9._~-]+)+)@(v[0-9][0-9A-Za-z.+-]*)$') { Fail "bad source module in ${ClientLock}: $l" }
+            $entries += [pscustomobject]@{ Name = $c[0]; Mod = $Matches[1]; ModVersion = $Matches[3]; Sum = $c[2]; Commit = $c[3]; Time = $c[4] }
         }
-    } else { Warn "$sumsFile is missing; the image files cannot be checked against the build" }
-    $imageLines = @()
-    foreach ($f in $ImageFiles) {
-        if ($f -notmatch '^[A-Za-z0-9][A-Za-z0-9._-]*$') { Fail "bad image file name: $f" }
-        $src = Join-Path $ImageDir $f
-        if (-not (Test-Path -LiteralPath $src -PathType Leaf)) { Fail "guest image file $src not found" }
-        $h = Sha256 $src
-        if ($imgSums.Count -and $imgSums[$f] -ne $h) { Fail "$f does not match the image SHA256SUMS" }
-        Copy-Item -LiteralPath $src (Join-Path $stage $f)
-        $imageLines += "  $h  $f"
+        foreach ($k in $want.Keys) { if (@($entries | Where-Object Name -EQ $k).Count -ne 1) { Fail "$ClientLock must pin $k exactly once" } }
+
+        # A fresh work directory outside the stage, and outside this repository's module,
+        # so its go.mod and go.sum stay untouched.
+        $work = Join-Path $Out 'clients'
+        if (Test-Path $work) { Remove-Item -Recurse -Force $work }
+        New-Item -ItemType Directory $work | Out-Null
+        $modTmp = Join-Path $work 'gomod'
+        New-Item -ItemType Directory $modTmp | Out-Null
+        # go mod download -json prints one object per module; each ends with a "}" line.
+        function ModDirs([string[]]$mods) {
+            $dirs = @{}
+            for ($i = 0; $i -lt $mods.Count; $i += 100) {
+                $chunk = $mods[$i..([Math]::Min($i + 99, $mods.Count - 1))]
+                $buf = [Collections.Generic.List[string]]::new()
+                foreach ($l in (Exec go mod download -json @chunk)) {
+                    $buf.Add($l)
+                    if ($l -eq '}') {
+                        $j = ($buf -join "`n") | ConvertFrom-Json
+                        $buf.Clear()
+                        if ($j.PSObject.Properties['Error'] -or -not $j.PSObject.Properties['Dir']) {
+                            Fail "go mod download $($j.Path)@$($j.Version) failed"
+                        }
+                        $dirs["$($j.Path)@$($j.Version)"] = $j
+                    }
+                }
+            }
+            $dirs
+        }
+        $savedEnv = $env:GOOS, $env:GOARCH, $env:CGO_ENABLED, $env:GOTOOLCHAIN, $env:GOFLAGS
+        $index.Add('')
+        $index.Add('== Windows clients in clients/: docker.exe and cli-plugins/docker-compose.exe, built from')
+        $index.Add('   the source modules in dist/clients.lock')
+        $index.Add('')
+        try {
+            foreach ($e in $entries | Sort-Object Name) {
+                $env:GOOS = $null; $env:GOARCH = $null; $env:CGO_ENABLED = $null
+                $env:GOTOOLCHAIN = 'local'; $env:GOFLAGS = ''
+                # The source, through the module proxy, checked by go against sum.golang.org
+                # and here against the lock.
+                Push-Location $modTmp
+                try { $src = (ModDirs @("$($e.Mod)@$($e.ModVersion)")).Values | Select-Object -First 1 } finally { Pop-Location }
+                if ($src.Sum -cne $e.Sum) { Fail "$($e.Mod)@$($e.ModVersion) has hash $($src.Sum), $ClientLock pins $($e.Sum)" }
+                if ($src.PSObject.Properties['Origin'] -and $src.Origin.PSObject.Properties['Hash'] -and $src.Origin.Hash -ne $e.Commit) {
+                    Fail "$($e.Mod)@$($e.ModVersion) is commit $($src.Origin.Hash), $ClientLock says $($e.Commit)"
+                }
+                $tree = Join-Path $work $e.Name
+                Copy-Item -Recurse -LiteralPath $src.Dir $tree
+                Get-ChildItem -LiteralPath $tree -Recurse -Force | ForEach-Object { if ($_.Attributes -band [IO.FileAttributes]::ReadOnly) { $_.Attributes = $_.Attributes -bxor [IO.FileAttributes]::ReadOnly } }
+
+                $dst = Join-Path $stage ($want[$e.Name] -replace '/', '\')
+                New-Item -ItemType Directory -Force (Split-Path -Parent $dst) | Out-Null
+                $short = $e.Commit.Substring(0, 7)
+                if ($e.Name -eq 'docker-cli') {
+                    # docker/cli has no go.mod: its scripts use vendor.mod and vendor.sum as
+                    # go.mod and go.sum. The module zip has no vendored code, so the
+                    # dependencies come through the proxy, checked against vendor.sum.
+                    Remove-Item -Recurse -Force (Join-Path $tree 'vendor')
+                    Copy-Item (Join-Path $tree 'vendor.mod') (Join-Path $tree 'go.mod')
+                    Copy-Item (Join-Path $tree 'vendor.sum') (Join-Path $tree 'go.sum')
+                    $v = $e.ModVersion.TrimStart('v') -replace '\+incompatible$', ''
+                    # scripts/build/.variables: these -X flags and grpcnotrace. Upstream's
+                    # Windows build uses cgo only for the osusergo tag it implies.
+                    $tags = 'grpcnotrace'
+                    $ld = "-s -w -buildid= -X github.com/docker/cli/cli/version.GitCommit=$short " +
+                        "-X github.com/docker/cli/cli/version.BuildTime=$($e.Time) -X github.com/docker/cli/cli/version.Version=$v"
+                    $pkg = './cmd/docker'
+                } else {
+                    # Makefile and Dockerfile: CGO_ENABLED=0, the e2e tag, and the version flag.
+                    $tags = 'e2e'
+                    $ld = "-s -w -buildid= -X github.com/docker/compose/v5/internal.Version=$($e.ModVersion)"
+                    $pkg = './cmd'
+                }
+                $env:GOOS = 'windows'; $env:GOARCH = 'amd64'; $env:CGO_ENABLED = '0'; $env:GOFLAGS = '-mod=readonly'
+                Push-Location $tree
+                try {
+                    Write-Host "building $($want[$e.Name]) from $($e.Mod)@$($e.ModVersion)"
+                    Exec go build -trimpath -buildvcs=false -tags $tags -ldflags $ld -o $dst $pkg | Out-Null
+                } finally { Pop-Location }
+                $env:GOFLAGS = ''
+
+                # License texts: the source module's and those of every module linked in.
+                $deps = [Collections.Generic.List[string]]::new()
+                foreach ($l in @(Exec go version -m $dst)) {
+                    $p = $l.Trim() -split "`t"
+                    if ($p[0] -eq 'dep' -and $p.Count -ge 3) { $deps.Add("$($p[1])@$($p[2])") }
+                    elseif ($p[0] -eq '=>') {
+                        if ($p.Count -lt 3 -or $p[2] -notmatch '^v') { Fail "$($want[$e.Name]) has a local replacement: $l" }
+                        $deps[$deps.Count - 1] = "$($p[1])@$($p[2])"
+                    }
+                }
+                if ($deps.Count -lt 10) { Fail "$($want[$e.Name]) lists only $($deps.Count) modules" }
+                Push-Location $modTmp
+                try { $dirs = ModDirs @($deps | Sort-Object -Unique) } finally { Pop-Location }
+
+                $base = Join-Path $tp ('clients\' + $e.Name)
+                New-Item -ItemType Directory -Force $base | Out-Null
+                $own = @(Get-ChildItem -LiteralPath $src.Dir -File | Where-Object { $_.Name -match $licRe } | Sort-Object Name)
+                if (-not @($own | Where-Object Name -Like 'LICEN*').Count) { Fail "no LICENSE in $($e.Mod)@$($e.ModVersion)" }
+                foreach ($lf in $own) { Copy-Item -LiteralPath $lf.FullName (Join-Path $base $lf.Name) }
+                $index.Add("$($want[$e.Name])  $($e.Mod) $($e.ModVersion) (commit $($e.Commit))  " + (($own | ForEach-Object { "clients/$($e.Name)/$($_.Name)" }) -join ' '))
+                $index.Add('  Go modules linked in (`go version -m`):')
+                foreach ($k in $dirs.Keys | Sort-Object) {
+                    $d = $dirs[$k]
+                    $files = @(Get-ChildItem -LiteralPath $d.Dir -File | Where-Object { $_.Name -match $licRe } | Sort-Object Name)
+                    if (-not $files.Count) { Fail "no license file in $k (linked into $($want[$e.Name]))" }
+                    $mdst = Join-Path $base ('go\' + ($d.Path -replace '/', '\'))
+                    New-Item -ItemType Directory -Force $mdst | Out-Null
+                    foreach ($lf in $files) { Copy-Item -LiteralPath $lf.FullName (Join-Path $mdst $lf.Name) }
+                    $index.Add("  $($d.Path)  $($d.Version)  " + (($files | ForEach-Object { "clients/$($e.Name)/go/$($d.Path)/$($_.Name)" }) -join ' '))
+                }
+                $clientLines += "  $(Sha256 $dst)  $($want[$e.Name])  ($($e.Mod)@$($e.ModVersion) $($e.Sum), commit $($e.Commit); -tags $tags -ldflags `"$ld`")"
+            }
+        } finally {
+            $env:GOOS, $env:GOARCH, $env:CGO_ENABLED, $env:GOTOOLCHAIN, $env:GOFLAGS = $savedEnv
+        }
     }
 
     $index.Add('')
@@ -238,10 +404,17 @@ try {
         '',
         'Quick start (no installer, no admin rights for these steps):',
         '  1. Keep all files of this archive in one folder, for example %LOCALAPPDATA%\Programs\hyperbutler.',
-        '  2. Add that folder to your user PATH.',
+        '  2. Add that folder to your user PATH. If you have no docker CLI yet, add its',
+        '     clients\ subfolder too: it holds docker.exe and cli-plugins\docker-compose.exe.',
         '  3. hyperbutler start',
-        '  4. docker run --rm hello-world   (needs the docker CLI)',
+        '  4. docker run --rm hello-world',
         '  5. hyperbutler stop',
+        '',
+        'A docker CLI you already have (Docker Desktop, another install) keeps working: the',
+        'hyperbutler docker context works with any docker CLI from 19.03 on, and hyperbutler',
+        'never changes PATH or copies the bundled CLI anywhere. `hyperbutler status` shows the',
+        'docker.exe in use. hyperbutler.exe boots only the guest image files of this archive;',
+        'if it refuses them, extract the archive again.',
         '',
         'Prerequisites (Virtual Machine Platform, Hyper-V Administrators membership) and the',
         'current status: https://github.com/Higangssh/hyperbutler#quick-start',
@@ -254,10 +427,11 @@ try {
         "commit: $commit",
         "snapshot: $([bool]$Snapshot)",
         "go: $goVersion",
-        'build: GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -buildvcs=true -ldflags "-s -w -buildid=" ./cmd/hyperbutler',
+        "build: GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -buildvcs=true -ldflags `"$ldflags`" ./cmd/hyperbutler",
         "hyperbutler.exe: $(Sha256 $exe)",
+        "guest image pin (image.json sha256): $(if ($pin) { $pin } else { 'none' })",
         'guest image:'
-    ) + $imageLines
+    ) + $imageLines + @('docker CLI and compose plugin (built from source, dist/clients.lock):') + $(if ($clientLines.Count) { $clientLines } else { @('  none (-NoClients)') })
     $gbi = Join-Path $ImageDir 'BUILDINFO.txt'
     if (Test-Path $gbi) { $bi += 'guest image build:'; $bi += (Get-Content $gbi | ForEach-Object { "  $_" }) }
     WriteText (Join-Path $stage 'BUILDINFO.txt') $bi
