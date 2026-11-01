@@ -64,8 +64,9 @@ func TestSchemaFields(t *testing.T) {
 	item := config.Item{Key: "memory", Value: "4GiB", Default: "4GiB", Source: config.SourceDefault, Type: "size", Apply: config.ApplyVM, Description: "d"}
 	itemKeys := []string{"key", "value", "default", "source", "type", "apply", "description"}
 
-	checkKeys(t, "version", VersionJSON{Schema: 1, Version: "v", GoVersion: "go", OS: "windows", Arch: "amd64", Revision: "r", Modified: true},
-		[]string{"schema", "version", "goVersion", "os", "arch", "revision", "modified"})
+	checkKeys(t, "version", VersionJSON{Schema: 1, Version: "v", GoVersion: "go", OS: "windows", Arch: "amd64", Revision: "r", Modified: true,
+		ImagePinned: true, ImageManifest: "h"},
+		[]string{"schema", "version", "goVersion", "os", "arch", "revision", "modified", "imagePinned", "imageManifestSha256"})
 	checkKeys(t, "config get", ConfigGetJSON{Schema: 1, Item: item}, append([]string{"schema"}, itemKeys...))
 	var listKeys []string
 	for _, k := range itemKeys {
@@ -83,10 +84,10 @@ func TestSchemaFields(t *testing.T) {
 	}
 	checkKeys(t, "status", StatusJSON{
 		Schema: 1, Running: true, SetUp: true, Home: "h", State: st, DataDir: "d", Disk: "x", DiskUsed: 1, DiskMax: 2, HostFree: 3,
-		MemoryMB: 4, CPUs: 5, Context: "c", ContextSel: true, DaemonJSON: "j", DaemonJSONExists: true,
+		MemoryMB: 4, CPUs: 5, Context: "c", ContextSel: true, DaemonJSON: "j", DaemonJSONExists: true, DockerCLI: "d", DockerCLIBundled: "b",
 	}, []string{
 		"schema", "running", "setUp", "home", "state", "dataDir", "disk", "diskHostBytes", "diskSizeBytes", "hostFreeBytes",
-		"memoryMB", "cpus", "dockerContext", "dockerContextSelected", "daemonJson", "daemonJsonExists",
+		"memoryMB", "cpus", "dockerContext", "dockerContextSelected", "daemonJson", "daemonJsonExists", "dockerCli", "dockerCliBundled",
 		"state.version", "state.phase", "state.pid", "state.pidCreated", "state.vmId", "state.runtimeId", "state.pipe",
 		"state.dataDir", "state.started", "state.readyMillis", "state.updated", "state.error", "state.errorCode", "state.imageDir",
 		"state.daemonConfig", "state.daemonConfig.generation", "state.daemonConfig.applies", "state.daemonConfig.source",
@@ -104,7 +105,7 @@ func TestSchemaAlwaysThere(t *testing.T) {
 		want []string
 	}{
 		"status":  {StatusJSON{}, []string{"schema", "running", "setUp", "home", "dockerContextSelected", "daemonJson", "daemonJsonExists"}},
-		"version": {VersionJSON{}, []string{"schema", "version", "goVersion", "os", "arch"}},
+		"version": {VersionJSON{}, []string{"schema", "version", "goVersion", "os", "arch", "imagePinned"}},
 		"list":    {ConfigListJSON{}, []string{"schema", "settingsFile", "keys"}},
 	} {
 		got := jsonKeys(t, c.v)
@@ -120,6 +121,10 @@ func TestVersionInfo(t *testing.T) {
 	v := versionInfo()
 	if v.Schema != SchemaVersion || v.Version == "" || !strings.HasPrefix(v.GoVersion, "go") || v.OS == "" || v.Arch == "" {
 		t.Fatalf("%+v", v)
+	}
+	// A test binary is a development build: no image pin.
+	if v.ImagePinned || v.ImageManifest != "" {
+		t.Fatalf("pinned: %+v", v)
 	}
 }
 

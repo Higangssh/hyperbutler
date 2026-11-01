@@ -202,6 +202,7 @@ func cmdStart(args []string, stdout, stderr io.Writer) error {
 	if !*noContext && in.settings.ContextManaged() {
 		selectContext(st.Pipe, stdout, stderr)
 	}
+	checkDockerCLI(findDockerCLI(), stdout, stderr)
 	return nil
 }
 
@@ -499,6 +500,7 @@ func selectContext(pipe string, stdout, stderr io.Writer) {
 	} else if c := os.Getenv("DOCKER_CONTEXT"); c != "" && c != contextName {
 		_, _ = fmt.Fprintf(stderr, "hyperbutler: note: DOCKER_CONTEXT=%s overrides the selected context in this shell.\n", c)
 	}
+	syncCompose(store, stdout, stderr)
 }
 
 // --- stop -----------------------------------------------------------------------------
@@ -629,6 +631,8 @@ func cmdStatus(args []string, stdout, stderr io.Writer) (int, error) {
 			r.ContextSel = cur == contextName
 		}
 	}
+	cli := findDockerCLI()
+	r.DockerCLI, r.DockerCLIBundled = cli.Path, cli.Bundled
 	code := 0
 	if !r.Running {
 		code = exitNotRunning
@@ -675,6 +679,14 @@ func cmdStatus(args []string, stdout, stderr io.Writer) (int, error) {
 			sel = "selected"
 		}
 		_, _ = fmt.Fprintf(stdout, "  context: %s (%s)\n", r.Context, sel)
+	}
+	switch {
+	case cli.usesBundled():
+		_, _ = fmt.Fprintf(stdout, "  cli:     %s (bundled)\n", cli.Path)
+	case cli.Path != "":
+		_, _ = fmt.Fprintf(stdout, "  cli:     %s (on PATH)\n", cli.Path)
+	case cli.Bundled != "":
+		_, _ = fmt.Fprintf(stdout, "  cli:     none on PATH; bundled: %s\n", cli.Bundled)
 	}
 	_, _ = fmt.Fprintf(stdout, "  daemon:  %s\n", daemonStatusLine(in.l, st))
 	_, _ = fmt.Fprintf(stdout, "  state:   %s\n", in.l.Home)

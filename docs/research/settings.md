@@ -175,12 +175,16 @@ does not exist yet. Every document is one object with `"schema": 1`. Within a sc
 fields are only added; removing or renaming one means a new version.
 `cmd/hyperbutler/schema_test.go` pins every field name, so a change fails the tests.
 
-- `version`: `schema`, `version`, `goVersion`, `os`, `arch`, and `revision`, `modified` when
-  the build has them.
+- `version`: `schema`, `version`, `goVersion`, `os`, `arch`, `imagePinned`, and `revision`,
+  `modified` when the build has them. `imagePinned` is true for a release build, which
+  boots only the guest image it was released with; `imageManifestSha256` is then the
+  SHA-256 of that image's `image.json` (ADR 0005, Decision 4).
 - `status`: `schema`, `running`, `setUp`, `home`, `dockerContextSelected`, `daemonJson`,
   `daemonJsonExists`, and when known `state` (the engine's state.json, with `daemonConfig`,
   `imageDir` and `hostGateway`: `address`, `enabled`, `ports`, `reloads`, `error`), `dataDir`, `disk`, `diskHostBytes`, `diskSizeBytes`, `hostFreeBytes`,
-  `memoryMB`, `cpus`, `dockerContext`. The exit code is 3 when hyperbutler is not running.
+  `memoryMB`, `cpus`, `dockerContext`, `dockerCli` (the docker.exe a plain `docker` runs:
+  the first on PATH) and `dockerCliBundled` (the one next to `hyperbutler.exe`). The exit
+  code is 3 when hyperbutler is not running.
 - `config list`: `schema`, `settingsFile`, `keys` (a list of the items below).
 - `config get KEY`: `schema` and one item: `key`, `value`, `default`, `source`, `type`,
   `apply` (`live`, `restart-dockerd`, `restart-vm`, `first-start`), `description`.

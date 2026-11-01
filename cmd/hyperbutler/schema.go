@@ -26,6 +26,11 @@ type VersionJSON struct {
 	Arch      string `json:"arch"`
 	Revision  string `json:"revision,omitempty"` // VCS revision of the build, if known
 	Modified  bool   `json:"modified,omitempty"` // the build had uncommitted changes
+	// ImagePinned says the build boots only the guest image it was released with (ADR
+	// 0005, Decision 4): the image.json whose SHA-256 is ImageManifest. A development
+	// build has no pin and accepts any image that matches its own image.json.
+	ImagePinned   bool   `json:"imagePinned"`
+	ImageManifest string `json:"imageManifestSha256,omitempty"`
 }
 
 // StatusJSON is `hyperbutler status --json`.
@@ -48,6 +53,10 @@ type StatusJSON struct {
 	// DaemonJSON is the user's daemon.json path; DaemonJSONExists says whether it exists.
 	DaemonJSON       string `json:"daemonJson"`
 	DaemonJSONExists bool   `json:"daemonJsonExists"`
+	// DockerCLI is the docker.exe a plain `docker` runs (the first on PATH), when there
+	// is one; DockerCLIBundled is the one next to hyperbutler.exe, when there is one.
+	DockerCLI        string `json:"dockerCli,omitempty"`
+	DockerCLIBundled string `json:"dockerCliBundled,omitempty"`
 }
 
 // ConfigListJSON is `hyperbutler config list --json`.
@@ -74,6 +83,7 @@ type ConfigPathJSON struct {
 
 func versionInfo() VersionJSON {
 	v := VersionJSON{Schema: SchemaVersion, Version: "(devel)", GoVersion: runtime.Version(), OS: runtime.GOOS, Arch: runtime.GOARCH}
+	v.ImageManifest, v.ImagePinned = engine.ImagePin()
 	if bi, ok := debug.ReadBuildInfo(); ok {
 		if bi.Main.Version != "" {
 			v.Version = bi.Main.Version
@@ -101,6 +111,11 @@ func cmdVersion(args []string, stdout, stderr io.Writer) error {
 		return writeJSON(stdout, v)
 	}
 	_, _ = fmt.Fprintln(stdout, "hyperbutler", v.Version)
+	if v.ImagePinned {
+		_, _ = fmt.Fprintln(stdout, "guest image: pinned, image.json sha256", v.ImageManifest)
+	} else {
+		_, _ = fmt.Fprintln(stdout, "guest image: not pinned (development build)")
+	}
 	return nil
 }
 
