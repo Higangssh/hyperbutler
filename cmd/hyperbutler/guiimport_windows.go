@@ -73,24 +73,6 @@ func importStatus(s desktopimport.Status) string {
 	return bridge.ImportAttention
 }
 
-// lock takes the installation's import lock, as import --from-desktop does: every
-// import (and plan) removes the helpers it finds, so two at once would remove each
-// other's.
-func (g *guiImporter) lock() (unlock func(), err error) {
-	in, err := openInstall()
-	if err != nil {
-		return nil, err
-	}
-	l, err := in.importLock()
-	if errors.Is(err, errImportRunning) {
-		return nil, bridge.Coded(bridge.CodeImportBusy, err)
-	}
-	if err != nil {
-		return nil, err
-	}
-	return func() { _ = l.Unlock() }, nil
-}
-
 // selection turns the window's ids into the import's selection.
 func selection(ids []string) desktopimport.Selection {
 	var sel desktopimport.Selection
@@ -106,11 +88,7 @@ func selection(ids []string) desktopimport.Selection {
 }
 
 func (g *guiImporter) Plan(ctx context.Context) ([]bridge.ImportItem, error) {
-	unlock, err := g.lock()
-	if err != nil {
-		return nil, err
-	}
-	defer unlock()
+	// A plan removes nothing, so it needs no lock; Run takes the import lock itself.
 	im, err := g.open(ctx)
 	if err != nil {
 		return nil, err
@@ -154,19 +132,15 @@ func (g *guiImporter) planned() (*desktopimport.Importer, *desktopimport.Plan, e
 
 // Check is import --from-desktop's free-space check for these items.
 func (g *guiImporter) Check(_ context.Context, ids []string) error {
-	_, plan, err := g.planned()
+	im, plan, err := g.planned()
 	if err != nil {
 		return err
 	}
-	in, err := openInstall()
+	space, err := im.Space(plan, selection(ids))
 	if err != nil {
 		return err
 	}
-	space, err := in.importSpaceFor(plan, selection(ids))
-	if err != nil {
-		return err
-	}
-	return bridge.Coded(bridge.CodeImportSpace, space.check())
+	return bridge.Coded(bridge.CodeImportSpace, space.Check())
 }
 
 func (g *guiImporter) Run(ctx context.Context, ids []string, progress func(bridge.ImportProgress)) (bridge.ImportResult, error) {
@@ -174,12 +148,10 @@ func (g *guiImporter) Run(ctx context.Context, ids []string, progress func(bridg
 	if err != nil {
 		return bridge.ImportResult{}, err
 	}
-	unlock, err := g.lock()
-	if err != nil {
-		return bridge.ImportResult{}, err
-	}
-	defer unlock()
+	// The window ran Check first, or the user chose to start anyway, so Run does not
+	// refuse on space again. It takes the import lock itself.
 	sel := selection(ids)
+	sel.ForceSpace = true
 	total, done := len(sel.Images)+len(sel.Volumes), 0
 	var bytes int64
 	res, err := im.Run(ctx, plan, sel, func(e desktopimport.Event) {
@@ -211,6 +183,9 @@ func (g *guiImporter) Run(ctx context.Context, ids []string, progress func(bridg
 		if res.Canceled && err == nil {
 			err = context.Canceled
 		}
+	}
+	if errors.Is(err, desktopimport.ErrImportRunning) {
+		err = bridge.Coded(bridge.CodeImportBusy, err)
 	}
 	return out, err
 }
