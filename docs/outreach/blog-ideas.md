@@ -90,6 +90,19 @@ surprising. Numbers are from the maintainer's Windows 11 Home laptop unless note
   mismatches on LAN pulls", `TestGuestLinkSpareNotLive`.
 - **Audience:** anyone writing a user-mode network stack, a virtio backend or a
   double-buffered writer; "how to debug data corruption without guessing".
+### 8. One flag halved our WebView2 GUI, and fixed its shutdown
+- **Hook:** the same home screen in a WebView2 window used 172 MiB private working set
+  across 7 processes; with `--disable-gpu` it used 77 MiB. Pure Win32 + GDI+ drew it in
+  5.4 MiB and one process.
+- **Story:** the GPU process held about 95 MiB for a page with four cards. With the GPU on,
+  5 of 72 window closes left 4 to 6 `msedgewebview2.exe` processes alive for 5 to 10 s,
+  even inside a kill-on-close job object (single-thread processes stuck while exiting);
+  with software compositing 0 of 31 did. Also: a freshly copied `.exe` takes about 500 ms
+  longer to start, before its first instruction runs (the antivirus scan), so "cold start"
+  is mostly first-run-after-install.
+- **Evidence:** [ADR 0008](../adr/0008-settings-gui-mcp.md) "Toolkit spike results",
+  `spike/gui/measure`.
+- **Audience:** anyone choosing WebView2 / Tauri / Wails against native on Windows.
 
 ## Smaller posts and tips
 
