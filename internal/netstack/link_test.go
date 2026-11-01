@@ -84,7 +84,7 @@ const testFrameLen = 65000 // about one GSO segment
 func testFrame(i int) []byte {
 	p := make([]byte, testFrameLen)
 	for k := 0; k+4 <= len(p); k += 4 {
-		binary.BigEndian.PutUint32(p[k:], uint32(i)) //nolint:gosec // G115: small test index
+		binary.BigEndian.PutUint32(p[k:], uint32(i))
 	}
 	return p
 }
