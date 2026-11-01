@@ -150,9 +150,24 @@ hyperbutler logs
 hyperbutler stop      # orderly guest shutdown
 ```
 
+The engine runs in the background until `hyperbutler stop` or sign-out; closing the terminal
+does not stop it. `stop`, `restart`, `config daemon apply` and a `config set ... --apply`
+that restarts dockerd or the VM first list the running containers that stop, and which
+come back afterwards: those with `--restart always` or `unless-stopped`. `on-failure`
+brings one back only if it stops with an error (a container killed because it ignored
+the stop signal does); one without a policy stays stopped. They do not ask: the command
+is the request. After `stop`, docker commands fail until the next `hyperbutler start`
+(see [Troubleshooting](#troubleshooting-and-uninstalling)).
+
+Double-clicking `hyperbutler.exe` in Explorer (or a shortcut to it) opens a window with
+the status. If hyperbutler is stopped, Enter starts it; the engine keeps running after
+the window closes. From a terminal, `hyperbutler` with no arguments prints the commands.
+
 To upgrade, run `hyperbutler stop`, repeat step 2 without the PATH lines, and `hyperbutler start`. The
 data disk in `%LOCALAPPDATA%\hyperbutler` is kept. Upgrades across releases are not tested yet
-(there has been no release).
+(there has been no release). `hyperbutler status` shows which `hyperbutler.exe` the running
+engine is and its version. `hyperbutler start` while an engine from another folder or
+another version runs says so; `hyperbutler restart` from the new folder switches to it.
 
 A release `hyperbutler.exe` boots only the guest image files it was released with, the
 ones next to it; `hyperbutler version` shows the `image.json` hash it expects. If it
@@ -237,6 +252,24 @@ hyperbutler diagnose                 # a local zip for a bug report; nothing is 
 hyperbutler uninstall --dry-run      # everything hyperbutler created, and what it keeps
 hyperbutler uninstall                # removes it (--keep-data keeps images and volumes)
 ```
+
+**docker cannot connect after `hyperbutler stop` or a reboot.** With the `hyperbutler`
+context selected and the engine stopped, every docker command fails with:
+
+```
+failed to connect to the docker API at npipe:////./pipe/docker_engine_hyperbutler; check if the path is correct and if the daemon is running: open //./pipe/docker_engine_hyperbutler: The system cannot find the file specified.
+```
+
+Nothing listens on the pipe, so the docker CLI cannot say more. Run `hyperbutler start`
+(it does not start at sign-in), or use another engine: `docker context use
+desktop-linux` for Docker Desktop, `docker context use default` for `DOCKER_HOST` or
+`\\.\pipe\docker_engine`. `docker context ls` shows the hint in the context's
+description. With another pipe set (`config set pipe`), the error names that pipe.
+
+**docker commands hang.** If the volume that holds the data disk is almost full, the
+free-space guard pauses the VM until space is freed. `hyperbutler status` says so:
+`paused:  C: has 900.0 MiB free; it resumes at 1.2 GiB free`. Free space on that volume
+and the VM goes on where it stopped; nothing is lost.
 
 `diagnose` redacts passwords, tokens, registry auth and proxy credentials, but keeps paths
 (with your user name): look through the zip before you attach it. `uninstall` stops

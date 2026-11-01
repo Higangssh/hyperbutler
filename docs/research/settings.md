@@ -361,6 +361,15 @@ fields are only added; removing or renaming one means a new version.
   `memoryMB`, `cpus`, `dockerContext`, `dockerCli` (the docker.exe a plain `docker` runs:
   the first on PATH) and `dockerCliBundled` (the one next to `hyperbutler.exe`). The exit
   code is 3 when hyperbutler is not running.
+  Added 2026-11-01, within schema 1: `state.executable` and `state.executableVersion`, the
+  running engine's `hyperbutler.exe` and its version (REQ-PLAT-008: the release tag, or
+  for a source build Go's version of the module, such as a pseudo-version, or `(devel)`
+  with the revision). `state.guardPause` (`volume`, `freeBytes`, `resumeAtBytes`, `since`)
+  while the free-space guard has the VM paused (REQ-DISK-010), and `guardPause` with the
+  same fields, whose `freeBytes` is the free space `status` measured itself (only while
+  the engine runs and is paused). Both are absent when they do not apply.
+  The container lists of REQ-UX-017 are text only: `stop`, `restart`, `config set
+  --apply` and `config daemon apply` have no `--json`.
 - `config list`: `schema`, `settingsFile`, `keys` (a list of the items below).
 - `config get KEY`: `schema` and one item: `key`, `value`, `default`, `source`, `type`,
   `apply` (`live`, `restart-dockerd`, `restart-vm`, `first-start`), `description`.

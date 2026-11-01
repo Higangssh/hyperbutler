@@ -262,6 +262,41 @@ Status of REQ-UX-004 and REQ-UX-005 (2026-11-01, for 0.1):
   store import itself was checked by reading this machine's stores. The Windows system
   proxy (`proxy.mode`) is 0.2; containers and builds are not changed, as in Docker Desktop.
 
+Status of the usage requirements (2026-11-01, for 0.1; scenarios in
+[usage-scenarios.md](research/usage-scenarios.md)):
+
+- REQ-UX-014: met. `stop` ends with "docker commands fail until `hyperbutler start`" and,
+  while the `hyperbutler` context is selected, the `docker context use` to switch
+  (`desktop-linux` named when it exists, then `default`). The context's description is
+  "hyperbutler engine; run `hyperbutler start` if docker cannot connect", shown by
+  `docker context ls` (CLI 29.9.2, on the VM); `start` updates the description of an
+  existing context. The README's troubleshooting quotes the CLI's pipe error with the fix.
+- REQ-UX-016: console part met. With no arguments and a console of its own
+  (`GetConsoleProcessList` returns 1), `hyperbutler.exe` shows the status, offers
+  "Press Enter to start hyperbutler, or close this window." when stopped, says the engine
+  keeps running after the window closes, and waits for Enter. It never reads an input
+  that is not a console. From a shell it prints the usage and exits 0 (unknown commands
+  and bad flags exit 2). Unit tests through a seam; on the VM in a hidden console of its
+  own made with `CREATE_NEW_CONSOLE` and Enter typed into it, engine stopped and
+  running. The GUI part is 0.2.
+- REQ-UX-017: met. `stop`, `restart`, `config daemon apply` and a `config set --apply`
+  that restarts dockerd or the VM list the running containers first (name, image, what
+  happens), from the engine's Docker API over its pipe, and go on without asking; an API
+  that does not answer in 5 s is said so. `always` and `unless-stopped` come back;
+  `on-failure` only if the container stops with an error, which on the VM was the case
+  for one killed after ignoring SIGTERM; no policy stays stopped. The lists are text only
+  (these commands have no `--json`).
+- REQ-DISK-010: met in unit tests. A pause by the free-space guard is in `state.json`
+  (`guardPause`: volume, free space, free space to resume, since), refreshed while paused
+  and removed on resume; `status` prints "paused:  C: has 900.0 MiB free; it resumes at
+  1.2 GiB free (...)" and `status --json` has `guardPause` with the free space measured
+  then. Not run against a full volume (that needs a mounted test VHD, so admin).
+- REQ-PLAT-008: met. `state.json` records the engine's `executable` and
+  `executableVersion`; `status` shows them. `start` while an engine of this installation
+  runs says which one runs and points to `restart` when the folder or the version
+  differs, and exits 0 as before (on the VM: a second copy in another folder, and a build
+  of another version).
+
 ## Non-goals
 
 - Windows containers (process-isolated or Hyper-V-isolated Windows images).

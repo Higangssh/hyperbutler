@@ -49,10 +49,10 @@ For each scenario:
 
 | # | Scenario | Gap | Requirement |
 |---|---|---|---|
-| S0.1 | Double-clicking `hyperbutler.exe` in Explorer | needs work | REQ-UX-016 (new) |
-| S0.2 | A Start-menu or desktop shortcut | small | REQ-UX-016 (new) |
+| S0.1 | Double-clicking `hyperbutler.exe` in Explorer | done (console, 2026-11-01) | REQ-UX-016 |
+| S0.2 | A Start-menu or desktop shortcut | done for 0.1 (2026-11-01); MSI entry 0.2 | REQ-UX-016 |
 | S0.3 | Opening the GUI (0.2): does it start or stop the engine? | small (design) | REQ-UX-011, REQ-UX-016 (new) |
-| S1.1 | `docker ps` / `run` / `compose up` with the engine stopped | small | REQ-UX-014 (new) |
+| S1.1 | `docker ps` / `run` / `compose up` with the engine stopped | done (2026-11-01) | REQ-UX-014 |
 | S1.2 | Starting on demand when a docker command arrives | needs work (later) | REQ-START-002 (new), REQ-MEM-004 |
 | S2.1 | Closing the terminal that ran `hyperbutler start` | none | REQ-UX-001 |
 | S2.2 | Containers with `--restart` after `stop` and `start` | none | REQ-API-001 |
@@ -60,7 +60,7 @@ For each scenario:
 | S2.4 | Sign-out, shutdown or reboot with containers running | small | REQ-PWR-003 (new) |
 | S2.5 | Fast startup | small | REQ-PWR-003 (new) |
 | S2.6 | Sleep, hibernate and resume | unknown, needs a bench | REQ-PWR-001/002, REQ-PWR-003 (new) |
-| S2.7 | `hyperbutler stop` with containers running | small | REQ-UX-017 (new) |
+| S2.7 | `hyperbutler stop` with containers running | done (2026-11-01) | REQ-UX-017 |
 | S3.1 | Docker Desktop installed, one or both stopped | small | REQ-UX-014 (new) |
 | S3.2 | Both running: which engine does `docker` reach? | small | REQ-UX-018 (new), REQ-PLAT-004 |
 | S3.3 | Docker Desktop selects `desktop-linux` again when it starts | small | REQ-UX-018 (new) |
@@ -77,17 +77,17 @@ For each scenario:
 | S5.1 | A second Windows user on the same PC | fixed (second account not run) | REQ-UX-020 (new) |
 | S5.2 | An elevated terminal of the same user | small (unverified) | REQ-UX-020 (new) |
 | S5.3 | An elevated terminal of a different (admin) account | small | REQ-UX-020 (new) |
-| S6.1 | `config set ... --apply` that restarts dockerd | small | REQ-UX-017 (new), REQ-UX-006 |
-| S6.2 | `config set memory ... --apply` (VM restart) | small | REQ-UX-017 (new) |
+| S6.1 | `config set ... --apply` that restarts dockerd | done (2026-11-01) | REQ-UX-017, REQ-UX-006 |
+| S6.2 | `config set memory ... --apply` (VM restart) | done (2026-11-01) | REQ-UX-017 |
 | S6.3 | Live settings (`hostGateway.*`) | none | REQ-NET-004 |
 | S7.1 | The data disk (guest file system) is full | needs work | REQ-DISK-009 (new), REQ-DISK-005 |
-| S7.2 | The host volume is nearly full | small | REQ-DISK-004, REQ-DISK-010 (new) |
+| S7.2 | The host volume is nearly full | done (2026-11-01, unit tests) | REQ-DISK-004, REQ-DISK-010 |
 | S7.3 | A container uses more memory than the VM has | none (bench open) | REQ-MEM-003 |
 | S8.1 | VPN connect or disconnect while running | none (one client tested) | REQ-NET-002 |
 | S8.2 | Wi-Fi change, airplane mode | none (from code) | REQ-NET-002 |
 | S8.3 | Corporate proxy | small | REQ-UX-009 |
-| S9.1 | Unzipping a new version over the running one | small | REQ-PLAT-008 (new), REQ-PLAT-005 |
-| S9.2 | `hyperbutler start` from a new folder while the old engine runs | small | REQ-PLAT-008 (new) |
+| S9.1 | Unzipping a new version over the running one | done for REQ-PLAT-008 (2026-11-01) | REQ-PLAT-008, REQ-PLAT-005 |
+| S9.2 | `hyperbutler start` from a new folder while the old engine runs | done (2026-11-01) | REQ-PLAT-008 |
 | S10.1 | Paths with spaces or Korean characters | none | REQ-FS-004 |
 | S10.2 | OneDrive folders | unknown | REQ-FS-004 |
 | S10.3 | Network drives, UNC and `\\wsl$` paths | small | REQ-FS-006 (new) |
@@ -130,6 +130,16 @@ For each scenario:
   (`hyperbutler gui`), with the behaviour of S0.3. The console launcher stays for
   machines where the GUI cannot run.
 - **Gap:** needs work. REQ-UX-016 (new).
+- **Done (2026-11-01, console part):** `hyperbutler.exe` with no arguments checks
+  `GetConsoleProcessList`. When it is 1 it prints the status and, for a stopped engine,
+  `Press Enter to start hyperbutler, or close this window.`; after the start, or for a
+  running engine, it says the engine keeps running after the window closes and waits for
+  Enter (`cmd/hyperbutler/launcher_windows.go`). It never reads an input that is not a
+  console. From a shell it prints the usage on stdout and exits 0; unknown commands and
+  bad flags exit 2. *Verified on VM*: started in a hidden console of its own through
+  `CreateProcess` with `CREATE_NEW_CONSOLE` and no standard handles (as Explorer does),
+  with Enter typed into the console, both with the engine running and stopped; the
+  engine it started was still running after the window closed.
 
 ### S0.2 A Start-menu or desktop shortcut
 
@@ -142,6 +152,8 @@ For each scenario:
   opens the GUI. `uninstall` lists and removes it. There is no desktop icon unless the
   installer's checkbox for it is ticked (off by default).
 - **Gap:** small. REQ-UX-016 (new).
+- **Done for 0.1 (2026-11-01):** a hand-made shortcut gets S0.1's launcher. The MSI's
+  Start-menu entry is 0.2.
 
 ### S0.3 The 0.2 GUI: start, stop and closing
 
@@ -212,6 +224,13 @@ For each scenario:
   autostart (S2.3). Later, the standby engine (S1.2), whose pipe can answer with a real
   hint.
 - **Gap:** small. REQ-UX-014 (new).
+- **Done (2026-11-01):** `stop` ends with "docker commands fail until `hyperbutler
+  start`" and, while the `hyperbutler` context is selected, "To use another engine
+  meanwhile: docker context use default" (with `desktop-linux` first when that context
+  exists). The context's description is "hyperbutler engine; run `hyperbutler start` if
+  docker cannot connect"; `start` rewrites it in an existing context. *Verified on VM*:
+  `docker context ls` (CLI 29.9.2) shows it. The README's troubleshooting quotes the
+  error above with the fix.
 
 ### S1.2 Starting on demand
 
@@ -358,8 +377,16 @@ For each scenario:
   not: job-17)". It does not ask, because `stop` is already the explicit request. The
   GUI's Stop shows the same list and asks.
 - **Gap:** small. REQ-UX-017 (new).
-
-## 3. Docker Desktop installed alongside
+- **Done (2026-11-01):** `stop`, `restart`, `config daemon apply` and a `config set
+  --apply` that restarts dockerd or the VM ask the engine's Docker API (over the pipe)
+  for the running containers and their restart policies first, print them, and go on
+  ("hyperbutler stop: 3 running containers stop; 1 comes back at the next start, 1 only
+  if it stops with an error (on-failure), 1 stays stopped." and a table). An API that
+  does not answer within 5 s is said so. *Verified on VM* with `--restart always`,
+  `on-failure` and no policy. `on-failure` is not "stays stopped": dockerd's stop kills a
+  container that ignores SIGTERM (exit 137), and on-failure brings that one back, seen
+  after both a dockerd restart and a VM stop.
+ Docker Desktop installed alongside
 
 Facts from the code that the scenarios below rely on
 ([compat.md](../compat.md#the-docker-cli-and-docker-desktop)):
@@ -768,6 +795,8 @@ then forward slashes). `hyperbutler status` prints it on the "docker:" line.
   stop; 1 comes back"). `--apply` stays the consent; there is no extra prompt. The docs
   explain why `live-restore` is owned (the guest must unmount the data disk cleanly).
 - **Gap:** small. REQ-UX-017 (new), REQ-UX-006.
+- **Done (2026-11-01):** S2.7's list, as "dockerd restarts: ...", before the restart
+  (*verified on VM* with `config set proxy.noProxy ... --apply`).
 
 ### S6.2 `config set memory ... --apply` (VM restart)
 
@@ -777,6 +806,8 @@ then forward slashes). `hyperbutler status` prints it on the "docker:" line.
   start (S2.2 applies to the containers).
 - **Intended:** the same list as S6.1, with "the VM restarts".
 - **Gap:** small. REQ-UX-017 (new).
+- **Done (2026-11-01):** as intended (*verified on VM* with `config set memory 3GiB
+  --apply`).
 
 ### S6.3 Live settings
 
@@ -815,6 +846,13 @@ then forward slashes). `hyperbutler status` prints it on the "docker:" line.
 - **Intended:** as today, plus `state.json` and `status` show "paused: the host volume C:
   has 20 MiB free; free space to resume", and the engine log says the same once.
 - **Gap:** small. REQ-DISK-004, REQ-DISK-010 (new).
+- **Done (2026-11-01, unit tests):** the guard reports each pause to the engine, which
+  writes `guardPause` into `state.json` (volume, free space, the free space it resumes
+  at, since when), refreshes it while paused when the free space moves by 1 MiB or more,
+  and removes it on resume. `status` prints "paused:  C: has 900.0 MiB free; it resumes
+  at 1.2 GiB free (...)" with the free space it measures itself, and `status --json`
+  has `guardPause`. Tested with a fake free-space reading (`TestHostGuardReportsPause`);
+  not run on a full volume, which needs a mounted test VHD and so admin.
 
 ### S7.3 A container uses more memory than the VM has
 
@@ -872,6 +910,9 @@ then forward slashes). `hyperbutler status` prints it on the "docker:" line.
   `hyperbutler upgrade --from ZIP` (or the MSI in 0.2) does stop, replace and start in
   order.
 - **Gap:** small. REQ-PLAT-008 (new), REQ-PLAT-005.
+- **Done (2026-11-01):** `status` shows the running engine's `hyperbutler.exe` and
+  version (`state.json` records them), and S9.2's message covers a start from the new
+  folder.
 
 ### S9.2 `hyperbutler start` from a new folder while the old engine runs
 
@@ -886,6 +927,14 @@ then forward slashes). `hyperbutler status` prints it on the "docker:" line.
   Run `hyperbutler restart` from here to switch." `state.json` already has `ImageDir`;
   it needs the engine's executable path and version as well.
 - **Gap:** small. REQ-PLAT-008 (new).
+- **Done (2026-11-01):** `state.json` has `executable` and `executableVersion`. `start`
+  while an engine of this installation runs compares them with its own and, when either
+  differs, prints "hyperbutler V1 from C:\old is running; this is V2 from C:\new. Run
+  `hyperbutler restart` from this folder to switch to this one." and exits 0 as before.
+  *Verified on VM* with a second copy in another folder (same version) and a build with
+  another version (`(devel)`); `restart` from the second folder then ran its engine.
+  The image folder is not compared: `restart` keeps the engine's image unless a release
+  build's pin refuses it (`restartImageDir`).
 
 ## 10. Bind mounts
 
