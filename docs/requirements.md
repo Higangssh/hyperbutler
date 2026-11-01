@@ -182,7 +182,7 @@ Status on the reference machine (2026-10-31, `hyperbutler-dev` with the user-mod
 | REQ-UX-002 | Lightweight install. | The installer is ≤ 150 MB. With default settings and no GUI window open, no GUI or tray process is running. At most 3 resident host processes while running: `hyperbutler.exe`, the VMM (or `vmmem`), and one optional helper (`bench/footprint`). The budget is measured with the GUI closed; with the GUI open it is measured and reported separately ([ADR 0008](adr/0008-settings-gui-mcp.md)). | P1 | U2 A5 |
 | REQ-UX-003 | Failures are diagnosable. | `hyperbutler doctor` detects and explains, with a fix, at least: missing Windows features, virtualization disabled in firmware, a conflicting hypervisor, a full host disk, and a named-pipe conflict (`bench/doctor`). | P1 | U1 P5 |
 | REQ-UX-004 | No account. | No feature needs a Docker, hyperbutler, or any other account. Registry logins stay the docker CLI's business (review of every release). | P0 | A4 |
-| REQ-UX-005 | No telemetry. | With default settings, hyperbutler makes no network requests of its own except the update check, and that check can be turned off. Image pulls and container traffic are the user's. Verified with a packet capture (`bench/no-telemetry`, *manual*). | P0 | A12 |
+| REQ-UX-005 | No telemetry. | With default settings, hyperbutler makes no network requests of its own except the update check, and that check can be turned off. Image pulls and container traffic are the user's. Verified by `bench/no-telemetry` (the engine's sockets and the guest network's flow log over an idle run, *manual*) and in CI by `internal/notelemetry` (no unreviewed network API in production code). | P0 | A12 |
 | REQ-UX-006 | Every setting has a command. | `hyperbutler config list/get/set/unset/path` reads and changes every user setting. `list` shows each key's value, default, source and when it applies. `set` validates first, writes atomically and says what restart, if any, it needs; it never restarts silently. An invalid file is never overwritten (unit and fuzz tests). | P0 | A6 |
 | REQ-UX-007 | Docker Engine settings pass through. | A user `daemon.json` reaches the guest's dockerd byte for byte. It is validated before use; keys hyperbutler owns are refused with a message; an invalid file leaves the previous one in effect. Applying it restarts dockerd only. `insecure-registries` to a LAN registry works end to end (`bench/daemon-json`). | P0 | A7 |
 | REQ-UX-008 | Machine-readable output. | `status`, `config list/get`, `version` and `diagnose` take `--json` with a documented, versioned schema, so scripts and AI tools can use them (unit tests on the schema). | P0 | A17 |
@@ -206,6 +206,32 @@ Status of the settings requirements (2026-10-31, `hyperbutler start`; details in
   registry on a second LAN machine is not tested yet.
 - REQ-UX-008: met for `status`, `config list/get/path` and `version` (`"schema": 1`, field
   names pinned by tests). `diagnose` does not exist yet.
+
+Status of REQ-UX-004 and REQ-UX-005 (2026-11-01, for 0.1):
+
+- REQ-UX-004: met (review of the tree). No command, setting or guest component asks for or
+  stores an account. The Docker API proxy passes `X-Registry-Auth` and every other header
+  through unchanged, so `docker login` and pulls stay the docker CLI's and dockerd's
+  business. `internal/engine/dockerctx` reads the user's `config.json` only for
+  `currentContext` and writes back every other key (credentials included) untouched. The
+  only "account" the tool mentions is the Windows account's Hyper-V Administrators
+  membership (until ADR 0004's broker) and the per-VM virtual account HCS uses.
+- REQ-UX-005: met. There is no update check in 0.1 (it comes in 0.2, with its off
+  switch). Statically, `internal/notelemetry` fails `go test ./...` on any network API in
+  production code (Windows and guest) that its allowlist does not justify, on a linked
+  module nobody reviewed, and on a guest init that runs a network tool or turns on
+  dockerd's `metrics-addr` or OpenTelemetry export. Today's network uses are the engine's
+  HTTP clients to dockerd over hvsock, the guest network's dialer and resolver (the
+  guest's own traffic) and the host gateway's loopback dialer. The guest runs no NTP or
+  DHCP client (its clock comes from Hyper-V's time sync, `hv_utils`; its address is on
+  the kernel command line), and dockerd gets no daemon.json by default, so its metrics
+  endpoint is off. At run time, `bench/no-telemetry` (5 min idle with one container run,
+  engine socket tables every 250 ms and the guest network's flow log) saw nothing on two
+  runs: no socket of the engine, its children or the VM's vmwp other than the pull's,
+  no guest connection, UDP flow or DNS query in the boot, idle and container phases, and
+  no guest frame at all at boot. The only remote endpoints were the pull of
+  `busybox:1.37` the bench made itself (registry-1.docker.io, auth.docker.io,
+  production.cloudfront.docker.com over 443), shown and not counted.
 
 ## Non-goals
 

@@ -228,6 +228,11 @@ met blocks the release. Changing a gate needs an ADR change, not a waiver here.
   written: unzip, PATH (with `clients\`, since a clean account has no docker CLI),
   `hyperbutler start`, `docker run --rm hello-world`, `docker compose version`,
   `hyperbutler stop`.
+- [ ] REQ-UX-005: `bench/no-telemetry` passes against the release candidate (default
+  5 minute idle, fresh `-home`), and `internal/notelemetry` is green in CI. 2026-11-01:
+  PASS on two runs, nothing seen outside the bench's own pull.
+- [ ] REQ-UX-004: no feature needs an account (review of the release's changes; the
+  2026-11-01 review is in [requirements.md](requirements.md)).
 - [ ] REQ-PLAT-005 (from the second release on): upgrading from every release since the
   last minor keeps images, volumes and containers.
 - [ ] The README "Current status" table matches the measured numbers for this release.
