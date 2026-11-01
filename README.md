@@ -258,6 +258,15 @@ proxy, so add the certificate to the image and set the proxy for builds (the doc
 `status`, `version`, `config list/get/path`, `doctor`, `diagnose` and `uninstall` take `--json`; every
 document carries `"schema": 1`. See [docs/research/settings.md](docs/research/settings.md).
 
+### The window
+
+`hyperbutler gui` (or a double-click on `hyperbutler.exe`) opens a small window: the engine's
+state with Start and Stop, containers by Compose project with their logs, storage,
+settings with `daemon.json`, and troubleshooting, in English or Korean. It uses the
+WebView2 Runtime that is part of Windows 11 (`WebView2Loader.dll` ships next to the exe),
+makes no network requests, starts nothing until you press Start, and leaves nothing
+running when you close it; the engine keeps running. See [docs/gui.md](docs/gui.md).
+
 ### AI tools (MCP)
 
 `hyperbutler mcp` is a Model Context Protocol server on stdio for an MCP client such as

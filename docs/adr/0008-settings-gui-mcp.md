@@ -148,6 +148,37 @@ open and is zero once it closes. Conditions:
 - The status schema (`StatusJSON`) lives in `package main`. Move it to an internal
   package the GUI can call directly, instead of starting `hyperbutler status --json`.
 
+#### The 0.2 GUI against the budgets (2026-11-01)
+
+The GUI is `hyperbutler gui` in `hyperbutler.exe`, not a second executable: the window
+calls the CLI's own code in process (one implementation of each operation), a
+double-click on `hyperbutler.exe` opens it from the same process (REQ-UX-016), the engine
+never loads WebView2 (only `gui` loads `WebView2Loader.dll`), and the stripped binary grows
+by 713 KB instead of repeating 17 MB. The cost is the console window a double-click shows
+for a moment; a `windowsgui` stub can remove it for the MSI's shortcut. `go-webview2` is
+replaced by `internal/gui/webview2` (the conditions above: no `log.Fatal` in callbacks,
+every COM object released, `runtime.Pinner`, `Controller::Close`, the loader DLL from disk
+only), and `StatusJSON` moved to `internal/schema`. Details, the bridge and its review:
+[docs/gui.md](../gui.md).
+
+bench/footprint, 50 runs of `hyperbutler gui --wait` with the engine stopped (same machine
+and display as above, WebView2 Runtime 156.0.4314.58, window 1120 x 780 DIP):
+
+| | Measured | Budget |
+|---|---|---|
+| Private working set, all processes | median 91.0 MiB, max 94.4 MiB | 100 MiB |
+| Processes | 7 | 8 |
+| First paint, warm | median 429 ms, max 453 ms | 2 s |
+| Processes left 2 s after close | 0 of 50 | 0 |
+| Network sockets held | 0 of 50 runs | none |
+
+All within the budgets, so WebView2 stays; native Win32 remains the fallback. The working
+set is 14 MiB above the spike's and reached 98.4 MiB after the layout check had shown every
+screen: the margin is small, and bench/footprint is the gate as screens grow. The socket
+check found the WebView2 Runtime connecting to its experimentation service on every launch
+after the first with a profile; no browser argument stops that, and the window removes the
+profile's `Local State` before each start, after which no run held a socket (docs/gui.md).
+
 Toolkit notes:
 
 - **DPI:** both spikes are per-monitor DPI aware (v2). WebView2 scales the page by
@@ -188,7 +219,8 @@ Implications for accessibility:
   `IRawElementProviderSimple`/`Fragment` for it.
 - Neither spike was checked with Narrator; do that on the first real screen.
 
-Third-party code added (spike only; nothing ships yet, so `NOTICE` is unchanged):
+Third-party code added by the spike (`hyperbutler.exe` links none of it; the 0.2 GUI ships
+only `WebView2Loader.dll`, listed in `NOTICE`):
 
 - `github.com/jchv/go-webview2` v0.0.0-20260205173254-56598839c808: MIT.
 - `github.com/jchv/go-winloader` v0.0.0-20250406163304-c1995be93bd1: ISC, a permissive
@@ -235,8 +267,10 @@ Third-party code added (spike only; nothing ships yet, so `NOTICE` is unchanged)
 
 Run on the 0.1 settings implementation (REQ-UX-006 to 008) on 2026-10-31: nine findings,
 two high (the guest's dockerd-restart watch), all fixed or documented in
-[settings.md](../research/settings.md#adversarial-review). It runs again on the GUI spike
-and the MCP server.
+[settings.md](../research/settings.md#adversarial-review). On the MCP server: see
+[mcp.md](../mcp.md). On the 0.2 GUI (2026-11-01): ten findings, none high, all fixed (the
+last by host-enforced one-time confirmation tokens), in
+[gui.md](../gui.md#adversarial-review-2026-11-01).
 
 ## Consequences
 

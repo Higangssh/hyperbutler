@@ -295,8 +295,28 @@ Status of the usage requirements (2026-11-01, for 0.1; scenarios in
   reads an input that is not a console. From a shell it prints the usage and exits 0
   (every usage error exits 2). Unit tests through a seam; on the VM in a console of its
   own made with `CREATE_NEW_CONSOLE` and Enter typed into it, engine stopped and running,
-  and through `Start-Process -Wait` (see usage-scenarios.md S0.1). The GUI part is 0.2.
-- REQ-UX-017: met. `stop`, `restart`, `config daemon apply` and a `config set --apply`
+  and through `Start-Process -Wait` (see usage-scenarios.md S0.1). GUI part (0.2): met on
+  2026-11-01. A double-click opens the window instead (without the WebView2 Runtime: a
+  message box with its download link, then the console launcher); the window starts the
+  engine only from its Start button or with `gui.startOnOpen`, and closing it never stops
+  the engine and says so once (docs/gui.md).
+- REQ-UX-011 (2026-11-01, 0.2 GUI phase 1): met except actions on images and volumes,
+  which are read-only lists. `hyperbutler gui` shows status, containers grouped by Compose
+  project with start, stop, restart and logs, storage, settings with `daemon.json`, and
+  troubleshooting; WebView2 with software compositing, not Electron. bench/footprint over
+  50 runs: 91.0 MiB median private working set (budget 100), 7 processes (8), first paint
+  429 ms warm (2 s), 0 processes left 2 s after close, no network socket (docs/gui.md).
+  Nothing polls while the window is hidden.
+- REQ-UX-013 (2026-11-01): met for English and Korean. Every GUI string is in a keyed
+  catalog with placeholders and plural forms; the language follows Windows or
+  `gui.language`; errors show a stable code and copy the English original; the
+  completeness test and the pseudo-locale layout check (`bench/footprint -lang pseudo
+  -check-layout`) pass. Japanese and Chinese are for 1.0.
+- REQ-UX-023 in the window (2026-11-01): Storage's "Import from Docker Desktop" dialog
+  drives the same internal/desktopimport plan and copy, with the import lock, the
+  free-space check ("Start anyway" is `--force-space`), progress, Cancel and the check that
+  Docker Desktop is unchanged; checked against a stand-in engine on Docker Desktop's pipe
+  (docs/gui.md).- REQ-UX-017: met. `stop`, `restart`, `config daemon apply` and a `config set --apply`
   that restarts dockerd or the VM list the running containers first (name, image, what
   happens), from the engine's Docker API over its pipe, and go on without asking; an API
   that does not answer in 5 s is said so. `always` and `unless-stopped` come back;

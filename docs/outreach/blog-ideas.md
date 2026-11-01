@@ -165,6 +165,15 @@ surprising. Numbers are from the maintainer's Windows 11 Home laptop unless note
   Tested against a second hyperbutler serving Docker Desktop's pipe name, and a run
   killed mid-copy is cleaned up by the next one.
 
+- **The browser that phoned home only on its second launch.** The GUI's footprint bench
+  checks that the window's processes hold no socket. The first launch passed; every
+  later one held two TLS connections to Microsoft from the WebView2 browser process, to
+  its experimentation service (`config.edge.skype.com`). A resolver rule that fails
+  every lookup, a dead proxy and the variations-fetch switch changed nothing: the
+  connection is made outside Chromium's network stack, and only a group policy turns
+  it off. Bisecting the profile pointed at one file, `Local State`: removing it before
+  each start makes every launch a first launch, and 50 of 50 runs then held no socket
+  ([gui.md](../gui.md#no-network-requests-req-ux-005)).
 ## Still to measure before writing
 
 - Side by side with Docker Desktop on WSL2 on the same machine (9P baselines need WSL).

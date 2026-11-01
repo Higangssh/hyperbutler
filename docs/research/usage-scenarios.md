@@ -167,6 +167,11 @@ For each scenario:
   created before this process so a reused PID does not count. `Start-Process -Wait` with
   a visible window now prints the usage and exits 0 in 1.2 s (2026-11-01). The waits
   stay bounded for any other launcher that looks like Explorer.
+- **Done (2026-11-01, 0.2 GUI):** with the WebView2 Runtime present the same detection frees
+  the console and opens the window in the same process (`hyperbutler gui`); without it, a
+  message box gives the runtime's download link and the console launcher runs. Unit tests
+  through a seam (`TestRunNoArgsOpensGUI`); the window itself was driven through UI
+  Automation (docs/gui.md).
 
 ### S0.2 A Start-menu or desktop shortcut
 
@@ -206,6 +211,12 @@ For each scenario:
   - The GUI says, once, the first time its window closes while the engine runs: "The
     engine keeps running in the background. Stop it here or with `hyperbutler stop`."
 - **Gap:** small (a design decision for the GUI spike). REQ-UX-011, REQ-UX-016 (new).
+- **Done (2026-11-01):** as intended. Opening shows the phase at once and a Start button
+  (the first-run screen when there is no settings.json); `gui.startOnOpen` (off by default)
+  starts a stopped engine at open. Stop shows the S2.7 list first. Closing never stops the
+  engine (it runs outside the window's job), the window's processes are gone about 0.2 s
+  after it closes, and the first close while the engine runs shows the note once.
+  *Verified on VM* with a test installation, driven through UI Automation (docs/gui.md).
 
 ## 1. The engine is not running
 
