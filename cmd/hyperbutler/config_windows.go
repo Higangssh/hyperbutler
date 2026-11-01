@@ -101,7 +101,7 @@ func configList(args []string, stdout, stderr io.Writer) error {
 	env := in.env()
 	env.ShowSecrets = *showSecrets
 	items := config.List(in.settings, env)
-	auto := autostartState()
+	auto := autostartFor(in)
 	if *asJSON {
 		return writeJSON(stdout, ConfigListJSON{Schema: SchemaVersion, SettingsFile: in.l.SettingsPath(), Keys: items, Autostart: &auto})
 	}

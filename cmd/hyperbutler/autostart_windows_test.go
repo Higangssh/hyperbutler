@@ -252,4 +252,11 @@ func TestAutostartOtherHome(t *testing.T) {
 	if code, out, _ := runCLI(t, "uninstall", "--dry-run", "--json"); code != 0 || strings.Contains(out, "scheduled-task") {
 		t.Fatalf("uninstall of another installation lists the task: %q", out)
 	}
+	// false records the setting and leaves the other installation's task.
+	if code, _, e := runCLI(t, "config", "set", "autostart", "false"); code != 0 || len(f.tasks) != 1 {
+		t.Fatalf("set false: %d %q %d", code, e, len(f.tasks))
+	}
+	if code, out, _ := runCLI(t, "config", "list"); code != 0 || !strings.Contains(out, `autostart task: it starts the installation in C:\elsewhere\hyperbutler, not this one`) {
+		t.Fatalf("list: %q", out)
+	}
 }

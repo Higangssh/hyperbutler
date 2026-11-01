@@ -61,7 +61,8 @@ hyperbutler restart
   this `hyperbutler.exe` (after a move, `set autostart true` again points it here).
   `false` and `uninstall` remove it. It starts the installation in
   `%LOCALAPPDATA%\hyperbutler` only: with `HYPERBUTLER_HOME` set to another directory,
-  `set autostart true` is refused. The first start of an installation mentions the
+  `set autostart true` is refused, and `false`, `config list`, `doctor` and `uninstall` leave
+  the task alone. The first start of an installation mentions the
   setting once.
 - **updateCheck** (REQ-UX-022, 0.2): on by default, as REQ-UX-005 allows (the one request
   hyperbutler makes of its own, with an off switch). At most once a day `start` and

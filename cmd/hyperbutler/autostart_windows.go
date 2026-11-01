@@ -322,6 +322,22 @@ func runSchtasks(args ...string) ([]byte, error) {
 	return stdout.Bytes(), err
 }
 
+// autostartOurs reports whether in is the installation the task starts (the one in
+// %LOCALAPPDATA%\hyperbutler, home): only that one shows, changes or removes it.
+func autostartOurs(in *install) (home string, ok bool) {
+	home, err := autostartHome()
+	return home, err == nil && engine.SamePath(home, in.l.Home)
+}
+
+// autostartFor is the task's state for in: for another installation (HYPERBUTLER_HOME)
+// it is not looked up, and Error says why.
+func autostartFor(in *install) AutostartJSON {
+	if home, ok := autostartOurs(in); !ok {
+		return AutostartJSON{Error: "it starts the installation in " + home + ", not this one"}
+	}
+	return autostartState()
+}
+
 // autostartState looks the task up.
 func autostartState() AutostartJSON {
 	name, err := autostartTaskName()
@@ -349,6 +365,9 @@ func autostartState() AutostartJSON {
 func describeAutostart(a AutostartJSON, wanted bool) string {
 	switch {
 	case a.Error != "" && !a.Exists:
+		if a.Task == "" {
+			return "autostart task: " + a.Error
+		}
 		return "autostart task: cannot tell (" + a.Error + ")"
 	case !a.Exists && wanted:
 		return fmt.Sprintf("autostart task: %s is missing; `hyperbutler config set autostart true` creates it again", a.Task)
@@ -366,6 +385,13 @@ func describeAutostart(a AutostartJSON, wanted bool) string {
 // called before settings.json records the change, so a task that could not be made
 // leaves the setting as it was.
 func applyAutostart(in *install, on bool, stdout io.Writer) error {
+	if home, ok := autostartOurs(in); !ok {
+		if on {
+			return fmt.Errorf("autostart starts the installation in %s, but this one is %s (HYPERBUTLER_HOME); it is not supported for another state directory", home, in.l.Home)
+		}
+		// The task is the other installation's: leave it.
+		return nil
+	}
 	name, err := autostartTaskName()
 	if err != nil {
 		return err
@@ -384,13 +410,6 @@ func applyAutostart(in *install, on bool, stdout io.Writer) error {
 		}
 		_, _ = fmt.Fprintf(stdout, "Removed the Task Scheduler task %s.\n", name)
 		return nil
-	}
-	home, err := autostartHome()
-	if err != nil {
-		return fmt.Errorf("autostart: %w", err)
-	}
-	if !engine.SamePath(home, in.l.Home) {
-		return fmt.Errorf("autostart starts the installation in %s, but this one is %s (HYPERBUTLER_HOME); it is not supported for another state directory", home, in.l.Home)
 	}
 	exe, err := os.Executable()
 	if err != nil {
@@ -425,7 +444,7 @@ func applyAutostart(in *install, on bool, stdout io.Writer) error {
 // installation in %LOCALAPPDATA%\hyperbutler, so the uninstall of another one (with
 // HYPERBUTLER_HOME) leaves it.
 func planAutostart(in *install, p *uninstallPlan) {
-	if home, err := autostartHome(); err != nil || !engine.SamePath(home, in.l.Home) {
+	if _, ok := autostartOurs(in); !ok {
 		return
 	}
 	a := autostartState()
@@ -439,7 +458,7 @@ func planAutostart(in *install, p *uninstallPlan) {
 
 // autostartCheck is doctor's line about the task.
 func autostartCheck(in *install) DoctorCheck {
-	a := autostartState()
+	a := autostartFor(in)
 	wanted := in.settings != nil && in.settings.Autostart
 	c := DoctorCheck{ID: "autostart", Status: doctorInfo, Summary: describeAutostart(a, wanted)}
 	switch {
