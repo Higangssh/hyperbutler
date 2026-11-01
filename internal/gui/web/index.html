@@ -1,0 +1,234 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="color-scheme" content="light">
+<meta name="referrer" content="no-referrer">
+<title>hyperbutler</title>
+<link rel="stylesheet" href="app.css">
+<script src="app.js" defer></script>
+</head>
+<body>
+<div class="win" id="win" hidden>
+  <nav class="tabs" role="tablist" id="tabs" data-k-aria="nav.label">
+    <button role="tab" id="tab-home" aria-controls="view-home" aria-selected="true" data-k="tab.home"></button>
+    <button role="tab" id="tab-containers" aria-controls="view-containers" aria-selected="false" tabindex="-1" data-k="tab.containers"></button>
+    <button role="tab" id="tab-storage" aria-controls="view-storage" aria-selected="false" tabindex="-1" data-k="tab.storage"></button>
+    <button role="tab" id="tab-settings" aria-controls="view-settings" aria-selected="false" tabindex="-1" data-k="tab.settings"></button>
+    <button role="tab" id="tab-help" aria-controls="view-help" aria-selected="false" tabindex="-1" data-k="tab.help"></button>
+  </nav>
+
+  <main class="main">
+    <!-- Home -->
+    <section id="view-home" role="tabpanel" aria-labelledby="tab-home" class="stack">
+      <section class="card hero" id="hero">
+        <img class="mascot" id="hero-mascot" src="mascot.png" width="150" height="132" alt="" data-k-alt="mascot.alt">
+        <div class="hero-text">
+          <span class="state" id="hero-state" role="status" aria-live="polite"></span>
+          <h1 id="hero-title"></h1>
+          <p class="sub" id="hero-sub"></p>
+        </div>
+        <div class="row-buttons" id="hero-buttons"></div>
+      </section>
+      <section class="card error-steps" id="error-card" hidden>
+        <h2 class="h2" data-k="error.steps.title"></h2>
+        <ol class="steps" id="error-steps"></ol>
+        <details class="details">
+          <summary data-k="error.details"></summary>
+          <pre class="mono" id="error-detail"></pre>
+          <div class="row-buttons end">
+            <span class="code" id="error-code"></span>
+            <button class="btn ghost small" id="error-copy" data-k="error.copy"></button>
+          </div>
+        </details>
+        <div class="row-buttons">
+          <button class="btn primary" id="error-retry" data-k="error.retry"></button>
+          <button class="btn ghost" id="error-diagnose" data-k="help.diagnose.button"></button>
+          <button class="btn ghost" id="error-help" data-k="error.openHelp"></button>
+        </div>
+      </section>
+      <div class="grid4">
+        <div class="card stat"><div class="ico ico-mem" aria-hidden="true"></div><div class="stat-body"><span class="sub" data-k="home.memory"></span><div><span class="num" id="st-mem"></span><span class="unit" id="st-mem-unit"></span></div><span class="sub" id="st-mem-sub"></span></div></div>
+        <div class="card stat"><div class="ico ico-cpu" aria-hidden="true"></div><div class="stat-body"><span class="sub" data-k="home.cpus"></span><div><span class="num" id="st-cpu"></span></div><span class="sub" id="st-cpu-sub"></span></div></div>
+        <div class="card stat"><div class="ico ico-disk" aria-hidden="true"></div><div class="stat-body"><span class="sub" data-k="home.disk"></span><div><span class="num" id="st-disk"></span><span class="unit" id="st-disk-unit"></span></div><span class="sub" id="st-disk-sub"></span></div></div>
+        <div class="card stat"><div class="ico ico-box" aria-hidden="true"></div><div class="stat-body"><span class="sub" data-k="home.containers"></span><div><span class="num" id="st-ctr"></span><span class="unit" id="st-ctr-unit"></span></div><span class="sub" id="st-ctr-sub"></span></div></div>
+      </div>
+      <section class="card" id="home-projects" hidden>
+        <h2 class="h2" data-k="home.running.title"></h2>
+        <div id="home-project-list"></div>
+      </section>
+    </section>
+
+    <!-- Containers -->
+    <section id="view-containers" role="tabpanel" aria-labelledby="tab-containers" class="split" hidden>
+      <section class="card list-card" aria-labelledby="ctr-list-title">
+        <h2 class="visually-hidden" id="ctr-list-title" data-k="containers.list"></h2>
+        <div class="toolbar"><button class="btn ghost small" id="ctr-refresh" data-k="action.refresh"></button></div>
+        <div id="ctr-groups"></div>
+      </section>
+      <section class="card detail-card" id="ctr-detail" aria-live="polite">
+        <div id="ctr-empty" class="empty"></div>
+        <div id="ctr-selected" hidden>
+          <div class="detail-head">
+            <span class="av" id="ctr-av" aria-hidden="true"></span>
+            <div class="detail-title"><h2 class="h2" id="ctr-name"></h2><span class="sub" id="ctr-status"></span></div>
+            <div class="row-buttons" id="ctr-actions"></div>
+          </div>
+          <div class="toolbar">
+            <span class="pill on" data-k="containers.logs"></span>
+            <label class="inline-label" for="log-tail" data-k="containers.tail"></label>
+            <select id="log-tail" class="field small">
+              <option value="100">100</option><option value="200" selected>200</option><option value="500">500</option><option value="1000">1000</option>
+            </select>
+            <button class="btn ghost small" id="log-refresh" data-k="action.refresh"></button>
+          </div>
+          <pre class="log" id="log" tabindex="0" data-k-aria="containers.logs"></pre>
+          <p class="sub small" id="log-note"></p>
+        </div>
+      </section>
+    </section>
+
+    <!-- Storage -->
+    <section id="view-storage" role="tabpanel" aria-labelledby="tab-storage" class="stack" hidden>
+      <div class="split">
+        <section class="card stack-tight">
+          <span class="sub strong" data-k="storage.host"></span>
+          <div><span class="num" id="sto-used"></span><span class="unit" id="sto-used-unit"></span><span class="sub gap" id="sto-max"></span></div>
+          <div class="bar" id="sto-bar" role="img"><div class="seg seg-img" id="sto-seg-img"></div><div class="seg seg-vol" id="sto-seg-vol"></div><div class="seg seg-cache" id="sto-seg-cache"></div></div>
+          <div class="legend" id="sto-legend"></div>
+          <div class="note blue"><img src="mascot.png" alt="" width="44" height="40"><span data-k="storage.reclaim.note"></span></div>
+        </section>
+        <section class="card stack-tight">
+          <h2 class="h2" data-k="storage.cleanup.title"></h2>
+          <p class="sub" data-k="storage.cleanup.body"></p>
+          <code class="mono block">docker system prune</code>
+        </section>
+      </div>
+      <section class="card import-card">
+        <div class="grow"><h2 class="h2" data-k="import.title"></h2><p class="sub" data-k="import.body"></p></div>
+        <button class="btn primary" id="import-open" data-k="import.open"></button>
+      </section>
+      <section class="card">
+        <h2 class="h2" id="sto-list-title"></h2>
+        <div id="sto-list"></div>
+      </section>
+    </section>
+
+    <!-- Settings -->
+    <section id="view-settings" role="tabpanel" aria-labelledby="tab-settings" class="stack" hidden>
+      <div class="banner warn" id="set-banner" hidden>
+        <img src="mascot.png" alt="" width="40" height="36">
+        <span class="strong" id="set-banner-text"></span>
+        <button class="btn primary" id="set-banner-apply" data-k="settings.restartNow"></button>
+      </div>
+      <div class="split">
+        <div class="col">
+          <h2 class="h" data-k="settings.resources"></h2>
+          <section class="card set-card" id="set-resources"></section>
+          <h2 class="h" data-k="settings.connection"></h2>
+          <section class="card set-card" id="set-connection"></section>
+          <h2 class="h" data-k="settings.app"></h2>
+          <section class="card set-card" id="set-app"></section>
+          <h2 class="h" data-k="settings.advanced"></h2>
+          <section class="card set-card" id="set-advanced"></section>
+        </div>
+        <div class="col">
+          <h2 class="h" data-k="daemon.title"></h2>
+          <section class="card stack-tight">
+            <p class="sub" data-k="daemon.body"></p>
+            <label class="visually-hidden" for="daemon-text" data-k="daemon.editor"></label>
+            <textarea id="daemon-text" class="code" spellcheck="false" autocomplete="off" rows="14"></textarea>
+            <p class="sub small" id="daemon-path"></p>
+            <div class="result" id="daemon-result" role="status" aria-live="polite" hidden></div>
+            <div class="row-buttons end">
+              <button class="btn ghost" id="daemon-validate" data-k="daemon.validate"></button>
+              <button class="btn ghost" id="daemon-save" data-k="daemon.save"></button>
+              <button class="btn primary" id="daemon-apply" data-k="daemon.apply"></button>
+            </div>
+          </section>
+        </div>
+      </div>
+    </section>
+
+    <!-- Help (troubleshooting) -->
+    <section id="view-help" role="tabpanel" aria-labelledby="tab-help" class="stack" hidden>
+      <div class="split">
+        <section class="card doctor">
+          <img class="mascot-sm" src="mascot.png" width="96" height="84" alt="" data-k-alt="mascot.alt">
+          <div class="grow">
+            <h2 class="h2" data-k="help.doctor.title"></h2>
+            <ul class="checks" id="doctor-list" aria-live="polite"></ul>
+            <button class="btn ghost" id="doctor-run" data-k="help.doctor.again"></button>
+          </div>
+        </section>
+        <section class="card stack-tight">
+          <h2 class="h2" data-k="help.diagnose.title"></h2>
+          <p class="sub" data-k="help.diagnose.body"></p>
+          <p class="sub path" id="diag-result" role="status" aria-live="polite"></p>
+          <div class="row-buttons">
+            <button class="btn primary" id="diag-run" data-k="help.diagnose.button"></button>
+            <button class="btn ghost" id="diag-reveal" data-k="help.diagnose.reveal" hidden></button>
+          </div>
+        </section>
+      </div>
+      <section class="card stack-tight">
+        <div class="title-row"><h2 class="h2" data-k="help.ladder.title"></h2><span class="sub" data-k="help.ladder.sub"></span></div>
+        <ol class="steps ladder">
+          <li class="step"><span class="n" aria-hidden="true">1</span><div class="grow"><div class="strong" data-k="help.ladder.dockerd"></div><div class="sub small" data-k="help.ladder.dockerd.sub"></div></div><button class="btn ghost" id="ladder-dockerd" data-k="help.ladder.try"></button></li>
+          <li class="step"><span class="n" aria-hidden="true">2</span><div class="grow"><div class="strong" data-k="help.ladder.vm"></div><div class="sub small" data-k="help.ladder.vm.sub"></div></div><button class="btn ghost" id="ladder-vm" data-k="help.ladder.try"></button></li>
+          <li class="step"><span class="n" aria-hidden="true">3</span><div class="grow"><div class="strong" data-k="help.ladder.settings"></div><div class="sub small" data-k="help.ladder.settings.sub"></div><code class="mono">hyperbutler config unset KEY</code></div></li>
+          <li class="step"><span class="n" aria-hidden="true">4</span><div class="grow"><div class="strong" data-k="help.ladder.image"></div><div class="sub small" data-k="help.ladder.image.sub"></div></div></li>
+        </ol>
+      </section>
+      <p class="sub small center" id="about"></p>
+    </section>
+  </main>
+</div>
+
+<!-- First run -->
+<main class="first" id="first" hidden>
+  <div class="first-card">
+    <img src="mascot.png" width="168" height="148" alt="" data-k-alt="mascot.alt">
+    <h1 data-k="first.title"></h1>
+    <p class="sub big" data-k="first.body"></p>
+    <ul class="checks boxed" id="first-checks" aria-live="polite"></ul>
+    <button class="btn primary huge" id="first-start" data-k="first.start"></button>
+    <p class="sub small"><span data-k="first.promise"></span> · <button class="link" id="first-settings" data-k="first.settingsFirst"></button></p>
+  </div>
+</main>
+
+<div class="toast" id="toast" role="alert" hidden>
+  <div class="toast-body"><strong id="toast-title"></strong><span id="toast-text"></span><span class="code" id="toast-code"></span></div>
+  <div class="row-buttons"><button class="btn ghost small" id="toast-copy" data-k="error.copy"></button><button class="btn ghost small" id="toast-close" data-k="action.close"></button></div>
+</div>
+
+<dialog id="import" aria-labelledby="import-title">
+  <form method="dialog" class="dialog wide">
+    <h2 class="h2" id="import-title" data-k="import.title"></h2>
+    <p class="sub" id="import-note" role="status" aria-live="polite"></p>
+    <ul class="importlist" id="import-list"></ul>
+    <div class="progress" id="import-progress" hidden>
+      <div class="bar"><div class="seg seg-img" id="import-bar"></div></div>
+      <span class="sub small" id="import-progress-text" aria-live="polite"></span>
+    </div>
+    <div class="row-buttons end">
+      <button class="btn ghost" type="button" id="import-cancel" data-k="import.cancel" hidden></button>
+      <button class="btn ghost" value="close" id="import-close" data-k="action.close"></button>
+      <button class="btn primary" type="button" id="import-start" data-k="import.start"></button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="confirm" aria-labelledby="confirm-title">
+  <form method="dialog" class="dialog">
+    <h2 class="h2" id="confirm-title"></h2>
+    <p class="sub" id="confirm-body"></p>
+    <ul class="stoplist" id="confirm-list"></ul>
+    <div class="row-buttons end">
+      <button class="btn ghost" value="cancel" id="confirm-cancel" data-k="action.cancel" autofocus></button>
+      <button class="btn primary" value="ok" id="confirm-ok"></button>
+    </div>
+  </form>
+</dialog>
+</body>
+</html>
