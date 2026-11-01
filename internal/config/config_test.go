@@ -384,3 +384,38 @@ func TestCAExtraFileCopy(t *testing.T) {
 		t.Fatalf("junk: %v, %d saved", err, len(saved))
 	}
 }
+
+// TestGUIKeys checks the GUI's own settings (REQ-UX-013, REQ-UX-016): the language is
+// auto or a shipped one, and opening the GUI starts nothing unless asked.
+func TestGUIKeys(t *testing.T) {
+	e, _ := testEnv(t)
+	lang, err := Lookup("gui.language")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if it := lang.Get(nil, e); it.Value != "auto" || it.Source != SourceDefault {
+		t.Fatalf("default language %+v", it)
+	}
+	s, err := lang.Set(nil, "KO", e)
+	if err != nil || s.GUILanguage != "ko" {
+		t.Fatalf("set ko: %v %+v", err, s)
+	}
+	if s, err = lang.Set(s, "auto", e); err != nil || s.GUILanguage != "" {
+		t.Fatalf("set auto: %v %+v", err, s)
+	}
+	for _, bad := range []string{"fr", "ko-KR", "../x", "<script>"} {
+		if _, err := lang.Set(nil, bad, e); err == nil {
+			t.Errorf("gui.language %q accepted", bad)
+		}
+	}
+	open, err := Lookup("gui.startOnOpen")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if it := open.Get(nil, e); it.Value != "false" {
+		t.Fatalf("gui.startOnOpen defaults to %s", it.Value)
+	}
+	if s, err := open.Set(nil, "true", e); err != nil || !s.GUIStartOnOpen {
+		t.Fatalf("set: %v", err)
+	}
+}

@@ -176,6 +176,8 @@ the network can reach nor changes what is trusted or what runs at sign-in.
 | `autostart` | refused | creates (or removes) a Task Scheduler task that runs at every sign-in |
 | `updateCheck` | refused | not dangerous, but whether hyperbutler makes its one network request (REQ-UX-005) is the user's network-policy choice, in either direction: a client must neither turn it on behind the user's back nor turn off the notices the user chose |
 | `network.frameCheck` | refused | turning it off trades data integrity for a few percent of throughput, a choice that is the user's |
+| `gui.startOnOpen` | refused | makes every opening of the GUI boot the VM: a standing choice that is the user's |
+| `gui.language` | refused | a preference of the user's own GUI, which no AI client needs to change |
 
 An allowed key goes through the CLI's own `config set` code, with `--` before the key and
 value, so a value such as `--apply` is a value and is refused by the key's validation,

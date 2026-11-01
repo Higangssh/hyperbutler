@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -299,6 +300,47 @@ var Keys = []*Key{
 			return nil
 		},
 		unset: func(s *engine.Settings, _ Env) error { s.UpdateCheck = nil; return nil },
+	},
+	{
+		Name: "gui.startOnOpen", Type: "bool", Apply: ApplyLive,
+		Description: "whether opening the GUI starts a stopped engine; by default it only shows a Start button",
+		def:         func(Env) string { return "false" },
+		get: func(s *engine.Settings, _ Env) (string, bool) {
+			return strconv.FormatBool(s.GUIStartOnOpen), s.GUIStartOnOpen
+		},
+		set: func(s *engine.Settings, v string, _ Env) error {
+			b, err := ParseBool(v)
+			if err != nil {
+				return err
+			}
+			s.GUIStartOnOpen = b
+			return nil
+		},
+		unset: func(s *engine.Settings, _ Env) error { s.GUIStartOnOpen = false; return nil },
+	},
+	{
+		Name: "gui.language", Type: "language", Apply: ApplyLive,
+		Description: `the GUI's language: "auto" (the Windows display language), ` + strings.Join(engine.GUILanguages, ", "),
+		def:         func(Env) string { return "auto" },
+		get: func(s *engine.Settings, _ Env) (string, bool) {
+			if s.GUILanguage == "" {
+				return "auto", false
+			}
+			return s.GUILanguage, true
+		},
+		set: func(s *engine.Settings, v string, _ Env) error {
+			v = strings.ToLower(strings.TrimSpace(v))
+			switch {
+			case v == "auto" || v == "":
+				s.GUILanguage = ""
+			case slices.Contains(engine.GUILanguages, v):
+				s.GUILanguage = v
+			default:
+				return fmt.Errorf("%.40q: want auto or one of %s", v, strings.Join(engine.GUILanguages, ", "))
+			}
+			return nil
+		},
+		unset: func(s *engine.Settings, _ Env) error { s.GUILanguage = ""; return nil },
 	},
 	{
 		Name: "hostGateway.enabled", Type: "bool", Apply: ApplyLive, Engine: true,

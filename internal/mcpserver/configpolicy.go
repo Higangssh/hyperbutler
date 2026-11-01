@@ -34,6 +34,8 @@ var configPolicy = map[string]configRule{
 	"hostGateway.enabled": {false, "it lets containers reach services on this machine's 127.0.0.1, and applies at once"},
 	"hostGateway.ports":   {false, "it chooses which of this machine's loopback ports containers reach, and applies at once"},
 	"autostart":           {false, "it creates a Task Scheduler task that runs at every sign-in"},
+	"gui.language":        {false, "a preference of the user's own GUI, which no AI client needs to change"},
+	"gui.startOnOpen":     {false, "it makes every opening of the GUI boot the VM, a standing choice that is the user's"},
 	"updateCheck":         {false, "whether hyperbutler makes its one network request is a network-policy choice for the user, in either direction"},
 	"network.frameCheck":  {false, "turning it off trades data integrity for throughput, a choice that is the user's"},
 }

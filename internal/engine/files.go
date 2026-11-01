@@ -11,6 +11,7 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -406,7 +407,16 @@ type Settings struct {
 	// Autostart records that `config set autostart true` asked for the sign-in task
 	// (REQ-UX-015). The task in Task Scheduler is what starts the engine.
 	Autostart bool `json:"autostart,omitempty"`
+	// GUIStartOnOpen says whether opening the GUI starts a stopped engine (REQ-UX-016);
+	// by default it never does, and shows a Start button instead.
+	GUIStartOnOpen bool `json:"guiStartOnOpen,omitempty"`
+	// GUILanguage is the GUI's language (REQ-UX-013), one of GUILanguages; empty means
+	// the Windows display language.
+	GUILanguage string `json:"guiLanguage,omitempty"`
 }
+
+// GUILanguages are the languages the GUI ships, besides empty (follow Windows).
+var GUILanguages = []string{"en", "ko"}
 
 // UpdateChecked reports whether the update check is on.
 func (s *Settings) UpdateChecked() bool { return s.UpdateCheck == nil || *s.UpdateCheck }
@@ -545,6 +555,9 @@ func (s *Settings) Validate() error {
 		if err := dockerenv.ValidateProxyURL(s.HTTPSProxy); err != nil {
 			return fmt.Errorf("settings: https proxy: %w", err)
 		}
+	}
+	if s.GUILanguage != "" && !slices.Contains(GUILanguages, s.GUILanguage) {
+		return fmt.Errorf("settings: GUI language %q is not one of %s", s.GUILanguage, strings.Join(GUILanguages, ", "))
 	}
 	if s.NoProxy != "" {
 		if err := dockerenv.ValidateNoProxy(s.NoProxy); err != nil {
