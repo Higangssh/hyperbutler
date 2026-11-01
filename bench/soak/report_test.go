@@ -40,7 +40,7 @@ func TestReport(t *testing.T) {
 	if err := report(&out, c, missing, 100, 0, "", nil, nil, nil, false); err != nil {
 		t.Fatalf("opted-out metric failed the run: %v", err)
 	}
-	if !strings.Contains(out.String(), "goroutines       skipped (opted out)") {
+	if !strings.Contains(out.String(), "goroutines        skipped (opted out)") {
 		t.Fatalf("opt-out not reported:\n%s", out.String())
 	}
 

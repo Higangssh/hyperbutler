@@ -100,6 +100,21 @@ Why Go here specifically:
    samples private working set and handle and goroutine counts, and fails on any positive
    trend beyond noise. It must pass before every release. A shorter run, for example 1 h,
    gates main on self-hosted hardware.
+   *Change, 2026-11-01:* the engine's private working set and private bytes are judged
+   as `ws_private + heap_released` and `private_bytes + heap_released` (same sample, same
+   limits); the raw values are still reported, and judged only when `heap_released` is
+   not sampled (no diag endpoint). Reason: on Windows the Go scavenger decommits the
+   pages it releases and reusing them commits them again, so the raw metrics rise as
+   `heap_released` falls, by up to its size, without a leak. Evidence: the gate failed
+   twice on the raw working set (+3.4 MiB over a 50 min window, +3.6 MiB over 35 min,
+   against about 2 MiB allowed) while Go `Sys` (42.0 MiB) and the Windows heaps
+   (1.27 MiB) were flat after the warm-up, a diff of the committed private regions
+   (`VirtualQueryEx`) put almost all the growth in Go's 4 MiB heap arenas being
+   recommitted, and over the window `private_bytes + heap_released` went from 93.77 to
+   93.80 MiB and `ws_private + heap_released` from 44.9 to 45.2 MiB. Re-judged from their
+   CSVs (`soak -judge`), both runs pass on the adjusted metrics. Growth the runtime cannot
+   give back (heap, stacks, native memory) still raises the adjusted metrics, and
+   `heap_released` is bounded by the heap, which `heap_inuse` is judged on.
 4. **Runtime limits:** long-running Go processes set `GOMEMLIMIT` and expose `pprof` and
    handle counts on a local debug endpoint, off by default.
 5. **Small `unsafe` surface:** Win32 and HCS calls live in a few files per package, are

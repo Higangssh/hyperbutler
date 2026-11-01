@@ -43,6 +43,23 @@ or the VM, grows over time.
   - the median floor of the last fifth of the window minus that of the first fifth
     (leaks that start late, and steps, which a robust slope ignores).
 
+  The engine's private working set and private bytes are **judged with the Go heap the
+  scavenger returned added back**: `ws_private_adj = ws_private + heap_released` and
+  `private_bytes_adj = private_bytes + heap_released`, from the same sample, with the
+  same limits (`-ws-abs`, `-ws-rel`). On Windows the Go scavenger decommits the pages it
+  returns to the OS, and reusing them commits them again, so the raw metrics move
+  opposite to `heap_released`, by up to its size (several MiB under the soak). That is
+  not a leak, but in a 1 h run it exceeds the 2 MiB allowed for a 40 MiB working set. The
+  adjusted metrics cancel it and still rise with any growth the runtime cannot give back
+  (Go heap, stacks, native memory). The raw `ws_private` and `private_bytes` stay in the
+  CSV and the table, marked `reported, not judged (see ws_private_adj)` with what their
+  verdict alone would be. Without `heap_released` (attach mode with `-diag-pipe none`)
+  the adjusted metrics are skipped and the raw ones are judged instead, which the table
+  says. Measured 2026-11-01 (1 h run, 50 min window): `ws_private` +3.4 MiB, while
+  `private_bytes + heap_released` went from 93.77 to 93.80 MiB and
+  `ws_private + heap_released` from 44.9 to 45.2 MiB; Go `Sys` and the Windows heaps
+  were flat, and a diff of the committed regions put the growth inside Go's heap arenas.
+
   The run also fails if the engine or the VM exits, if any docker command fails, if
   samples or buckets are missing, or if the window is too short to judge. A metric
   with no samples fails unless explicitly opted out (`-diag-pipe none`,
@@ -65,7 +82,15 @@ soak.exe -hyperbutler hyperbutler.exe -home $env:TEMP\hb-soak\home -image-dir DI
 soak.exe ... -duration 24h -warmup 1h
 # quick local check (catches only fast leaks)
 soak.exe ... -duration 15m -warmup 3m -bucket 1m
+# re-judge a recorded run from its CSV, with the run's -warmup and -bucket
+soak.exe -judge bench\results\soak.csv -warmup 10m
 ```
+
+`-judge` reads the columns by name, so CSVs from before a column existed still work; the
+adjusted metrics are recomputed from `ws_private`, `private_bytes` and `heap_released`.
+Metrics with no samples in the CSV are skipped (the CSV does not record opt-outs), the
+workload's results are not in the CSV, and `-min-window` defaults to 80 % of the recorded
+time after the warm-up.
 
 Raw CSVs and profiles go under `bench/results/`, which git ignores; record summaries in
 `docs/`.

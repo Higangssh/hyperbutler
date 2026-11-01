@@ -39,6 +39,7 @@ type config struct {
 	hb        hostmon.Hyperbutler
 	startArgs []string
 	waitQuiet time.Duration
+	judge     string // -judge: re-judge this CSV instead of running
 	verdictConfig
 }
 
@@ -80,8 +81,8 @@ func parseFlags() (*config, error) {
 	fs.IntVar(&c.maxSampleErrors, "max-sample-errors", 3, "failed samples tolerated before the run fails")
 	fs.StringVar(&c.out, "out", "", "write every sample to this CSV file (keep raw dumps out of git, e.g. under bench/results/)")
 
-	wsAbs := fs.Int64("ws-abs", 1<<20, "private working set: allowed growth in bytes over the window")
-	wsRel := fs.Float64("ws-rel", 0.05, "private working set: allowed growth as a fraction of its median")
+	wsAbs := fs.Int64("ws-abs", 1<<20, "private working set and private bytes (raw and adjusted): allowed growth in bytes over the window")
+	wsRel := fs.Float64("ws-rel", 0.05, "private working set and private bytes (raw and adjusted): allowed growth as a fraction of the median")
 	hAbs := fs.Float64("handles-abs", 20, "handle count: allowed growth over the window")
 	hRel := fs.Float64("handles-rel", 0.05, "handle count: allowed growth as a fraction of its median")
 	thAbs := fs.Float64("threads-abs", 2, "thread count: allowed growth over the window")
@@ -92,8 +93,28 @@ func parseFlags() (*config, error) {
 	vmRel := fs.Float64("vmmem-rel", 0.10, "vmmem private working set: allowed growth as a fraction of its median")
 	wpAbs := fs.Int64("vmwp-abs", 8<<20, "vmwp private working set: allowed growth in bytes over the window")
 	wpRel := fs.Float64("vmwp-rel", 0.10, "vmwp private working set: allowed growth as a fraction of its median")
+	fs.StringVar(&c.judge, "judge", "", "re-judge the run recorded in this CSV (-out) with -warmup, -min-window, -bucket and the limits, instead of running one")
 	if err := fs.Parse(os.Args[1:]); err != nil {
 		return nil, err
+	}
+	// The adjusted metrics are judged with the raw metrics' limits.
+	c.limits = map[string]Limit{
+		"ws_private":        {Abs: float64(*wsAbs), Rel: *wsRel},
+		"private_bytes":     {Abs: float64(*wsAbs), Rel: *wsRel},
+		"ws_private_adj":    {Abs: float64(*wsAbs), Rel: *wsRel},
+		"private_bytes_adj": {Abs: float64(*wsAbs), Rel: *wsRel},
+		"handles":           {Abs: *hAbs, Rel: *hRel},
+		"threads":           {Abs: *thAbs},
+		"goroutines":        {Abs: *gAbs},
+		"heap_inuse":        {Abs: float64(*heapAbs), Rel: *heapRel},
+		"vmmem_ws_private":  {Abs: float64(*vmAbs), Rel: *vmRel},
+		"vmwp_ws_private":   {Abs: float64(*wpAbs), Rel: *wpRel},
+	}
+	if c.judge != "" {
+		if c.bucket <= 0 || c.warmup < 0 || c.minWindow < 0 {
+			return nil, errors.New("need -bucket > 0, -warmup >= 0 and -min-window >= 0")
+		}
+		return c, nil
 	}
 	if c.docker == "" || c.imageTar == "" {
 		return nil, errors.New("-docker and -image-tar are required")
@@ -150,16 +171,6 @@ func parseFlags() (*config, error) {
 		}
 	}
 	c.startArgs = strings.Fields(*startArgs)
-	c.limits = map[string]Limit{
-		"ws_private":       {Abs: float64(*wsAbs), Rel: *wsRel},
-		"private_bytes":    {Abs: float64(*wsAbs), Rel: *wsRel},
-		"handles":          {Abs: *hAbs, Rel: *hRel},
-		"threads":          {Abs: *thAbs},
-		"goroutines":       {Abs: *gAbs},
-		"heap_inuse":       {Abs: float64(*heapAbs), Rel: *heapRel},
-		"vmmem_ws_private": {Abs: float64(*vmAbs), Rel: *vmRel},
-		"vmwp_ws_private":  {Abs: float64(*wpAbs), Rel: *wpRel},
-	}
 	return c, nil
 }
 
@@ -255,6 +266,14 @@ func run() (err error) {
 	c, err := parseFlags()
 	if err != nil {
 		return err
+	}
+	if c.judge != "" {
+		f, err := os.Open(c.judge)
+		if err != nil {
+			return err
+		}
+		defer func() { _ = f.Close() }()
+		return judgeCSV(os.Stdout, f, c.verdictConfig)
 	}
 	ctx, stopSignals := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stopSignals()
@@ -408,6 +427,7 @@ sampling:
 				if o := st.OS; o != nil {
 					extra["os_private"], extra["os_heap_committed"] = u(o.PrivateBytes), u(o.HeapCommitted)
 				}
+				addAdjusted(row, float64(m.HeapReleased))
 			}
 		}
 		// Other VMs do not change this engine's counters, but they compete for host
@@ -427,7 +447,8 @@ sampling:
 			break
 		}
 		if len(row) > 0 {
-			rec := []string{strconv.FormatFloat(t, 'f', 1, 64)}
+			// Millisecond times, so -judge buckets the samples the way the run did.
+			rec := []string{strconv.FormatFloat(t, 'f', 3, 64)}
 			for _, m := range metrics {
 				v, ok := row[m]
 				if ok {

@@ -48,6 +48,9 @@ type Verdict struct {
 	Allowed      float64       // growth (and shift) that still counts as noise
 	Pass         bool
 	Reason       string // why it failed, or "" when it passed
+	// NotJudged names the metric judged in this one's place, or is "" when this
+	// metric is judged. Set by the caller; Analyze leaves it empty.
+	NotJudged string
 }
 
 func (v Verdict) String() string {
@@ -55,7 +58,10 @@ func (v Verdict) String() string {
 	if !v.Pass {
 		status = "FAIL: " + v.Reason
 	}
-	return fmt.Sprintf("%-16s n=%-5d buckets=%-4d window=%-8s median=%-12.0f slope=%+.1f/h growth=%+.1f shift=%+.1f allowed=%.1f  %s",
+	if v.NotJudged != "" {
+		status = fmt.Sprintf("reported, not judged (see %s); alone: %s", v.NotJudged, status)
+	}
+	return fmt.Sprintf("%-17s n=%-5d buckets=%-4d window=%-8s median=%-12.0f slope=%+.1f/h growth=%+.1f shift=%+.1f allowed=%.1f  %s",
 		v.Metric, v.Points, v.Buckets, v.Window.Round(time.Second), v.Median, v.SlopePerHour, v.Growth, v.Shift, v.Allowed, status)
 }
 
