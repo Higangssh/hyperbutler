@@ -279,6 +279,15 @@ met blocks the release. Changing a gate needs an ADR change, not a waiver here.
   written: unzip, PATH (with `clients\`, since a clean account has no docker CLI),
   `hyperbutler start`, `docker run --rm hello-world`, `docker compose version`,
   `hyperbutler stop`.
+  2026-11-02, snapshot zip of e42d435 (CRC guest image) on a new local standard account,
+  Windows 11 Home 26200, no docker CLI and no `~\.docker`: install, first start (2.3 s,
+  data disk and context created, bundled compose registered), hello-world, nginx on
+  8080, compose nginx+redis on 8081, a bind mount from the profile, status, doctor (all
+  OK), restart and stop all passed; the GUI opened in Korean from Explorer. Before the
+  account joined Hyper-V Administrators, `start` failed at once, as expected; its
+  message was not captured. Recheck with the release zip. Found on the way: the image
+  files (`system.vhd`) sit next to `hyperbutler.exe`, and a double-click on
+  `system.vhd` asks Windows to mount it.
 - [ ] REQ-UX-005: `bench/no-telemetry` passes against the release candidate (default
   5 minute idle, fresh `-home`), and `internal/notelemetry` is green in CI. 2026-11-01:
   PASS on two runs, nothing seen outside the bench's own pull.
