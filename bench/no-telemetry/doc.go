@@ -32,6 +32,11 @@
 //     have no PID). The guest's connections are all in the stack's log, which misses
 //     nothing; the engine's own code is held by internal/notelemetry, which fails the
 //     build on any unreviewed network API.
+//   - Which phase an engine socket belongs to, when it relays a guest flow: the engine
+//     dials the host side after the guest's SYN, so a pull's last connection can first
+//     show up in the poll after the pull ended. An engine socket to an address the guest
+//     connected to is judged by that guest flow's phase instead. An engine connection of
+//     its own to the same address would hide behind it; internal/notelemetry covers that.
 //   - DNS: the engine resolves the guest's names with the Windows resolver, so the DNS
 //     Client service (svchost) sends those packets, plus LLMNR, mDNS and NetBIOS for
 //     single-label names. They happen only for names the guest asked for, and those

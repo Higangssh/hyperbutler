@@ -100,6 +100,8 @@ func TestFailures(t *testing.T) {
 		},
 		Sockets: []Seen{
 			{Socket: Socket{Proto: "tcp4", Remote: netip.MustParseAddrPort("1.1.1.1:443"), State: "ESTABLISHED"}, Phase: "pull", First: now},
+			// The engine side of the pull's flow, first polled after the pull ended.
+			{Socket: Socket{Proto: "tcp4", Remote: netip.MustParseAddrPort("1.1.1.1:443"), State: "ESTABLISHED"}, Phase: "idle-1", First: now},
 			{Socket: Socket{Proto: "tcp4", Remote: netip.MustParseAddrPort("127.0.0.1:80"), State: "ESTABLISHED"}, Phase: "idle-1", First: now},
 			{Socket: Socket{Proto: "tcp6", Remote: netip.MustParseAddrPort("[2001:db8::1]:443"), State: "SYN_SENT"}, Phase: "boot", First: now},
 		},

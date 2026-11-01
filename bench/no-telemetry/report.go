@@ -241,14 +241,23 @@ type Report struct {
 // Failures lists what violates REQ-UX-005: a socket of a watched process that may
 // talk to another machine, first seen in a counted phase, and anything the guest asked
 // the network for in a counted phase.
+//
+// An engine socket to an address the guest connected to relays that guest flow, which
+// the flow log already places in its phase. Its own first sighting can land in the next
+// phase, because the engine dials the host side after the guest's SYN and the socket
+// table is polled, so it is judged by the guest flow, not by when it was first seen.
 func (r *Report) Failures() []string {
 	counted := map[string]bool{}
+	guest := map[string]bool{}
 	for _, p := range r.Phases {
 		counted[p.Name] = p.Counted
+		for _, f := range p.Guest.Flows {
+			guest[f.Dst] = true
+		}
 	}
 	var out []string
 	for _, s := range r.Sockets {
-		if s.External() && counted[s.Phase] {
+		if s.External() && counted[s.Phase] && !(s.Remote.IsValid() && guest[s.Remote.String()]) {
 			out = append(out, fmt.Sprintf("%s: PID %d %s %s -> %s %s", s.Phase, s.PID, s.Proto, s.Local, s.Remote, s.State))
 		}
 	}
