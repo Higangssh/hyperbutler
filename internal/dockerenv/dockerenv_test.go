@@ -103,10 +103,13 @@ func TestNoProxy(t *testing.T) {
 func TestRewriteLoopback(t *testing.T) {
 	gw := netip.MustParseAddr("192.168.127.254")
 	for in, want := range map[string]string{
-		"http://127.0.0.1:3128":      "http://192.168.127.254:3128",
-		"http://u:p@localhost:3128":  "http://u:p@192.168.127.254:3128",
-		"http://[::1]:8080":          "http://192.168.127.254:8080",
-		"http://127.1.2.3":           "http://192.168.127.254",
+		"http://127.0.0.1:3128":     "http://192.168.127.254:3128",
+		"http://u:p@localhost:3128": "http://u:p@192.168.127.254:3128",
+		"http://[::ffff:127.0.0.1]": "http://192.168.127.254",
+		// Review L-E: the host gateway dials 127.0.0.1, so these are not rewritten
+		// (CheckProxyReach refuses them).
+		"http://[::1]:8080":          "http://[::1]:8080",
+		"http://127.1.2.3":           "http://127.1.2.3",
 		"http://proxy.corp:3128":     "http://proxy.corp:3128",
 		"http://localhost.corp:3128": "http://localhost.corp:3128",
 		"http://10.0.0.1:3128":       "http://10.0.0.1:3128",

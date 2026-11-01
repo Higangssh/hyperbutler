@@ -38,7 +38,7 @@ func (d *Doc) Validate() error {
 		}
 	}
 	if d.NoProxy != "" {
-		if err := ValidateNoProxy(d.NoProxy); err != nil {
+		if err := validateNoProxy(d.NoProxy, MaxDocNoProxy); err != nil {
 			return err
 		}
 		if NormalizeNoProxy(d.NoProxy) != d.NoProxy {

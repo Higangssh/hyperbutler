@@ -168,7 +168,7 @@ func Serve(opts ServeOptions) error {
 		}
 		dj, _ := ReadDaemonJSON(l, subnet) // only for NO_PROXY; an invalid file adds nothing
 		t0 := time.Now()
-		doc, st := BuildDockerdEnv(s, envNet, dj)
+		doc, st := BuildDockerdEnv(s, envNet, dj, l.CAExtraPath())
 		log.Info("dockerd environment built", "caImport", st.CAImport, "caCerts", st.CACerts, "caSkipped", st.CASkipped,
 			"caStats", fmt.Sprintf("%+v", st.CAStats), "took", time.Since(t0).Round(time.Millisecond))
 		return doc, st

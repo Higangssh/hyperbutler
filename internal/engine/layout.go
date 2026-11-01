@@ -67,6 +67,11 @@ func (l Layout) DaemonConfigPath() string { return filepath.Join(l.Home, "daemon
 // what stays in effect while the user's file is invalid.
 func (l Layout) DaemonAppliedPath() string { return filepath.Join(l.Home, "daemon.applied.json") }
 
+// CAExtraPath is the engine's copy of ca.extraFile (REQ-UX-009), made by `config set`:
+// the only one read at boot and apply, so the user's file, which can be on a network
+// path or behind a link to one, is read only when it is set.
+func (l Layout) CAExtraPath() string { return filepath.Join(l.Home, "ca-extra.pem") }
+
 func (l Layout) DiskPath() string     { return filepath.Join(l.Data, "data.vhdx") }
 func (l Layout) DiskMetaPath() string { return filepath.Join(l.Data, "disk.json") }
 

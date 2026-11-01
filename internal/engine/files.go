@@ -280,8 +280,11 @@ type Settings struct {
 	// CAImport says whether the guest's dockerd trusts the CA certificates of the
 	// Windows root stores too (REQ-UX-009); nil means yes.
 	CAImport *bool `json:"caImport,omitempty"`
-	// CAExtraFile is a PEM file of more CA certificates for dockerd to trust.
-	CAExtraFile string `json:"caExtraFile,omitempty"`
+	// CAExtraFile is a PEM file of more CA certificates for dockerd to trust, as the
+	// user named it. `config set` copies it to Layout.CAExtraPath, and only that copy
+	// is read at boot and apply; CAExtraSHA256 is the copy's SHA-256.
+	CAExtraFile   string `json:"caExtraFile,omitempty"`
+	CAExtraSHA256 string `json:"caExtraFileSha256,omitempty"`
 	// HTTPProxy, HTTPSProxy and NoProxy are dockerd's proxy settings (HTTP_PROXY,
 	// HTTPS_PROXY, NO_PROXY). The URLs may carry credentials: they are shown only
 	// through dockerenv.Redact.
@@ -408,6 +411,9 @@ func (s *Settings) Validate() error {
 	if s.CAExtraFile != "" && (!filepath.IsAbs(s.CAExtraFile) || len(s.CAExtraFile) > 1024 || !utf8.ValidString(s.CAExtraFile) || strings.ContainsRune(s.CAExtraFile, 0)) {
 		return fmt.Errorf("settings: CA file %q must be an absolute path", s.CAExtraFile)
 	}
+	if s.CAExtraSHA256 != "" && !isHexDigest(s.CAExtraSHA256) {
+		return errors.New("settings: the CA file hash is not a SHA-256 in hex")
+	}
 	// The proxy errors never quote the URL, which may hold a password.
 	if s.HTTPProxy != "" {
 		if err := dockerenv.ValidateProxyURL(s.HTTPProxy); err != nil {
@@ -522,7 +528,11 @@ func encode(v any) ([]byte, error) {
 // WriteFileAtomic replaces path with data: it writes a temporary file in the same
 // directory, flushes it, and renames it over path, so a reader or a crash sees either
 // the old or the new content. A rename that collides with a reader is retried.
-func WriteFileAtomic(path string, data []byte) error {
+func WriteFileAtomic(path string, data []byte) error { return writeFileAtomic(path, data, false) }
+
+// writeFileAtomic is WriteFileAtomic; private gives the file a DACL for the current
+// user only (on Windows) before anything is written to it.
+func writeFileAtomic(path string, data []byte, private bool) error {
 	var rnd [6]byte
 	_, _ = rand.Read(rnd[:])
 	tmp := path + ".tmp-" + hex.EncodeToString(rnd[:])
@@ -530,7 +540,12 @@ func WriteFileAtomic(path string, data []byte) error {
 	if err != nil {
 		return err
 	}
-	_, err = f.Write(data)
+	if private {
+		err = restrictToUser(tmp)
+	}
+	if err == nil {
+		_, err = f.Write(data)
+	}
 	if err == nil {
 		err = f.Sync()
 	}

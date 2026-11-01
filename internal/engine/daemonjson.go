@@ -123,9 +123,13 @@ type DaemonConfig struct {
 	known    bool   // inEffect is known (a delivery succeeded on this VM)
 	pusher   DaemonPusher
 
-	envInEffect  []byte // the encoded environment the guest accepted last
-	envKnown     bool
-	envSt        EnvState
+	envInEffect []byte // the encoded environment the guest accepted last
+	envKnown    bool
+	envSt       EnvState
+	// envBuildErr is what kept the environment in effect from being complete when it
+	// was built (a certificate file or store that could not be read). It holds until
+	// the next build, so a reconnect, which re-sends that environment, reports it again.
+	envBuildErr  string
 	envRestarted bool // the environment delivery of this Connected or Apply restarted dockerd
 }
 
@@ -194,8 +198,10 @@ func (d *DaemonConfig) deliverEnv(ctx context.Context, p DaemonPusher, fresh boo
 		}
 		data = b
 	} else {
+		// What the last delivery said about the guest no longer holds; what the build
+		// said about this environment does.
 		st = d.envSt
-		st.Error, st.Restarted = "", false
+		st.Error, st.Restarted = d.envBuildErr, false
 	}
 	if p.Hello().Features&guestctl.FeatureDockerdEnv == 0 {
 		if len(data) == 0 {
@@ -220,7 +226,7 @@ func (d *DaemonConfig) deliverEnv(ctx context.Context, p DaemonPusher, fresh boo
 		d.envRestarted = prev.Restarted
 		return err
 	}
-	d.envInEffect, d.envKnown = data, true
+	d.envInEffect, d.envKnown, d.envBuildErr = data, true, st.Error
 	st.SHA256 = digest(data)
 	st.Restarted = r.Flags&guestctl.DaemonRestarted != 0
 	d.envRestarted = st.Restarted

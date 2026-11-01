@@ -22,10 +22,14 @@ import (
 	"strings"
 )
 
-// MaxProxyURL bounds a proxy URL; MaxNoProxy bounds the NO_PROXY list.
+// MaxProxyURL bounds a proxy URL; MaxNoProxy bounds the user's NO_PROXY list
+// (proxy.noProxy). MaxDocNoProxy bounds the list dockerd gets, which is the user's with
+// the entries the host adds (localhost, the guest network, daemon.json's registries): it
+// leaves room for them, so the user's list always fits.
 const (
-	MaxProxyURL = 2048
-	MaxNoProxy  = 4096
+	MaxProxyURL   = 2048
+	MaxNoProxy    = 4096
+	MaxDocNoProxy = MaxNoProxy + 1024
 )
 
 // ErrProxy is wrapped by every proxy validation error.
@@ -149,9 +153,12 @@ func HasCredentials(v string) bool {
 // ValidateNoProxy checks a NO_PROXY list: comma-separated host names, domains
 // (".example.com" or "example.com"), "*", IP addresses or CIDR prefixes, each with an
 // optional port. Spaces around entries are allowed.
-func ValidateNoProxy(v string) error {
-	if len(v) > MaxNoProxy {
-		return fmt.Errorf("%w: the no-proxy list is longer than %d bytes", ErrProxy, MaxNoProxy)
+func ValidateNoProxy(v string) error { return validateNoProxy(v, MaxNoProxy) }
+
+// validateNoProxy is ValidateNoProxy with another length limit.
+func validateNoProxy(v string, limit int) error {
+	if len(v) > limit {
+		return fmt.Errorf("%w: the no-proxy list is longer than %d bytes", ErrProxy, limit)
 	}
 	if strings.TrimSpace(v) == "" {
 		return fmt.Errorf("%w: empty no-proxy list (unset the key instead)", ErrProxy)
@@ -199,19 +206,33 @@ func NormalizeNoProxy(v string) string {
 	return strings.Join(parts, ",")
 }
 
-// RewriteLoopback replaces a loopback host (localhost, 127.0.0.0/8, ::1) in a proxy
-// URL with gw, the guest's address for this host's loopback (the host gateway): a
-// proxy that runs on Windows, such as a local NTLM relay, listens on 127.0.0.1, which in
-// the guest is the guest itself. Other URLs are returned unchanged. ok reports a
-// rewrite.
+// LoopbackHost reports whether h names this host's loopback, and whether the host
+// gateway reaches it there. The gateway connects to 127.0.0.1, and to [::1] only when
+// 127.0.0.1 refuses, so it reaches localhost and 127.0.0.1; a proxy given as [::1] or
+// another 127.x address would get whatever listens on 127.0.0.1 with that port, and the
+// proxy's credentials with it.
+func LoopbackHost(h string) (loopback, viaGateway bool) {
+	if strings.EqualFold(h, "localhost") {
+		return true, true
+	}
+	a, err := netip.ParseAddr(h)
+	if err != nil || !a.Unmap().IsLoopback() {
+		return false, false
+	}
+	return true, a.Unmap() == netip.AddrFrom4([4]byte{127, 0, 0, 1})
+}
+
+// RewriteLoopback replaces localhost or 127.0.0.1 in a proxy URL with gw, the guest's
+// address for this host's loopback (the host gateway): a proxy that runs on Windows,
+// such as a local NTLM relay, listens on 127.0.0.1, which in the guest is the guest
+// itself. Other URLs, including other loopback addresses (LoopbackHost), are returned
+// unchanged. ok reports a rewrite.
 func RewriteLoopback(v string, gw netip.Addr) (out string, ok bool) {
 	u, err := ParseProxyURL(v)
 	if err != nil || !gw.IsValid() {
 		return v, false
 	}
-	h := u.Hostname()
-	a, aerr := netip.ParseAddr(h)
-	if !strings.EqualFold(h, "localhost") && (aerr != nil || !a.IsLoopback()) {
+	if _, via := LoopbackHost(u.Hostname()); !via {
 		return v, false
 	}
 	if p := u.Port(); p != "" {

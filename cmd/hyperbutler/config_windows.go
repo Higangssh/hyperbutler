@@ -50,6 +50,7 @@ func (in *install) env() config.Env {
 	return config.Env{
 		Home: in.l.Home, HostCPUs: runtime.NumCPU(), Getenv: os.Getenv,
 		DiskExists: func(dir string) bool { return diskExists(engine.Layout{Home: in.l.Home, Data: dir}) },
+		SaveCAFile: func(b []byte) error { return engine.SaveCAExtra(in.l, b) },
 	}
 }
 

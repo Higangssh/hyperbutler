@@ -167,7 +167,7 @@ func (in *install) planUninstall(keepData, up bool) *uninstallPlan {
 			addFile(f, "data disk: all images, containers and volumes")
 		}
 	}
-	for _, f := range append([]string{l.StatePath(), l.DaemonAppliedPath()}, append(tmpSiblings(l.StatePath()), tmpSiblings(l.DaemonAppliedPath())...)...) {
+	for _, f := range append([]string{l.StatePath(), l.DaemonAppliedPath(), l.CAExtraPath()}, append(append(tmpSiblings(l.StatePath()), tmpSiblings(l.DaemonAppliedPath())...), tmpSiblings(l.CAExtraPath())...)...) {
 		addFile(f, "")
 	}
 	for _, f := range []string{l.EngineLogPath(), l.EngineLogPath() + ".1", l.ConsoleLogPath(), l.ConsoleLogPath() + ".1"} {

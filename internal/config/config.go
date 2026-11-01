@@ -8,6 +8,8 @@
 package config
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"path/filepath"
@@ -59,6 +61,19 @@ type Env struct {
 	// ShowSecrets makes Get show secret values (proxy credentials) as they are;
 	// otherwise they are redacted (`config list/get --show-secrets`).
 	ShowSecrets bool
+	// SaveCAFile, if set, stores the ca.extraFile copy that the engine reads
+	// (engine.SaveCAExtra); nil data removes it. `config set ca.extraFile` calls it
+	// with the file it checked, `unset` with nil.
+	SaveCAFile func(data []byte) error
+	// links resolves links in a ca.extraFile path (nil: the file system's).
+	links linkFS
+}
+
+func (e Env) saveCAFile(data []byte) error {
+	if e.SaveCAFile == nil {
+		return nil
+	}
+	return e.SaveCAFile(data)
 }
 
 func (e Env) getenv(k string) string {
@@ -292,15 +307,15 @@ var Keys = []*Key{
 	},
 	{
 		Name: "ca.extraFile", Type: "path", Apply: ApplyDockerd,
-		Description: "a PEM file of more CA certificates for dockerd to trust, or empty",
+		Description: "a PEM file of more CA certificates for dockerd to trust, or empty; it is copied when set (set it again after the file changes)",
 		def:         func(Env) string { return "" },
 		get: func(s *engine.Settings, _ Env) (string, bool) {
 			return s.CAExtraFile, s.CAExtraFile != ""
 		},
-		set: func(s *engine.Settings, v string, _ Env) error {
+		set: func(s *engine.Settings, v string, e Env) error {
 			if v == "" {
-				s.CAExtraFile = ""
-				return nil
+				s.CAExtraFile, s.CAExtraSHA256 = "", ""
+				return e.saveCAFile(nil)
 			}
 			if len(v) > 1024 || !utf8.ValidString(v) || strings.ContainsRune(v, 0) {
 				return fmt.Errorf("ca.extraFile %q: want a PEM file", v)
@@ -309,18 +324,33 @@ var Keys = []*Key{
 			if err != nil {
 				return err
 			}
-			// A network path would be read at every engine start and apply, and could
-			// hang it or send credentials to another machine.
+			// A network path could hang the read or send credentials to another
+			// machine. The file is read here only: what the engine reads at boot and
+			// apply is the copy saved below.
+			src := abs
 			if strings.HasPrefix(abs, `\\`) || runtime.GOOS == "windows" && !drivePath(abs) {
 				return fmt.Errorf("ca.extraFile %s: want a file on a local drive", v)
 			}
-			if _, err := engine.ReadCAFile(abs); err != nil {
+			if runtime.GOOS == "windows" {
+				if src, err = resolveLocal(abs, e.linkFS()); err != nil {
+					return fmt.Errorf("ca.extraFile %s: %w", v, err)
+				}
+			}
+			data, _, err := engine.ReadCAFile(src)
+			if err != nil {
 				return err
 			}
-			s.CAExtraFile = abs
+			if err := e.saveCAFile(data); err != nil {
+				return fmt.Errorf("ca.extraFile: save the copy: %w", err)
+			}
+			sum := sha256.Sum256(data)
+			s.CAExtraFile, s.CAExtraSHA256 = abs, hex.EncodeToString(sum[:])
 			return nil
 		},
-		unset: func(s *engine.Settings, _ Env) error { s.CAExtraFile = ""; return nil },
+		unset: func(s *engine.Settings, e Env) error {
+			s.CAExtraFile, s.CAExtraSHA256 = "", ""
+			return e.saveCAFile(nil)
+		},
 	},
 	{
 		Name: "proxy.http", Type: "url", Apply: ApplyDockerd, Secret: true,

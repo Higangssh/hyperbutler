@@ -126,7 +126,7 @@ jobs:
       strict: true
       with-sources: ${{ github.event_name != 'pull_request' }}
 
-  # 81 targets at 10 s each keeps this under about 20 minutes. Longer runs happen once a
+  # 82 targets at 10 s each keeps this under about 20 minutes. Longer runs happen once a
   # week in fuzz-weekly.yml.
   fuzz:
     name: fuzz smoke (10s per target)
@@ -149,7 +149,7 @@ jobs:
         env:
           FUZZTIME: 10s
           # Raise it whenever a Fuzz target is added (also in fuzz-weekly.yml).
-          FUZZ_MIN_TARGETS: "81"
+          FUZZ_MIN_TARGETS: "82"
         run: ./scripts/ci/fuzz-all.ps1
 
       - name: Upload crashing inputs

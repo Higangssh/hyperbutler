@@ -1,11 +1,22 @@
 package config
 
 import (
+	"bytes"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/sha256"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/hex"
+	"encoding/pem"
 	"errors"
+	"math/big"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Higangssh/hyperbutler/internal/engine"
 	"github.com/Higangssh/hyperbutler/internal/leaktest"
@@ -279,6 +290,10 @@ func TestProxyKeys(t *testing.T) {
 	if _, err := set(s, "hostGateway.ports", "3128,5432"); err != nil {
 		t.Fatal(err)
 	}
+	// Review L-E: the gateway connects to 127.0.0.1, not [::1].
+	if _, err := set(s, "proxy.https", "http://u:s3cret@[::1]:3128"); err == nil || !strings.Contains(err.Error(), "bind the relay to 127.0.0.1") || strings.Contains(err.Error(), "s3cret") {
+		t.Fatalf("[::1] proxy: %v", err)
+	}
 	// An unrelated key is not refused for it.
 	off := false
 	bad := *s
@@ -314,5 +329,58 @@ func TestCAKeys(t *testing.T) {
 	}
 	if _, err := x.Set(s, `\\server\share\ca.pem`, e); err == nil {
 		t.Fatal("a network path was accepted")
+	}
+}
+
+func testCAPEM(t *testing.T) []byte {
+	t.Helper()
+	k, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	tmpl := &x509.Certificate{
+		SerialNumber: big.NewInt(time.Now().UnixNano()), Subject: pkix.Name{CommonName: "hb config test CA"},
+		NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(time.Hour),
+		BasicConstraintsValid: true, IsCA: true, KeyUsage: x509.KeyUsageCertSign,
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &k.PublicKey, k)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
+}
+
+// TestCAExtraFileCopy (review M-C): set copies the file it checked (the engine reads
+// only the copy), records the copy's hash and the path as given; setting it again
+// copies the file again; unset removes the copy.
+func TestCAExtraFileCopy(t *testing.T) {
+	e, _ := testEnv(t)
+	var saved [][]byte
+	e.SaveCAFile = func(b []byte) error { saved = append(saved, b); return nil }
+	x, _ := Lookup("ca.extraFile")
+	p := filepath.Join(t.TempDir(), "ca.pem")
+	one := testCAPEM(t)
+	if err := os.WriteFile(p, one, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s, err := x.Set(nil, p, e)
+	sum := sha256.Sum256(one)
+	if err != nil || len(saved) != 1 || !bytes.Equal(saved[0], one) || s.CAExtraFile != p || s.CAExtraSHA256 != hex.EncodeToString(sum[:]) {
+		t.Fatalf("set: %v, %d saved, %+v", err, len(saved), s)
+	}
+	if it := x.Get(s, e); it.Value != p {
+		t.Fatalf("shown as %q", it.Value)
+	}
+	two := append(one, testCAPEM(t)...)
+	_ = os.WriteFile(p, two, 0o600)
+	s2, err := x.Set(s, p, e)
+	if err != nil || len(saved) != 2 || !bytes.Equal(saved[1], two) || s2.CAExtraSHA256 == s.CAExtraSHA256 || Equal(s, s2) {
+		t.Fatalf("set again: %v, %+v", err, s2)
+	}
+	s3, err := x.Unset(s2, e)
+	if err != nil || len(saved) != 3 || saved[2] != nil || s3.CAExtraFile != "" || s3.CAExtraSHA256 != "" {
+		t.Fatalf("unset: %v, %+v", err, s3)
+	}
+	// A refused file saves nothing.
+	_ = os.WriteFile(p, []byte("junk"), 0o600)
+	if _, err := x.Set(s3, p, e); err == nil || len(saved) != 3 {
+		t.Fatalf("junk: %v, %d saved", err, len(saved))
 	}
 }

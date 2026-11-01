@@ -44,11 +44,12 @@ var disallowedStores = []store{
 	{windows.CERT_SYSTEM_STORE_LOCAL_MACHINE, "Disallowed", `LocalMachine\Disallowed`},
 }
 
-// ImportRoots adds the trusted root certificates of the Windows stores to set (only CA
-// certificates within their validity period; see dockerenv.CertSet.Add). A store that
-// does not exist is skipped; the first other error is returned after every store was
-// tried.
-func ImportRoots(set *dockerenv.CertSet) error {
+// LoadDisallowed records the certificates of the "Untrusted Certificates" stores in
+// set.Disallowed, so set.Add drops them, whatever their source: call it before adding
+// any. A certificate matches by its hash (thumbprint), as in Windows: the whole
+// certificate, not its key or subject. A store that does not exist is skipped; the
+// first other error is returned after every store was tried.
+func LoadDisallowed(set *dockerenv.CertSet) error {
 	if set.Disallowed == nil {
 		set.Disallowed = make(map[[32]byte]bool)
 	}
@@ -59,6 +60,15 @@ func ImportRoots(set *dockerenv.CertSet) error {
 			firstErr = err
 		}
 	}
+	return firstErr
+}
+
+// ImportRoots adds the trusted root certificates of the Windows stores to set (only CA
+// certificates within their validity period, and not disallowed: call LoadDisallowed
+// first; see dockerenv.CertSet.Add). A store that does not exist is skipped; the first
+// other error is returned after every store was tried.
+func ImportRoots(set *dockerenv.CertSet) error {
+	var firstErr error
 	for _, s := range rootStores {
 		err := enum(s, func(der []byte) { set.Add(der, true) })
 		if err != nil && firstErr == nil {
@@ -68,9 +78,15 @@ func ImportRoots(set *dockerenv.CertSet) error {
 	return firstErr
 }
 
-// enum calls fn with a copy of the DER of every X.509 certificate in s. Certificates
-// larger than dockerenv.MaxCertDER are passed truncated to one byte too many, which
-// CertSet counts as invalid, without copying them.
+// LocalMachineRoots returns the DER of every certificate in LocalMachine\Root, read-only,
+// as they are (no checks): bench/corp-proxy picks one to look for in the guest.
+func LocalMachineRoots() ([][]byte, error) {
+	var out [][]byte
+	err := enum(rootStores[1], func(der []byte) { out = append(out, der) })
+	return out, err
+}
+
+// enum calls fn with a copy of the DER of every X.509 certificate in s (see enumStore).
 func enum(s store, fn func(der []byte)) error {
 	name, err := windows.UTF16PtrFromString(s.name)
 	if err != nil {
@@ -85,20 +101,27 @@ func enum(s store, fn func(der []byte)) error {
 		return fmt.Errorf("open the %s certificate store: %w", s.what, err)
 	}
 	defer func() { _ = windows.CertCloseStore(h, 0) }()
+	return enumStore(h, s.what, maxPerStore, fn)
+}
+
+// enumStore calls fn with a copy of the DER of every X.509 certificate in the open
+// store h, at most limit of them. Certificates larger than dockerenv.MaxCertDER are
+// passed truncated to one byte too many, which CertSet counts as invalid, without
+// copying them.
+func enumStore(h windows.Handle, what string, limit int, fn func(der []byte)) error {
 	var c *windows.CertContext
+	var err error
 	for n := 0; ; n++ {
-		if n == maxPerStore {
-			if c != nil {
-				_ = windows.CertFreeCertificateContext(c)
-			}
-			return fmt.Errorf("the %s certificate store has more than %d certificates; the rest were not read", s.what, maxPerStore)
-		}
 		c, err = windows.CertEnumCertificatesInStore(h, c) // frees the previous context
 		if err != nil {
 			if errors.Is(err, syscall.Errno(windows.CRYPT_E_NOT_FOUND)) {
 				return nil
 			}
-			return fmt.Errorf("read the %s certificate store: %w", s.what, err)
+			return fmt.Errorf("read the %s certificate store: %w", what, err)
+		}
+		if n == limit {
+			_ = windows.CertFreeCertificateContext(c)
+			return fmt.Errorf("the %s certificate store has more than %d certificates; the rest were not read", what, limit)
 		}
 		if c.EncodingType&windows.X509_ASN_ENCODING == 0 || c.EncodedCert == nil || c.Length == 0 {
 			continue

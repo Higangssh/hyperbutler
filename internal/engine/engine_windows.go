@@ -235,6 +235,25 @@ func CurrentUserSDDL() (string, error) {
 	return vm.UserOnlySDDL(tu.User.Sid.String())
 }
 
+// restrictToUser gives path a protected DACL (nothing inherited) for the current user
+// only.
+func restrictToUser(path string) error {
+	s, err := CurrentUserSDDL()
+	if err != nil {
+		return err
+	}
+	sd, err := windows.SecurityDescriptorFromString(s)
+	if err != nil {
+		return err
+	}
+	dacl, _, err := sd.DACL()
+	if err != nil {
+		return err
+	}
+	return windows.SetNamedSecurityInfo(path, windows.SE_FILE_OBJECT,
+		windows.DACL_SECURITY_INFORMATION|windows.PROTECTED_DACL_SECURITY_INFORMATION, nil, nil, dacl, nil)
+}
+
 // Run boots the VM and serves the Docker API until ctx ends, the VM stops on its own,
 // or OnReady returns. Then it shuts the guest down (an orderly power-off through the
 // Hyper-V shutdown integration component, bounded by ShutdownTimeout) and terminates
