@@ -35,4 +35,5 @@ guest/cmd/hyperbutlerd/daemoncfg.go net.Dialer dials /run/docker.sock ("unix") f
 
 # Programs started by a name known only at run time run code this scan cannot see.
 cmd/hyperbutler/commands_windows.go exec:computed starts the engine: this executable (os.Executable)
+cmd/hyperbutler/dockercli_windows.go exec:computed runs the docker CLI on PATH (third-party code) with only --version, to warn when it is too old
 guest/cmd/hyperbutlerd/main_linux.go exec:computed dockerd --validate on a new daemon.json; dockerd validates and exits
