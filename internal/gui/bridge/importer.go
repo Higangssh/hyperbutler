@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"regexp"
 	"sync"
+	"time"
 )
 
 // The window's "Import from Docker Desktop" (REQ-UX-023). The import itself lives in
@@ -130,11 +131,20 @@ type importState struct {
 	mu      sync.Mutex
 	cancel  context.CancelFunc
 	planned map[string]string // id -> status, from the last plan
+	run     tracker           // the running import's Run
 }
+
+// WaitImport waits up to timeout for a running import's Run to return (after
+// CancelImport, its cleanup takes up to about 30 s), and reports whether it did.
+func (d *Dispatcher) WaitImport(timeout time.Duration) bool { return d.imp.run.wait(timeout) }
 
 func (d *Dispatcher) importPlan(ctx context.Context) (any, error) {
 	if d.o.Importer == nil {
 		return nil, Codedf(CodeImportUnavailable, "importing from Docker Desktop is not available in this build yet")
+	}
+	if d.ImportRunning() {
+		// A new plan replaces the importer the running import uses.
+		return nil, Codedf(CodeBusy, "an import is running; plan again when it is done")
 	}
 	items, err := d.o.Importer.Plan(ctx)
 	if err != nil {
@@ -205,15 +215,25 @@ func (d *Dispatcher) importRun(ids []string, force bool, token string) (any, err
 			return nil, err
 		}
 	}
-	ctx, cancel := context.WithCancel(d.base)
+	// Not the window's context: closing the window must not cancel the import under its
+	// own cleanup. The window cancels it (CancelImport) and waits for Run to return
+	// (Wait) before the process ends.
+	ctx, cancel := context.WithCancel(context.WithoutCancel(d.base))
 	d.imp.cancel = cancel
+	d.bg.add()
+	d.imp.run.add()
 	go func() {
+		defer d.bg.done()
+		defer d.imp.run.done()
 		notify := func(p ImportProgress) {
 			if d.o.Notify != nil {
 				d.o.Notify("import", p)
 			}
 		}
-		res, err := d.o.Importer.Run(ctx, take, notify)
+		res, err := d.o.Importer.Run(ctx, take, func(p ImportProgress) {
+			p.Current = field(p.Current) // a name someone else wrote
+			notify(p)
+		})
 		res.Differences = cleanList(res.Differences)
 		final := ImportProgress{Total: len(take), Done: res.Imported + res.Already + res.Refused + res.Failed, Bytes: res.Bytes, Result: &res}
 		switch {
@@ -233,12 +253,25 @@ func (d *Dispatcher) importRun(ids []string, force bool, token string) (any, err
 }
 
 func (d *Dispatcher) importCancel() (any, error) {
+	d.CancelImport()
+	return struct{}{}, nil
+}
+
+// ImportRunning reports whether an import runs (the window asks before it closes).
+func (d *Dispatcher) ImportRunning() bool {
+	d.imp.mu.Lock()
+	defer d.imp.mu.Unlock()
+	return d.imp.cancel != nil
+}
+
+// CancelImport cancels the running import, if any. Its Run still undoes the item in
+// progress and checks Docker Desktop; Wait waits for that.
+func (d *Dispatcher) CancelImport() {
 	d.imp.mu.Lock()
 	defer d.imp.mu.Unlock()
 	if d.imp.cancel != nil {
 		d.imp.cancel()
 	}
-	return struct{}{}, nil
 }
 
 // cleanList bounds a list of English lines from the import for the page.

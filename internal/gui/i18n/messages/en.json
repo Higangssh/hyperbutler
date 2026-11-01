@@ -8,6 +8,8 @@
   "tab.help": "Help",
   "gui.noRuntime": "hyperbutler's window needs the Microsoft Edge WebView2 Runtime, which is not installed. It is part of Windows 11; on other systems get the Evergreen runtime from {url}\n\nUntil then, hyperbutler works from the terminal (hyperbutler start, hyperbutler status).",
   "gui.closeNote": "The engine keeps running in the background. Stop it here or with hyperbutler stop.",
+  "gui.closeImport": "An import is running. Stop it and close?\n\nThe item being copied is undone in hyperbutler; what is already imported stays, and Docker Desktop is not changed.",
+  "gui.notResponding": "A hyperbutler window is already open for this state directory, but it could not be brought to the front. If none shows, end hyperbutler.exe in Task Manager and open the window again.",
   "mascot.alt": "The hyperbutler robot butler holding a tray",
 
   "phase.notsetup": "Not set up yet",
@@ -340,6 +342,7 @@
   "import.progress": "{done} of {total} done: {name}",
   "import.done": "Done. {n} items were imported.",
   "import.cancelled": "The import was stopped. What was already imported stays.",
+  "import.stopping": "Stopping the import…",
   "import.failed": "The import stopped with an error",
   "import.status.new": "New",
   "import.status.imported": "Already imported",

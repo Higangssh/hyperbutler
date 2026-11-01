@@ -110,14 +110,15 @@
     $("toast-copy").hidden = !toastRef;
     $("toast").hidden = false;
   }
-  function showInfo(text) {
+  // showInfo shows a note; one that stays (keep) is not hidden after a while.
+  function showInfo(text, keep) {
     $("toast").className = "toast info";
     $("toast-title").textContent = text;
     $("toast-text").textContent = "";
     $("toast-code").textContent = "";
     $("toast-copy").hidden = true;
     $("toast").hidden = false;
-    setTimeout(() => { if ($("toast").classList.contains("info")) $("toast").hidden = true; }, 4000);
+    if (!keep) setTimeout(() => { if ($("toast").classList.contains("info") && $("toast-title").textContent === text) $("toast").hidden = true; }, 4000);
   }
   function copyEnglish(ref, btn) {
     if (!ref) return;
@@ -828,6 +829,13 @@
   function onEvent(m) {
     if (m.event === "activated" && document.visibilityState === "visible") refreshStatus(false);
     if (m.event === "import" && m.data) onImportProgress(m.data);
+    // The window is closing during an import: the host stopped it and waits for its
+    // cleanup before it closes.
+    if (m.event === "closing") {
+      $("import-cancel").disabled = true;
+      $("import-progress-text").textContent = t("import.stopping");
+      showInfo(t("import.stopping"), true);
+    }
   }
 
   function wire() {

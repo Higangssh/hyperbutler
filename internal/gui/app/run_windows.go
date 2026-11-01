@@ -74,7 +74,16 @@ type Options struct {
 	// InstanceKey names the one window allowed per state directory; a second Run with
 	// the same key brings the first window to the front and returns.
 	InstanceKey string
+	// ImportRunningText asks, when the window is closed during an import, whether to
+	// stop it and close; StoppingText is shown while the import stops; NotRespondingText
+	// says that another window holds the instance but cannot be found. Translated by the
+	// caller.
+	ImportRunningText, StoppingText, NotRespondingText string
 }
+
+// importStopGrace bounds the wait for a canceled import before the process ends: the
+// import undoes its item in progress and checks Docker Desktop, within about 30 s.
+const importStopGrace = 40 * time.Second
 
 // state is the one window of the process; the window procedure reaches it here.
 type state struct {
@@ -87,6 +96,8 @@ type state struct {
 	cancel  context.CancelFunc
 	visible atomic.Bool
 	closing bool
+	// stopping is set while the window waits for a canceled import before it closes.
+	stopping bool
 }
 
 var st *state
@@ -234,10 +245,63 @@ func Run(o Options) int {
 		return ExitFailed
 	}
 	loop()
+	s.drain()
 	// The window is gone. Give the browser processes a moment to finish, then the job
 	// (closed with this process) ends any that are left.
 	waitChildren(1500 * time.Millisecond)
 	return ExitOK
+}
+
+// drain runs after the window is gone, however it went (a close, a failed browser
+// process): an import still running is canceled and its Run, with its cleanup, is
+// waited for, as are the requests still being answered (their context is canceled), so
+// the process does not end under them.
+func (s *state) drain() {
+	s.d.CancelImport()
+	if !s.d.Wait(importStopGrace) {
+		s.o.Log(fmt.Sprintf("background work did not end within %v; exiting anyway", importStopGrace))
+	}
+}
+
+// askClose is WM_CLOSE: during an import it asks whether to stop it. Yes cancels the
+// import and keeps the window (and the process) until its Run has returned, at most
+// importStopGrace; no keeps the window open. It reports whether to close now.
+func (s *state) askClose(hwnd uintptr) bool {
+	if s.stopping {
+		return false // already waiting for the import
+	}
+	if !s.d.ImportRunning() {
+		return true
+	}
+	const mbYesNo, mbIconWarning, mbDefButton2, idYes = 0x4, 0x30, 0x100, 6
+	if messageBox(hwnd, s.o.Title, s.o.ImportRunningText, mbYesNo|mbIconWarning|mbDefButton2) != idYes {
+		return false
+	}
+	s.stopping = true
+	s.o.Log("close requested during an import: stopping it first")
+	s.d.CancelImport()
+	setWindowText(hwnd, s.o.Title+" - "+s.o.StoppingText)
+	s.event("closing")
+	go func() {
+		ok := s.d.WaitImport(importStopGrace)
+		s.disp.post(func() {
+			if !ok {
+				s.o.Log(fmt.Sprintf("the import did not stop within %v; closing anyway", importStopGrace))
+			}
+			s.showCloseNote(s.hwnd)
+			s.close()
+		})
+	}()
+	return false
+}
+
+// showCloseNote shows S0.3's note once, before the window closes.
+func (s *state) showCloseNote(hwnd uintptr) {
+	if s.o.CloseNote != nil && !s.closing {
+		if note := s.o.CloseNote(); note != "" {
+			messageBox(hwnd, s.o.Title, note, mbIconInfo)
+		}
+	}
 }
 
 // serve answers the page's requests from memory: GET of a known file, else 404.
@@ -355,12 +419,10 @@ func wndproc(hwnd, m, wp, lp uintptr) uintptr {
 		return 0
 	case wmClose:
 		s.o.Log("close requested")
-		if s.o.CloseNote != nil && !s.closing {
-			note := s.o.CloseNote()
-			if note != "" {
-				messageBox(hwnd, s.o.Title, note, mbIconInfo)
-			}
+		if s.closing || !s.askClose(hwnd) {
+			return 0
 		}
+		s.showCloseNote(hwnd)
 		s.close()
 		return 0
 	case wmDestroy:

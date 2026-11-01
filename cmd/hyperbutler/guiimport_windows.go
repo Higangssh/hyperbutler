@@ -26,6 +26,10 @@ type guiImporter struct {
 	mu   sync.Mutex
 	im   *desktopimport.Importer
 	plan *desktopimport.Plan
+	// running counts Runs in progress: the importer is never closed or replaced under
+	// one; a close meanwhile (closed) happens when the last one returns.
+	running int
+	closed  bool
 }
 
 // Item ids: the kind and the name the import takes (an image id, a volume name).
@@ -99,6 +103,11 @@ func (g *guiImporter) Plan(ctx context.Context) ([]bridge.ImportItem, error) {
 		return nil, err
 	}
 	g.mu.Lock()
+	if g.running > 0 || g.closed {
+		g.mu.Unlock()
+		im.Close()
+		return nil, bridge.Codedf(bridge.CodeBusy, "an import is running; plan again when it is done")
+	}
 	if g.im != nil {
 		g.im.Close()
 	}
@@ -148,6 +157,10 @@ func (g *guiImporter) Run(ctx context.Context, ids []string, progress func(bridg
 	if err != nil {
 		return bridge.ImportResult{}, err
 	}
+	g.mu.Lock()
+	g.running++
+	g.mu.Unlock()
+	defer g.endRun()
 	// The window ran Check first, or the user chose to start anyway, so Run does not
 	// refuse on space again. It takes the import lock itself.
 	sel := selection(ids)
@@ -190,11 +203,24 @@ func (g *guiImporter) Run(ctx context.Context, ids []string, progress func(bridg
 	return out, err
 }
 
-// close drops the importer the last plan used (when the window closes).
+// endRun ends a Run; the last one does a close that came meanwhile.
+func (g *guiImporter) endRun() {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.running--
+	if g.running == 0 && g.closed && g.im != nil {
+		g.im.Close()
+		g.im, g.plan = nil, nil
+	}
+}
+
+// close drops the importer the last plan used (when the window closes); under a
+// running Run (the window gave up waiting for it) the last Run closes it.
 func (g *guiImporter) close() {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	if g.im != nil {
+	g.closed = true
+	if g.running == 0 && g.im != nil {
 		g.im.Close()
 		g.im, g.plan = nil, nil
 	}

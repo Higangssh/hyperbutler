@@ -160,6 +160,7 @@ func runGUI(o guiOptions, paint io.Writer, log func(string)) int {
 		Title: msgs["app.title"], DataDir: filepath.Join(data, "webview2"), Language: browserLang,
 		NoRuntimeTitle: title, NoRuntimeText: text,
 		CloseNote: h.closeNote, ReportPaint: paint, Log: log, InstanceKey: strings.ToLower(h.home),
+		ImportRunningText: msgs["gui.closeImport"], StoppingText: msgs["import.stopping"],
 	})
 }
 

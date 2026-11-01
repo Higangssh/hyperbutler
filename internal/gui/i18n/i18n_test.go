@@ -163,7 +163,7 @@ func TestPageKeys(t *testing.T) {
 	}
 	// Keys the host uses (cmd/hyperbutler/gui_windows.go): the window title, the note at
 	// the first close while the engine runs, and the missing-runtime message.
-	keys = append(keys, "app.title", "gui.closeNote", "gui.noRuntime")
+	keys = append(keys, "app.title", "gui.closeNote", "gui.noRuntime", "gui.closeImport", "gui.notResponding", "import.stopping")
 	for _, c := range bridge.Codes {
 		keys = append(keys, "error."+c)
 	}

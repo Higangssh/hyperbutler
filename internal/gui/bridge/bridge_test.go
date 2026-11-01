@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -524,6 +525,67 @@ func TestImport(t *testing.T) {
 			}
 			break
 		}
+	}
+}
+
+// slowImporter's Run blocks until it is canceled, then takes a while to clean up (as
+// the import undoes its item in progress and checks Docker Desktop), then sets cleaned.
+type slowImporter struct {
+	fakeImporter
+	started chan struct{}
+	cleaned atomic.Bool
+}
+
+func (f *slowImporter) Run(ctx context.Context, _ []string, progress func(ImportProgress)) (ImportResult, error) {
+	progress(ImportProgress{Running: true, Current: "evil‮exe.gpj"})
+	close(f.started)
+	<-ctx.Done()
+	time.Sleep(300 * time.Millisecond)
+	f.cleaned.Store(true)
+	return ImportResult{}, ctx.Err()
+}
+
+// TestImportOutlivesWindow (H1): closing the window does not cancel an import under
+// its cleanup; CancelImport cancels it and Wait returns only after Run did.
+func TestImportOutlivesWindow(t *testing.T) {
+	imp := &slowImporter{started: make(chan struct{})}
+	window, closeWindow := context.WithCancel(context.Background())
+	events := make(chan ImportProgress, 8)
+	d := New(Options{Host: &fakeHost{}, Importer: imp, Context: window, Notify: func(_ string, p any) { events <- p.(ImportProgress) }})
+	if r := call(t, d, `{"id":1,"op":"import.plan"}`); !r.OK {
+		t.Fatalf("plan: %+v", r)
+	}
+	if r := call(t, d, `{"id":2,"op":"import.run","args":{"ids":["image:a"],"token":"`+tokenFor(t, d, "import.run", "")+`"}}`); !r.OK {
+		t.Fatalf("run: %+v", r)
+	}
+	<-imp.started
+	// M4: the item name is cleaned before it reaches the page.
+	if p := <-events; strings.ContainsRune(p.Current, 0x202e) || !strings.Contains(p.Current, "evil") {
+		t.Fatalf("progress name %q", p.Current)
+	}
+	if !d.ImportRunning() {
+		t.Fatal("no import running")
+	}
+	// A plan while it runs would replace its importer.
+	if r := call(t, d, `{"id":3,"op":"import.plan"}`); r.OK || r.Error.Code != CodeBusy {
+		t.Fatalf("plan during an import: %+v", r)
+	}
+	closeWindow()
+	if d.WaitImport(200*time.Millisecond) || d.Wait(10*time.Millisecond) {
+		t.Fatal("Wait returned while the import still runs")
+	}
+	if !d.ImportRunning() {
+		t.Fatal("closing the window canceled the import")
+	}
+	d.CancelImport()
+	if !d.WaitImport(5 * time.Second) {
+		t.Fatal("Wait timed out")
+	}
+	if !imp.cleaned.Load() {
+		t.Fatal("Wait returned before the import's cleanup ended")
+	}
+	if p := <-events; p.Running || !p.Canceled {
+		t.Fatalf("final event %+v", p)
 	}
 }
 

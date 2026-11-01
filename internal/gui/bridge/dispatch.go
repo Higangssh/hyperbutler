@@ -83,7 +83,8 @@ type Options struct {
 	Importer Importer
 	// Notify sends an event to the page ({"event": name, "data": data}); may be nil.
 	Notify func(name string, data any)
-	// Context ends with the window: background work (an import) stops with it.
+	// Context ends with the window: requests stop with it. An import does not (its
+	// cleanup must run): the window cancels it with CancelImport and waits with Wait.
 	Context context.Context
 }
 
@@ -131,7 +132,59 @@ type Dispatcher struct {
 	base context.Context
 	imp  importState
 	tok  tokens
+	// bg counts what still runs: requests being answered and background work (an
+	// import, a start on open). Wait waits for it before the process ends.
+	bg tracker
 }
+
+// tracker counts running work and lets Wait wait for none (a WaitGroup would not allow
+// an Add racing with Wait, which a late request could do).
+type tracker struct {
+	mu   sync.Mutex
+	n    int
+	zero chan struct{}
+}
+
+func (t *tracker) add() {
+	t.mu.Lock()
+	if t.n == 0 {
+		t.zero = make(chan struct{})
+	}
+	t.n++
+	t.mu.Unlock()
+}
+
+func (t *tracker) done() {
+	t.mu.Lock()
+	t.n--
+	if t.n == 0 {
+		close(t.zero)
+	}
+	t.mu.Unlock()
+}
+
+func (t *tracker) wait(timeout time.Duration) bool {
+	t.mu.Lock()
+	if t.n == 0 {
+		t.mu.Unlock()
+		return true
+	}
+	z := t.zero
+	t.mu.Unlock()
+	tm := time.NewTimer(timeout)
+	defer tm.Stop()
+	select {
+	case <-z:
+		return true
+	case <-tm.C:
+		return false
+	}
+}
+
+// Wait waits up to timeout for the requests being answered and the background work (an
+// import's Run, its cleanup included) to end, and reports whether they did. The window
+// calls it after it closed, so the process does not end under them.
+func (d *Dispatcher) Wait(timeout time.Duration) bool { return d.bg.wait(timeout) }
 
 // New returns a dispatcher.
 func New(o Options) *Dispatcher {
@@ -159,6 +212,8 @@ func (d *Dispatcher) Handle(ctx context.Context, msg string) Response {
 		return d.fail(req.ID, Codedf(CodeBusy, "too many requests at once"), CodeBusy)
 	}
 	defer d.inflight.Add(-1)
+	d.bg.add()
+	defer d.bg.done()
 	data, err := d.serve(ctx, req.Op, args)
 	if err != nil {
 		return d.fail(req.ID, err, fallbackCode(req.Op))
@@ -415,7 +470,9 @@ func (d *Dispatcher) init(ctx context.Context) (any, error) {
 			return
 		}
 		v.Starting = true
+		d.bg.add()
 		go func() {
+			defer d.bg.done()
 			_, _ = d.exclusive(func() (any, error) {
 				c, cancel := context.WithTimeout(ctx, startTimeout)
 				defer cancel()

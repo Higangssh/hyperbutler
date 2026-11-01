@@ -157,6 +157,14 @@ func messageBox(hwnd uintptr, title, text string, flags uintptr) uintptr {
 	return r
 }
 
+var procSetWindowTextW = user32.NewProc("SetWindowTextW")
+
+func setWindowText(hwnd uintptr, text string) {
+	if p, err := windows.UTF16PtrFromString(text); err == nil {
+		_, _, _ = procSetWindowTextW.Call(hwnd, uintptr(unsafe.Pointer(p)))
+	}
+}
+
 // MessageBox shows an error box with no owner window (for the runtime check and the
 // console launcher's fallback).
 func MessageBox(title, text string) { messageBox(0, title, text, mbIconError|mbTopmost) }
