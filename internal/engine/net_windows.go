@@ -14,14 +14,18 @@ import (
 	"net/http"
 	"net/netip"
 	"net/url"
+	"os"
+	"sort"
 	"sync"
 	"time"
 
 	"github.com/Microsoft/go-winio"
 	"github.com/Microsoft/go-winio/pkg/guid"
+	"golang.org/x/sys/windows"
 
 	"github.com/Higangssh/hyperbutler/internal/diag"
 	"github.com/Higangssh/hyperbutler/internal/netstack"
+	"github.com/Higangssh/hyperbutler/internal/socktable"
 	"github.com/Higangssh/hyperbutler/internal/transport"
 	"github.com/Higangssh/hyperbutler/internal/vm"
 )
@@ -50,6 +54,9 @@ type NetConfig struct {
 	HostGateway *netstack.HostGateway
 	// AutoPublish mirrors `docker run -p` ports on the host's loopback.
 	AutoPublish bool
+	// OnUnpublished, if set, is called with every port of running containers that
+	// auto-publishing could not mirror (State.UnpublishedPorts), whenever that changes.
+	OnUnpublished func([]UnpublishedPort)
 	// Debug logs denied guest connections.
 	Debug bool
 }
@@ -67,6 +74,7 @@ type guestNet struct {
 	publish []netstack.Publish
 	log     *slog.Logger
 
+	ap       *autoPublisher // set by startAutoPublish
 	apCancel context.CancelFunc
 	apDone   chan struct{}
 
@@ -263,29 +271,43 @@ func (g *guestNet) close() {
 
 // --- auto-publish -------------------------------------------------------------------
 
-// startAutoPublish runs autoPublish until close.
+// startAutoPublish runs autoPublish until close, and from then on checkStart can be
+// asked about container starts.
 func (g *guestNet) startAutoPublish(ctx context.Context, target transport.HvsockTarget, step func(string, ...any)) {
-	ctx, g.apCancel = context.WithCancel(ctx)
-	g.apDone = make(chan struct{})
-	go func() {
-		defer close(g.apDone)
-		g.autoPublish(ctx, target, step)
-	}()
-}
-
-// autoPublish follows dockerd's container events and mirrors published ports.
-//
-// The port numbers come from the guest. A port that any host socket already listens on
-// is refused, because a specific 127.0.0.1 bind would otherwise take loopback clients
-// away from a host service bound to the wildcard address. A guest can still claim a
-// free loopback port before a host program does; see ADR 0006, review finding 1.
-func (g *guestNet) autoPublish(ctx context.Context, target transport.HvsockTarget, step func(string, ...any)) {
 	d := &transport.HvsockDialer{Target: target, Retries: 2, RetryWait: 100 * time.Millisecond}
 	client := &http.Client{Transport: &http.Transport{
 		DialContext:       func(ctx context.Context, _, _ string) (net.Conn, error) { return d.DialContext(ctx) },
 		DisableKeepAlives: true,
 	}}
-	ap := &autoPublisher{g: g, client: client, step: step, open: map[string][]io.Closer{}}
+	g.ap = &autoPublisher{g: g, client: client, step: step, open: map[string][]io.Closer{},
+		failed: map[string][]UnpublishedPort{}, check: hostPortFree}
+	ctx, g.apCancel = context.WithCancel(ctx)
+	g.apDone = make(chan struct{})
+	go func() {
+		defer close(g.apDone)
+		g.autoPublish(ctx)
+	}()
+}
+
+// checkStart is the API proxy's StartChecker (REQ-NET-005, proposed): it refuses the
+// start of a container whose published ports a host program already holds, before
+// dockerd starts it, so `docker run` and `docker start` fail with Docker's "Ports are
+// not available" error as on Docker Desktop. Anything it cannot judge is let through.
+func (g *guestNet) checkStart(ctx context.Context, ref string) error {
+	if g.ap == nil {
+		return nil
+	}
+	return g.ap.checkStart(ctx, ref)
+}
+
+// autoPublish follows dockerd's container events and mirrors published ports.
+//
+// The port numbers come from the guest. A port that any host socket already listens on
+// is refused (hostPortFree), and a container's ports are published all together or not
+// at all (publishAll). A guest can still claim a free loopback port before a host
+// program does; see ADR 0006, review finding 1.
+func (g *guestNet) autoPublish(ctx context.Context) {
+	ap := g.ap
 	for ctx.Err() == nil {
 		if err := ap.follow(ctx); err != nil && ctx.Err() == nil {
 			g.log.Warn("auto-publish: event stream ended", "err", err)
@@ -305,9 +327,14 @@ type autoPublisher struct {
 	g      *guestNet
 	client *http.Client
 	step   func(string, ...any)
-	mu     sync.Mutex
-	open   map[string][]io.Closer
-	count  int
+	// check reports a host port that is taken, without binding it (hostPortFree).
+	check func(uint16) error
+	mu    sync.Mutex
+	open  map[string][]io.Closer
+	count int
+	// failed are the ports of running containers that could not be published, by
+	// container; State.UnpublishedPorts shows them.
+	failed map[string][]UnpublishedPort
 }
 
 func (a *autoPublisher) follow(ctx context.Context) error {
@@ -395,6 +422,25 @@ func (a *autoPublisher) get(ctx context.Context, path string) ([]byte, error) {
 	return io.ReadAll(io.LimitReader(resp.Body, maxInspectBytes+1))
 }
 
+func (a *autoPublisher) checkStart(ctx context.Context, ref string) error {
+	b, err := a.get(ctx, "/containers/"+url.PathEscape(ref)+"/json")
+	if err != nil {
+		return nil // an unknown container, or dockerd not answering: dockerd says so
+	}
+	id, running, ports, err := startPorts(b, a.g.cfg.GuestIP())
+	if err != nil || running {
+		return nil
+	}
+	for _, p := range ports {
+		if err := a.check(p); err != nil {
+			a.g.log.Warn("auto-publish: refused a container start: a host program already uses its port",
+				"container", id[:12], "port", p, "err", err)
+			return err
+		}
+	}
+	return nil
+}
+
 func (a *autoPublisher) add(ctx context.Context, id string) {
 	a.mu.Lock()
 	_, done := a.open[id]
@@ -415,38 +461,66 @@ func (a *autoPublisher) add(ctx context.Context, id string) {
 		a.g.log.Warn("auto-publish: bindings to a guest-only address (such as -p 127.0.0.1:P:C) are not reachable from the host; use -p P:C",
 			"container", id[:12], "skipped", skipped)
 	}
-	var closers []io.Closer
+	a.mu.Lock()
+	room := maxAutoPublished - a.count
+	a.mu.Unlock()
+	if 2*len(ports) > room {
+		a.g.log.Warn("auto-publish: limit reached", "limit", maxAutoPublished, "container", id[:12])
+		a.fail(id, ports, fmt.Errorf("hyperbutler publishes at most %d host listeners", maxAutoPublished))
+		return
+	}
+	// REQ-NET-001: 127.0.0.1, [::1] and localhost; all of a container's ports or none.
+	closers, err := publishAll(ports, a.check, func(host netip.AddrPort, guest uint16) (io.Closer, error) {
+		return a.g.st.Publish(netstack.Publish{Host: host, GuestPort: guest})
+	}, ipv6Available)
+	if err != nil {
+		a.g.log.Warn("auto-publish: none of the container's ports is published: a host program already uses one",
+			"container", id[:12], "ports", fmt.Sprint(ports), "err", err)
+		a.fail(id, ports, err)
+		return
+	}
 	for _, p := range ports {
-		a.mu.Lock()
-		full := a.count >= maxAutoPublished
-		a.mu.Unlock()
-		if full {
-			a.g.log.Warn("auto-publish: limit reached", "limit", maxAutoPublished)
-			break
-		}
-		if err := portInUse(p); err != nil {
-			a.g.log.Warn("auto-publish: refusing a port a host program already uses", "port", p, "err", err)
-			continue
-		}
-		// REQ-NET-001: 127.0.0.1, [::1] and localhost. IPv4 must work; IPv6 loopback is
-		// best effort (it can be disabled on the host).
-		for _, ip := range []netip.Addr{netip.AddrFrom4([4]byte{127, 0, 0, 1}), netip.IPv6Loopback()} {
-			pub := netstack.Publish{Host: netip.AddrPortFrom(ip, p), GuestPort: p}
-			c, err := a.g.st.Publish(pub)
-			if err != nil {
-				a.g.log.Warn("auto-publish failed", "addr", pub.Host, "err", err)
-				continue
-			}
-			a.step("auto-published %s for container %s", pub, id[:12])
-			closers = append(closers, c)
-			a.mu.Lock()
-			a.count++
-			a.mu.Unlock()
-		}
+		a.step("auto-published port %d on 127.0.0.1 and [::1] for container %s", p, id[:12])
 	}
 	a.mu.Lock()
 	a.open[id] = closers
+	a.count += len(closers)
 	a.mu.Unlock()
+}
+
+// fail records that none of a running container's ports is published.
+func (a *autoPublisher) fail(id string, ports []uint16, err error) {
+	a.mu.Lock()
+	a.open[id] = nil // tried: a later sync does not try again while it runs
+	if len(ports) > 0 {
+		a.failed[id] = unpublished(id, ports, err, time.Now().UTC().Truncate(time.Second))
+	}
+	a.mu.Unlock()
+	a.reportFailed()
+}
+
+// reportFailed hands the current list of unpublished ports to NetConfig.OnUnpublished.
+func (a *autoPublisher) reportFailed() {
+	on := a.g.nc.OnUnpublished
+	if on == nil {
+		return
+	}
+	a.mu.Lock()
+	var all []UnpublishedPort
+	for _, us := range a.failed {
+		all = append(all, us...)
+	}
+	a.mu.Unlock()
+	sort.Slice(all, func(i, j int) bool {
+		if all[i].Port != all[j].Port {
+			return all[i].Port < all[j].Port
+		}
+		return all[i].Container < all[j].Container
+	})
+	if len(all) > MaxUnpublishedPorts {
+		all = all[:MaxUnpublishedPorts]
+	}
+	on(all)
 }
 
 func (a *autoPublisher) remove(id string) {
@@ -454,47 +528,18 @@ func (a *autoPublisher) remove(id string) {
 	cs := a.open[id]
 	delete(a.open, id)
 	a.count -= len(cs)
+	_, hadFailed := a.failed[id]
+	delete(a.failed, id)
 	a.mu.Unlock()
 	for _, c := range cs {
 		_ = c.Close()
 	}
 	if len(cs) > 0 {
-		a.step("unpublished %d port(s) of container %s", len(cs), id[:12])
+		a.step("unpublished %d listener(s) of container %s", len(cs), id[:12])
 	}
-}
-
-// portInUse reports an error when some host socket already listens on TCP port p on any
-// address. Binding the wildcard address of the same family fails then (without
-// SO_REUSEADDR), so successful probe binds, closed at once, mean the port is free. The
-// IPv4, IPv6-only and dual-stack sockets are probed separately: Windows lets a wildcard
-// listener of one kind coexist with one of another (measured: a dual-stack [::]:P
-// listener passes both single-family probes, and an IPv4 0.0.0.0:P listener passes the
-// dual-stack one).
-func portInUse(p uint16) error {
-	for _, probe := range []struct{ network, addr string }{
-		{"tcp4", fmt.Sprintf("0.0.0.0:%d", p)},
-		{"tcp6", fmt.Sprintf("[::]:%d", p)},
-		{"tcp", fmt.Sprintf(":%d", p)}, // dual-stack
-	} {
-		ln, err := net.Listen(probe.network, probe.addr)
-		if err != nil {
-			if probe.network != "tcp4" && !ipv6Available() {
-				continue
-			}
-			return err
-		}
-		_ = ln.Close()
+	if hadFailed {
+		a.reportFailed()
 	}
-	return nil
-}
-
-func ipv6Available() bool {
-	ln, err := net.Listen("tcp", "[::1]:0")
-	if err != nil {
-		return false
-	}
-	_ = ln.Close()
-	return true
 }
 
 func (a *autoPublisher) closeAll() {
@@ -507,4 +552,73 @@ func (a *autoPublisher) closeAll() {
 	for _, id := range ids {
 		a.remove(id)
 	}
+}
+
+// hostPortFree reports an error when some host socket already listens on TCP port p,
+// on any address.
+//
+// Why ask at all: Windows lets a listener on the wildcard address (0.0.0.0:P, [::]:P)
+// and one on a specific address (127.0.0.1:P) coexist, so a successful bind of
+// 127.0.0.1:P does not mean the port is free. A host server on 0.0.0.0:P would then
+// lose its loopback clients to the container. The reverse split happens too: with a
+// host program on 127.0.0.1:P only, our 127.0.0.1 bind fails while [::1] succeeds, and
+// `localhost` reaches the container while 127.0.0.1 reaches the host program
+// (publishAll closes the [::1] half then). A listener on a specific interface address
+// (the LAN IP) counts as well: a client of that service on this machine may use either
+// address, and Docker, which binds the wildcard, collides with it too.
+//
+// How: the system's TCP listener tables (GetExtendedTcpTable, IPv4 and IPv6), which
+// list every listener on every address, and reading them opens no socket. The earlier
+// probe bound 0.0.0.0:P and [::]:P for a moment, and a wildcard bind can raise the
+// Windows Firewall "allow access" prompt for hyperbutler.exe on a user's `docker run
+// -p`. Listeners of this engine (another container's port) are not counted: dockerd
+// refuses a host port another container holds, and the bind decides the rest.
+//
+// If the tables cannot be read, it binds 127.0.0.1:P and [::1]:P (loopback only, never
+// a wildcard) and closes them at once: that still catches a loopback listener, though
+// not one on the wildcard or the LAN address.
+func hostPortFree(p uint16) error {
+	return hostPortFreeExcept(p, uint32(os.Getpid())) //nolint:gosec // G115: Windows process IDs are DWORDs
+}
+
+// hostPortFreeExcept is hostPortFree with the listeners of process self not counted.
+func hostPortFreeExcept(p uint16, self uint32) error {
+	var r socktable.Reader
+	ss, err := r.TCPListeners()
+	if err != nil {
+		return loopbackPortFree(p)
+	}
+	return portFreeIn(ss, p, self, addrInUse())
+}
+
+// loopbackPortFree is hostPortFree's fallback: a bind of each loopback address.
+func loopbackPortFree(p uint16) error {
+	for i, ip := range loopbacks {
+		ln, err := net.Listen("tcp", netip.AddrPortFrom(ip, p).String())
+		if err != nil {
+			if i == 1 && !ipv6Available() {
+				continue
+			}
+			return &PortsUnavailable{Port: p, Addr: ip, Cause: listenCause(err)}
+		}
+		_ = ln.Close()
+	}
+	return nil
+}
+
+// addrInUse is WSAEADDRINUSE in the system's words, as a failed bind would say it.
+func addrInUse() error {
+	if s := windows.WSAEADDRINUSE.Error(); s != "" {
+		return errors.New(s)
+	}
+	return errAddrInUse
+}
+
+func ipv6Available() bool {
+	ln, err := net.Listen("tcp", "[::1]:0")
+	if err != nil {
+		return false
+	}
+	_ = ln.Close()
+	return true
 }

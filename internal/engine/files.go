@@ -90,6 +90,38 @@ type State struct {
 	// HostGateway is the host gateway setting in effect (REQ-NET-004), once the guest
 	// network is up.
 	HostGateway *HostGatewayState `json:"hostGateway,omitempty"`
+	// UnpublishedPorts are the published ports of running containers that the engine
+	// could not mirror on the host's loopback (REQ-NET-001), because a host program
+	// holds them. A container's ports are published all together or not at all, so
+	// every port of such a container is listed. A `docker run` or `docker start` through
+	// the engine fails instead; this lists what a restart policy started, or what lost a
+	// race with a host program after the start was checked.
+	UnpublishedPorts []UnpublishedPort `json:"unpublishedPorts,omitempty"`
+}
+
+// UnpublishedPort is one port in State.UnpublishedPorts.
+type UnpublishedPort struct {
+	Container string    `json:"container"` // the first 12 digits of the container ID
+	Port      uint16    `json:"port"`      // the host port
+	Reason    string    `json:"reason"`    // in Docker's words ("Ports are not available: ...")
+	Since     time.Time `json:"since"`
+}
+
+// MaxUnpublishedPorts bounds State.UnpublishedPorts.
+const MaxUnpublishedPorts = 256
+
+// Validate reports the first field out of range.
+func (u *UnpublishedPort) Validate() error {
+	if len(u.Container) != 12 || !validContainerID(u.Container+strings.Repeat("0", 52)) {
+		return fmt.Errorf("unpublished port: bad container id %q", u.Container)
+	}
+	if u.Port == 0 {
+		return errors.New("unpublished port: port 0")
+	}
+	if len(u.Reason) > maxErrorLen || !utf8.ValidString(u.Reason) {
+		return errors.New("unpublished port: reason too long or not UTF-8")
+	}
+	return nil
 }
 
 // HostGatewayState is the host gateway setting the running engine applies.
@@ -200,6 +232,14 @@ func (s *State) Validate() error {
 	}
 	if s.HostGateway != nil {
 		if err := s.HostGateway.Validate(); err != nil {
+			return fmt.Errorf("state: %w", err)
+		}
+	}
+	if len(s.UnpublishedPorts) > MaxUnpublishedPorts {
+		return fmt.Errorf("state: %d unpublished ports, at most %d", len(s.UnpublishedPorts), MaxUnpublishedPorts)
+	}
+	for i := range s.UnpublishedPorts {
+		if err := s.UnpublishedPorts[i].Validate(); err != nil {
 			return fmt.Errorf("state: %w", err)
 		}
 	}

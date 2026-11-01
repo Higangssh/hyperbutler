@@ -228,13 +228,17 @@ func Serve(opts ServeOptions) error {
 	}
 	defer func() { _ = console.Close() }()
 
+	netCfg := opts.Net
+	netCfg.OnUnpublished = func(u []UnpublishedPort) {
+		pub.update(func(s *State) { s.UnpublishedPorts = u })
+	}
 	var predicted string // the runtime id OnGrant recorded
 	runErr := Run(ctx, Config{
 		KernelPath: opts.KernelPath, InitrdPath: opts.InitrdPath, Image: opts.Image,
 		MemoryMB: opts.Settings.Memory(), CPUs: opts.Settings.CPUCount(runtime.NumCPU()),
 		Pipe: opts.Pipe, VMID: l.VMPrefix() + randomHex(6),
 		Disk: l, DiskSize: opts.Settings.DiskSize,
-		Net: opts.Net, ConsoleLog: console, Logger: log, Backend: opts.Backend,
+		Net: netCfg, ConsoleLog: console, Logger: log, Backend: opts.Backend,
 		DaemonConfig: dc,
 		OnGrant: func(_ string, rid guid.GUID) {
 			predicted = strings.ToLower(rid.String())

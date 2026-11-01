@@ -41,9 +41,9 @@ For each scenario:
   last of the two to select its own context wins. `DOCKER_HOST` or `DOCKER_CONTEXT`
   overrides the selection in one shell, and `docker --context NAME` in one command. The
   two engines keep separate images, containers and volumes. They do not share pipes. They
-  do share the host's ports, and today a port collision is **not reported to the user**
-  and can split traffic between the two engines (S3.4). That is the most important fix
-  in this note.
+  do share the host's ports. A port collision used to go unreported and could split
+  traffic between the two engines (S3.4). That was the most important fix in this note;
+  `docker run` now fails with Docker's "Ports are not available" error instead.
 
 ## Summary
 
@@ -64,7 +64,7 @@ For each scenario:
 | S3.1 | Docker Desktop installed, one or both stopped | small | REQ-UX-014 (new) |
 | S3.2 | Both running: which engine does `docker` reach? | small | REQ-UX-018 (new), REQ-PLAT-004 |
 | S3.3 | Docker Desktop selects `desktop-linux` again when it starts | small | REQ-UX-018 (new) |
-| S3.4 | Both publish the same port | **needs work** | REQ-NET-005 (new), REQ-NET-001 |
+| S3.4 | Both publish the same port | fixed (Docker Desktop not run) | REQ-NET-005 (new), REQ-NET-001 |
 | S3.5 | `host.docker.internal` differences | small (documented) | REQ-NET-004 |
 | S3.6 | Compose plugin and credential helper (`credsStore: desktop`) | small | REQ-UX-019 (new) |
 | S3.7 | Moving images and volumes from Docker Desktop | small (docs) | REQ-UX-021 (new) |
@@ -480,8 +480,36 @@ Facts from the code that the scenarios below rely on
      lists the ports that could not be published, with the reason.
   3. The docs say that two engines cannot both publish one port, and how to run both
      (different host ports).
-- **Gap:** **needs work**. It is a correctness problem today, not only a message.
-  REQ-NET-005 (new), REQ-NET-001.
+- **Fixed** *(verified on VM, 2026-11-01)*: points 1 to 3 are built
+  ([compat.md, Published ports](../compat.md#published-ports)). The probe reads the
+  system's TCP listener tables instead of binding, so a listener on any address
+  (wildcard, loopback, LAN IP) counts as taken and no wildcard socket is ever opened.
+  A container's ports are published all together, on both loopbacks, or not at all. The
+  API proxy checks each `POST /containers/{name}/start` and answers `500` with Docker's
+  wording before dockerd starts the container. The same test as above:
+  - a host program on `127.0.0.1:18080`: `docker run -d -p 18080:80` exited 125 with
+    `Ports are not available: exposing port TCP 127.0.0.1:18080 -> 0.0.0.0:0: listen tcp
+    127.0.0.1:18080: bind: Only one usage of each socket address (protocol/network
+    address/port) is normally permitted. (another program, process N, listens on
+    127.0.0.1:18080)`; the container stayed `Created`, and `127.0.0.1`, `localhost` and
+    `[::1]` all reached the host program or nothing;
+  - the same with the host program on `[::1]:18080` only (`exposing port TCP
+    [::1]:18080`), for `docker run` and `docker start`;
+  - with the port free, `127.0.0.1`, `localhost` and `[::1]` all reached the container;
+  - a `--restart always` container with two ports, one taken while the engine was
+    stopped: after `start` it ran with neither port published, and `status` listed both
+    (the taken one with the error above, the other "held back with port P"); after the
+    host program exited, `docker restart` published both and the list emptied;
+  - the engine's sockets, sampled from the TCP and UDP tables about every 70 µs for 30 s
+    across a refused run, a start and a restart, were `127.0.0.1:P` and `[::1]:P`
+    listeners only.
+
+  Left: Docker Desktop itself was not run. *Hyperbutler first* still depends on Desktop,
+  whose `0.0.0.0:P` bind may succeed next to hyperbutler's loopback listeners. Random
+  ports (`-P`) are not checked before the start, only published all-or-nothing after
+  it.
+- **Gap:** none found in hyperbutler (Docker Desktop not run). REQ-NET-005 (new),
+  REQ-NET-001.
 
 ### S3.5 `host.docker.internal`
 
@@ -970,9 +998,9 @@ Two smaller findings to fix without a requirement:
 
 - `Describe(CodePipeInUse)` names `\\.\pipe\docker_engine_hyperbutler` even when another
   pipe is configured (`internal/engine/serve_windows.go:348-349`, S5.1).
-- The port probe can bind `0.0.0.0:P` and `[::]:P` for a moment
-  (`net_windows.go:473-489`). Whether that ever raises a Windows Firewall prompt for
-  `hyperbutler.exe` was not checked. None appeared in this run.
+- The port probe bound `0.0.0.0:P` and `[::]:P` for a moment, which can raise a Windows
+  Firewall prompt for `hyperbutler.exe`. It now reads the TCP listener tables and opens
+  no socket (S3.4).
 
 ## How it was checked
 

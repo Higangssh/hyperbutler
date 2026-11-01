@@ -76,11 +76,11 @@ func TestPortInUseRefusesHostListener(t *testing.T) {
 			t.Fatal(err)
 		}
 		p := uint16(ln.Addr().(*net.TCPAddr).Port)
-		if err := portInUse(p); err == nil {
+		if err := hostPortFree(p); err == nil {
 			t.Errorf("%s: port %d held by a host listener was reported free", network, p)
 		}
 		ln.Close()
-		if err := portInUse(p); err != nil {
+		if err := hostPortFree(p); err != nil {
 			t.Errorf("%s: free port %d reported in use: %v", network, p, err)
 		}
 	}

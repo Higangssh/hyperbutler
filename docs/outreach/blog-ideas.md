@@ -109,7 +109,11 @@ surprising. Numbers are from the maintainer's Windows 11 Home laptop unless note
   a "is this port free?" probe on the wildcard passes, the engine's `127.0.0.1` bind
   fails, its `[::1]` bind succeeds, and `curl 127.0.0.1:8080` reaches the host program
   while `curl localhost:8080` reaches the container. `docker run` itself succeeded.
-  Docker Desktop and a second engine side by side hit the same rule.
+  Docker Desktop and a second engine side by side hit the same rule. The fix asks
+  instead of binding: the system's TCP listener table (`GetExtendedTcpTable`) shows every
+  listener on every address, opens no socket and so can never raise the Windows Firewall
+  prompt that a wildcard probe bind can; the API proxy then fails the container start
+  with Docker's own "Ports are not available" error
   ([usage-scenarios.md](../research/usage-scenarios.md#s34-both-publish-the-same-port)).
 
 ## Still to measure before writing

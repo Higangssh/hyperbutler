@@ -86,7 +86,8 @@ func TestSchemaFields(t *testing.T) {
 			Env: &engine.EnvState{HTTPProxy: "http://u:***@p:1", HTTPSProxy: "http://p:1", NoProxy: "localhost", CAImport: true, CACerts: 3, CASkipped: 7,
 				CAStats: dockerenv.Stats{Added: 3, Duplicate: 1, NotCA: 1, Expired: 1, NotYetValid: 1, Invalid: 1, Disallowed: 1, OverLimit: 1},
 				SHA256:  "h", Restarted: true, Error: "e"}},
-		HostGateway: &engine.HostGatewayState{Address: "192.168.127.254", Enabled: true, Ports: "all", Reloads: 1, Error: "e"},
+		HostGateway:      &engine.HostGatewayState{Address: "192.168.127.254", Enabled: true, Ports: "all", Reloads: 1, Error: "e"},
+		UnpublishedPorts: []engine.UnpublishedPort{{Container: "0123456789ab", Port: 8080, Reason: "r", Since: now}},
 	}
 	checkKeys(t, "status", StatusJSON{
 		Schema: 1, Running: true, SetUp: true, Home: "h", State: st, DataDir: "d", Disk: "x", DiskUsed: 1, DiskMax: 2, HostFree: 3,
@@ -107,6 +108,8 @@ func TestSchemaFields(t *testing.T) {
 		"state.daemonConfig.env.sha256", "state.daemonConfig.env.restarted", "state.daemonConfig.env.error",
 		"state.hostGateway", "state.hostGateway.address", "state.hostGateway.enabled", "state.hostGateway.ports",
 		"state.hostGateway.reloads", "state.hostGateway.error",
+		"state.unpublishedPorts", "state.unpublishedPorts[].container", "state.unpublishedPorts[].port", "state.unpublishedPorts[].reason",
+		"state.unpublishedPorts[].since",
 	})
 	checkKeys(t, "diagnose", DiagnoseJSON{Schema: 1, File: "f", Files: []string{"a"}, Missing: []DiagnoseMissing{{Name: "n", Reason: "r"}}},
 		[]string{"schema", "file", "files", "missing", "missing[].name", "missing[].reason"})

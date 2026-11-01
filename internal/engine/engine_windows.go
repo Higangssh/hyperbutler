@@ -535,8 +535,11 @@ func Run(ctx context.Context, cfg Config) (err error) {
 			return err
 		}
 	}
+	var checkStart transport.StartChecker
 	if gnet != nil && cfg.Net.AutoPublish {
 		gnet.startAutoPublish(runCtx, target, step)
+		// A start whose ports a host program holds fails as on Docker Desktop.
+		checkStart = gnet.checkStart
 	}
 	if shares != nil {
 		shares.startLifetime(runCtx, target)
@@ -550,6 +553,7 @@ func Run(ctx context.Context, cfg Config) (err error) {
 		Logger:   slog.New(levelFilter{h: log.Handler(), min: slog.LevelWarn}),
 		// Windows bind sources in container creates become shares (ADR 0007).
 		RewriteCreate: rewrite,
+		CheckStart:    checkStart,
 	}
 	step("serving %s", cfg.Pipe)
 	if err := p.Serve(runCtx, ln); err != nil && runCtx.Err() == nil {

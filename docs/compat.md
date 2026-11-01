@@ -43,6 +43,35 @@ When it is off, connections to `192.168.127.254` are refused, the names give NXD
 the guest off from the host gateway (daemon.json's `bip`, `fixed-cidr` and
 `default-address-pools` are checked; `docker network create` is not).
 
+## Published ports
+
+REQ-NET-001; the collision handling is the proposed REQ-NET-005
+([usage-scenarios.md, S3.4](research/usage-scenarios.md#s34-both-publish-the-same-port)).
+Code: `internal/engine/publish.go`, `internal/engine/net_windows.go` (auto-publish).
+
+| | Docker Desktop | hyperbutler |
+|---|---|---|
+| `-p 8080:80` listens on | `0.0.0.0:8080` (all host addresses) | `127.0.0.1:8080` and `[::1]:8080`; the LAN needs REQ-NET-003 (not built) |
+| A port a host program already listens on (any address: wildcard, loopback, LAN IP) | `docker run` fails: `Ports are not available: exposing port TCP 0.0.0.0:8080 -> 0.0.0.0:0: listen tcp 0.0.0.0:8080: bind: Only one usage of each socket address ...` | `docker run` and `docker start` fail the same way, before dockerd starts the container (exit 125, the container stays `Created`): `Ports are not available: exposing port TCP 127.0.0.1:8080 -> 0.0.0.0:0: listen tcp 127.0.0.1:8080: bind: Only one usage of each socket address ... (another program, process N, listens on ADDR)` |
+| One of the two loopbacks taken | n/a | neither is published (no split between `127.0.0.1` and `localhost`/`[::1]`) |
+| A container started by a restart policy, `docker restart`, or after a host program took the port between the check and the bind | the start fails | the container runs, **none** of its ports is published, `engine.log` says why, and `hyperbutler status` (and `status --json`, `state.unpublishedPorts`) lists each port with the reason until the container stops |
+| Random ports (`-P`, `-p 80`) and host-port ranges | checked at bind | not checked before the start (dockerd picks the port then); published all-or-nothing after it, as above |
+| UDP (`-p 53:53/udp`) | published | not mirrored on the host yet |
+| IPv6 loopback disabled on the host | n/a | `127.0.0.1` alone counts as published |
+
+How a taken port is found: the engine reads the system's TCP listener tables
+(`GetExtendedTcpTable`) and opens no socket for it. Windows lets a wildcard listener
+(`0.0.0.0:P`) and a specific one (`127.0.0.1:P`) coexist, so a successful bind would not
+prove the port free, and a probe bind of the wildcard address can raise the Windows
+Firewall "allow access" prompt. hyperbutler never listens on a wildcard address. If the
+tables cannot be read, it falls back to binding `127.0.0.1:P` and `[::1]:P`, which catches
+a loopback listener but not one on the wildcard or the LAN address.
+
+The start check runs in the engine's Docker API proxy, so it covers every client that
+uses the pipe (the docker CLI, compose, SDKs). A program that takes the port in the
+moment between the check and the bind still wins; then the container runs unpublished
+and `status` says so.
+
 ## The docker CLI and Docker Desktop
 
 REQ-UX-001, REQ-API-001. Code: `cmd/hyperbutler/dockercli_windows.go`,
@@ -96,8 +125,11 @@ uninstall` take the entry out.
   `cliPluginsExtraDirs`, was not checked.
 - `DOCKER_HOST` or `DOCKER_CONTEXT` in the environment overrides the selected context;
   `start` prints a note when they are set.
-- Both engines share the host's ports. A port Docker Desktop already publishes is not
-  mirrored by hyperbutler, and today only `engine.log` says so; see
+- Both engines share the host's ports. A `docker run -p` on hyperbutler for a port Docker
+  Desktop already publishes fails with "Ports are not available", as on Desktop
+  ([Published ports](#published-ports)). The reverse (hyperbutler first) depends on
+  Desktop, which binds `0.0.0.0:P` and may succeed next to hyperbutler's loopback
+  listeners; run the two on different host ports. See
   [usage-scenarios.md, S3.4](research/usage-scenarios.md#s34-both-publish-the-same-port).
 
 **Windows on ARM64.** The release is x64 only (`hyperbutler-<tag>-windows-amd64.zip`).

@@ -177,6 +177,15 @@ into the same folder.
   selects it (and prints the one it replaced); switch back with `docker context use
   desktop-linux`. See [docs/compat.md](docs/compat.md#the-docker-cli-and-docker-desktop).
 
+### Published ports and other users
+
+- `docker run -p 8080:80` listens on `127.0.0.1:8080` and `[::1]:8080` (so `localhost`
+  works), not on the LAN. If another program (Docker Desktop, a dev server, another user's
+  hyperbutler) already listens on that port on any address, `docker run` fails with
+  Docker's own "Ports are not available" error and names the process. A container started
+  by a restart policy keeps running without its ports then, and `hyperbutler status` lists
+  them with the reason. See [docs/compat.md](docs/compat.md#published-ports).
+
 ### Settings
 
 ```powershell
