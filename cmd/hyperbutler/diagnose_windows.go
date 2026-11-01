@@ -31,6 +31,11 @@ import (
 // diagLogWindow is how much of the end of each log the bundle takes.
 const diagLogWindow = 4 << 20
 
+// diagJSONMax bounds the JSON files the user edits (daemon.json, the docker CLI's
+// config.json), which the state files' 64 KiB bound would leave out: an oversized
+// daemon.json is itself worth seeing.
+const diagJSONMax = 1 << 20
+
 // bundle is the content of a diagnose zip, in order.
 type bundle struct {
 	files   []bundleFile
@@ -40,13 +45,16 @@ type bundle struct {
 	originals map[string]fileFacts
 }
 
-// fileFacts is one original file: size, SHA-256 and the encoding details redaction hides.
+// fileFacts is one original file: its size and the encoding details redaction hides.
+// There is no hash of the original: with a guess at a password, a hash of a file that
+// holds one would confirm the guess offline. RedactedSHA256 is that of the redacted
+// copy in the zip.
 type fileFacts struct {
-	Path   string `json:"path"`
-	Bytes  int    `json:"bytes"`
-	SHA256 string `json:"sha256"`
-	BOM    bool   `json:"utf8Bom"`
-	CRLF   bool   `json:"crlf"`
+	Path           string `json:"path"`
+	Bytes          int    `json:"bytes"`
+	RedactedSHA256 string `json:"redactedSha256"`
+	BOM            bool   `json:"utf8Bom"`
+	CRLF           bool   `json:"crlf"`
 }
 
 type bundleFile struct {
@@ -72,21 +80,29 @@ func (b *bundle) addJSON(name string, v any) {
 	b.add(name, redact.JSON(j))
 }
 
-// addFile adds a JSON file of the installation, redacted, or records why it is not there.
-func (b *bundle) addFile(name, path string) {
-	data, err := engine.ReadFileBounded(path)
+// addFile adds a JSON file of the installation (read up to limit bytes), redacted, or
+// records why it is not there.
+func (b *bundle) addFile(name, path string, limit int) {
+	data, err := engine.ReadFileLimit(path, limit)
 	switch {
 	case errors.Is(err, os.ErrNotExist):
 		b.skip(name, "not present ("+path+")")
+	case errors.Is(err, engine.ErrTooLarge):
+		size := "more"
+		if fi, serr := os.Stat(path); serr == nil {
+			size = fmt.Sprint(fi.Size())
+		}
+		b.skip(name, fmt.Sprintf("omitted: %s is %s bytes, over the %s diagnose reads", path, size, engine.HumanSize(uint64(limit)))) //nolint:gosec // G115: a positive constant
 	case err != nil:
 		b.skip(name, err.Error())
 	default:
-		b.add(name, redact.JSON(data))
-		sum := sha256.Sum256(data)
+		red := redact.JSON(data)
+		b.add(name, red)
+		sum := sha256.Sum256(red)
 		if b.originals == nil {
 			b.originals = map[string]fileFacts{}
 		}
-		b.originals[name] = fileFacts{Path: path, Bytes: len(data), SHA256: hex.EncodeToString(sum[:]),
+		b.originals[name] = fileFacts{Path: path, Bytes: len(data), RedactedSHA256: hex.EncodeToString(sum[:]),
 			BOM: bytes.HasPrefix(data, []byte("\xef\xbb\xbf")), CRLF: bytes.Contains(data, []byte("\r\n"))}
 	}
 }
@@ -114,12 +130,23 @@ func readTail(path string, n int64) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	if fi.Size() > n {
-		if _, err := f.Seek(fi.Size()-n, io.SeekStart); err != nil {
-			return nil, err
-		}
+	if fi.Size() <= n {
+		return io.ReadAll(io.LimitReader(f, n))
 	}
-	return io.ReadAll(io.LimitReader(f, n))
+	// One byte before the window: if it is a line end, the window starts a line.
+	if _, err := f.Seek(fi.Size()-n-1, io.SeekStart); err != nil {
+		return nil, err
+	}
+	b, err := io.ReadAll(io.LimitReader(f, n+1))
+	if err != nil {
+		return nil, err
+	}
+	// Drop the partial first line: half a line can be half a secret, which redaction
+	// would no longer recognize ("…rd=hunter2" without "passwo").
+	if i := bytes.IndexByte(b, '\n'); i >= 0 {
+		return b[i+1:], nil
+	}
+	return nil, nil // one line longer than the window
 }
 
 func cmdDiagnose(args []string, stdout, stderr io.Writer) error {
@@ -139,7 +166,8 @@ func cmdDiagnose(args []string, stdout, stderr io.Writer) error {
 		return err
 	}
 	b := collect(now)
-	if err := writeBundle(path, now, b); err != nil {
+	aclKept, err := writeBundle(path, now, b)
+	if err != nil {
 		return fmt.Errorf("diagnose: %w", err)
 	}
 	r := DiagnoseJSON{Schema: SchemaVersion, File: path, Files: []string{}, Missing: b.missing}
@@ -147,6 +175,10 @@ func cmdDiagnose(args []string, stdout, stderr io.Writer) error {
 	for _, f := range b.files {
 		r.Files = append(r.Files, f.name)
 		size += uint64(len(f.data))
+	}
+	if !aclKept {
+		// On stderr, so --json output stays one document.
+		_, _ = fmt.Fprintf(stderr, "hyperbutler: note: the file system of %s keeps no access lists (FAT32 or exFAT), so the zip is not private: anyone who can open the drive can read it.\n", filepath.VolumeName(path))
 	}
 	if *asJSON {
 		return writeJSON(stdout, r)
@@ -192,11 +224,11 @@ func collect(now time.Time) *bundle {
 
 	var st *engine.State
 	if herr == nil {
-		b.addFile("settings.json", l.SettingsPath())
-		b.addFile("daemon.json", l.DaemonConfigPath())
-		b.addFile("daemon.applied.json", l.DaemonAppliedPath())
-		b.addFile("state.json", l.StatePath())
-		b.addFile("disk.json", l.DiskMetaPath())
+		b.addFile("settings.json", l.SettingsPath(), engine.MaxStateFile)
+		b.addFile("daemon.json", l.DaemonConfigPath(), diagJSONMax)
+		b.addFile("daemon.applied.json", l.DaemonAppliedPath(), diagJSONMax)
+		b.addFile("state.json", l.StatePath(), engine.MaxStateFile)
+		b.addFile("disk.json", l.DiskMetaPath(), engine.MaxStateFile)
 		for _, lf := range []struct{ name, path string }{
 			{"logs/engine.log", l.EngineLogPath()}, {"logs/engine.log.1", l.EngineLogPath() + ".1"},
 			{"logs/console.log", l.ConsoleLogPath()}, {"logs/console.log.1", l.ConsoleLogPath() + ".1"},
@@ -221,7 +253,7 @@ func collect(now time.Time) *bundle {
 	// The docker CLI's config.json, through redact.JSON like every JSON file: it holds
 	// registry credentials ("auth", "identitytoken"), which never leave.
 	if store, err := dockerctx.DefaultStore(); err == nil {
-		b.addFile("docker-config.json", filepath.Join(store.Dir, "config.json"))
+		b.addFile("docker-config.json", filepath.Join(store.Dir, "config.json"), diagJSONMax)
 	}
 	if len(b.originals) > 0 {
 		b.addJSON("files.json", b.originals)
@@ -404,12 +436,15 @@ func dockerContexts() map[string]any {
 }
 
 // writeBundle writes the zip to a new file (never over an existing one) that only the
-// current user, SYSTEM and Administrators can open.
-func writeBundle(path string, now time.Time, b *bundle) (err error) {
+// current user, SYSTEM and Administrators can open, on a file system that keeps access
+// lists. aclKept is false when it does not (FAT32, exFAT): the zip is then as open as
+// the drive.
+func writeBundle(path string, now time.Time, b *bundle) (aclKept bool, err error) {
 	f, err := createPrivateFile(path)
 	if err != nil {
-		return err
+		return false, err
 	}
+	aclKept = persistentACLs(f)
 	defer func() {
 		if cerr := f.Close(); err == nil {
 			err = cerr
@@ -422,18 +457,31 @@ func writeBundle(path string, now time.Time, b *bundle) (err error) {
 	for _, bf := range b.files {
 		w, err := zw.CreateHeader(&zip.FileHeader{Name: bf.name, Method: zip.Deflate, Modified: now})
 		if err != nil {
-			return err
+			return aclKept, err
 		}
 		if _, err := w.Write(bf.data); err != nil {
-			return err
+			return aclKept, err
 		}
 	}
-	return zw.Close()
+	return aclKept, zw.Close()
+}
+
+// persistentACLs reports whether f's file system stores access lists
+// (FILE_PERSISTENT_ACLS: NTFS and ReFS do; FAT32 and exFAT do not). When it cannot
+// tell, it says yes.
+func persistentACLs(f *os.File) bool {
+	var flags uint32
+	if err := windows.GetVolumeInformationByHandle(windows.Handle(f.Fd()), nil, 0, nil, nil, &flags, nil, 0); err != nil {
+		return true
+	}
+	return flags&windows.FILE_PERSISTENT_ACLS != 0
 }
 
 // createPrivateFile creates path, which must not exist, with a protected DACL for the
 // current user, SYSTEM and Administrators (as engine.MkdirPrivate does for directories),
-// so the bundle does not inherit a share's or a volume root's wider access.
+// so the bundle does not inherit a share's or a volume root's wider access. That holds
+// only on a file system with access lists (persistentACLs): FAT32 and exFAT drop the
+// DACL, and anyone who can open the drive can read the file.
 func createPrivateFile(path string) (*os.File, error) {
 	tu, err := windows.GetCurrentProcessToken().GetTokenUser()
 	if err != nil {

@@ -501,9 +501,18 @@ func WriteFileAtomic(path string, data []byte) error {
 	return err
 }
 
+// MaxStateFile is the bound ReadFileBounded applies.
+const MaxStateFile = maxFileSize
+
+// ErrTooLarge is wrapped by the error of a read that hit its bound.
+var ErrTooLarge = errors.New("file too large")
+
 // ReadFileBounded reads at most maxFileSize bytes of path, retrying sharing
 // violations (an atomic rename in progress).
 func ReadFileBounded(path string) ([]byte, error) { return readFileLimit(path, maxFileSize) }
+
+// ReadFileLimit is ReadFileBounded with another limit.
+func ReadFileLimit(path string, limit int) ([]byte, error) { return readFileLimit(path, limit) }
 
 // readFileLimit is ReadFileBounded with another limit.
 func readFileLimit(path string, limit int) ([]byte, error) {
@@ -516,7 +525,7 @@ func readFileLimit(path string, limit int) ([]byte, error) {
 		defer func() { _ = f.Close() }() // read-only
 		b, err = io.ReadAll(io.LimitReader(f, int64(limit)+1))
 		if err == nil && len(b) > limit {
-			err = fmt.Errorf("%s is larger than %d bytes", path, limit)
+			err = fmt.Errorf("%s is larger than %d bytes: %w", path, limit, ErrTooLarge)
 		}
 		return err
 	})

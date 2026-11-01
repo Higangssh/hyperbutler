@@ -4,6 +4,8 @@ package main
 
 import (
 	"archive/zip"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"io"
 	"os"
@@ -215,7 +217,11 @@ func TestDiagnose(t *testing.T) {
 	writeFile(t, filepath.Join(dockerCfg, "config.json"), `{"auths":{"r.example":{"auth":"`+testSecret+`"}},"currentContext":"hyperbutler"}`)
 	writeFile(t, filepath.Join(dockerCfg, "contexts", "tls", "x", "docker", "key.pem"), testSecret)
 	// A daemon.json with CRLF line ends: files.json keeps what redaction re-indents away.
-	writeFile(t, filepath.Join(home, "daemon.json"), "{\r\n  \"debug\": true\r\n}\r\n")
+	// It holds a proxy password: no hash of the original may leave (H-1), or a guessed
+	// password could be confirmed offline.
+	daemonJSON := "{\r\n  \"debug\": true,\r\n  \"proxies\": {\"http-proxy\": \"http://bob:" + testSecret + "@p:3128\"}\r\n}\r\n"
+	writeFile(t, filepath.Join(home, "daemon.json"), daemonJSON)
+	origSum := sha256.Sum256([]byte(daemonJSON))
 	out := filepath.Join(t.TempDir(), "d.zip")
 	code, so, e := runCLI(t, "diagnose", "--out", out, "--json")
 	if code != 0 {
@@ -242,6 +248,9 @@ func TestDiagnose(t *testing.T) {
 		if strings.Contains(string(b), testSecret) {
 			t.Errorf("%s holds the secret:\n%s", f.Name, b)
 		}
+		if strings.Contains(strings.ToLower(string(b)), hex.EncodeToString(origSum[:])) {
+			t.Errorf("%s holds the SHA-256 of the unredacted daemon.json:\n%s", f.Name, b)
+		}
 	}
 	for _, want := range []string{"summary.txt", "version.json", "status.json", "settings.json", "daemon.json", "state.json", "disk.json",
 		"logs/engine.log", "logs/console.log", "last-start-failure.json", "host.json", "docker-contexts.json", "docker-config.json", "files.json"} {
@@ -256,7 +265,9 @@ func TestDiagnose(t *testing.T) {
 		t.Errorf("redaction removed too much:\n%s\n%s", got["daemon.json"], got["logs/engine.log"])
 	}
 	var facts map[string]fileFacts
-	if err := json.Unmarshal([]byte(got["files.json"]), &facts); err != nil || !facts["daemon.json"].CRLF || facts["daemon.json"].Bytes != 23 || len(facts["daemon.json"].SHA256) != 64 {
+	redSum := sha256.Sum256([]byte(got["daemon.json"]))
+	if err := json.Unmarshal([]byte(got["files.json"]), &facts); err != nil || !facts["daemon.json"].CRLF || facts["daemon.json"].Bytes != len(daemonJSON) ||
+		facts["daemon.json"].RedactedSHA256 != hex.EncodeToString(redSum[:]) {
 		t.Errorf("files.json: %v\n%s", err, got["files.json"])
 	}
 	if !strings.Contains(got["docker-config.json"], `"currentContext": "hyperbutler"`) {

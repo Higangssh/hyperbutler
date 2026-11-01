@@ -338,12 +338,17 @@ fields are only added; removing or renaming one means a new version.
   (Windows build and edition, Hyper-V Administrators, computecore.dll, HCS services,
   hypervisor launch type, CPU virtualization features, compute systems, free space; no
   shell, DISM or elevation), `docker-contexts.json` (meta.json only, never TLS material),
-  `docker-config.json` and `files.json` (size, SHA-256, BOM and CRLF of each original
-  JSON file). Every file goes through `internal/redact`: values of secret keys (`auth`,
+  `docker-config.json` and `files.json` (size, BOM and CRLF of each original JSON file,
+  and the SHA-256 of its redacted copy: a hash of the original would let anyone with a
+  guess at a password confirm it offline). daemon.json and the docker CLI's config.json
+  are read up to 1 MiB, the state files up to 64 KiB; a larger file is listed in
+  `missing` and summary.txt with its size. A log's window starts at a whole line. Every
+  file goes through `internal/redact`: values of secret keys (`auth`,
   `password`, `token`, `identitytoken`, ...), URL user information, Authorization,
   Proxy-Authorization, Cookie and X-Registry-Auth headers, Bearer tokens, JWTs, PEM
   private keys. Paths stay. The zip is created new (never over a file) with an ACL for
-  the user, SYSTEM and Administrators.
+  the user, SYSTEM and Administrators; on FAT32 or exFAT, which keep no ACLs, diagnose
+  says the zip is not private.
 - `uninstall`: `schema`, `home`, `dryRun`, `keepData`, `items` (`kind`, `path`, `detail`;
   `[]` when no trace is left), and when there are any `kept`, `failed` and `notes`. Kinds:
   `engine`, `vm`, `acl`, `docker-context`, `file`, `dir`.
