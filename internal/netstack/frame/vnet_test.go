@@ -6,6 +6,7 @@ import (
 	"io"
 	"testing"
 	"testing/iotest"
+	"time"
 )
 
 func vnetFrame(h VnetHdr, ethLen int) []byte {
@@ -147,22 +148,40 @@ func TestChunkReaderErrors(t *testing.T) {
 	}
 }
 
+// pumpFrame is frame i of TestPump: 14+i*50 bytes, every byte a function of i and its
+// position, so a frame cut, shifted or overwritten by another one does not match.
+func pumpFrame(i int) []byte {
+	f := make([]byte, 14+i*50)
+	for k := range f {
+		f[k] = byte(i*131 + k*7 + k>>8)
+	}
+	return f
+}
+
 func TestPump(t *testing.T) {
 	var stream []byte
 	for i := 0; i < 100; i++ {
-		stream = Append(stream, bytes.Repeat([]byte{byte(i)}, 14+i*50))
+		stream = Append(stream, pumpFrame(i))
 	}
-	cr := NewChunkReader(iotest.HalfReader(bytes.NewReader(stream)), EthernetHeaderLen, MaxFrameLen(9000))
-	n := 0
-	err := Pump(cr, 2, 0, func(f []byte) error {
-		if len(f) != 14+n*50 || f[0] != byte(n) {
-			t.Errorf("frame %d: %d bytes, first %d", n, len(f), f[0])
+	for _, slow := range []bool{false, true} {
+		cr := NewChunkReader(iotest.HalfReader(bytes.NewReader(stream)), EthernetHeaderLen, MaxFrameLen(9000))
+		n := 0
+		// A slow handler lets the reader fill every buffer ahead of it, so a buffer
+		// handed back too early would be refilled under a frame still being handled.
+		err := Pump(cr, 2, 0, func(f []byte) error {
+			want := pumpFrame(n)
+			if slow && n%10 == 0 {
+				time.Sleep(5 * time.Millisecond)
+			}
+			if !bytes.Equal(f, want) {
+				t.Errorf("slow %v, frame %d: %d bytes, want %d with its pattern", slow, n, len(f), len(want))
+			}
+			n++
+			return nil
+		}, func() {})
+		if !errors.Is(err, io.EOF) || n != 100 {
+			t.Fatalf("Pump (slow %v): %v after %d frames", slow, err, n)
 		}
-		n++
-		return nil
-	}, func() {})
-	if !errors.Is(err, io.EOF) || n != 100 {
-		t.Fatalf("Pump: %v after %d frames", err, n)
 	}
 	// A failing handler stops the reader through stop.
 	pr, pw := io.Pipe()
@@ -174,7 +193,7 @@ func TestPump(t *testing.T) {
 		}
 	}()
 	boom := errors.New("boom")
-	err = Pump(NewChunkReader(pr, EthernetHeaderLen, MaxFrameLen(1500)), 2, 0, func([]byte) error { return boom },
+	err := Pump(NewChunkReader(pr, EthernetHeaderLen, MaxFrameLen(1500)), 2, 0, func([]byte) error { return boom },
 		func() { pr.CloseWithError(io.ErrClosedPipe); pw.CloseWithError(io.ErrClosedPipe) })
 	if !errors.Is(err, boom) {
 		t.Fatalf("Pump: %v, want the handler's error", err)
