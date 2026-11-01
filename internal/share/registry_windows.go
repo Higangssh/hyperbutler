@@ -74,6 +74,9 @@ func (r *Registry) resolve(winPath string, create bool) (string, error) {
 		return "", fmt.Errorf("share: %q is not an absolute Windows path", winPath)
 	}
 	p := filepath.Clean(strings.TrimPrefix(winPath, `\\?\`))
+	if err := checkLocalDrive(winPath, p); err != nil {
+		return "", err
+	}
 	fi, err := os.Stat(p)
 	if os.IsNotExist(err) && !create {
 		return "", fmt.Errorf("bind source path does not exist: %s", p)

@@ -33,6 +33,64 @@ func driveAbs(p string) bool {
 	return c >= 'a' && c <= 'z' && p[1] == ':' && (p[2] == '\\' || p[2] == '/')
 }
 
+// UnsharableError is a bind source that hyperbutler cannot share (REQ-FS-006): a network
+// path, a path inside WSL, a device path, or a folder on a mapped network drive. The
+// proxy answers the create with it, so the user sees why and what to do instead of
+// dockerd's "invalid characters for a local volume name".
+type UnsharableError struct {
+	Source string // as the client sent it
+	Why    string // "is a network path"
+	Fix    string // what to do instead
+}
+
+func (e *UnsharableError) Error() string {
+	return fmt.Sprintf("bind source %s %s; hyperbutler shares folders on local drives only. %s", e.Source, e.Why, e.Fix)
+}
+
+const (
+	fixCopy = `Copy the files to a folder on a local drive (such as C:\src) and bind that, or use a named volume.`
+	fixWSL  = `hyperbutler does not use WSL, so it cannot reach files inside a WSL distribution. Copy them to a folder on a local drive (such as C:\src), or use the Docker engine that runs in WSL for them.`
+	fixPath = `Use a path with a drive letter, such as C:\src.`
+)
+
+// NetworkDriveError is the UnsharableError for a source on a mapped network drive.
+func NetworkDriveError(source, drive string) error {
+	return &UnsharableError{Source: source, Why: "is on " + drive + ", a network drive", Fix: fixCopy}
+}
+
+// checkSharable refuses a source that starts with two backslashes and is not a drive
+// path behind "\\?\": UNC paths (\\server\share), WSL's \\wsl$ and \\wsl.localhost, and
+// device paths (\\.\..., \\?\Volume{...}, \\?\UNC\...). Everything else (drive paths,
+// guest paths, named volumes, "//var/run/docker.sock" as Git Bash users write it) is
+// left to the rest of the rewrite.
+func checkSharable(src string) error {
+	if !strings.HasPrefix(src, `\\`) || WindowsPath(src) {
+		return nil
+	}
+	low := strings.ToLower(src)
+	rest := low[2:]
+	if r, ok := strings.CutPrefix(low, `\\?\unc\`); ok {
+		rest = r
+	}
+	host, _, _ := strings.Cut(rest, `\`)
+	switch {
+	case host == "wsl$" || host == "wsl.localhost":
+		return &UnsharableError{Source: src, Why: "is inside a WSL distribution", Fix: fixWSL}
+	case strings.HasPrefix(low, `\\?\unc\`) || !strings.HasPrefix(low, `\\?\`) && !strings.HasPrefix(low, `\\.\`):
+		return &UnsharableError{Source: src, Why: "is a network path", Fix: fixCopy}
+	}
+	return &UnsharableError{Source: src, Why: "is a device path", Fix: fixPath}
+}
+
+// bindSource is the source part of a -v spec that starts with two backslashes: up to
+// the colon before the guest target ("\\server\share\x:/x:ro" -> "\\server\share\x").
+func bindSource(spec string) string {
+	if i := strings.Index(spec, ":/"); i >= 0 {
+		return spec[:i]
+	}
+	return spec
+}
+
 // splitBind splits a docker -v spec whose source is a Windows path into source, target
 // and options. ok is false for any spec whose source is not a Windows path (a named
 // volume or a guest path), which is left alone.
@@ -98,6 +156,9 @@ func RewriteCreateMounts(body []byte, resolve, resolveMount Resolver) ([]byte, e
 			if !ok {
 				continue
 			}
+			if err := checkSharable(bindSource(spec)); err != nil {
+				return nil, err
+			}
 			src, target, opts, win, err := splitBind(spec)
 			if err != nil {
 				return nil, err
@@ -127,6 +188,9 @@ func RewriteCreateMounts(body []byte, resolve, resolveMount Resolver) ([]byte, e
 				continue
 			}
 			src, _ := mm["Source"].(string)
+			if err := checkSharable(src); err != nil {
+				return nil, err
+			}
 			if !WindowsPath(src) {
 				continue
 			}
