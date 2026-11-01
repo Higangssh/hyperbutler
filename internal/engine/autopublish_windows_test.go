@@ -90,6 +90,28 @@ func TestCheckStartRefusesTakenPort(t *testing.T) {
 	}
 }
 
+// Review L3: a host port another container of this engine publishes (the listener is
+// the engine's own) refuses the start with a reason that names the engine. A container
+// whose own listeners are still open (its stop not synced yet) is not refused by them.
+func TestCheckStartOwnPort(t *testing.T) {
+	_, p := hostProgram(t) // under this process's PID: the engine's
+	a := testPublisher(t, fakeDockerd(t, p), hostPortFree, nil)
+	err := a.g.checkStart(context.Background(), "web")
+	want := fmt.Sprintf("(another container of this engine publishes host port %d)", p)
+	if err == nil || !strings.HasSuffix(err.Error(), want) || strings.Contains(err.Error(), "another program") {
+		t.Fatalf("start of a container publishing %d, held by the engine: %v", p, err)
+	}
+	a.mu.Lock()
+	a.open[testID] = []io.Closer{io.NopCloser(nil)}
+	a.mu.Unlock()
+	if err := a.g.checkStart(context.Background(), "web"); err != nil {
+		t.Errorf("a container whose own listeners are open: %v", err)
+	}
+	a.mu.Lock()
+	delete(a.open, testID) // the fake closer is not a listener; closeAll need not see it
+	a.mu.Unlock()
+}
+
 // A container started without the check (a restart policy, or a host program that
 // won the race) whose port is taken on 127.0.0.1 gets no listener at all, and
 // State.UnpublishedPorts lists all its ports until it stops.

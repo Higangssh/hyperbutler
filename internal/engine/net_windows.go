@@ -16,6 +16,7 @@ import (
 	"net/url"
 	"os"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -431,9 +432,17 @@ func (a *autoPublisher) checkStart(ctx context.Context, ref string) error {
 	if err != nil || running {
 		return nil
 	}
+	a.mu.Lock()
+	mirrored := len(a.open[id]) > 0
+	a.mu.Unlock()
+	if mirrored {
+		// Its ports are still this engine's listeners (the stop was not synced yet), and
+		// the publish after the start keeps them: the bind in check would fail on them.
+		return nil
+	}
 	for _, p := range ports {
 		if err := a.check(p); err != nil {
-			a.g.log.Warn("auto-publish: refused a container start: a host program already uses its port",
+			a.g.log.Warn("auto-publish: refused a container start: its host port is not available",
 				"container", id[:12], "port", p, "err", err)
 			return err
 		}
@@ -571,39 +580,89 @@ func (a *autoPublisher) closeAll() {
 // list every listener on every address, and reading them opens no socket. The earlier
 // probe bound 0.0.0.0:P and [::]:P for a moment, and a wildcard bind can raise the
 // Windows Firewall "allow access" prompt for hyperbutler.exe on a user's `docker run
-// -p`. Listeners of this engine (another container's port) are not counted: dockerd
-// refuses a host port another container holds, and the bind decides the rest.
+// -p`. Listeners of this engine (another container's port) are not counted there.
 //
-// If the tables cannot be read, it binds 127.0.0.1:P and [::1]:P (loopback only, never
-// a wildcard) and closes them at once: that still catches a loopback listener, though
-// not one on the wildcard or the LAN address.
+// Then, when the tables say the port is free (or cannot be read), it binds 127.0.0.1:P
+// and [::1]:P (loopback only, never a wildcard) and closes them at once. A port no
+// socket holds can still refuse a bind: Hyper-V and WinNAT reserve ranges of ports
+// (`netsh int ipv4 show excludedportrange protocol=tcp`), where a bind fails with
+// WSAEACCES although no listener exists, and the publish after the start would then
+// fail with nothing published. The bind also catches what the tables leave out: a
+// listener of this engine, which is another container publishing the same host port
+// (dockerd allows two containers one host port on different guest addresses, and both
+// map to the host's loopback), and, when the tables cannot be read, any loopback
+// listener (though not one on the wildcard or the LAN address).
 func hostPortFree(p uint16) error {
 	return hostPortFreeExcept(p, uint32(os.Getpid())) //nolint:gosec // G115: Windows process IDs are DWORDs
 }
 
-// hostPortFreeExcept is hostPortFree with the listeners of process self not counted.
+// hostPortFreeExcept is hostPortFree with the listeners of process self counted as the
+// engine's own.
 func hostPortFreeExcept(p uint16, self uint32) error {
 	var r socktable.Reader
 	ss, err := r.TCPListeners()
-	if err != nil {
-		return loopbackPortFree(p)
-	}
-	return portFreeIn(ss, p, self, addrInUse())
+	return portFreeWith(p, self, ss, err, net.Listen, ipv6Available)
 }
 
-// loopbackPortFree is hostPortFree's fallback: a bind of each loopback address.
-func loopbackPortFree(p uint16) error {
+// listenFunc opens a TCP listener, as net.Listen does (a parameter, so tests can
+// refuse a bind).
+type listenFunc func(network, address string) (net.Listener, error)
+
+// portFreeWith is hostPortFreeExcept with the listener table ss (unreadable when
+// tableErr is set), the bind and the IPv6 check given.
+func portFreeWith(p uint16, self uint32, ss []socktable.Socket, tableErr error, listen listenFunc, v6 func() bool) error {
+	if tableErr == nil {
+		if err := portFreeIn(ss, p, self, addrInUse()); err != nil {
+			return err
+		}
+	}
+	err := loopbackPortFree(p, listen, v6)
+	var pu *PortsUnavailable
+	if errors.As(err, &pu) && tableErr == nil && listensOn(ss, p, self) {
+		// The holder is this engine: not "another program".
+		pu.Cause = fmt.Errorf("%w (another container of this engine publishes host port %d)", pu.Cause, p)
+	}
+	return err
+}
+
+// listensOn reports whether process pid has a TCP listener on port p in ss.
+func listensOn(ss []socktable.Socket, p uint16, pid uint32) bool {
+	for _, s := range ss {
+		if strings.HasPrefix(s.Proto, "tcp") && s.State == "LISTEN" && s.Local.Port() == p && s.PID == pid {
+			return true
+		}
+	}
+	return false
+}
+
+// loopbackPortFree binds each loopback address on port p and closes it at once. A
+// host without IPv6 loopback (v6 false) needs 127.0.0.1 only.
+func loopbackPortFree(p uint16, listen listenFunc, v6 func() bool) error {
 	for i, ip := range loopbacks {
-		ln, err := net.Listen("tcp", netip.AddrPortFrom(ip, p).String())
+		ln, err := listen("tcp", netip.AddrPortFrom(ip, p).String())
 		if err != nil {
-			if i == 1 && !ipv6Available() {
+			if i == 1 && !v6() {
 				continue
 			}
-			return &PortsUnavailable{Port: p, Addr: ip, Cause: listenCause(err)}
+			return &PortsUnavailable{Port: p, Addr: ip, Cause: bindCause(err)}
 		}
 		_ = ln.Close()
 	}
 	return nil
+}
+
+// excludedRangeHint follows a bind refused with WSAEACCES, which on a port nobody
+// listens on means Windows reserves it.
+const excludedRangeHint = "(Windows reserves this port: it is in an excluded port range, such as Hyper-V and WinNAT set; " +
+	"list them with `netsh int ipv4 show excludedportrange protocol=tcp`, and publish another host port)"
+
+// bindCause is listenCause, with excludedRangeHint added for WSAEACCES.
+func bindCause(err error) error {
+	c := listenCause(err)
+	if errors.Is(err, windows.WSAEACCES) {
+		return fmt.Errorf("%w %s", c, excludedRangeHint)
+	}
+	return c
 }
 
 // addrInUse is WSAEADDRINUSE in the system's words, as a failed bind would say it.

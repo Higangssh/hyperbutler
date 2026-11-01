@@ -11,6 +11,8 @@ import (
 	"os"
 	"strings"
 	"testing"
+
+	"golang.org/x/sys/windows"
 )
 
 // The host program of these tests listens on 127.0.0.1 only: a wildcard listener
@@ -59,23 +61,106 @@ func TestHostPortFreeSeesLoopbackListener(t *testing.T) {
 	if s := err.Error(); !strings.HasPrefix(s, want) || !strings.HasSuffix(s, tail) {
 		t.Errorf("message %q", s)
 	}
-	if err := hostPortFree(p); err != nil {
-		t.Errorf("the engine's own listener counts as taken: %v", err)
-	}
 	if err := hostPortFreeExcept(freePort(t), 0); err != nil {
 		t.Errorf("free port: %v", err)
+	}
+}
+
+// Review L3: a host port held by this engine is another container's publish (two
+// containers may publish one host port on different guest addresses, and both map to
+// the host's loopback). It is refused, and the reason names the engine, not "another
+// program".
+func TestHostPortFreeOwnListener(t *testing.T) {
+	_, p := hostProgram(t) // under this process's PID: the engine's own
+	err := hostPortFree(p)
+	var pu *PortsUnavailable
+	if !errors.As(err, &pu) || pu.Port != p {
+		t.Fatalf("port %d held by the engine: %v", p, err)
+	}
+	s := err.Error()
+	if want := fmt.Sprintf("(another container of this engine publishes host port %d)", p); !strings.HasSuffix(s, want) {
+		t.Errorf("message %q, want the suffix %q", s, want)
+	}
+	if strings.Contains(s, "another program") {
+		t.Errorf("message %q blames another program", s)
 	}
 }
 
 // The fallback binds loopback only and still sees a 127.0.0.1 listener.
 func TestLoopbackPortFree(t *testing.T) {
 	_, p := hostProgram(t)
-	if err := loopbackPortFree(p); err == nil {
+	if err := loopbackPortFree(p, net.Listen, ipv6Available); err == nil {
 		t.Errorf("port %d held on 127.0.0.1 reported free", p)
 	}
 	q := freePort(t)
-	if err := loopbackPortFree(q); err != nil {
+	if err := loopbackPortFree(q, net.Listen, ipv6Available); err != nil {
 		t.Errorf("free port %d: %v", q, err)
+	}
+}
+
+// refusingListen is a listenFunc that fails the binds of the addresses in deny with
+// errno, binds the rest on port 0 of the same address, and records every address asked
+// for.
+type refusingListen struct {
+	deny  map[string]bool
+	errno error
+	asked []string
+}
+
+func (r *refusingListen) listen(network, address string) (net.Listener, error) {
+	r.asked = append(r.asked, address)
+	ap := netip.MustParseAddrPort(address)
+	if r.deny[address] {
+		return nil, &net.OpError{Op: "listen", Net: network, Addr: net.TCPAddrFromAddrPort(ap), Err: os.NewSyscallError("bind", r.errno)}
+	}
+	return net.Listen(network, netip.AddrPortFrom(ap.Addr(), 0).String())
+}
+
+// Review M1: a port in a Windows excluded port range is in no listener table, but its
+// loopback bind fails with WSAEACCES. The check binds both loopbacks (never a
+// wildcard) after the table says the port is free, and fails with Docker's wording,
+// the bind error and a hint about excluded ranges.
+func TestHostPortFreeExcludedRange(t *testing.T) {
+	p := freePort(t)
+	for _, denied := range []netip.Addr{loopbacks[0], loopbacks[1]} {
+		addr := netip.AddrPortFrom(denied, p).String()
+		r := &refusingListen{deny: map[string]bool{addr: true}, errno: windows.WSAEACCES}
+		err := portFreeWith(p, 0, nil, nil, r.listen, func() bool { return true })
+		var pu *PortsUnavailable
+		if !errors.As(err, &pu) || pu.Port != p || pu.Addr != denied {
+			t.Fatalf("%s refused: %v", addr, err)
+		}
+		if !errors.Is(err, windows.WSAEACCES) {
+			t.Errorf("%s refused: the bind error is not in the chain: %v", addr, err)
+		}
+		want := fmt.Sprintf("Ports are not available: exposing port TCP %s -> 0.0.0.0:0: listen tcp %s: bind: %s ", addr, addr, windows.WSAEACCES.Error())
+		s := err.Error()
+		if !strings.HasPrefix(s, want) || !strings.Contains(s, "excluded port range") ||
+			!strings.Contains(s, "netsh int ipv4 show excludedportrange protocol=tcp") {
+			t.Errorf("message %q", s)
+		}
+		for _, a := range r.asked {
+			if ap := netip.MustParseAddrPort(a); !ap.Addr().IsLoopback() {
+				t.Errorf("bound %s, not a loopback address", a)
+			}
+		}
+	}
+
+	// Another bind error says what it is, without the excluded-range hint.
+	addr := netip.AddrPortFrom(loopbacks[0], p).String()
+	r := &refusingListen{deny: map[string]bool{addr: true}, errno: windows.WSAEADDRINUSE}
+	err := portFreeWith(p, 0, nil, nil, r.listen, func() bool { return true })
+	if err == nil || strings.Contains(err.Error(), "excluded") || !strings.Contains(err.Error(), windows.WSAEADDRINUSE.Error()) {
+		t.Errorf("WSAEADDRINUSE: %v", err)
+	}
+
+	// A free port: both loopbacks are tried, and nothing stays bound.
+	r = &refusingListen{}
+	if err := portFreeWith(p, 0, nil, nil, r.listen, func() bool { return true }); err != nil {
+		t.Fatalf("free port: %v", err)
+	}
+	if want := []string{netip.AddrPortFrom(loopbacks[0], p).String(), netip.AddrPortFrom(loopbacks[1], p).String()}; strings.Join(r.asked, " ") != strings.Join(want, " ") {
+		t.Errorf("bound %v, want %v", r.asked, want)
 	}
 }
 

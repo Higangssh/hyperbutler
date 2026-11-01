@@ -54,6 +54,8 @@ Code: `internal/engine/publish.go`, `internal/engine/net_windows.go` (auto-publi
 | `-p 8080:80` listens on | `0.0.0.0:8080` (all host addresses) | `127.0.0.1:8080` and `[::1]:8080`; the LAN needs REQ-NET-003 (not built) |
 | A port a host program already listens on (any address: wildcard, loopback, LAN IP) | `docker run` fails: `Ports are not available: exposing port TCP 0.0.0.0:8080 -> 0.0.0.0:0: listen tcp 0.0.0.0:8080: bind: Only one usage of each socket address ...` | `docker run` and `docker start` fail the same way, before dockerd starts the container (exit 125, the container stays `Created`): `Ports are not available: exposing port TCP 127.0.0.1:8080 -> 0.0.0.0:0: listen tcp 127.0.0.1:8080: bind: Only one usage of each socket address ... (another program, process N, listens on ADDR)` |
 | One of the two loopbacks taken | n/a | neither is published (no split between `127.0.0.1` and `localhost`/`[::1]`) |
+| A port in a Windows excluded port range (Hyper-V and WinNAT reserve ranges; `netsh int ipv4 show excludedportrange protocol=tcp` lists them) | `docker run` fails: `Ports are not available: exposing port TCP 0.0.0.0:P -> 0.0.0.0:0: listen tcp 0.0.0.0:P: bind: An attempt was made to access a socket in a way forbidden by its access permissions.` | `docker run` and `docker start` fail before the start with the same bind error for `127.0.0.1:P` (or `[::1]:P`), then `(Windows reserves this port: it is in an excluded port range ...)` with the `netsh` command that lists the ranges |
+| Two containers publishing one host port on different guest addresses (`-p 8080:80` and `-p GUESTIP:8080:80`) | the second fails at the host bind | the second fails before the start, ending `(another container of this engine publishes host port 8080)` |
 | A container started by a restart policy, `docker restart`, or after a host program took the port between the check and the bind | the start fails | the container runs, **none** of its ports is published, `engine.log` says why, and `hyperbutler status` (and `status --json`, `state.unpublishedPorts`) lists each port with the reason until the container stops |
 | Random ports (`-P`, `-p 80`) and host-port ranges | checked at bind | not checked before the start (dockerd picks the port then); published all-or-nothing after it, as above |
 | UDP (`-p 53:53/udp`) | published | not mirrored on the host yet |
@@ -63,8 +65,10 @@ How a taken port is found: the engine reads the system's TCP listener tables
 (`GetExtendedTcpTable`) and opens no socket for it. Windows lets a wildcard listener
 (`0.0.0.0:P`) and a specific one (`127.0.0.1:P`) coexist, so a successful bind would not
 prove the port free, and a probe bind of the wildcard address can raise the Windows
-Firewall "allow access" prompt. hyperbutler never listens on a wildcard address. If the
-tables cannot be read, it falls back to binding `127.0.0.1:P` and `[::1]:P`, which catches
+Firewall "allow access" prompt. hyperbutler never listens on a wildcard address. When
+the tables say the port is free, it also binds `127.0.0.1:P` and `[::1]:P` and closes
+them at once: a port in an excluded range is in no table, but refuses that bind (with
+`WSAEACCES`). If the tables cannot be read, that bind is the whole check, which catches
 a loopback listener but not one on the wildcard or the LAN address.
 
 The start check runs in the engine's Docker API proxy, so it covers every client that
