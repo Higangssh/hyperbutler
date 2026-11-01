@@ -156,6 +156,28 @@ func (s Store) SyncPluginDir(dir, plugin string, systemDirs []string) (PluginSyn
 	return r, nil
 }
 
+// HasPluginDir reports whether dir is in cliPluginsExtraDirs. A missing config.json
+// has none.
+func (s Store) HasPluginDir(dir string) (bool, error) {
+	b, err := readBounded(s.configPath())
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	dirs, err := ExtraPluginDirs(b)
+	if err != nil {
+		return false, err
+	}
+	for _, d := range dirs {
+		if samePath(d, dir) {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
 // RemovePluginDir takes dir out of cliPluginsExtraDirs, if it is there.
 func (s Store) RemovePluginDir(dir string) error {
 	b, err := readBounded(s.configPath())

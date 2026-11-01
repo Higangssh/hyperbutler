@@ -136,3 +136,30 @@ func TestSyncPluginDir(t *testing.T) {
 		t.Error("a plugin path was accepted as a name")
 	}
 }
+
+func TestHasPluginDir(t *testing.T) {
+	s := Store{Dir: filepath.Join(t.TempDir(), ".docker")}
+	dir := filepath.Join(t.TempDir(), "clients", "cli-plugins")
+	if has, err := s.HasPluginDir(dir); err != nil || has {
+		t.Fatalf("no config.json: %v %v", has, err)
+	}
+	b, err := SetExtraPluginDir([]byte(`{"auths":{}}`), dir, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(s.Dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(s.configPath(), b, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if has, err := s.HasPluginDir(strings.ToUpper(dir)); err != nil || !has {
+		t.Fatalf("listed, other case: %v %v", has, err)
+	}
+	if err := s.RemovePluginDir(dir); err != nil {
+		t.Fatal(err)
+	}
+	if has, err := s.HasPluginDir(dir); err != nil || has {
+		t.Fatalf("after removal: %v %v", has, err)
+	}
+}

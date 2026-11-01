@@ -26,6 +26,7 @@ const (
 	uninstallVM      = "vm"             // an HCS compute system of this installation
 	uninstallACL     = "acl"            // a VM account's access entry on a disk file
 	uninstallContext = "docker-context" // the "hyperbutler" docker context
+	uninstallPlugins = "docker-plugins" // the bundled cli-plugins entry in the docker CLI's config.json
 	uninstallFile    = "file"
 	uninstallDir     = "dir" // removed only when empty
 )
@@ -145,10 +146,7 @@ func (in *install) planUninstall(keepData, up bool) *uninstallPlan {
 		in.planACLs(p, st, keepData, dataDirs)
 	}
 	in.planContext(p)
-	// HOOK(cliPluginsExtraDirs): when dockerctx gains SetExtraPluginDir (the bundled
-	// docker CLI plugin directory that start adds to cliPluginsExtraDirs in config.json),
-	// list that entry here as an uninstallContext-like item and remove it in
-	// cmdUninstall next to removeContext. Not wired yet: the function is not on main.
+	in.planPlugins(p)
 
 	// Files, by name, in the order they are removed: the data disk first, settings.json
 	// last (and only if everything before it went), so a failed uninstall still knows
@@ -285,6 +283,36 @@ func (in *install) planACLs(p *uninstallPlan, st *engine.State, keepData bool, d
 
 // planContext lists the docker context, if hyperbutler created it for this
 // installation's pipe, and what is selected instead when it goes.
+// planPlugins lists the bundled clients\cli-plugins entry that start adds to the docker
+// CLI's cliPluginsExtraDirs, so that docker stops looking for compose in a folder about
+// to be deleted. Only this executable's own entry is touched.
+func (in *install) planPlugins(p *uninstallPlan) {
+	d := clientsDir()
+	if d == "" {
+		return
+	}
+	store, err := dockerctx.DefaultStore()
+	if err != nil {
+		return
+	}
+	dir := filepath.Join(d, pluginsDirName)
+	has, err := store.HasPluginDir(dir)
+	switch {
+	case err != nil:
+		p.keep(uninstallPlugins, dir, "docker config.json unreadable, left alone: "+err.Error())
+	case has:
+		p.add(planned{UninstallItem: UninstallItem{Kind: uninstallPlugins, Path: dir, Detail: "in cliPluginsExtraDirs of " + filepath.Join(store.Dir, "config.json")}})
+	}
+}
+
+func removePluginDir(dir string) error {
+	store, err := dockerctx.DefaultStore()
+	if err != nil {
+		return err
+	}
+	return store.RemovePluginDir(dir)
+}
+
 func (in *install) planContext(p *uninstallPlan) {
 	store, err := dockerctx.DefaultStore()
 	if err != nil {
@@ -550,6 +578,8 @@ func cmdUninstall(args []string, stdin io.Reader, stdout, stderr io.Writer) erro
 			err = revokeACE(it)
 		case it.Kind == uninstallContext:
 			err = removeContext(p.restoreCtx, p.restore)
+		case it.Kind == uninstallPlugins:
+			err = removePluginDir(it.Path)
 		case it.Kind == uninstallFile && it.last:
 			deferred = append(deferred, it)
 			continue
