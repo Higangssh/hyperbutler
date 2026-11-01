@@ -68,7 +68,7 @@ func cmdConfig(args []string, stdout, stderr io.Writer) error {
 	if len(args) == 0 || args[0] == "-h" || args[0] == "--help" || args[0] == "help" {
 		_, _ = fmt.Fprint(stdout, configUsageText())
 		if len(args) == 0 {
-			return &shownError{err: errors.New("config: no subcommand")}
+			return &shownError{err: usagef("config: no subcommand")}
 		}
 		return nil
 	}
@@ -84,7 +84,7 @@ func cmdConfig(args []string, stdout, stderr io.Writer) error {
 	case "daemon":
 		return configDaemon(args[1:], stdout, stderr)
 	}
-	return fmt.Errorf("config: unknown subcommand %q\n\n%s", args[0], configUsageText())
+	return usagef("config: unknown subcommand %q\n\n%s", args[0], configUsageText())
 }
 
 func configList(args []string, stdout, stderr io.Writer) error {
@@ -138,7 +138,7 @@ func configGet(args []string, stdout, stderr io.Writer) error {
 		return err
 	}
 	if len(pos) != 1 {
-		return errors.New("config get: want one KEY")
+		return usagef("config get: want one KEY")
 	}
 	k, err := config.Lookup(pos[0])
 	if err != nil {
@@ -195,9 +195,9 @@ func configSet(verb string, args []string, stdout, stderr io.Writer) error {
 	}
 	if len(pos) != want {
 		if verb == "set" {
-			return errors.New("config set: want KEY VALUE")
+			return usagef("config set: want KEY VALUE")
 		}
-		return errors.New("config unset: want KEY")
+		return usagef("config unset: want KEY")
 	}
 	k, err := config.Lookup(pos[0])
 	if err != nil {
@@ -337,7 +337,7 @@ func reloadLive(in *install, stdout io.Writer) error {
 
 func configDaemon(args []string, stdout, stderr io.Writer) error {
 	if len(args) == 0 {
-		return errors.New("config daemon: want validate or apply")
+		return usagef("config daemon: want validate or apply")
 	}
 	switch args[0] {
 	case "validate":
@@ -345,7 +345,7 @@ func configDaemon(args []string, stdout, stderr io.Writer) error {
 	case "apply":
 		return daemonApply(args[1:], stdout, stderr)
 	}
-	return fmt.Errorf("config daemon: unknown subcommand %q (want validate or apply)", args[0])
+	return usagef("config daemon: unknown subcommand %q (want validate or apply)", args[0])
 }
 
 func guestSubnet() daemoncfg.Options { return daemoncfg.Options{GuestSubnet: netstack.DefaultSubnet} }

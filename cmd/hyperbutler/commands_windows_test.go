@@ -58,8 +58,14 @@ func TestCLIUsage(t *testing.T) {
 	if code, _, _ := runCLI(t, "stop", "-h"); code != 0 {
 		t.Fatalf("stop -h: exit %d", code)
 	}
-	if code, _, _ := runCLI(t, "stop", "extra"); code != 1 {
-		t.Fatalf("stop with an argument: exit %d", code)
+	// Review L1: every usage error exits 2, a positional argument too many or missing
+	// and an unknown subcommand as much as a bad flag.
+	for _, cmd := range []string{"stop extra", "status extra", "config list extra", "config", "config frobnicate",
+		"config get", "config get a b", "config set memory", "config unset", "config daemon", "config daemon frobnicate"} {
+		code, _, e := runCLI(t, strings.Fields(cmd)...)
+		if code != 2 || (cmd != "config" && !strings.Contains(e, "hyperbutler: ")) { // config alone prints its usage
+			t.Errorf("%s: exit %d, %q", cmd, code, e)
+		}
 	}
 	if code, _, _ := runCLI(t, "engine"); code != 2 {
 		t.Fatalf("engine without flags: exit %d", code)

@@ -104,8 +104,14 @@ func run(args []string, stdout, stderr io.Writer) int {
 		_, _ = fmt.Fprint(stderr, usageText)
 		return 2
 	}
+	var se *shownError
+	if ue := (*usageError)(nil); errors.As(err, &ue) {
+		if !errors.As(err, &se) {
+			_, _ = fmt.Fprintln(stderr, "hyperbutler:", err)
+		}
+		return 2
+	}
 	if err != nil {
-		var se *shownError
 		if !errors.As(err, &se) {
 			_, _ = fmt.Fprintln(stderr, "hyperbutler:", err)
 		}

@@ -81,10 +81,18 @@ func parseArgs(fs *flag.FlagSet, args []string) error {
 		return &flagError{err}
 	}
 	if fs.NArg() != 0 {
-		return fmt.Errorf("%s: unexpected argument %q", fs.Name(), fs.Arg(0))
+		return usagef("%s: unexpected argument %q", fs.Name(), fs.Arg(0))
 	}
 	return nil
 }
+
+// usageError is a command line no command can run: an argument too many or missing,
+// an unknown subcommand. run prints it and exits 2, as for a bad flag.
+type usageError struct{ msg string }
+
+func (e *usageError) Error() string { return e.msg }
+
+func usagef(format string, a ...any) error { return &usageError{fmt.Sprintf(format, a...)} }
 
 // debugPipeEnv names the variable that turns the engine's debug endpoint on when
 // --debug-pipe is not given (ADR 0003, guardrail 4). It is read by `hyperbutler start`.
