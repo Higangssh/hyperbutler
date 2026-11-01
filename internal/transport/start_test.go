@@ -177,3 +177,51 @@ func dockerMessage(t *testing.T, b []byte) string {
 	}
 	return m.Message
 }
+
+// Review L4: the start check runs under the connection's context, which ends when the
+// client disconnects during the check, not only when the proxy stops.
+func TestStartCheckEndsWithClient(t *testing.T) {
+	ln := tcpListener(t)
+	defer ln.Close()
+	cApp, cProxy := tcpPair(t, ln)
+	uProxy, uApp := tcpPair(t, ln)
+	defer cApp.Close()
+	defer uApp.Close()
+	fp := &fakeProber{TCPConn: cProxy}
+	checking := make(chan struct{})
+	ended := make(chan error, 1)
+	check := func(ctx context.Context, _ string) error {
+		close(checking)
+		select {
+		case <-ctx.Done():
+			ended <- ctx.Err()
+		case <-time.After(10 * time.Second):
+			ended <- errors.New("not canceled")
+		}
+		return nil
+	}
+	done := make(chan struct{})
+	go func() {
+		forward(context.Background(), fp, uProxy, 10*time.Millisecond, discardLogger, &filterHooks{checkStart: check})
+		close(done)
+	}()
+	if _, err := io.WriteString(cApp, "POST /containers/web/start HTTP/1.1\r\nHost: docker\r\n\r\n"); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-checking:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the start was not checked")
+	}
+	fp.gone.Store(true)
+	if err := <-ended; !errors.Is(err, context.Canceled) {
+		t.Fatalf("the check's context after the client left: %v", err)
+	}
+	_ = cApp.Close()
+	_ = uApp.Close()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("forward did not end")
+	}
+}

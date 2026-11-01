@@ -243,9 +243,14 @@ func forward(ctx context.Context, client, upstream net.Conn, poll time.Duration,
 	c := &halfConn{conn: client}
 	u := &halfConn{conn: upstream}
 
+	// cctx is this connection's: done when the proxy stops or the connection is torn
+	// down. The start check runs under it.
+	cctx, ccancel := context.WithCancel(ctx)
+	defer ccancel()
 	var once sync.Once
 	abort := func() {
 		once.Do(func() {
+			ccancel()
 			_ = c.Close()
 			_ = u.Close()
 		})
@@ -269,7 +274,7 @@ func forward(ctx context.Context, client, upstream net.Conn, poll time.Duration,
 			}
 		} else {
 			f := newReqFilter(readerOnly{client}, writerOnly{u.conn}, h.rewrite)
-			f.checkStart, f.ctx = h.checkStart, ctx
+			f.checkStart, f.ctx = whileConnected(h.checkStart, client, poll), cctx
 			err := f.run()
 			var rej *rejection
 			if errors.As(err, &rej) {
@@ -319,6 +324,43 @@ func forward(ctx context.Context, client, upstream net.Conn, poll time.Duration,
 	// once.Do waits for an abort that is already running (for example one started by
 	// ctx), so both connections are closed when forward returns.
 	abort()
+}
+
+// whileConnected is check with its context also canceled once client, polled every
+// poll, has disconnected entirely, so a client that gives up during a start check (the
+// docker CLI interrupted) does not keep the check's requests to dockerd going. Nothing
+// else reads the client meanwhile: its direction of the proxy is in the check. A client
+// that cannot tell (peerProber; TCP in tests) gets check unchanged, under the
+// connection's context.
+func whileConnected(check StartChecker, client net.Conn, poll time.Duration) StartChecker {
+	prober, ok := client.(peerProber)
+	if check == nil || !ok {
+		return check
+	}
+	return func(ctx context.Context, ref string) error {
+		ctx, cancel := context.WithCancel(ctx)
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			t := time.NewTicker(poll)
+			defer t.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-t.C:
+					if prober.peerClosed() {
+						cancel()
+						return
+					}
+				}
+			}
+		}()
+		err := check(ctx, ref)
+		cancel()
+		<-done
+		return err
+	}
 }
 
 // refuse answers a refused create or start: no more requests go upstream, dockerd finishes the
