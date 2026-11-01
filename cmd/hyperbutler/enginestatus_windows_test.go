@@ -4,9 +4,13 @@ package main
 
 import (
 	"bytes"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"golang.org/x/sys/windows"
 
 	"github.com/Higangssh/hyperbutler/internal/engine"
 )
@@ -34,6 +38,57 @@ func TestOtherEngine(t *testing.T) {
 	if s := otherEngine(&engine.State{}, `C:\x\hyperbutler.exe`, "v0.1.2"); s != "" {
 		t.Errorf("unrecorded: %q", s)
 	}
+}
+
+// Review L2: two spellings of one existing file are the same engine: a relative and an
+// absolute path, an 8.3 short name (where the volume makes them), and a hard link,
+// which a string comparison of the paths cannot see. A copy is another file.
+func TestOtherEngineSameFile(t *testing.T) {
+	dir := t.TempDir()
+	exe := filepath.Join(dir, "hyperbutler-long-name.exe")
+	if err := os.WriteFile(exe, []byte("MZ"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	st := &engine.State{Executable: exe, ExecutableVersion: "v0.1.1"}
+	spellings := map[string]string{}
+	t.Chdir(dir)
+	spellings["relative"] = filepath.Base(exe)
+	link := filepath.Join(dir, "linked.exe")
+	if err := os.Link(exe, link); err != nil {
+		t.Fatal(err)
+	}
+	spellings["hard link"] = link
+	if short := shortPath(t, exe); short != "" && !strings.EqualFold(short, exe) {
+		spellings["8.3"] = short
+	} else {
+		t.Log("no 8.3 name on this volume")
+	}
+	for kind, p := range spellings {
+		if s := otherEngine(st, p, "v0.1.1"); s != "" {
+			t.Errorf("%s spelling %s: %q", kind, p, s)
+		}
+	}
+	copied := filepath.Join(dir, "copy.exe")
+	if err := os.WriteFile(copied, []byte("MZ"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if s := otherEngine(st, copied, "v0.1.1"); s == "" {
+		t.Error("a copy counts as the same engine")
+	}
+}
+
+func shortPath(t *testing.T, p string) string {
+	t.Helper()
+	long, err := windows.UTF16PtrFromString(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	buf := make([]uint16, windows.MAX_PATH)
+	n, err := windows.GetShortPathName(long, &buf[0], uint32(len(buf)))
+	if err != nil || n == 0 || int(n) > len(buf) {
+		return ""
+	}
+	return windows.UTF16ToString(buf[:n])
 }
 
 func TestBuildVersion(t *testing.T) {

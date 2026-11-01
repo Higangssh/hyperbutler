@@ -266,7 +266,7 @@ func cmdStart(args []string, stdout, stderr io.Writer) error {
 // version than this one, exe at version (REQ-PLAT-008), and points to restart. It is
 // empty when they are the same, or the engine is from a release that did not record it.
 func otherEngine(st *engine.State, exe, version string) string {
-	if st.Executable == "" || engine.SamePath(st.Executable, exe) && st.ExecutableVersion == version {
+	if st.Executable == "" || sameExecutable(st.Executable, exe) && st.ExecutableVersion == version {
 		return ""
 	}
 	running := st.ExecutableVersion
@@ -276,6 +276,19 @@ func otherEngine(st *engine.State, exe, version string) string {
 	return fmt.Sprintf("hyperbutler %s from %s is running; this is %s from %s.\n"+
 		"Run `hyperbutler restart` from this folder to switch to this one.",
 		printable([]byte(running)), printable([]byte(filepath.Dir(st.Executable))), version, filepath.Dir(exe))
+}
+
+// sameExecutable reports whether paths a and b name one file. When both exist, the
+// file system decides (os.SameFile), so two spellings of one file (an 8.3 short name,
+// a relative path, a junction or a mapped drive) match; otherwise the cleaned paths
+// are compared without case (engine.SamePath).
+func sameExecutable(a, b string) bool {
+	fa, errA := os.Stat(a)
+	fb, errB := os.Stat(b)
+	if errA == nil && errB == nil {
+		return os.SameFile(fa, fb)
+	}
+	return engine.SamePath(a, b)
 }
 
 // applySettings creates settings.json on the first start and records start's flags,
