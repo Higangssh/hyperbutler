@@ -5,6 +5,7 @@
 //	no-telemetry -hyperbutler hyperbutler.exe -home %TEMP%\hb-dev\notelemetry\home
 //	    -image-dir DIR -docker docker.exe [-docker-config DIR] [-idle 5m]
 //	    [-start-args "--pipe \\.\pipe\docker_engine_hb_notel"] [-out report.json]
+//	    [-allow-no-vmwp]
 //
 // It starts the installation in -home with its debug endpoint on, leaves it idle for
 // -idle with one container (`-image`, default busybox:1.37, running `sleep 5`) run in
@@ -15,7 +16,8 @@
 //     tables with their owning PIDs (GetExtendedTcpTable, GetExtendedUdpTable) and
 //     records every socket of the engine, its child processes and this VM's vmwp. A
 //     TCP connection to a non-loopback address, or a UDP socket not bound to loopback,
-//     is a request.
+//     is a request. A run that cannot identify this VM's vmwp fails, since the VM
+//     worker's sockets would go unwatched; -allow-no-vmwp runs without them.
 //   - The guest: its only network is the engine's user-mode stack (ADR 0006), which
 //     logs every connection, UDP flow and DNS query the guest makes. The bench reads
 //     that log from the debug endpoint (/debug/vars/net) at each phase boundary.

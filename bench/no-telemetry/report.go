@@ -322,3 +322,13 @@ func (r *Report) Print(w io.Writer) {
 	}
 	pf("\nPASS: REQ-UX-005, no request of hyperbutler's own was seen\n")
 }
+
+// noVMWP decides what a run does when this VM's vmwp could not be identified (err): the
+// VM worker's own sockets would go unwatched, so that is a failure unless allowed
+// (-allow-no-vmwp).
+func noVMWP(err error, allowed bool) error {
+	if allowed {
+		return nil
+	}
+	return fmt.Errorf("FAIL: this VM's vmwp was not identified, so its sockets cannot be watched: %w (-allow-no-vmwp runs the check without them)", err)
+}

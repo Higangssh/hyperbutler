@@ -33,6 +33,9 @@ type config struct {
 	every     time.Duration
 	out       string
 	keep      bool
+	// noVMWP lets the check pass without this VM's vmwp identified: its sockets are
+	// then not watched.
+	noVMWP bool
 }
 
 func main() {
@@ -57,6 +60,7 @@ func parseFlags() (*config, error) {
 	fs.DurationVar(&c.every, "interval", 250*time.Millisecond, "socket table polling interval")
 	fs.StringVar(&c.out, "out", "", "write the report as JSON to this file")
 	fs.BoolVar(&c.keep, "keep-running", false, "leave the engine running afterwards")
+	fs.BoolVar(&c.noVMWP, "allow-no-vmwp", false, "go on when this VM's vmwp cannot be identified (its sockets are then not watched, and the result says so)")
 	if err := fs.Parse(os.Args[1:]); err != nil {
 		return nil, err
 	}
@@ -207,7 +211,10 @@ func run() (err error) {
 	if after, err := hostmon.Snapshot(); err != nil {
 		return err
 	} else if vm, err = hostmon.FindNewVM(before, after); err != nil {
-		logf("this VM's vmwp is not watched: %v", err)
+		if err := noVMWP(err, c.noVMWP); err != nil {
+			return err
+		}
+		logf("this VM's vmwp is not watched (-allow-no-vmwp): %v", err)
 	}
 	pl.set(func(p *poller) { p.engine, p.vmwp = enginePID, vm.VMWP })
 	logf("engine PID %d, vmwp PID %d, debug pipe %s", enginePID, vm.VMWP, c.debugPipe)

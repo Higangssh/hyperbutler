@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/binary"
+	"errors"
 	"net/netip"
 	"reflect"
 	"strings"
@@ -124,5 +125,16 @@ func TestRecorder(t *testing.T) {
 	all := r.All()
 	if len(all) != 1 || all[0].Phase != "boot" || all[0].Polls != 2 || all[0].State != "ESTABLISHED" || r.Polls != 2 {
 		t.Fatalf("got %+v", all)
+	}
+}
+
+// A run whose vmwp was not found fails unless -allow-no-vmwp is given (L-7).
+func TestNoVMWP(t *testing.T) {
+	cause := errors.New("no new vmwp")
+	if err := noVMWP(cause, false); err == nil || !strings.HasPrefix(err.Error(), "FAIL") || !errors.Is(err, cause) {
+		t.Fatalf("without -allow-no-vmwp: %v", err)
+	}
+	if err := noVMWP(cause, true); err != nil {
+		t.Fatalf("with -allow-no-vmwp: %v", err)
 	}
 }
