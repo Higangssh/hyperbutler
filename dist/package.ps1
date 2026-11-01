@@ -24,8 +24,9 @@
 # version that hyperbutler.exe reports itself, image hashes that match the artifact's
 # SHA256SUMS, an image.json to pin, guest license texts, a source bundle, the bundled
 # clients, and REQ-UX-002's 150 MB limit. -Snapshot relaxes all but the last for local
-# dry runs and marks the zip as not for redistribution. The client source pins and the
-# size limit always apply.
+# dry runs and marks the zip as not for redistribution; its name ends in -snapshot, so
+# no -Version makes it look like a release. The client source pins and the size limit
+# always apply, and so do the module proxy and checksum database (EnterPinnedGoEnv).
 #
 # Reproducibility: CGO_ENABLED=0, -trimpath, -buildvcs=true (the version comes from the
 # git tag, as `git describe` sees it), -ldflags "-s -w -buildid= -X <image pin>",
@@ -71,6 +72,25 @@ function Exec([string]$exe) {
     $o | Where-Object { $null -ne $_ }
 }
 function Sha256([string]$path) { (Get-FileHash -Algorithm SHA256 -LiteralPath $path).Hash.ToLowerInvariant() }
+# What go fetches from the network (the client sources and their dependencies, and
+# go-winres) comes through proxy.golang.org and is checked against sum.golang.org,
+# whatever the caller's environment or go env file says: GOENV=off ignores the file,
+# and every variable that would skip the proxy or the checksum database is cleared.
+$pinnedGoEnv = [ordered]@{
+    GOENV = 'off'; GOPROXY = 'https://proxy.golang.org'; GOSUMDB = 'sum.golang.org'
+    GONOSUMDB = $null; GONOSUMCHECK = $null; GONOPROXY = $null; GOPRIVATE = $null; GOINSECURE = $null; GOFLAGS = $null
+}
+function EnterPinnedGoEnv {
+    $saved = @{}
+    foreach ($k in $pinnedGoEnv.Keys) {
+        $saved[$k] = [Environment]::GetEnvironmentVariable($k)
+        [Environment]::SetEnvironmentVariable($k, $pinnedGoEnv[$k])
+    }
+    $saved
+}
+function ExitPinnedGoEnv([hashtable]$saved) {
+    foreach ($k in $saved.Keys) { [Environment]::SetEnvironmentVariable($k, $saved[$k]) }
+}
 function WriteText([string]$path, [string[]]$lines) {
     # LF and UTF-8 without BOM on both PowerShell editions, so the bytes don't depend on
     # the shell that ran this.
@@ -91,7 +111,9 @@ try {
     if (-not $Snapshot -and $Version -notmatch '^v\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?$') {
         Fail "a release version must be a semver tag (vX.Y.Z[-pre]), got $Version"
     }
+    # A snapshot never carries a release's name, even with -Version vX.Y.Z.
     $name = "hyperbutler-$Version-windows-amd64"
+    if ($Snapshot) { $name += '-snapshot' }
     $stage = Join-Path $Out $name
     if (Test-Path $stage) { Remove-Item -Recurse -Force $stage }
     New-Item -ItemType Directory -Force $stage | Out-Null
@@ -127,8 +149,11 @@ try {
     # The icon and version resource (cmd/hyperbutler/winres), stamped with this version. The
     # .syso files are git-ignored, so generating them leaves the tree clean for -buildvcs.
     $resVersion = $Version.TrimStart('v')
-    Exec go run github.com/tc-hib/go-winres@v0.3.3 make --in cmd/hyperbutler/winres/winres.json `
-        --out cmd/hyperbutler/rsrc --arch 'amd64,arm64' --product-version $resVersion --file-version $resVersion | Out-Null
+    $goSaved = EnterPinnedGoEnv
+    try {
+        Exec go run github.com/tc-hib/go-winres@v0.3.3 make --in cmd/hyperbutler/winres/winres.json `
+            --out cmd/hyperbutler/rsrc --arch 'amd64,arm64' --product-version $resVersion --file-version $resVersion | Out-Null
+    } finally { ExitPinnedGoEnv $goSaved }
     $saved = $env:GOOS, $env:GOARCH, $env:CGO_ENABLED, $env:GOTOOLCHAIN, $env:GOFLAGS
     try {
         $env:GOOS = 'windows'; $env:GOARCH = 'amd64'; $env:CGO_ENABLED = '0'
@@ -252,6 +277,7 @@ try {
         $index.Add('== Windows clients in clients/: docker.exe and cli-plugins/docker-compose.exe, built from')
         $index.Add('   the source modules in dist/clients.lock')
         $index.Add('')
+        $goSaved = EnterPinnedGoEnv
         try {
             foreach ($e in $entries | Sort-Object Name) {
                 $env:GOOS = $null; $env:GOARCH = $null; $env:CGO_ENABLED = $null
@@ -332,6 +358,7 @@ try {
                 $clientLines += "  $(Sha256 $dst)  $($want[$e.Name])  ($($e.Mod)@$($e.ModVersion) $($e.Sum), commit $($e.Commit); -tags $tags -ldflags `"$ld`")"
             }
         } finally {
+            ExitPinnedGoEnv $goSaved
             $env:GOOS, $env:GOARCH, $env:CGO_ENABLED, $env:GOTOOLCHAIN, $env:GOFLAGS = $savedEnv
         }
     }
