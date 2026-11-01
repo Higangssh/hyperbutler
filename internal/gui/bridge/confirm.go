@@ -9,6 +9,8 @@ import (
 	"regexp"
 	"sync"
 	"time"
+
+	"github.com/Higangssh/hyperbutler/internal/config"
 )
 
 // Confirmation tokens. The operations that stop something or change what dockerd runs
@@ -35,10 +37,17 @@ var TokenActions = map[string]bool{
 	"container.stop":    true,
 	"container.restart": true,
 	OpImportRun:         true,
+	OpConfigSet:         true, // only the settings Editable marks Confirmed
 }
 
-// TokenTTL is how long a token stays good: long enough to read the dialog.
-const TokenTTL = 2 * time.Minute
+// TokenTTL is how long a token stays good. Every token gets the same ten minutes: the
+// list a stop or restart shows (REQ-UX-017) can be long, and a person who reads it, or
+// steps away with the dialog open, should not come back to HB-GUI-005. A shorter life
+// would protect nothing: a token is spent on its first use (or refusal), is bound to
+// one action (and container, or setting and value), and a page that could misuse one
+// could as well ask for a fresh one. Expiry only bounds what is outstanding, with
+// maxTokens.
+const TokenTTL = 10 * time.Minute
 
 // maxTokens bounds the outstanding tokens; the oldest go first.
 const maxTokens = 32
@@ -46,10 +55,13 @@ const maxTokens = 32
 // CodeConfirm: a destructive request without a valid confirmation token.
 const CodeConfirm = "HB-GUI-005"
 
-// ConfirmArgs ask for a token for an action (and a container, for container.*).
+// ConfirmArgs ask for a token for an action (and a container, for container.*; a setting
+// and its new value, for config.set).
 type ConfirmArgs struct {
 	Action string `json:"action"`
 	ID     string `json:"id,omitempty"`
+	Key    string `json:"key,omitempty"`
+	Value  string `json:"value,omitempty"`
 }
 
 // TokenArgs carry a confirmation token.
@@ -71,14 +83,25 @@ func checkConfirmArgs(a *ConfirmArgs) error {
 		return fmt.Errorf("action %.40q needs no confirmation", a.Action)
 	}
 	isContainer := a.Action == "container.stop" || a.Action == "container.restart"
+	isSetting := a.Action == OpConfigSet
 	switch {
 	case isContainer && !reContainerID.MatchString(a.ID):
 		return errors.New("id: want a container id (64 hex digits)")
 	case !isContainer && a.ID != "":
 		return errors.New("id: only container actions name one")
+	case isSetting && !reKey.MatchString(a.Key):
+		return errors.New("key: not a setting name")
+	case isSetting && (len(a.Value) > maxValue || !printableValue(a.Value)):
+		return fmt.Errorf("value: at most %d bytes of printable text", maxValue)
+	case !isSetting && (a.Key != "" || a.Value != ""):
+		return errors.New("key, value: only config.set names them")
 	}
 	return nil
 }
+
+// settingID is what a config.set token is bound to: the setting and its new value (a
+// setting's name has no "=").
+func settingID(key, value string) string { return key + "=" + value }
 
 type token struct {
 	action, id string
@@ -113,6 +136,8 @@ func (t *tokens) issue(action, id string) string {
 }
 
 // use spends tok for action and id; it is gone afterwards whether or not it matched.
+// Callers hold the exclusive lock already (Dispatcher.exclusive), so a request that is
+// refused as busy keeps its token.
 func (t *tokens) use(tok, action, id string) error {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -148,6 +173,19 @@ func (d *Dispatcher) confirm(ctx context.Context, a *ConfirmArgs) (any, error) {
 		}
 		pv := p.(PreviewView)
 		v.Preview = &pv
+	case OpConfigSet:
+		k, err := config.Lookup(a.Key)
+		if err != nil {
+			return nil, Coded(CodeConfigValue, err)
+		}
+		if Editable[k.Name] != Confirmed {
+			return nil, Codedf(CodeNotEditable, "%s needs no confirmation in the window, or is changed in a terminal", k.Name)
+		}
+		v.Token = d.tok.issue(a.Action, settingID(k.Name, a.Value))
+		if v.Token == "" {
+			return nil, Codedf(CodeConfirm, "no confirmation could be made")
+		}
+		return v, nil
 	}
 	v.Token = d.tok.issue(a.Action, a.ID)
 	if v.Token == "" {

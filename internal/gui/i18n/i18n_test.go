@@ -169,6 +169,9 @@ func TestPageKeys(t *testing.T) {
 	}
 	for _, k := range config.Keys {
 		keys = append(keys, "setting."+k.Name, "setting."+k.Name+".help")
+		if bridge.Editable[k.Name] == bridge.Confirmed {
+			keys = append(keys, "confirm.setting."+k.Name+".body") // the dialog's explanation
+		}
 	}
 	for _, k := range keys {
 		if strings.HasSuffix(k, ".") {

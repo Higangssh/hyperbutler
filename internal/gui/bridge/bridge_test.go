@@ -34,6 +34,8 @@ func TestDecode(t *testing.T) {
 		`{"id":4,"op":"container.action","args":{"id":"` + cid + `","action":"stop","token":"` + tok32 + `"}}`,
 		`{"id":8,"op":"container.action","args":{"id":"` + cid + `","action":"start"}}`,
 		`{"id":9,"op":"confirm","args":{"action":"engine.stop"}}`,
+		`{"id":10,"op":"confirm","args":{"action":"config.set","key":"hostGateway.ports","value":"8080,9000"}}`,
+		`{"id":11,"op":"config.set","args":{"key":"autostart","value":"true","token":"` + tok32 + `"}}`,
 		`{"id":5,"op":"container.logs","args":{"id":"` + cid + `"}}`,
 		`{"id":6,"op":"config.set","args":{"key":"cpus","value":"2"}}`,
 		`{"id":7,"op":"import.run","args":{"ids":["image:busybox:latest"],"token":"` + tok32 + `"}}`,
@@ -72,6 +74,9 @@ func TestDecode(t *testing.T) {
 		"bad token":        `{"id":1,"op":"engine.stop","args":{"token":"xyz"}}`,
 		"confirm start":    `{"id":1,"op":"confirm","args":{"action":"engine.start"}}`,
 		"confirm no id":    `{"id":1,"op":"confirm","args":{"action":"container.stop"}}`,
+		"confirm no key":   `{"id":1,"op":"confirm","args":{"action":"config.set"}}`,
+		"key on engine":    `{"id":1,"op":"confirm","args":{"action":"engine.stop","key":"cpus"}}`,
+		"set bad token":    `{"id":1,"op":"config.set","args":{"key":"autostart","value":"true","token":"x"}}`,
 		"bad import id":    `{"id":1,"op":"import.run","args":{"ids":["a b"],"token":"` + tok32 + `"}}`,
 		"bad ref":          `{"id":1,"op":"error.copy","args":{"ref":0}}`,
 		"too big":          `{"id":1,"op":"log","args":{"text":"` + strings.Repeat("a", MaxMessage) + `"}}`,
@@ -288,12 +293,17 @@ func TestDaemonJSON(t *testing.T) {
 	}
 }
 
-// TestEditableCoversEveryKey fails until a new setting is classified as changeable in
-// the window or not.
+// TestEditableCoversEveryKey fails until a new setting is classified: changed in the
+// window freely, changed there after a confirmation, or CLI-only.
 func TestEditableCoversEveryKey(t *testing.T) {
 	for _, k := range config.Keys {
-		if _, ok := Editable[k.Name]; !ok {
-			t.Errorf("setting %s is not in Editable: decide whether the window may change it (docs/gui.md)", k.Name)
+		a, ok := Editable[k.Name]
+		if !ok {
+			t.Errorf("setting %s is not in Editable: decide whether the window may change it freely, after a confirmation, or not at all (docs/gui.md)", k.Name)
+			continue
+		}
+		if a != Free && a != Confirmed && a != CLIOnly {
+			t.Errorf("setting %s: access %d is none of Free, Confirmed, CLIOnly", k.Name, a)
 		}
 	}
 	for k := range Editable {
@@ -301,6 +311,118 @@ func TestEditableCoversEveryKey(t *testing.T) {
 			t.Errorf("Editable lists %s, which is not a setting", k)
 		}
 	}
+	// The ones the review found a page could flip silently need a confirmation.
+	for _, k := range []string{"hostGateway.enabled", "hostGateway.ports", "autostart", "updateCheck", "context.manage"} {
+		if Editable[k] != Confirmed {
+			t.Errorf("%s: want Confirmed", k)
+		}
+	}
+}
+
+// TestConfirmedSettings: a Confirmed setting changes only with a token for that key and
+// that value; a Free one needs none; a CLI-only one gets no token.
+func TestConfirmedSettings(t *testing.T) {
+	h := &fakeHost{}
+	d := New(Options{Host: h})
+	set := func(key, value, token string) Response {
+		msg := `{"id":1,"op":"config.set","args":{"key":"` + key + `","value":"` + value + `"`
+		if token != "" {
+			msg += `,"token":"` + token + `"`
+		}
+		return call(t, d, msg+`}}`)
+	}
+	confirm := func(key, value string) Response {
+		return call(t, d, `{"id":2,"op":"confirm","args":{"action":"config.set","key":"`+key+`","value":"`+value+`"}}`)
+	}
+	if r := set("hostGateway.enabled", "true", ""); r.OK || r.Error.Code != CodeConfirm {
+		t.Fatalf("hostGateway.enabled without a token: %+v", r)
+	}
+	c := confirm("hostGateway.enabled", "true")
+	if !c.OK {
+		t.Fatalf("confirm: %+v", c)
+	}
+	tk := c.Data.(ConfirmView).Token
+	// The token is for that value: another one is refused (and the token spent).
+	if r := set("hostGateway.enabled", "false", tk); r.OK || r.Error.Code != CodeConfirm {
+		t.Fatalf("token for another value: %+v", r)
+	}
+	if r := set("hostGateway.enabled", "true", tk); r.OK {
+		t.Fatal("a spent token was still good")
+	}
+	// The key is matched as config.Lookup names it.
+	tk = confirm("HOSTGATEWAY.PORTS", "8080").Data.(ConfirmView).Token
+	if r := set("hostGateway.ports", "8080", tk); !r.OK {
+		t.Fatalf("hostGateway.ports with its token: %+v", r)
+	}
+	if r := set("cpus", "3", ""); !r.OK {
+		t.Fatalf("cpus: %+v", r)
+	}
+	if r := confirm("cpus", "3"); r.OK || r.Error.Code != CodeNotEditable {
+		t.Fatalf("a token for a free setting: %+v", r)
+	}
+	if r := confirm("pipe", `x`); r.OK || r.Error.Code != CodeNotEditable {
+		t.Fatalf("a token for a CLI-only setting: %+v", r)
+	}
+	if want := []string{"hostGateway.ports=8080", "cpus=3"}; strings.Join(h.sets, " ") != strings.Join(want, " ") {
+		t.Fatalf("sets %v, want %v", h.sets, want)
+	}
+	// The settings view says which ones ask first.
+	for _, it := range MakeSettings(schema.ConfigList{Keys: []config.Item{{Key: "autostart"}, {Key: "cpus"}, {Key: "pipe"}}}).Keys {
+		if want := it.Key == "autostart"; it.Confirm != want || it.Editable != (it.Key != "pipe") {
+			t.Errorf("%s: editable %v confirm %v", it.Key, it.Editable, it.Confirm)
+		}
+	}
+}
+
+// TestBusyKeepsToken: a request refused as busy has not spent its token.
+func TestBusyKeepsToken(t *testing.T) {
+	h := &fakeHost{}
+	d := New(Options{Host: h})
+	for _, c := range []struct{ action, id, msg string }{
+		{"engine.stop", "", `{"id":1,"op":"engine.stop","args":{"token":"%s"}}`},
+		{"container.stop", cid, `{"id":1,"op":"container.action","args":{"id":"` + cid + `","action":"stop","token":"%s"}}`},
+		{"daemon.save", "", `{"id":1,"op":"daemon.save","args":{"text":"{}","token":"%s"}}`},
+	} {
+		tk := tokenFor(t, d, c.action, c.id)
+		msg := strings.Replace(c.msg, "%s", tk, 1)
+		d.mutating.Lock() // another change runs
+		r := call(t, d, msg)
+		d.mutating.Unlock()
+		if r.OK || r.Error.Code != CodeBusy {
+			t.Fatalf("%s while busy: %+v", c.action, r)
+		}
+		r = call(t, d, msg)
+		if r.Error != nil && r.Error.Code == CodeConfirm {
+			t.Fatalf("%s: the busy refusal spent the token: %+v", c.action, r.Error)
+		}
+	}
+	tk := confirmSetting(t, d, "autostart", "true")
+	d.mutating.Lock()
+	r := call(t, d, `{"id":1,"op":"config.set","args":{"key":"autostart","value":"true","token":"`+tk+`"}}`)
+	d.mutating.Unlock()
+	if r.OK || r.Error.Code != CodeBusy {
+		t.Fatalf("config.set while busy: %+v", r)
+	}
+	if r := call(t, d, `{"id":1,"op":"config.set","args":{"key":"autostart","value":"true","token":"`+tk+`"}}`); !r.OK {
+		t.Fatalf("config.set after busy: %+v", r)
+	}
+	// Tokens live TokenTTL, ten minutes.
+	now := time.Now()
+	d.tok.now = func() time.Time { return now }
+	tk = tokenFor(t, d, "engine.restart", "")
+	now = now.Add(9 * time.Minute)
+	if r := call(t, d, `{"id":1,"op":"engine.restart","args":{"token":"`+tk+`"}}`); !r.OK {
+		t.Fatalf("a nine-minute-old token: %+v", r)
+	}
+}
+
+func confirmSetting(t *testing.T, d *Dispatcher, key, value string) string {
+	t.Helper()
+	r := call(t, d, `{"id":2,"op":"confirm","args":{"action":"config.set","key":"`+key+`","value":"`+value+`"}}`)
+	if !r.OK {
+		t.Fatalf("confirm %s: %+v", key, r)
+	}
+	return r.Data.(ConfirmView).Token
 }
 
 func TestMakeContainers(t *testing.T) {
@@ -378,7 +500,14 @@ func TestImport(t *testing.T) {
 		t.Fatal("imported an item that is already imported")
 	}
 	imp.noSpace = true
-	if r := call(t, d, `{"id":5,"op":"import.run","args":{"ids":["image:a"],"token":"`+tokenFor(t, d, "import.run", "")+`"}}`); r.OK || r.Error.Code != CodeImportSpace {
+	// Busy (an import runs) keeps the token; the space refusal comes after it.
+	tk := tokenFor(t, d, "import.run", "")
+	d.imp.cancel = func() {}
+	if r := call(t, d, `{"id":5,"op":"import.run","args":{"ids":["image:a"],"token":"`+tk+`"}}`); r.OK || r.Error.Code != CodeBusy {
+		t.Fatalf("import while one runs: %+v", r)
+	}
+	d.imp.cancel = nil
+	if r := call(t, d, `{"id":5,"op":"import.run","args":{"ids":["image:a"],"token":"`+tk+`"}}`); r.OK || r.Error.Code != CodeImportSpace {
 		t.Fatalf("ran without space: %+v", r)
 	}
 	// force is import --force-space: the check is skipped.

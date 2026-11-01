@@ -93,6 +93,9 @@ type LogsArgs struct {
 type ConfigSetArgs struct {
 	Key   string `json:"key"`
 	Value string `json:"value"`
+	// Token confirms a setting Editable marks Confirmed (from confirm with this key and
+	// value); the others take none.
+	Token string `json:"token,omitempty"`
 }
 
 // DaemonArgs carries a daemon.json text.
@@ -254,6 +257,9 @@ func checkArgs(op string, args any) error {
 		}
 		if len(a.Value) > maxValue || !printableValue(a.Value) {
 			return fmt.Errorf("value: at most %d bytes of printable text", maxValue)
+		}
+		if a.Token != "" {
+			return checkToken(a.Token)
 		}
 	case *DaemonArgs:
 		if op == OpDaemonSave {

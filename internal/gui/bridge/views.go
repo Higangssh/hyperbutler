@@ -171,13 +171,15 @@ func MakeContainers(list []dockerapi.Container) ContainersView {
 // SettingView is one setting. Description is the English one from internal/config;
 // the page shows its own translation by key and falls back to it.
 type SettingView struct {
-	Key         string `json:"key"`
-	Value       string `json:"value"`
-	Default     string `json:"default"`
-	Source      string `json:"source"`
-	Type        string `json:"type"`
-	Apply       string `json:"apply"`
-	Editable    bool   `json:"editable"`
+	Key      string `json:"key"`
+	Value    string `json:"value"`
+	Default  string `json:"default"`
+	Source   string `json:"source"`
+	Type     string `json:"type"`
+	Apply    string `json:"apply"`
+	Editable bool   `json:"editable"`
+	// Confirm says a change needs a confirmation (a token for the key and value).
+	Confirm     bool   `json:"confirm,omitempty"`
 	Description string `json:"description"`
 }
 
@@ -192,7 +194,8 @@ func MakeSettings(l schema.ConfigList) SettingsView {
 	v := SettingsView{Keys: []SettingView{}}
 	for _, it := range l.Keys {
 		v.Keys = append(v.Keys, SettingView{Key: it.Key, Value: field(it.Value), Default: field(it.Default), Source: string(it.Source),
-			Type: it.Type, Apply: string(it.Apply), Editable: Editable[it.Key], Description: field(it.Description)})
+			Type: it.Type, Apply: string(it.Apply), Editable: Editable[it.Key] != CLIOnly, Confirm: Editable[it.Key] == Confirmed,
+			Description: field(it.Description)})
 	}
 	return v
 }

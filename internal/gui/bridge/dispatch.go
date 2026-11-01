@@ -253,10 +253,7 @@ func (d *Dispatcher) serve(ctx context.Context, op string, args any) (any, error
 		return d.importPlan(c)
 	case OpImportRun:
 		a := args.(*ImportArgs)
-		if err := d.tok.use(a.Token, OpImportRun, ""); err != nil {
-			return nil, err
-		}
-		return d.importRun(a.IDs, a.Force)
+		return d.importRun(a.IDs, a.Force, a.Token)
 	case OpImportCancel:
 		return d.importCancel()
 	case OpLog:
@@ -286,12 +283,13 @@ func (d *Dispatcher) serve(ctx context.Context, op string, args any) (any, error
 		return d.containers(c)
 	case OpContainerDo:
 		a := args.(*ContainerArgs)
-		if a.Action != "start" {
-			if err := d.tok.use(a.Token, "container."+a.Action, a.ID); err != nil {
-				return nil, err
-			}
-		}
+		// The lock first, then the token: a request refused as busy keeps it.
 		return d.exclusive(func() (any, error) {
+			if a.Action != "start" {
+				if err := d.tok.use(a.Token, "container."+a.Action, a.ID); err != nil {
+					return nil, err
+				}
+			}
 			c, cancel := timed(readTimeout + 10*time.Second)
 			defer cancel()
 			return d.containerAction(c, a.ID, a.Action)
@@ -306,12 +304,12 @@ func (d *Dispatcher) serve(ctx context.Context, op string, args any) (any, error
 	case OpEngineStart, OpEngineStop, OpEngineRestart, OpDockerdRestart:
 		eop, t := map[string]EngineOp{OpEngineStart: EngineStart, OpEngineStop: EngineStop, OpEngineRestart: EngineRestart, OpDockerdRestart: EngineRestartDockerd}[op],
 			map[string]time.Duration{OpEngineStart: startTimeout, OpEngineStop: stopTimeout, OpEngineRestart: restartTimeout, OpDockerdRestart: stopTimeout + time.Minute}[op]
-		if eop != EngineStart {
-			if err := d.tok.use(args.(*TokenArgs).Token, op, ""); err != nil {
-				return nil, err
-			}
-		}
 		return d.exclusive(func() (any, error) {
+			if eop != EngineStart {
+				if err := d.tok.use(args.(*TokenArgs).Token, op, ""); err != nil {
+					return nil, err
+				}
+			}
 			c, cancel := timed(t)
 			defer cancel()
 			out, err := d.o.Host.Engine(c, eop)
@@ -330,18 +328,19 @@ func (d *Dispatcher) serve(ctx context.Context, op string, args any) (any, error
 		return MakeSettings(l), nil
 	case OpConfigSet:
 		a := args.(*ConfigSetArgs)
-		return d.exclusive(func() (any, error) { return d.configSet(ctx, a.Key, a.Value) })
+		return d.exclusive(func() (any, error) { return d.configSet(ctx, a.Key, a.Value, a.Token) })
 	case OpDaemonGet:
 		return d.daemonGet(ctx)
 	case OpDaemonValidate:
 		return d.daemonCheck(args.(*DaemonArgs).Text)
 	case OpDaemonSave:
 		a := args.(*DaemonArgs)
-		if err := d.tok.use(a.Token, OpDaemonSave, ""); err != nil {
-			return nil, err
-		}
-		text := a.Text
-		return d.exclusive(func() (any, error) { return d.daemonSave(ctx, text) })
+		return d.exclusive(func() (any, error) {
+			if err := d.tok.use(a.Token, OpDaemonSave, ""); err != nil {
+				return nil, err
+			}
+			return d.daemonSave(ctx, a.Text)
+		})
 	case OpStorage:
 		c, cancel := timed(readTimeout)
 		defer cancel()
@@ -590,31 +589,48 @@ func (d *Dispatcher) preview(ctx context.Context) (any, error) {
 
 // --- settings -----------------------------------------------------------------------
 
-// Editable are the settings the GUI changes. The others are shown and changed with the
-// CLI: they are paths, pipes, secrets or trust decisions that a page showing
-// container text should not be able to change (docs/gui.md). TestEditableCoversEveryKey
-// fails until a new key is classified here.
-var Editable = map[string]bool{
-	"memory":              true,
-	"cpus":                true,
-	"context.manage":      true,
-	"autostart":           true,
-	"updateCheck":         true,
-	"hostGateway.enabled": true,
-	"hostGateway.ports":   true,
-	"gui.startOnOpen":     true,
-	"gui.language":        true,
+// Access says how the window may change a setting.
+type Access int
 
-	"disk.size":          false,
-	"data.dir":           false,
-	"pipe":               false,
-	"engine.memoryLimit": false,
-	"network.frameCheck": false,
-	"ca.import":          false,
-	"ca.extraFile":       false,
-	"proxy.http":         false,
-	"proxy.https":        false,
-	"proxy.noProxy":      false,
+const (
+	// CLIOnly: shown, and changed with `hyperbutler config set` in a terminal.
+	CLIOnly Access = iota
+	// Free: changed from the window without a confirmation.
+	Free
+	// Confirmed: changed from the window after a confirmation, with a token bound to
+	// the setting and its new value (the page's dialog says what it does).
+	Confirmed
+)
+
+// Editable classifies every setting (docs/gui.md). Free are the VM's size and the
+// window's own settings. Confirmed are the ones that open this PC to the containers
+// (hostGateway.*), start or reach something outside the window (autostart, the update
+// check), or change the user's docker CLI (context.manage): a page made to run script
+// could otherwise flip them silently. CLI-only are paths, pipes, secrets and trust
+// decisions, which a page showing container text should not change at all.
+// TestEditableCoversEveryKey fails until a new key is classified here.
+var Editable = map[string]Access{
+	"memory":          Free,
+	"cpus":            Free,
+	"gui.startOnOpen": Free,
+	"gui.language":    Free,
+
+	"hostGateway.enabled": Confirmed,
+	"hostGateway.ports":   Confirmed,
+	"autostart":           Confirmed,
+	"updateCheck":         Confirmed,
+	"context.manage":      Confirmed,
+
+	"disk.size":          CLIOnly,
+	"data.dir":           CLIOnly,
+	"pipe":               CLIOnly,
+	"engine.memoryLimit": CLIOnly,
+	"network.frameCheck": CLIOnly,
+	"ca.import":          CLIOnly,
+	"ca.extraFile":       CLIOnly,
+	"proxy.http":         CLIOnly,
+	"proxy.https":        CLIOnly,
+	"proxy.noProxy":      CLIOnly,
 }
 
 // SetView is a change of one setting.
@@ -624,19 +640,26 @@ type SetView struct {
 	Running bool        `json:"running"`
 }
 
-func (d *Dispatcher) configSet(ctx context.Context, key, value string) (any, error) {
+// configSet runs under exclusive: a token is spent only by a request that runs.
+func (d *Dispatcher) configSet(ctx context.Context, key, value, token string) (any, error) {
 	k, err := config.Lookup(key)
 	if err != nil {
 		return nil, Coded(CodeConfigValue, err)
 	}
-	if !Editable[k.Name] {
+	switch Editable[k.Name] {
+	case Free:
+	case Confirmed:
+		if err := d.tok.use(token, OpConfigSet, settingID(k.Name, value)); err != nil {
+			return nil, err
+		}
+	default:
 		return nil, Codedf(CodeNotEditable, "%s is changed with `hyperbutler config set` in a terminal", k.Name)
 	}
 	c, cancel := context.WithTimeout(ctx, readTimeout)
 	defer cancel()
 	out, err := d.o.Host.ConfigSet(c, k.Name, value)
 	if err != nil {
-		return nil, Coded(CodeConfigValue, err)
+		return nil, withCode(CodeConfigValue, err)
 	}
 	l, err := d.o.Host.ConfigList(c)
 	if err != nil {

@@ -548,10 +548,24 @@
     if (!out.some((o) => o[0] === it.value)) out.unshift([it.value, it.value]);
     return out;
   }
+  // settingValue is a value as the confirmation names it: on/off for a switch.
+  function settingValue(it, value) {
+    if (it.type === "bool") return t(value === "true" ? "setting.value.on" : "setting.value.off");
+    return value === "" ? t("settings.empty") : value;
+  }
   async function setSetting(it, value, ctl) {
+    // Some settings open this PC to the containers or reach outside the window: the page
+    // asks first and the host refuses the change without a token for this key and value.
+    let token = "";
+    if (it.confirm) {
+      const ok = await confirmDialog(t("confirm.setting.title", { name: settingName(it), value: settingValue(it, value) }),
+        t("confirm.setting." + it.key + ".body"), t("confirm.setting.ok"), []);
+      if (!ok) { renderSettings(); return; }
+      try { token = (await call("confirm", { action: "config.set", key: it.key, value })).token; } catch (e) { showError(e); return; }
+    }
     busy(ctl, true);
     try {
-      const r = await call("config.set", { key: it.key, value });
+      const r = await call("config.set", token ? { key: it.key, value, token } : { key: it.key, value });
       const i = settings.findIndex((s) => s.key === it.key);
       if (i >= 0 && r.item && r.item.key) settings[i] = r.item;
       if (r.running && (it.apply === "restart-vm" || it.apply === "restart-dockerd")) pendingRestart.add(it.key);

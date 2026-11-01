@@ -68,6 +68,15 @@ func Coded(code string, err error) error {
 	return &Error{Code: code, Err: err}
 }
 
+// withCode is err with its own code if it has one (a host's "busy"), else code.
+func withCode(code string, err error) error {
+	var e *Error
+	if err == nil || errors.As(err, &e) {
+		return err
+	}
+	return &Error{Code: code, Err: err}
+}
+
 // Codedf is Coded(code, fmt.Errorf(format, a...)).
 func Codedf(code, format string, a ...any) error {
 	return &Error{Code: code, Err: fmt.Errorf(format, a...)}

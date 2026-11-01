@@ -171,7 +171,7 @@ func (d *Dispatcher) importPlan(ctx context.Context) (any, error) {
 
 // importRun starts the import of ids in the background; progress goes to the page as
 // events. Only items of the last plan that are not already imported are taken.
-func (d *Dispatcher) importRun(ids []string, force bool) (any, error) {
+func (d *Dispatcher) importRun(ids []string, force bool, token string) (any, error) {
 	if d.o.Importer == nil {
 		return nil, Codedf(CodeImportUnavailable, "importing from Docker Desktop is not available in this build yet")
 	}
@@ -179,6 +179,10 @@ func (d *Dispatcher) importRun(ids []string, force bool) (any, error) {
 	defer d.imp.mu.Unlock()
 	if d.imp.cancel != nil {
 		return nil, Codedf(CodeBusy, "an import is already running")
+	}
+	// Busy first, then the token: a request refused as busy keeps it.
+	if err := d.tok.use(token, OpImportRun, ""); err != nil {
+		return nil, err
 	}
 	var take []string
 	for _, id := range ids {
