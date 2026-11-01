@@ -1,29 +1,30 @@
 # Network APIs that production code may use (REQ-UX-005), one per line:
 #
-#   FILE RULE REASON
+#   FILE RULE COUNT REASON
 #
 # FILE is relative to the repository root, RULE is what TestNoUnreviewedNetworkUse
-# reports, and REASON says why this use makes no request of hyperbutler's own: it
-# reaches only this machine (a pipe, an hvsock, loopback, a Unix socket in the guest),
-# or it carries the guest's traffic, which is the user's. An entry covers every use of
-# RULE in FILE, so keep files small enough that this stays meaningful.
+# reports, COUNT is how many uses of RULE FILE has (exactly: a new one fails the test
+# until it is reviewed and the count raised), and REASON says why these uses make no
+# request of hyperbutler's own: they reach only this machine (a pipe, an hvsock,
+# loopback, a Unix socket in the guest), or they carry the guest's traffic, which is
+# the user's.
 
 # The engine talks to the guest's dockerd (the Docker API) over hvsock. The Transport
 # literals have no Proxy (only http.DefaultTransport reads HTTP_PROXY) and their
 # DialContext ignores the address: every request goes to transport.HvsockDialer.
-internal/engine/console_windows.go net/http.Client GET /_ping to the guest dockerd over hvsock
-internal/engine/console_windows.go net/http.Transport DialContext is transport.HvsockDialer (the guest)
-internal/engine/net_windows.go net/http.Client container events and inspect from the guest dockerd over hvsock (auto-publish)
-internal/engine/net_windows.go net/http.Transport DialContext is transport.HvsockDialer (the guest)
-internal/engine/share_windows.go net/http.Client container events and list from the guest dockerd over hvsock (share pruning)
-internal/engine/share_windows.go net/http.Transport DialContext is transport.HvsockDialer (the guest)
+internal/engine/console_windows.go net/http.Client 1 GET /_ping to the guest dockerd over hvsock
+internal/engine/console_windows.go net/http.Transport 1 DialContext is transport.HvsockDialer (the guest)
+internal/engine/net_windows.go net/http.Client 2 container events and inspect from the guest dockerd over hvsock (auto-publish): the client and the autoPublisher field holding it
+internal/engine/net_windows.go net/http.Transport 1 DialContext is transport.HvsockDialer (the guest)
+internal/engine/share_windows.go net/http.Client 3 container events and list from the guest dockerd over hvsock (share pruning): the client and the two functions it is passed to
+internal/engine/share_windows.go net/http.Transport 1 DialContext is transport.HvsockDialer (the guest)
 
 # The guest network (ADR 0006): the host side of connections and DNS queries the guest
 # makes. Only the guest's (the user's containers' and pulls') traffic goes this way;
 # bench/no-telemetry checks that the guest makes none of its own at idle.
-internal/netstack/stack.go net.Dialer dials what a guest connection or UDP flow asked for, after the Policy check
-internal/netstack/stack.go net.DefaultResolver answers the guest's DNS queries with the host resolver
-internal/netstack/hostgw.go net.Dialer host gateway: dials 127.0.0.1 or [::1] only (loopbackOnly control)
+internal/netstack/stack.go net.Dialer 2 dials what a guest connection or UDP flow asked for, after the Policy check (Stack.dialer: its type and its literal)
+internal/netstack/stack.go net.DefaultResolver 1 answers the guest's DNS queries with the host resolver
+internal/netstack/hostgw.go net.Dialer 1 host gateway: dials 127.0.0.1 or [::1] only (loopbackOnly control)
 #
 # On Windows, net.DefaultResolver hands each lookup to the DNS Client service
 # (Dnscache, in svchost), which sends the packets, and for single-label names may also
@@ -31,9 +32,9 @@ internal/netstack/hostgw.go net.Dialer host gateway: dials 127.0.0.1 or [::1] on
 # only for names the guest asked for, which the engine's flow log records.
 
 # hyperbutlerd (guest) checks that dockerd answers on its Unix socket.
-guest/cmd/hyperbutlerd/daemoncfg.go net.Dialer dials /run/docker.sock ("unix") for GET /_ping
+guest/cmd/hyperbutlerd/daemoncfg.go net.Dialer 1 dials /run/docker.sock ("unix") for GET /_ping
 
 # Programs started by a name known only at run time run code this scan cannot see.
-cmd/hyperbutler/commands_windows.go exec:computed starts the engine: this executable (os.Executable)
-cmd/hyperbutler/dockercli_windows.go exec:computed runs the docker CLI on PATH (third-party code) with only --version, to warn when it is too old
-guest/cmd/hyperbutlerd/main_linux.go exec:computed dockerd --validate on a new daemon.json; dockerd validates and exits
+cmd/hyperbutler/commands_windows.go exec:computed 1 starts the engine: this executable (os.Executable)
+cmd/hyperbutler/dockercli_windows.go exec:computed 1 runs the docker CLI on PATH (third-party code) with only --version, to warn when it is too old
+guest/cmd/hyperbutlerd/main_linux.go exec:computed 1 dockerd --validate on a new daemon.json; dockerd validates and exits

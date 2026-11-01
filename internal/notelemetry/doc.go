@@ -9,19 +9,25 @@
 // reviewed:
 //
 //   - ScanGo parses the Go sources and reports every use of an API that opens a
-//     connection or resolves a name: net.Dial*, net.Dialer, net.Resolver and the
-//     net.Lookup* functions, the net/http client (Client, Transport, Get, ...),
-//     httputil's reverse proxy, crypto/tls, net/smtp and net/rpc dialing, miekg/dns's
-//     client, raw socket connects outside AF_VSOCK and AF_UNIX, exec of network tools
-//     (curl, wget, ...) or of a program named at run time (the engine, dockerd, the
-//     user's docker.exe: code this scan cannot see), the WinHTTP, WinINet and URLMon
-//     DLLs, and URL literals naming any host but the local Docker API ("docker"), the
-//     debug endpoint ("diag") or loopback. Calls whose arguments are literally local (net.Dial("unix", ...), a
-//     loopback address, unix.Connect to a SockaddrVM) pass on their own.
+//     connection, sends a datagram or resolves a name: net.Dial*, net.Dialer,
+//     net.Resolver, the net.Lookup* and net.Resolve*Addr functions, UDP and IP
+//     listeners (net.ListenUDP, ListenPacket, ListenIP: they send too), the net/http
+//     client (Client, Transport, Get, ...), httputil's reverse proxy, crypto/tls,
+//     net/smtp and net/rpc dialing, miekg/dns's client, raw socket connects outside
+//     AF_VSOCK and AF_UNIX, exec of network tools (curl, wget, ...; named as the
+//     program or in any literal argument, as in cmd /c curl or powershell -c
+//     Invoke-WebRequest) or of a program named at run time (the engine, dockerd, the
+//     user's docker.exe: code this scan cannot see), the WinHTTP, WinINet, URLMon,
+//     Winsock (ws2_32) and DNS client (dnsapi) DLLs, URL literals naming any host but
+//     the local Docker API ("docker"), the debug endpoint ("diag") or loopback, dot
+//     imports of these packages and of os/exec (their identifiers carry no package
+//     name), and cgo. Calls whose arguments are literally local (net.Dial("unix", ...),
+//     a loopback address, unix.Connect to a SockaddrVM) pass on their own.
 //   - Every other finding needs a line in allowlist.txt, which names the file, the
-//     API and why the use cannot leave the machine on its own (it dials an hvsock or a
-//     pipe, or it relays the guest's own traffic). An entry that no longer matches
-//     anything fails too, so the list stays exact.
+//     API, how many uses of it the file has, and why they cannot leave the machine on
+//     their own (they dial an hvsock or a pipe, or relay the guest's own traffic). The
+//     count is exact, so one reviewed net.Dialer does not cover the next one added to
+//     the file, and an entry that no longer matches anything fails too.
 //   - The modules linked into the shipped binaries (hyperbutler.exe and the guest's
 //     agent, sockfwd, netfwd and hyperbutlerd, from `go list -deps`) must each be on a
 //     reviewed list, so a new dependency that phones home cannot arrive unnoticed.

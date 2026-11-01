@@ -34,9 +34,12 @@ const all = "*"
 
 // networkAPIs are the identifiers ScanGo reports, by import path.
 var networkAPIs = map[string][]string{
+	// A UDP or IP listener sends as well as it receives (WriteTo), and the Resolve
+	// functions look a name up in DNS.
 	"net": {"Dial", "DialTimeout", "DialTCP", "DialUDP", "DialIP", "Dialer", "Resolver", "DefaultResolver",
 		"LookupAddr", "LookupCNAME", "LookupHost", "LookupIP", "LookupMX", "LookupNS", "LookupPort",
-		"LookupSRV", "LookupTXT", "LookupNetIP", "ListenMulticastUDP"},
+		"LookupSRV", "LookupTXT", "LookupNetIP", "ListenMulticastUDP", "ListenUDP", "ListenPacket", "ListenIP",
+		"ResolveTCPAddr", "ResolveUDPAddr", "ResolveIPAddr"},
 	"net/http": {"Client", "Transport", "DefaultClient", "DefaultTransport", "Get", "Head", "Post",
 		"PostForm", "ProxyFromEnvironment", "ProxyURL"},
 	"net/http/httputil":          {"ReverseProxy", "NewSingleHostReverseProxy"},
@@ -62,8 +65,9 @@ var networkTools = map[string]bool{
 	"dhclient": true, "bitsadmin": true, "certutil": true, "invoke-webrequest": true, "invoke-restmethod": true,
 }
 
-// networkDLLs are Windows client libraries for HTTP and URL downloads.
-var networkDLLs = []string{"winhttp", "wininet", "urlmon"}
+// networkDLLs are Windows client libraries for HTTP and URL downloads, Winsock (a
+// socket that bypasses the Go packages above) and the DNS client.
+var networkDLLs = []string{"winhttp", "wininet", "urlmon", "ws2_32", "dnsapi"}
 
 // localHosts are the URL hosts that do not leave the machine: the Docker API over the
 // guest's hvsock and the debug endpoint over a pipe both use these as dummy hosts.
@@ -115,6 +119,10 @@ func ScanGo(root string, dirs []string) ([]Finding, error) {
 }
 
 func scanFile(fset *token.FileSet, rel string, f *ast.File) []Finding {
+	var out []Finding
+	add := func(pos token.Pos, rule string) {
+		out = append(out, Finding{File: rel, Line: fset.Position(pos).Line, Rule: rule})
+	}
 	// Local name -> import path, for the packages that have network APIs.
 	imports := map[string]string{}
 	execName := ""
@@ -124,16 +132,20 @@ func scanFile(fset *token.FileSet, rel string, f *ast.File) []Finding {
 		if im.Name != nil {
 			name = im.Name.Name
 		}
-		if _, ok := networkAPIs[p]; ok {
+		_, network := networkAPIs[p]
+		switch {
+		case p == "C":
+			// cgo: C code calls the network without a Go identifier to see.
+			add(im.Pos(), "cgo")
+		case name == "." && (network || p == "os/exec"):
+			// A dot import's identifiers carry no package name to match.
+			add(im.Pos(), "dotimport:"+p)
+		case network:
 			imports[name] = p
 		}
 		if p == "os/exec" {
 			execName = name
 		}
-	}
-	var out []Finding
-	add := func(pos token.Pos, rule string) {
-		out = append(out, Finding{File: rel, Line: fset.Position(pos).Line, Rule: rule})
 	}
 	pkgOf := func(e ast.Expr) (pkg, sel string, ok bool) {
 		s, ok := e.(*ast.SelectorExpr)
@@ -166,15 +178,27 @@ func scanFile(fset *token.FileSet, rel string, f *ast.File) []Finding {
 					arg = 1
 				}
 				if len(n.Args) > arg {
-					if s, ok := stringLit(n.Args[arg]); ok {
-						tool := strings.ToLower(strings.TrimSuffix(path.Base(strings.ReplaceAll(s, `\`, "/")), ".exe"))
-						if networkTools[tool] {
-							add(n.Pos(), "exec:"+tool)
-						}
-					} else {
+					if _, ok := stringLit(n.Args[arg]); !ok {
 						// A program named at run time (this executable, dockerd, the
 						// user's docker.exe) runs code this scan cannot see.
 						add(n.Pos(), "exec:computed")
+					}
+					// Every literal argument, not only the program: a shell runs the
+					// tool named in its arguments (cmd /c curl, powershell -c
+					// Invoke-WebRequest, sh -c "wget ...").
+					seen := map[string]bool{}
+					for _, a := range n.Args[arg:] {
+						s, ok := stringLit(a)
+						if !ok {
+							continue
+						}
+						for _, w := range shellWord.FindAllString(strings.ReplaceAll(s, `\`, "/"), -1) {
+							tool := strings.TrimSuffix(strings.ToLower(w), ".exe")
+							if networkTools[tool] && !seen[tool] {
+								seen[tool] = true
+								add(n.Pos(), "exec:"+tool)
+							}
+						}
 					}
 				}
 				return true

@@ -5,11 +5,13 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -55,10 +57,11 @@ func repoRoot(t *testing.T) string {
 	return root
 }
 
-// allowEntry is one line of allowlist.txt: a file, a rule and the reason.
+// allowEntry is one line of allowlist.txt: a file, a rule, how many uses of it the
+// file has, and the reason.
 type allowEntry struct {
 	file, rule, why string
-	line            int
+	count, line     int
 }
 
 func readAllowlist(t *testing.T) []allowEntry {
@@ -78,10 +81,14 @@ func readAllowlist(t *testing.T) []allowEntry {
 			continue
 		}
 		fields := strings.Fields(s)
-		if len(fields) < 3 {
-			t.Fatalf("allowlist.txt:%d: want FILE RULE REASON, got %q", n, s)
+		count := 0
+		if len(fields) >= 4 {
+			count, _ = strconv.Atoi(fields[2])
 		}
-		out = append(out, allowEntry{file: fields[0], rule: fields[1], why: strings.Join(fields[2:], " "), line: n})
+		if count < 1 {
+			t.Fatalf("allowlist.txt:%d: want FILE RULE COUNT REASON, got %q", n, s)
+		}
+		out = append(out, allowEntry{file: fields[0], rule: fields[1], count: count, why: strings.Join(fields[3:], " "), line: n})
 	}
 	if err := sc.Err(); err != nil {
 		t.Fatal(err)
@@ -90,34 +97,65 @@ func readAllowlist(t *testing.T) []allowEntry {
 }
 
 // TestNoUnreviewedNetworkUse fails on a network API in production code that
-// allowlist.txt does not name, and on an allowlist entry that matches nothing.
+// allowlist.txt does not name, on more (or fewer) uses of it in a file than the entry
+// counts, and on an allowlist entry that matches nothing. The count keeps one reviewed
+// net.Dialer from covering the next one added to the same file.
 func TestNoUnreviewedNetworkUse(t *testing.T) {
 	root := repoRoot(t)
 	fs, err := ScanGo(root, productionDirs)
 	if err != nil {
 		t.Fatal(err)
 	}
-	allow := readAllowlist(t)
-	used := make([]bool, len(allow))
+	for _, p := range checkAllowlist(fs, readAllowlist(t)) {
+		t.Error(p)
+	}
+}
+
+// checkAllowlist returns what is wrong with fs against allow.
+func checkAllowlist(fs []Finding, allow []allowEntry) (problems []string) {
+	errorf := func(format string, a ...any) { problems = append(problems, fmt.Sprintf(format, a...)) }
+	type key struct{ file, rule string }
+	found := map[key][]Finding{}
+	var order []key
 	for _, f := range fs {
 		if strings.HasPrefix(f.File, "internal/notelemetry/") {
 			continue // the checker's own tables name the APIs it looks for
 		}
-		ok := false
-		for i, a := range allow {
-			if a.file == f.File && a.rule == f.Rule {
-				ok, used[i] = true, true
+		k := key{f.File, f.Rule}
+		if found[k] == nil {
+			order = append(order, k)
+		}
+		found[k] = append(found[k], f)
+	}
+	listed := map[key]allowEntry{}
+	for _, a := range allow {
+		k := key{a.file, a.rule}
+		if _, dup := listed[k]; dup {
+			errorf("allowlist.txt:%d: %s %s is listed twice", a.line, a.file, a.rule)
+		}
+		listed[k] = a
+		if len(found[k]) == 0 {
+			errorf("allowlist.txt:%d: %s %s matches nothing; remove it", a.line, a.file, a.rule)
+		}
+	}
+	for _, k := range order {
+		a, ok := listed[k]
+		uses := found[k]
+		switch {
+		case !ok:
+			for _, f := range uses {
+				errorf("%s: a network API in production code (REQ-UX-005). If it cannot reach the network on its own, add \"%s %s %d <why>\" to internal/notelemetry/allowlist.txt", f, f.File, f.Rule, len(uses))
 			}
-		}
-		if !ok {
-			t.Errorf("%s: a network API in production code (REQ-UX-005). If it cannot reach the network on its own, add \"%s %s <why>\" to internal/notelemetry/allowlist.txt", f, f.File, f.Rule)
+		case len(uses) != a.count:
+			var lines []string
+			for _, f := range uses {
+				lines = append(lines, strconv.Itoa(f.Line))
+			}
+			errorf("allowlist.txt:%d: %s %s allows %d uses, the file has %d (lines %s): review the new one, then update the count",
+				a.line, a.file, a.rule, a.count, len(uses), strings.Join(lines, ", "))
 		}
 	}
-	for i, a := range allow {
-		if !used[i] {
-			t.Errorf("allowlist.txt:%d: %s %s matches nothing; remove it", a.line, a.file, a.rule)
-		}
-	}
+	return problems
 }
 
 // TestGuestScriptsStayOffline fails if the guest's init runs a network tool or turns on
