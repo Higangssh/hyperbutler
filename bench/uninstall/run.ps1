@@ -9,7 +9,9 @@
 # It
 #
 #  1. starts hyperbutler with the data disk in a separate directory that also holds a
-#     file of the user's, runs a container and writes a volume;
+#     file of the user's, runs a container and writes a volume, and checks that
+#     state.json recorded the VM's runtime id (learned before the VM was granted access
+#     to its disks) as the one the VM got;
 #  2. checks that `uninstall --dry-run` lists the engine, the docker context, the data
 #     disk, settings and logs, and that it changed nothing;
 #  3. checks that `uninstall` without --yes and without a console refuses;
@@ -102,6 +104,10 @@ try {
     Check 'a container writes a volume' ($r.Code -eq 0) (Show $r)
     $status = (hb @('status', '--json')).Out | ConvertFrom-Json
     $disk = $status.disk
+    # The runtime id the engine recorded before granting the VM access to the disks is the
+    # one the VM got: one entry, the same as runtimeId.
+    $past = @(if (@($status.state.PSObject.Properties | ForEach-Object { $_.Name }) -contains 'pastRuntimeIds') { $status.state.pastRuntimeIds })
+    Check 'state.json recorded the VM''s runtime id before the grant' ($past.Count -eq 1 -and $past[0] -eq $status.state.runtimeId) "$($past -join ',') vs $($status.state.runtimeId)"
 
     # 2. The dry run lists everything and changes nothing.
     $plan = DryRun
