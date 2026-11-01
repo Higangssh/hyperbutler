@@ -143,6 +143,15 @@ met blocks the release. Changing a gate needs an ADR change, not a waiver here.
 - [ ] The **24 h soak** (`bench/soak`) passed on self-hosted Hyper-V hardware against the
   release candidate, with the diag endpoint on: no positive trend in private working set,
   handles, threads or goroutines. Attach the report.
+  - 1 h main gate, 2026-11-01, main at e232f5c, local A2b image, with bind mounts and a
+    published port: 12327 docker commands, 0 failed. **FAIL on the engine's private
+    working set** (+3.4 MiB over the 50 min window against an allowed 2.0 MiB); private
+    bytes, handles, threads, goroutines, heap in use, vmmem and vmwp passed. The Go heap
+    profiles at the end of the warm-up and of the run are the same (diff ≈ 0), and Go
+    `Sys` is flat at 41.3 MiB from minute 35. About 2.4 MiB of the rise is Go reusing
+    pages it had returned (`heap_released` 7.2 → 4.8 MiB), which is bounded by the heap
+    size; private bytes outside Go grew about 2 MiB/h in the second half and were
+    flattening. Not explained yet: the 24 h run decides.
 - [ ] The 45 MB working set seen under the soak workload is profiled and explained
   (ADR 0003, Consequences) before any memory budget is claimed.
 - [ ] `go test -race ./...` and the goleak meta-test pass on Windows and Linux (CI).
