@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 	"time"
 	"unsafe"
 
@@ -41,6 +42,55 @@ func consoleWindowVisible() bool {
 	return hwnd != 0 && windows.IsWindowVisible(windows.HWND(hwnd))
 }
 
+// parentIsExplorer reports whether the process that started this one is explorer.exe,
+// as for a double-click, the Run box, the Start menu or a shortcut. Start-Process -Wait,
+// start /wait, wt.exe, Task Scheduler and VS Code tasks have another parent, so a script
+// in a visible window never meets the launcher's prompt. If the parent has exited, or a
+// later process reuses its PID (it then starts after this one), the answer is no.
+func parentIsExplorer() bool {
+	snap, err := windows.CreateToolhelp32Snapshot(windows.TH32CS_SNAPPROCESS, 0)
+	if err != nil {
+		return false
+	}
+	defer func() { _ = windows.CloseHandle(snap) }()
+	self := windows.GetCurrentProcessId()
+	var parent uint32
+	names := map[uint32]string{}
+	var e windows.ProcessEntry32
+	e.Size = uint32(unsafe.Sizeof(e))
+	for err = windows.Process32First(snap, &e); err == nil; err = windows.Process32Next(snap, &e) {
+		names[e.ProcessID] = windows.UTF16ToString(e.ExeFile[:])
+		if e.ProcessID == self {
+			parent = e.ParentProcessID
+		}
+	}
+	name, ok := names[parent]
+	if !ok || !strings.EqualFold(name, "explorer.exe") {
+		return false
+	}
+	return startedBefore(parent, self)
+}
+
+// startedBefore reports whether process a was created before process b, so a reused
+// parent PID is not taken for the real parent.
+func startedBefore(a, b uint32) bool {
+	created := func(pid uint32) (windows.Filetime, bool) {
+		h, err := windows.OpenProcess(windows.PROCESS_QUERY_LIMITED_INFORMATION, false, pid)
+		if err != nil {
+			return windows.Filetime{}, false
+		}
+		defer func() { _ = windows.CloseHandle(h) }()
+		var c, x, k, u windows.Filetime
+		if windows.GetProcessTimes(h, &c, &x, &k, &u) != nil {
+			return windows.Filetime{}, false
+		}
+		return c, true
+	}
+	ca, ok1 := created(a)
+	cb, ok2 := created(b)
+	return ok1 && ok2 && ca.Nanoseconds() <= cb.Nanoseconds()
+}
+
 // noLauncherEnv names the variable that turns the launcher off: with it set to 1,
 // hyperbutler.exe with no arguments prints the usage wherever it runs.
 const noLauncherEnv = "HYPERBUTLER_NO_LAUNCHER"
@@ -48,13 +98,14 @@ const noLauncherEnv = "HYPERBUTLER_NO_LAUNCHER"
 // ownsConsole reports whether hyperbutler.exe runs in a console window of its own, as
 // Explorer and shortcuts make one: the console was created for this process alone (a
 // shell sharing it makes the count 2 or more), its window is visible, and stdout is
-// that console (not redirected to a file or a pipe). Start-Process -Wait, start /wait,
-// a scheduled task the user sees, a VS Code "process" task and wt.exe hyperbutler make
-// such a window too, so the launcher's waits end on their own (launcherCloseWait,
-// launcherStartWait), and HYPERBUTLER_NO_LAUNCHER=1 turns it off. A variable, so tests
+// that console (not redirected to a file or a pipe), and explorer.exe started it.
+// Start-Process -Wait, start /wait, a scheduled task the user sees, a VS Code "process"
+// task and wt.exe hyperbutler make such a window too, but with another parent. The
+// launcher's waits still end on their own (launcherCloseWait, launcherStartWait), and
+// HYPERBUTLER_NO_LAUNCHER=1 turns it off. A variable, so tests
 // can choose either path.
 var ownsConsole = func() bool {
-	return consoleProcesses() == 1 && consoleWindowVisible() && isConsole(os.Stdout)
+	return consoleProcesses() == 1 && consoleWindowVisible() && isConsole(os.Stdout) && parentIsExplorer()
 }
 
 // launcherDisabled reports whether HYPERBUTLER_NO_LAUNCHER=1 turns the launcher off.

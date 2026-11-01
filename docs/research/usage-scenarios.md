@@ -162,9 +162,11 @@ For each scenario:
   after 301.2 s with it stopped, starting nothing (`status` still said stopped); with `-WindowStyle Hidden`,
   with stdout redirected (`-RedirectStandardOutput`), and with
   `HYPERBUTLER_NO_LAUNCHER=1`, it printed the usage and exited 0 in about 1 s (the
-  `Start-Process` round trip). Telling a script's visible window from Explorer's would
-  need the parent process (Explorer is the parent of a double-click and of a shortcut);
-  that is not done.
+  `Start-Process` round trip). Since then the launcher also needs explorer.exe as its
+  parent (Explorer starts a double-click, the Run box, the Start menu and a shortcut),
+  created before this process so a reused PID does not count. `Start-Process -Wait` with
+  a visible window now prints the usage and exits 0 in 1.2 s (2026-11-01). The waits
+  stay bounded for any other launcher that looks like Explorer.
 
 ### S0.2 A Start-menu or desktop shortcut
 

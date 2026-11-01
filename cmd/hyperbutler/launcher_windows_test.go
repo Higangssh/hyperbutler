@@ -10,6 +10,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"golang.org/x/sys/windows"
 )
 
 func setOwnsConsole(t *testing.T, own bool) {
@@ -213,6 +215,22 @@ func TestOwnsConsoleChecks(t *testing.T) {
 	}
 	if ownsConsole() {
 		t.Fatal("ownsConsole without a visible console of its own")
+	}
+}
+
+// go test is not started by Explorer, so the parent check says no; startedBefore
+// orders a parent before its child.
+func TestParentIsExplorer(t *testing.T) {
+	if parentIsExplorer() {
+		t.Fatal("go test's parent taken for explorer.exe")
+	}
+	self := windows.GetCurrentProcessId()
+	parent := uint32(os.Getppid())
+	if !startedBefore(parent, self) {
+		t.Fatalf("parent %d not started before %d", parent, self)
+	}
+	if startedBefore(self, parent) {
+		t.Fatal("this process taken as started before its parent")
 	}
 }
 
