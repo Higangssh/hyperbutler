@@ -10,7 +10,6 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -119,32 +118,13 @@ type ContainerInfo struct {
 	ComposeService string `json:"composeService,omitempty"`
 }
 
-func shortID(id string) string {
-	id = strings.TrimPrefix(id, "sha256:")
-	if len(id) > 12 {
-		id = id[:12]
-	}
-	return id
-}
+func shortID(id string) string { return dockerapi.ShortID(id) }
 
-func containerName(c apiContainer) string {
-	for _, n := range c.Names {
-		if n = strings.TrimPrefix(n, "/"); n != "" && !strings.Contains(n, "/") {
-			return n
-		}
-	}
-	return shortID(c.ID)
-}
+func containerName(c apiContainer) string { return dockerapi.ContainerName(c.ID, c.Names) }
 
-// composeLabel is a Compose project or service label when it looks like a name Compose
-// makes, or empty. Labels are free text anyone can set with docker run --label, so other
-// text is left out rather than returned outside untrustedText.
-func composeLabel(v string) string {
-	if len(v) > 64 || dockerapi.ValidName("label", v) != nil {
-		return ""
-	}
-	return v
-}
+// composeLabel is a Compose label when it looks like a name Compose makes, or empty
+// (dockerapi.ComposeLabel): labels are free text anyone can set.
+func composeLabel(v string) string { return dockerapi.ComposeLabel(v) }
 
 func unixTime(s int64) string {
 	if s <= 0 {
@@ -153,16 +133,7 @@ func unixTime(s int64) string {
 	return time.Unix(s, 0).UTC().Format(time.RFC3339)
 }
 
-func portText(p apiPort) string {
-	if p.PublicPort == 0 {
-		return fmt.Sprintf("%d/%s", p.PrivatePort, p.Type)
-	}
-	ip := p.IP
-	if strings.Contains(ip, ":") {
-		ip = "[" + ip + "]"
-	}
-	return fmt.Sprintf("%s:%d->%d/%s", ip, p.PublicPort, p.PrivatePort, p.Type)
-}
+func portText(p apiPort) string { return dockerapi.PortText(p) }
 
 func (t *toolset) containers(ctx context.Context, in containersIn) (any, error) {
 	d, err := t.docker(ctx)
@@ -237,47 +208,8 @@ const (
 // An index is missing when the cap or deadline left it out. Any error other than a
 // container's 404 fails the call.
 func restartPolicies(ctx context.Context, d *dockerClient, list []apiContainer, deadline time.Time) (map[int]string, error) {
-	n := min(len(list), maxInspects)
-	ctx, cancel := context.WithCancel(ctx)
-	defer cancel()
-	var (
-		mu    sync.Mutex
-		out   = map[int]string{}
-		first error
-		wg    sync.WaitGroup
-		next  = make(chan int)
-	)
-	for range min(n, maxInspectsAtOnce) {
-		wg.Go(func() {
-			for i := range next {
-				var ins apiInspect
-				err := d.getJSON(ctx, "/containers/"+url.PathEscape(list[i].ID)+"/json", nil, &ins)
-				mu.Lock()
-				switch {
-				case err == nil:
-					out[i] = ins.HostConfig.RestartPolicy.Name
-				case isNotFound(err): // removed meanwhile: it has none
-					out[i] = ""
-				case first == nil:
-					first = err
-					cancel()
-				}
-				mu.Unlock()
-			}
-		})
-	}
-	for i := range n {
-		if time.Now().After(deadline) || ctx.Err() != nil {
-			break
-		}
-		next <- i
-	}
-	close(next)
-	wg.Wait()
-	if first != nil {
-		return nil, first
-	}
-	return out, nil
+	p, err := dockerapi.RestartPolicies(ctx, d.c, list, deadline, maxInspects, maxInspectsAtOnce)
+	return p, wrap(err)
 }
 
 // --- logs ------------------------------------------------------------------------------

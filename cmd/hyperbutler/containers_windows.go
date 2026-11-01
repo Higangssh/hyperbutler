@@ -4,18 +4,15 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net"
-	"net/http"
-	"net/url"
-	"strings"
 	"time"
 
 	"github.com/Microsoft/go-winio"
 
+	"github.com/Higangssh/hyperbutler/internal/dockerapi"
 	"github.com/Higangssh/hyperbutler/internal/engine"
 )
 
@@ -23,32 +20,18 @@ import (
 // containers stop and which of them come back.
 
 // RunningContainer is a running container that a stop or restart is about to stop.
-type RunningContainer struct {
-	Name  string `json:"name"`
-	Image string `json:"image"`
-	// RestartPolicy is its restart policy's name as dockerd has it ("always",
-	// "unless-stopped", "on-failure", "no"); empty for none.
-	RestartPolicy string `json:"restartPolicy"`
-	// ComesBack says dockerd starts it again when it starts: the policy is always or
-	// unless-stopped.
-	ComesBack bool `json:"comesBack"`
-}
+type RunningContainer = dockerapi.RunningContainer
 
 // comesBack reports whether a container with restart policy p is started again when
 // dockerd starts after a stop.
-func comesBack(p string) bool { return p == "always" || p == "unless-stopped" }
-
-// mayComeBack reports whether c comes back depending on how it stops: on-failure
-// restarts a container whose exit code at the stop is not 0, such as one killed after
-// it ignored SIGTERM (seen on the VM), but not one that exits cleanly.
-func (c RunningContainer) mayComeBack() bool { return !c.ComesBack && c.RestartPolicy == "on-failure" }
+func comesBack(p string) bool { return dockerapi.ComesBack(p) }
 
 // afterText says what happens to c, for the list.
-func (c RunningContainer) afterText() string {
+func afterText(c RunningContainer) string {
 	switch {
 	case c.ComesBack:
 		return "comes back (restart " + c.RestartPolicy + ")"
-	case c.mayComeBack():
+	case c.MayComeBack():
 		return "comes back only if it stops with an error, as when killed (restart on-failure)"
 	case c.RestartPolicy == "" || c.RestartPolicy == "no":
 		return "stays stopped (no restart policy)"
@@ -65,69 +48,13 @@ const containerAPITimeout = 5 * time.Second
 func listRunningContainers(ctx context.Context, pipe string) ([]RunningContainer, error) {
 	ctx, cancel := context.WithTimeout(ctx, containerAPITimeout)
 	defer cancel()
-	client := &http.Client{Transport: &http.Transport{
-		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-			return winio.DialPipeContext(ctx, pipe)
-		},
-		DisableKeepAlives: true,
-	}}
-	defer client.CloseIdleConnections()
-	var list []struct {
-		ID    string   `json:"Id"`
-		Names []string `json:"Names"`
-		Image string   `json:"Image"`
-	}
-	if err := getJSON(ctx, client, "/containers/json", &list); err != nil {
-		return nil, err
-	}
-	out := make([]RunningContainer, 0, len(list))
-	for _, c := range list {
-		rc := RunningContainer{Name: containerName(c.ID, c.Names), Image: c.Image}
-		var in struct {
-			HostConfig struct {
-				RestartPolicy struct {
-					Name string `json:"Name"`
-				} `json:"RestartPolicy"`
-			} `json:"HostConfig"`
-		}
-		if err := getJSON(ctx, client, "/containers/"+url.PathEscape(c.ID)+"/json", &in); err != nil {
-			return nil, err
-		}
-		rc.RestartPolicy = in.HostConfig.RestartPolicy.Name
-		rc.ComesBack = comesBack(rc.RestartPolicy)
-		out = append(out, rc)
-	}
-	return out, nil
-}
-
-func getJSON(ctx context.Context, client *http.Client, path string, v any) error {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://docker"+path, nil)
-	if err != nil {
-		return err
-	}
-	resp, err := client.Do(req)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("GET %s: %s", path, resp.Status)
-	}
-	return json.NewDecoder(io.LimitReader(resp.Body, 16<<20)).Decode(v)
+	d := dockerapi.New(func(ctx context.Context) (net.Conn, error) { return winio.DialPipeContext(ctx, pipe) })
+	defer d.Close()
+	return dockerapi.ListRunning(ctx, d)
 }
 
 // containerName is a container's name without the leading "/", or its short id.
-func containerName(id string, names []string) string {
-	for _, n := range names {
-		if n = strings.TrimPrefix(n, "/"); n != "" && !strings.Contains(n, "/") {
-			return n
-		}
-	}
-	if len(id) > 12 {
-		id = id[:12]
-	}
-	return id
-}
+func containerName(id string, names []string) string { return dockerapi.ContainerName(id, names) }
 
 // writeContainerList prints what a stop or restart does to the running containers: what
 // is the event ("hyperbutler stop", "dockerd restarts"), later when they come back ("at
@@ -145,7 +72,7 @@ func writeContainerList(w io.Writer, what, later string, list []RunningContainer
 		switch {
 		case c.ComesBack:
 			back++
-		case c.mayComeBack():
+		case c.MayComeBack():
 			maybe++
 		}
 	}
@@ -158,7 +85,7 @@ func writeContainerList(w io.Writer, what, later string, list []RunningContainer
 	_, _ = fmt.Fprintf(w, "%s, %d stay%s stopped.\n", s, stay, verbS(stay))
 	t := newTable(w, "  CONTAINER", "IMAGE", "THEN")
 	for _, c := range list {
-		t.row("  "+c.Name, c.Image, c.afterText())
+		t.row("  "+c.Name, c.Image, afterText(c))
 	}
 	t.flush()
 }

@@ -17,7 +17,6 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
-	"unicode/utf8"
 )
 
 // BodyMax bounds every response body that is decoded whole.
@@ -74,28 +73,20 @@ func StatusOf(err error) int {
 // IsNotFound reports whether err is the Docker API's 404.
 func IsNotFound(err error) bool { return StatusOf(err) == http.StatusNotFound }
 
+// RequestError is a request that got no answer (the pipe is gone, the context ended):
+// Op is the method and path.
+type RequestError struct {
+	Op  string
+	Err error
+}
+
+func (e *RequestError) Error() string { return e.Op + ": " + e.Err.Error() }
+func (e *RequestError) Unwrap() error { return e.Err }
+
 // Clean makes engine text safe to print on one line: invalid UTF-8 and control
 // characters (escape sequences included, and the bidirectional overrides) become
 // U+FFFD, and it is cut to at most n bytes on a rune boundary.
-func Clean(s string, n int) string {
-	var b strings.Builder
-	for _, r := range strings.ToValidUTF8(s, string(utf8.RuneError)) {
-		switch {
-		case r < 0x20, r == 0x7f, r >= 0x80 && r < 0xa0,
-			r >= 0x202a && r <= 0x202e, r >= 0x2066 && r <= 0x2069, r == 0x200e, r == 0x200f, r == 0x061c:
-			r = utf8.RuneError
-		}
-		b.WriteRune(r)
-	}
-	out := b.String()
-	if len(out) > n {
-		for n > 0 && !utf8.RuneStart(out[n]) {
-			n--
-		}
-		out = out[:n]
-	}
-	return out
-}
+func Clean(s string, n int) string { return Clip(CleanText(s, false), n) }
 
 // Do sends one request. The path is built by the caller from validated names only
 // (ValidName, ValidImageRef). An answer other than 2xx or 304 becomes an *Error, with its
@@ -114,7 +105,7 @@ func (c *Client) Do(ctx context.Context, method, path string, q url.Values, body
 	}
 	resp, err := c.c.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("%s %s: %w", method, path, err)
+		return nil, &RequestError{Op: method + " " + path, Err: err}
 	}
 	if resp.StatusCode/100 != 2 && resp.StatusCode != http.StatusNotModified {
 		defer func() { _ = resp.Body.Close() }()
@@ -128,6 +119,11 @@ func (c *Client) Do(ctx context.Context, method, path string, q url.Values, body
 		return nil, &Error{Method: method, Path: path, Status: resp.StatusCode, Message: Clean(m.Message, 1024)}
 	}
 	return resp, nil
+}
+
+// GetJSON GETs path and decodes the answer into out.
+func (c *Client) GetJSON(ctx context.Context, path string, q url.Values, out any) error {
+	return c.JSON(ctx, http.MethodGet, path, q, nil, out)
 }
 
 // JSON sends a request with in as its JSON body (nil: none) and decodes the answer into

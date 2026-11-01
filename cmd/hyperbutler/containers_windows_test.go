@@ -34,7 +34,7 @@ func TestComesBack(t *testing.T) {
 		"":               "stays stopped (no restart policy)",
 	} {
 		c := RunningContainer{RestartPolicy: p, ComesBack: comesBack(p)}
-		if got := c.afterText(); got != want {
+		if got := afterText(c); got != want {
 			t.Errorf("%q: %q, want %q", p, got, want)
 		}
 	}

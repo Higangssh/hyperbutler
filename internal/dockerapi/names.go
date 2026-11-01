@@ -15,6 +15,9 @@ var (
 	reImage = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._/:@-]{0,254}$`)
 )
 
+// IsName reports whether s is a container or volume name or id as ValidName accepts it.
+func IsName(s string) bool { return reName.MatchString(s) }
+
 // ValidName checks a container or volume name or id before it goes into an API path.
 func ValidName(what, s string) error {
 	if !reName.MatchString(s) {

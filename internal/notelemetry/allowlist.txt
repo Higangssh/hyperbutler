@@ -20,24 +20,15 @@ internal/engine/net_windows.go net/http.Transport 1 DialContext is transport.Hvs
 internal/engine/share_windows.go net/http.Client 3 container events and list from the guest dockerd over hvsock (share pruning): the client and the two functions it is passed to
 internal/engine/share_windows.go net/http.Transport 1 DialContext is transport.HvsockDialer (the guest)
 
-# Before a stop or restart the CLI lists the running containers (REQ-UX-017) through the
-# engine's Docker API pipe on this machine. The Transport has no Proxy and its
-# DialContext ignores the address: every request goes to winio.DialPipeContext.
-cmd/hyperbutler/containers_windows.go net/http.Client 2 GET /containers/json and inspect over the engine's local named pipe: the client and getJSON's parameter
-cmd/hyperbutler/containers_windows.go net/http.Transport 1 DialContext is winio.DialPipeContext (a local named pipe)
-
-# hyperbutler mcp (REQ-UX-012) reads and drives the engine through the same local pipe.
-# The Transport has no Proxy and its DialContext ignores the address: it calls
-# Options.Dial, which cmd/hyperbutler/mcp_windows.go sets to winio.DialPipeContext.
-internal/mcpserver/docker.go net/http.Client 2 Docker API calls over the engine's local named pipe: the dockerClient field and the literal
-internal/mcpserver/docker.go net/http.Transport 1 DialContext is Options.Dial (winio.DialPipeContext, a local named pipe)
-
-# hyperbutler import --from-desktop (REQ-UX-023) reads Docker Desktop's engine and writes
-# hyperbutler's, both through local named pipes. internal/dockerapi's Transport has no
-# Proxy and its DialContext ignores the address: it calls the Dial it is given, which
-# internal/desktopimport sets to Options.Dial, and cmd/hyperbutler/import_windows.go to
-# winio.DialPipeContext.
-internal/dockerapi/dockerapi.go net/http.Client 2 Docker API calls over a local named pipe (Docker Desktop's or hyperbutler's): the Client field and the literal
+# One Docker API client (internal/dockerapi) serves every caller on a local named pipe:
+# the CLI's REQ-UX-017 list before a stop or restart (cmd/hyperbutler/containers_windows.go),
+# hyperbutler mcp (REQ-UX-012, cmd/hyperbutler/mcp_windows.go), the GUI (REQ-UX-011,
+# cmd/hyperbutler/gui_windows.go), and hyperbutler import --from-desktop (REQ-UX-023),
+# which reads Docker Desktop's engine and writes hyperbutler's. Its Transport has no Proxy
+# and its DialContext ignores the address: it calls the Dial it is given, which is always
+# winio.DialPipeContext on a local pipe (internal/desktopimport passes Options.Dial, which
+# cmd/hyperbutler/import_windows.go sets to it).
+internal/dockerapi/dockerapi.go net/http.Client 2 Docker API calls over a local named pipe (hyperbutler's or Docker Desktop's): the Client field and the literal
 internal/dockerapi/dockerapi.go net/http.Transport 1 DialContext is the caller's Dial (winio.DialPipeContext, a local named pipe)
 
 # The guest network (ADR 0006): the host side of connections and DNS queries the guest
