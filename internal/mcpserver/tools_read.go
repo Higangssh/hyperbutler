@@ -14,6 +14,8 @@ import (
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+
+	"github.com/Higangssh/hyperbutler/internal/dockerapi"
 )
 
 // noArgs is the input of a tool without arguments.
@@ -138,7 +140,7 @@ func containerName(c apiContainer) string {
 // makes, or empty. Labels are free text anyone can set with docker run --label, so other
 // text is left out rather than returned outside untrustedText.
 func composeLabel(v string) string {
-	if len(v) > 64 || !reName.MatchString(v) {
+	if len(v) > 64 || dockerapi.ValidName("label", v) != nil {
 		return ""
 	}
 	return v

@@ -9,6 +9,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"github.com/Higangssh/hyperbutler/internal/dockerapi"
 	"github.com/Higangssh/hyperbutler/internal/redact"
 )
 
@@ -162,42 +163,16 @@ func redactedJSON(v any) ([]byte, error) {
 // --- argument checks ---------------------------------------------------------------
 
 var (
-	// A container or volume name or id: what dockerd accepts as a name
-	// ([a-zA-Z0-9][a-zA-Z0-9_.-]+), or a hex id. It cannot be "." or "..", hold a '/', or
-	// start with '-', so it is one plain path segment of the API URL.
-	reName = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,254}$`)
-	// An image reference or id: [registry[:port]/]path[:tag][@digest], or sha256:hex.
-	reImage = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._/:@-]{0,254}$`)
 	// HOST:CONTAINER[/tcp|/udp].
 	rePort = regexp.MustCompile(`^([0-9]{1,5}):([0-9]{1,5})(?:/(tcp|udp))?$`)
 	reEnv  = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]{0,127}=`)
 )
 
-// validName checks a container or volume name or id from a client.
-func validName(what, s string) error {
-	if !reName.MatchString(s) {
-		return fmt.Errorf("%s %q is not a valid name or id (letters, digits, '_', '.', '-'; starting with a letter or digit)", what, clip(s, 80))
-	}
-	return nil
-}
+// validName checks a container or volume name or id from a client (dockerapi.ValidName).
+func validName(what, s string) error { return dockerapi.ValidName(what, s) }
 
-// validImageRef checks an image reference or id from a client: no empty, "." or ".."
-// path segment, so it stays within the API's /images/ path.
-func validImageRef(s string) error {
-	bad := !reImage.MatchString(s)
-	if !bad {
-		for seg := range strings.SplitSeq(s, "/") {
-			if seg == "" || seg == "." || seg == ".." {
-				bad = true
-				break
-			}
-		}
-	}
-	if bad {
-		return fmt.Errorf("image %q is not a valid image reference (such as busybox, busybox:1.37 or ghcr.io/owner/name:tag)", clip(s, 80))
-	}
-	return nil
-}
+// validImageRef checks an image reference or id from a client (dockerapi.ValidImageRef).
+func validImageRef(s string) error { return dockerapi.ValidImageRef(s) }
 
 // splitImageRef splits a reference into the image create API's fromImage and tag: the
 // tag or digest it names, or "latest" (dockerd would otherwise pull every tag).
