@@ -62,9 +62,18 @@ type guestLink struct {
 	pending []byte
 	spare   []byte
 	closed  bool
+	// inflight is the buffer writeLoop is writing, tracked only while linkCheck is set.
+	inflight []byte
 }
 
 const maxPending = 1 << 20
+
+// linkCheck, when set, is called under guestLink.mu wherever the link's buffers change
+// hands, with the queue, the buffer being written (nil between writes) and the spare.
+// Tests set it, before any link runs, to check that no two of them share an array: a
+// buffer that is written to the guest while enqueue appends to it is corrupted silently
+// (ADR 0006). It is nil in production, which costs one load per call site.
+var linkCheck func(pending, inflight, spare []byte)
 
 func newGuestLink(conn net.Conn, vnet bool) *guestLink {
 	l := &guestLink{conn: conn, vnet: vnet}
@@ -95,6 +104,9 @@ func (l *guestLink) enqueue(pkt *stack.PacketBuffer, size int, vh *frame.VnetHdr
 	for _, s := range pkt.AsSlices() {
 		l.pending = append(l.pending, s...)
 	}
+	if linkCheck != nil {
+		linkCheck(l.pending, l.inflight, l.spare)
+	}
 	l.cond.Broadcast()
 	return true
 }
@@ -117,6 +129,10 @@ func (l *guestLink) writeLoop() {
 		// frames (NEEDS_CSUM), so that is silent payload corruption.
 		buf := l.pending
 		l.pending, l.spare = l.spare[:0], nil
+		if linkCheck != nil {
+			l.inflight = buf
+			linkCheck(l.pending, l.inflight, l.spare)
+		}
 		l.cond.Broadcast()
 		l.mu.Unlock()
 
@@ -127,6 +143,10 @@ func (l *guestLink) writeLoop() {
 		// a larger one a burst grew.
 		if cap(buf) <= maxPending+frame.MaxVnetFrameLen+frame.HeaderLen {
 			l.spare = buf[:0]
+		}
+		if linkCheck != nil {
+			l.inflight = nil
+			linkCheck(l.pending, l.inflight, l.spare)
 		}
 		l.mu.Unlock()
 		if err != nil {

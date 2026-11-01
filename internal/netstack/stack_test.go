@@ -3,18 +3,25 @@ package netstack
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/binary"
 	"errors"
+	"fmt"
 	"io"
+	"math/rand/v2"
 	"net"
 	"net/netip"
 	"os"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/miekg/dns"
 	"gvisor.dev/gvisor/pkg/tcpip"
 	"gvisor.dev/gvisor/pkg/tcpip/adapters/gonet"
+	"gvisor.dev/gvisor/pkg/tcpip/header"
 	"gvisor.dev/gvisor/pkg/tcpip/network/ipv4"
 	"gvisor.dev/gvisor/pkg/tcpip/transport/tcp"
 	"gvisor.dev/gvisor/pkg/waiter"
@@ -295,6 +302,387 @@ func TestOffloadLink(t *testing.T) {
 	if on, known := n.Offloading(); !on || !known {
 		t.Fatalf("Offloading() = %v, %v", on, known)
 	}
+}
+
+// streamAt fills p with the bytes at off of the seeded test stream: 8-byte word k is
+// splitmix64(seed+k), so any part of the stream can be computed on its own.
+func streamAt(seed uint64, off int64, p []byte) {
+	var w [8]byte
+	for len(p) > 0 {
+		z := seed + uint64(off)/8
+		z = (z ^ z>>30) * 0xbf58476d1ce4e5b9
+		z = (z ^ z>>27) * 0x94d049bb133111eb
+		binary.LittleEndian.PutUint64(w[:], z^z>>31)
+		n := copy(p, w[off%8:])
+		p, off = p[n:], off+int64(n)
+	}
+}
+
+// sendStream writes size bytes of stream seed to w and returns their SHA-256.
+func sendStream(w io.Writer, seed uint64, size int64) ([32]byte, error) {
+	h := sha256.New()
+	buf := make([]byte, 64<<10)
+	for off := int64(0); off < size; {
+		b := buf[:min(int64(len(buf)), size-off)]
+		streamAt(seed, off, b)
+		h.Write(b)
+		if _, err := w.Write(b); err != nil {
+			return [32]byte{}, err
+		}
+		off += int64(len(b))
+	}
+	return [32]byte(h.Sum(nil)), nil
+}
+
+// recvStream reads r to the end and returns how many bytes it read and their SHA-256.
+func recvStream(r io.Reader) (int64, [32]byte, error) {
+	h := sha256.New()
+	n, err := io.CopyBuffer(h, r, make([]byte, 64<<10))
+	return n, [32]byte(h.Sum(nil)), err
+}
+
+// arrivalCheck checks, in the fake guest's link reader, the payload of every TCP
+// segment from the host's port against the stream its connection carries: a segment
+// whose bytes the host changed after queueing it is caught as it arrives, whatever the
+// guest's TCP does with it afterwards.
+type arrivalCheck struct {
+	port uint16 // the host side's port
+	mu   sync.Mutex
+	// flows by the guest's port. The link reader adds a flow at the SYN; the test sets
+	// its seed once the dial returns, before the host sends anything.
+	flows    map[uint16]*arrivalFlow
+	exp      []byte // only the link reader uses it
+	segs     atomic.Int64
+	bad      atomic.Int64
+	firstBad atomic.Int64
+	corrupt  chan struct{} // closed at the first bad segment, or when the link breaks
+	once     sync.Once
+}
+
+func (a *arrivalCheck) fail() { a.once.Do(func() { close(a.corrupt) }) }
+
+func (a *arrivalCheck) failed() bool {
+	select {
+	case <-a.corrupt:
+		return true
+	default:
+		return false
+	}
+}
+
+type arrivalFlow struct {
+	isn  uint32
+	seed uint64
+	set  bool
+}
+
+func newArrivalCheck(port uint16) *arrivalCheck {
+	return &arrivalCheck{port: port, flows: map[uint16]*arrivalFlow{}, corrupt: make(chan struct{})}
+}
+
+func (a *arrivalCheck) flow(guestPort uint16) *arrivalFlow {
+	f := a.flows[guestPort]
+	if f == nil {
+		f = &arrivalFlow{}
+		a.flows[guestPort] = f
+	}
+	return f
+}
+
+// expect sets the seed of the stream the host sends to the guest's port.
+func (a *arrivalCheck) expect(guestPort uint16, seed uint64) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	f := a.flow(guestPort)
+	f.seed, f.set = seed, true
+}
+
+func (a *arrivalCheck) inspect(eth []byte) {
+	if len(eth) < header.EthernetMinimumSize || header.Ethernet(eth).Type() != header.IPv4ProtocolNumber {
+		return
+	}
+	ip := header.IPv4(eth[header.EthernetMinimumSize:])
+	if !ip.IsValid(len(ip)) || ip.TransportProtocol() != tcp.ProtocolNumber {
+		return
+	}
+	seg := header.TCP(ip.Payload())
+	if len(seg) < header.TCPMinimumSize || int(seg.DataOffset()) < header.TCPMinimumSize ||
+		int(seg.DataOffset()) > len(seg) || seg.SourcePort() != a.port {
+		return
+	}
+	syn := seg.Flags()&header.TCPFlagSyn != 0
+	a.mu.Lock()
+	f := a.flow(seg.DestinationPort())
+	if syn {
+		f.isn = seg.SequenceNumber()
+	}
+	fl := *f
+	a.mu.Unlock()
+	p := seg.Payload()
+	if len(p) == 0 || !fl.set || syn {
+		return
+	}
+	off := int64(seg.SequenceNumber() - fl.isn - 1)
+	if cap(a.exp) < len(p) {
+		a.exp = make([]byte, len(p))
+	}
+	exp := a.exp[:len(p)]
+	streamAt(fl.seed, off, exp)
+	a.segs.Add(1)
+	if !bytes.Equal(p, exp) {
+		if a.bad.Add(1) == 1 {
+			a.firstBad.Store(off)
+		}
+		a.fail()
+	}
+}
+
+// streamResult is one stream as one end saw it.
+type streamResult struct {
+	n   int64
+	sum [32]byte
+	err error
+}
+
+// duplex sends size bytes of stream seed on c and reads c to the end at the same time,
+// then closes c. It returns what it sent and what it read.
+func duplex(c net.Conn, seed uint64, size int64) (sent, got streamResult) {
+	done := make(chan streamResult, 1)
+	go func() {
+		sum, err := sendStream(c, seed, size)
+		if err == nil {
+			err = c.(interface{ CloseWrite() error }).CloseWrite()
+		}
+		done <- streamResult{size, sum, err}
+	}()
+	got.n, got.sum, got.err = recvStream(c)
+	if got.err != nil {
+		c.Close() // unblock the sender
+	}
+	sent = <-done
+	c.Close()
+	return sent, got
+}
+
+// dribble writes stream seed to c in small writes of random sizes, a fraction of a
+// millisecond apart, until the peer half-closes c, then closes c.
+func dribble(c net.Conn, seed uint64) {
+	defer c.Close()
+	stop := make(chan struct{})
+	go func() { _, _ = io.Copy(io.Discard, c); close(stop) }()
+	rng := rand.New(rand.NewPCG(seed, 1))
+	msg := make([]byte, 3000)
+	for off := int64(0); ; {
+		select {
+		case <-stop:
+			return
+		default:
+		}
+		m := msg[:1+rng.IntN(len(msg))]
+		streamAt(seed, off, m)
+		if _, err := c.Write(m); err != nil {
+			<-stop
+			return
+		}
+		off += int64(len(m))
+		time.Sleep(100 * time.Microsecond)
+	}
+}
+
+// TestLinkIntegrityUnderStalls streams seeded data both ways through TCP connections
+// over an offload link whose hvsock writes stall, through the real guestLink and
+// frame.Pump: the queue to the guest fills to its bound and past it, the guest's frames
+// are read ahead of the stack, and neither side verifies a checksum (ADR 0006,
+// "Integrity"). Every stream must arrive with its SHA-256, every segment from the host
+// must carry its own bytes when the guest reads it, and the link's buffers must never
+// share an array. Before 036c062 a queue that outgrew the spare bound was sent while
+// enqueue overwrote it.
+//
+// Four connections share the link, as parallel layer downloads do: one connection's
+// send buffer (tcpBufferLarge) is about the queue bound, so alone it rarely fills the
+// queue. A fifth one carries small writes (dribble). The link check fails on every run
+// without the fix; the data checks on most. HYPERBUTLER_TEST_LONG=1 streams 256 MiB
+// each way instead of 128 (16 with -short or -race).
+func TestLinkIntegrityUnderStalls(t *testing.T) {
+	size := int64(128 << 20)
+	switch {
+	case os.Getenv("HYPERBUTLER_TEST_LONG") == "1":
+		size = 256 << 20
+	case testing.Short() || raceEnabled:
+		size = 16 << 20
+	}
+	const conns = 4
+	per := size / conns
+	const upSeed, downSeed, chatSeed, stallSeed = 0x0123456789abcdef, 0xfedcba9876543210, 0x5eed, 20261101
+	bufs := checkLinkBuffers(t)
+
+	// The host service: a connection names its index in its first 8 bytes; the service
+	// then sends that index's download while it hashes the upload.
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { ln.Close() })
+	type hostFlow struct {
+		i         int
+		sent, got streamResult
+	}
+	hostSide := make(chan hostFlow, conns+1)
+	go func() {
+		for range conns + 1 {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go func() {
+				_ = c.SetDeadline(time.Now().Add(30 * time.Second))
+				var idx [8]byte
+				if _, err := io.ReadFull(c, idx[:]); err != nil {
+					c.Close()
+					hostSide <- hostFlow{i: -1, got: streamResult{err: err}}
+					return
+				}
+				i := binary.BigEndian.Uint64(idx[:])
+				if i == conns {
+					dribble(c, chatSeed)
+					return
+				}
+				sent, got := duplex(c, downSeed+i, per)
+				hostSide <- hostFlow{int(i % conns), sent, got}
+			}()
+		}
+	}()
+
+	virt := netip.MustParseAddrPort("192.168.127.254:7")
+	n := newTestStack(t, func(c *Config) {
+		c.HostForwards = []HostForward{{Virtual: virt, Host: netip.MustParseAddrPort(ln.Addr().String())}}
+	})
+	check := newArrivalCheck(virt.Port())
+	var sc *stallingConn
+	g := newFakeGuestWith(t, n, fakeGuestOpts{
+		offload: true,
+		wrap:    func(c net.Conn) net.Conn { sc = newStallingConn(c, stallSeed); return sc },
+		inspect: check.inspect,
+		linkErr: func(error) { check.fail() },
+	})
+	var cs []net.Conn
+	defer func() {
+		for _, c := range cs {
+			c.Close()
+		}
+	}()
+	for range conns + 1 { // the last one is the chatter
+		c, err := guestDial(t, g, virt)
+		if err != nil {
+			t.Fatalf("dial host forward: %v", err)
+		}
+		_ = c.SetDeadline(time.Now().Add(30 * time.Second))
+		cs = append(cs, c)
+	}
+	finished := make(chan struct{})
+	defer close(finished)
+	go func() {
+		// Corrupted headers can stall a connection: end them at the first bad segment.
+		select {
+		case <-check.corrupt:
+			for _, c := range cs {
+				c.Close()
+			}
+		case <-finished:
+		}
+	}()
+	type guestFlow struct{ sent, got streamResult }
+	guestSide := make([]guestFlow, conns)
+	var wg sync.WaitGroup
+	for i, c := range cs {
+		seed := downSeed + uint64(i)
+		if i == conns {
+			seed = chatSeed // echoed
+		}
+		check.expect(uint16(c.LocalAddr().(*net.TCPAddr).Port), seed)
+		var idx [8]byte
+		binary.BigEndian.PutUint64(idx[:], uint64(i))
+		if _, err := c.Write(idx[:]); err != nil {
+			t.Fatal(err)
+		}
+		if i == conns {
+			break
+		}
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			guestSide[i].sent, guestSide[i].got = duplex(c, upSeed+uint64(i), per)
+		}()
+	}
+	// The host dribbles small writes on the last connection until the streams are done
+	// (dribble). Its small segments land between the streams' segments, which are all
+	// the same size, so the frames in one queue do not line up with those in the next:
+	// a queue overwritten by later frames then reaches the guest as cut and mixed
+	// frames, not as whole ones that TCP would take for retransmissions.
+	chatErr := make(chan error, 1)
+	go func() {
+		got, sum, err := recvStream(cs[conns])
+		if err == nil {
+			exp := make([]byte, got)
+			streamAt(chatSeed, 0, exp)
+			if sha256.Sum256(exp) != sum {
+				err = fmt.Errorf("the dribbled stream arrived different (%d bytes)", got)
+			}
+		}
+		chatErr <- err
+	}()
+	wg.Wait()
+	_ = cs[conns].(*gonet.TCPConn).CloseWrite() // stops the dribbler
+	chatE := <-chatErr
+	if b := check.bad.Load(); b > 0 {
+		t.Fatalf("%d of %d segments from the host arrived with other bytes (the first at stream offset %d)",
+			b, check.segs.Load(), check.firstBad.Load())
+	}
+	if check.failed() {
+		t.Fatalf("the guest stopped reading the link after %d good segments", check.segs.Load())
+	}
+	if chatE != nil {
+		t.Fatal(chatE)
+	}
+	hosts := make([]hostFlow, conns)
+	for range conns {
+		h := <-hostSide
+		if h.i < 0 {
+			t.Fatalf("host side: %v", h.got.err)
+		}
+		hosts[h.i] = h
+	}
+	for i, gf := range guestSide {
+		hf := hosts[i]
+		for _, r := range []streamResult{gf.sent, gf.got, hf.sent, hf.got} {
+			if r.err != nil {
+				t.Fatalf("connection %d: %v", i, r.err)
+			}
+		}
+		if gf.got.n != per || gf.got.sum != hf.sent.sum {
+			t.Errorf("connection %d, download: the guest got %d bytes with SHA-256 %x, the host sent %d with %x",
+				i, gf.got.n, gf.got.sum[:8], per, hf.sent.sum[:8])
+		}
+		if hf.got.n != per || hf.got.sum != gf.sent.sum {
+			t.Errorf("connection %d, upload: the host got %d bytes with SHA-256 %x, the guest sent %d with %x",
+				i, hf.got.n, hf.got.sum[:8], per, gf.sent.sum[:8])
+		}
+	}
+	if check.segs.Load() == 0 || g.bigIn.Load() == 0 || g.bigOut.Load() == 0 {
+		t.Errorf("test setup: %d segments checked, %d and %d over the MTU in and out",
+			check.segs.Load(), g.bigIn.Load(), g.bigOut.Load())
+	}
+	if d := n.Stats().FramesDropped; d != 0 {
+		t.Errorf("FramesDropped = %d", d)
+	}
+	// Under the race detector the stacks may be too slow to fill the queue past the
+	// bound in a short run; the other checks still apply.
+	if sc.stallCount() == 0 || (bufs.grown.Load() == 0 && !raceEnabled) {
+		t.Errorf("test setup: %d link stalls, %d checks while a queue past the spare bound was written; want both",
+			sc.stallCount(), bufs.grown.Load())
+	}
+	t.Logf("%d MiB each way over %d connections, %d link stalls, %d checks while a queue past the spare bound was written, %d segments checked on arrival",
+		size>>20, conns, sc.stallCount(), bufs.grown.Load(), check.segs.Load())
 }
 
 // TestGuestResetPropagates: a guest that resets a relayed connection makes the relay

@@ -3,6 +3,7 @@ package netstack
 import (
 	"bufio"
 	"context"
+	"errors"
 	"io"
 	"net"
 	"net/netip"
@@ -49,8 +50,30 @@ func newFakeGuest(t *testing.T, n *Stack) *fakeGuest { return newFakeGuestMode(t
 // sends and takes segments larger than the MTU, with a virtio_net_hdr on every frame.
 func newFakeGuestMode(t *testing.T, n *Stack, offload bool) *fakeGuest {
 	t.Helper()
+	return newFakeGuestWith(t, n, fakeGuestOpts{offload: offload})
+}
+
+type fakeGuestOpts struct {
+	offload bool
+	// wrap, if set, wraps the host's end of the link (the engine's hvsock connection).
+	wrap func(net.Conn) net.Conn
+	// inspect, if set, sees every Ethernet frame from the host as it arrives, in the
+	// link reader's buffer, before the guest finishes its checksum or copies it.
+	inspect func(eth []byte)
+	// linkErr, if set, is called when the guest stops reading the host's frames because
+	// the stream or a frame is malformed (not when the link closes).
+	linkErr func(error)
+}
+
+func newFakeGuestWith(t *testing.T, n *Stack, o fakeGuestOpts) *fakeGuest {
+	t.Helper()
+	offload := o.offload
 	cfg := n.Config()
 	hostEnd, guestEnd := net.Pipe()
+	hostConn := hostEnd
+	if o.wrap != nil {
+		hostConn = o.wrap(hostEnd)
+	}
 	ch := channel.New(512, uint32(cfg.MTU+header.EthernetMinimumSize), guestMAC)
 	if offload {
 		ch.SupportedGSOKind = stack.HostGSOSupported
@@ -78,9 +101,9 @@ func newFakeGuestMode(t *testing.T, n *Stack, offload bool) *fakeGuest {
 	go func() {
 		defer g.wg.Done()
 		if offload {
-			_ = n.ServeOffload(hostEnd)
+			_ = n.ServeOffload(hostConn)
 		} else {
-			_ = n.ServeConn(hostEnd)
+			_ = n.ServeConn(hostConn)
 		}
 	}()
 	go func() { // guest -> host
@@ -127,23 +150,38 @@ func newFakeGuestMode(t *testing.T, n *Stack, offload bool) *fakeGuest {
 			fr = frame.NewVnetReader(br)
 		}
 		for {
+			// b is the frame reader's buffer, valid until the next frame. Nothing here
+			// copies it before inspect sees it, or before the guest stack takes it
+			// (MakeWithData copies, as a kernel copies into an skb), so bytes the host
+			// changed after handing them over are seen as they arrived.
 			b, err := fr.Next()
 			if err != nil {
+				if errors.Is(err, frame.ErrFrameSize) {
+					t.Errorf("the host's frame stream is out of sync: %v", err)
+					if o.linkErr != nil {
+						o.linkErr(err)
+					}
+				}
 				return
 			}
 			if offload {
 				h, eth, err := frame.ParseVnet(b, cfg.MTU)
 				if err != nil {
 					t.Errorf("host sent a bad offload frame: %v", err)
+					if o.linkErr != nil {
+						o.linkErr(err)
+					}
 					return
+				}
+				if o.inspect != nil {
+					o.inspect(eth)
 				}
 				if h.IsGSO() {
 					g.bigIn.Add(1)
 				}
 				if h.Flags&frame.VnetFlagNeedsCsum != 0 {
-					// Finish the checksum as the guest kernel would
+					// Finish the checksum in place, as the guest kernel would
 					// (skb_checksum_help), then check the TCP checksum it gives.
-					eth = append([]byte(nil), eth...)
 					seg := eth[h.CsumStart:]
 					at := int(h.CsumOffset)
 					sum := checksum.Checksum(seg, 0)
@@ -157,8 +195,10 @@ func newFakeGuestMode(t *testing.T, n *Stack, offload bool) *fakeGuest {
 					g.csumOK.Add(1)
 				}
 				b = eth
+			} else if o.inspect != nil {
+				o.inspect(b)
 			}
-			pkt := stack.NewPacketBuffer(stack.PacketBufferOptions{Payload: buffer.MakeWithData(append([]byte(nil), b...))})
+			pkt := stack.NewPacketBuffer(stack.PacketBufferOptions{Payload: buffer.MakeWithData(b)})
 			ch.InjectInbound(header.Ethernet(b).Type(), pkt)
 			pkt.DecRef()
 		}
