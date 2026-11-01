@@ -220,8 +220,16 @@ func TestLayout(t *testing.T) {
 	if err != nil || filepath.Base(h) != "hyperbutler" || filepath.Base(filepath.Dir(h)) != "Local" {
 		t.Fatalf("DefaultHome = %q, %v", h, err)
 	}
-	t.Setenv(HomeEnv, "rel")
-	if h, err := DefaultHome(); err != nil || !filepath.IsAbs(h) {
-		t.Fatalf("HYPERBUTLER_HOME relative: %q, %v", h, err)
+	// A relative HYPERBUTLER_HOME would name another installation in every directory.
+	for _, rel := range []string{"rel", `\no-volume`, `C:drive-relative`} {
+		t.Setenv(HomeEnv, rel)
+		if h, err := DefaultHome(); err == nil {
+			t.Fatalf("HYPERBUTLER_HOME %q accepted: %q", rel, h)
+		}
+	}
+	abs := filepath.Join(testDir(t), "h")
+	t.Setenv(HomeEnv, abs+`\`)
+	if h, err := DefaultHome(); err != nil || h != abs {
+		t.Fatalf("HYPERBUTLER_HOME absolute: %q, %v", h, err)
 	}
 }

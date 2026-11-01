@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -13,10 +14,14 @@ import (
 const HomeEnv = "HYPERBUTLER_HOME"
 
 // DefaultHome returns the state directory: %HYPERBUTLER_HOME% if set, else
-// %LOCALAPPDATA%\hyperbutler.
+// %LOCALAPPDATA%\hyperbutler. HYPERBUTLER_HOME must be absolute: a relative one would
+// name another installation (and another Tag) in every working directory.
 func DefaultHome() (string, error) {
 	if h := os.Getenv(HomeEnv); h != "" {
-		return filepath.Abs(h)
+		if !filepath.IsAbs(h) {
+			return "", fmt.Errorf("engine: %s=%q must be an absolute path", HomeEnv, h)
+		}
+		return filepath.Clean(h), nil
 	}
 	base := os.Getenv("LOCALAPPDATA")
 	if base == "" {
