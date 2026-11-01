@@ -213,8 +213,9 @@ met blocks the release. Changing a gate needs an ADR change, not a waiver here.
     735-861 Mbit/s over 30 back-to-back pull/rmi cycles, 0 failed. HNS NAT was not run:
     it needs an HNS network created on the host, a system change. HNS NAT is a VM path
     too, so it cannot beat the host's own rate, and the stack is within 1% of that.
-    This meets the gate's intent against an upper bound of NAT; whether that replaces
-    the NAT run is the maintainer's call.
+    This meets the gate's intent against an upper bound of NAT, and on 2026-11-01 the
+    maintainer accepted the host's own rate as the baseline (ADR 0006, "Gate
+    amendment"). **Met.** Repeat the 30-cycle pull loop against the release candidate.
   - The same run found a silent corruption bug in the host-to-guest link: about 1 in 10
     back-to-back pulls failed with "unexpected commit digest" until it was fixed
     (036c062; [guest-networking.md](research/guest-networking.md), "Layer digest
@@ -258,7 +259,10 @@ met blocks the release. Changing a gate needs an ADR change, not a waiver here.
   registry pull within 20% of HNS NAT; idle stack memory within REQ-MEM-001; split DNS,
   public DNS and a VPN-only address in one run with the VPN connected; p99 small-request
   latency recorded idle and under load next to raw hvsock (the open p99.9 tail of about
-  11 ms explained). Today the throughput and LAN registry rows are not met.
+  11 ms explained). On 2026-11-01 every row but the p99.9 tail explanation reads "Yes":
+  the throughput row since the 2026-10-31 work (median 69% of raw hvsock), and the LAN row
+  against the host's own rate. The tail of about 11 ms under a reconnecting load is still
+  an open item in ADR 0006.
 - [ ] `bench/net-vpn`, `bench/coexist` and `bench/noadmin` have run (ADR 0006,
   "What stays unverified").
 

@@ -285,7 +285,7 @@ splitting the link into one connection per direction.
 |---|---|---|
 | Guest-to-host TCP at least 50% of raw hvsock, same boot | 6 boots, each the median of 5 x 1 GiB: **80, 74, 49, 56, 92, 64%** (median 69%; before: 36-38% on 2 boots). The stack ran at 6.9-10.6 Gbit/s; raw hvsock varied from 8.0 to 21.7 Gbit/s between boots, and the one boot under 50% was the one with the fastest raw run (stack 10.56 against raw 21.70). Without offload: 36%. Host to guest (not gated): 28-62% of a raw 23-29 Gbit/s. | **Yes**, on 5 of 6 boots and on the median |
 | Host CPU at most 1 core per Gbit/s | The engine: 0.11-0.20 cores per Gbit/s for every bulk path. The guest's share (vmmem) cannot be read by a non-elevated user; the guest was at about 30% of its 2 vCPUs during bulk transfers, which adds about 0.06 cores per Gbit/s at 10 Gbit/s. | Yes (engine measured, guest estimated) |
-| LAN registry pull within 20% of HNS NAT | Not run (no second machine). **Deferred** to the release checklist; see "Gate amendment". | Deferred |
+| LAN registry pull within 20% of HNS NAT | Deferred to the release checklist, then run 2026-11-01: stack 929-931 Mbit/s against the host's own 916-941 (99%), docker pull 0 failures in 30; see "Gate amendment". | **Yes** (against the host's rate) |
 | Idle memory within REQ-MEM-001 | `bench/mem-idle` on this branch (`hyperbutler start`, 4 GiB / 8 vCPU): median 316.5 MiB (332 MB), engine 19.1 MiB (was 315 / 17.7 MiB). Under load the engine's private working set was 46-55 MB in every bulk, latency and connection-rate run (Go heap 30-36 MB). Before, it was 180-260 MB after a connection-rate run. | Yes |
 | VPN split DNS, public DNS and a VPN-only address in one run | Rechecked through `hyperbutler start` with the new image: `peer-a` resolved to 100.64.0.10 and `registry-1.docker.io` resolved, in the same run; HTTPS from a container; `-p` on `127.0.0.1` and `[::1]`; `docker pull`. | Yes (Tailscale only) |
 | p99 small-request latency (ADR 0003) | Gate bench, n=20000: stack idle p50/p99/p99.9 158/257/504 µs (raw 52/77/124); under bulk load 147/244/**491** µs (raw 52/96/259), max 2.6 ms. Containers (`bench/net-perf`): rr 187/392/1244 µs, during a download 356/1418/3093, `-p` 233/421/1196. | Recorded |
@@ -338,6 +338,17 @@ What the local numbers say, and why they do not replace it:
 **ADR 0006 is accepted, with the LAN-registry gate deferred to the release checklist.**
 The other five gates are met. The user-mode stack stays the default and HNS NAT stays an
 opt-in backend. If the deferred check fails, the fallback in "Consequences" applies.
+
+**LAN gate met (2026-11-01), against the host's own rate.** The run had a Raspberry Pi 5
+with `registry:2` on 1 Gbit wired and the host on a 1 Gbit USB adapter. Three 256 MiB
+layers were fetched in parallel. The host's `curl.exe` reached 916-941 Mbit/s and a
+container through the stack 929-931 Mbit/s (99%). `docker pull` through the stack ran at
+735-861 Mbit/s with 0 failures in 30 back-to-back cycles. HNS NAT was not run, because
+it needs an HNS network created on the host. NAT is also a VM path, so it cannot beat
+the host's own rate. The maintainer accepted the host's rate as the baseline: the stack
+within 20% of it is within 20% of NAT. The same run found and fixed a silent
+host-to-guest corruption bug (036c062; guest-networking.md, "Layer digest mismatches on
+LAN pulls").
 
 ## Implementation review
 
