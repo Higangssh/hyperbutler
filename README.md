@@ -200,6 +200,8 @@ into the same folder.
   See [docs/compat.md](docs/compat.md#the-docker-cli-and-docker-desktop).
 - Tools that ignore docker contexts (Testcontainers, the Docker SDKs, IDEs) and moving
   images and volumes over from Docker Desktop: [docs/tools.md](docs/tools.md).
+- `hyperbutler import --from-desktop` copies the images and volumes you pick from a running
+  Docker Desktop, verifies each copy and leaves Docker Desktop as it was (`--dry-run` lists).
 
 ### Published ports and other users
 

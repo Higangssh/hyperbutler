@@ -4,7 +4,7 @@ The docker CLI follows the `hyperbutler` docker context that `hyperbutler start`
 Many other tools do not: they read `DOCKER_HOST`, or a setting of their own, and
 otherwise use `\\.\pipe\docker_engine`, which is Docker Desktop's pipe, not hyperbutler's
 (REQ-API-003). The second half of this page moves images and volumes from Docker Desktop
-to hyperbutler (REQ-UX-021).
+to hyperbutler (REQ-UX-023, REQ-UX-021).
 
 hyperbutler's Docker API is at:
 
@@ -94,14 +94,168 @@ not even without Docker Desktop, because a later Docker Desktop install would th
 in a confusing way. Back to the default: `hyperbutler config unset pipe`, then
 `hyperbutler restart`.
 
-## Moving from Docker Desktop (REQ-UX-021)
+## Moving from Docker Desktop (REQ-UX-023, REQ-UX-021)
 
 The two engines keep separate data disks; nothing is shared or migrated automatically.
-With both running, stream images and volumes from one context to the other: Docker
-Desktop's context is `desktop-linux`, hyperbutler's is `hyperbutler`. Containers are not
-moved: create them again from their compose files or `docker run` lines.
+With both running, one command copies images and volumes; the manual steps below it are
+the fallback. Containers are not moved: create them again in hyperbutler from their
+compose files (`docker compose up`) or `docker run` lines.
 
-### Images
+### `hyperbutler import --from-desktop`
+
+Start Docker Desktop and hyperbutler, then:
+
+```powershell
+hyperbutler import --from-desktop --dry-run                    # what there is, what is here already
+hyperbutler import --from-desktop                              # pick from a numbered list
+hyperbutler import --from-desktop --image myapp:1,postgres:16 --volume pgdata
+hyperbutler import --from-desktop --all-images --all-volumes
+```
+
+(In PowerShell, quote a list with a comma, `"--volume=pgdata,cache"`, or PowerShell
+splits it into two arguments.)
+
+- **It is a copy, never a move.** Docker Desktop's images, volumes and containers are
+  unchanged and keep working. Before the import, the command records Docker Desktop's
+  images and tags, volume names, the content hash of every volume it will read, and its
+  containers with their states; afterwards it records them again and prints "Docker
+  Desktop unchanged: N images, M volumes, K containers", or what differs (then it exits
+  1). Anything Docker Desktop's own containers change during the import shows there too.
+- **Where Docker Desktop is.** The endpoint of the `desktop-linux` docker context (its
+  `meta.json` under `%DOCKER_CONFIG%` or `~/.docker`, read only, and only a local
+  `npipe://` endpoint is used), else `\\.\pipe\dockerDesktopLinuxEngine`. Nothing else of
+  Docker Desktop's is read. When nothing answers there: "Docker Desktop is not running:
+  start Docker Desktop first", exit 1. hyperbutler must be running too (`hyperbutler
+  start`).
+- **What is already here.** An image whose id hyperbutler has is "already imported", under
+  any tags; if only some of its tags are missing they are added (the tag API, nothing is
+  copied). A volume of the same name whose content hash equals Docker Desktop's is
+  "already imported". `--dry-run` and the numbered list mark each item new, already
+  imported, partly present (tags), conflict, or cannot import (an untagged image; a
+  volume that is not a plain local one, such as a bind or NFS volume). A second run right
+  after a full one copies 0 bytes: "Nothing to import: 5 images and 2 volumes already
+  here.", exit 0. There is no record file: what counts is what hyperbutler has.
+- **What is refused** (exit 1, nothing changed): a tag that names another image in
+  hyperbutler (remove or retag it there first); a volume of the same name with other
+  content (`--overwrite-volumes` deletes hyperbutler's and copies Docker Desktop's); a
+  volume a running Docker Desktop container mounts, with the container names: stop them
+  in Docker Desktop first, so the copy is consistent. `--allow-live-volumes` copies
+  anyway and warns that the copy may be inconsistent. The command never stops anything
+  itself.
+- **Verification.** After loading an image every tag must name the same image id in
+  hyperbutler. A volume is hashed as it streams (entry names, types, permission bits,
+  owners, sizes, link targets, contents); the hash must equal the one recorded before the
+  copy (else the volume changed while copying), and a fresh export of the copy in
+  hyperbutler must hash the same. A mismatch removes the copy from hyperbutler, and only
+  there, and exits 1.
+- **Progress** goes to stderr (bytes and rate). Ctrl+C cancels: the item in progress is
+  removed from hyperbutler, the helpers are removed, and the check of Docker Desktop
+  still runs; a second Ctrl+C quits at once. If the command is killed, the next one
+  removes the helpers and the half-filled volume it left.
+- `--json` prints a schema 1 result: every item with its size, status, outcome, bytes
+  copied and reason, the skipped ones, and the check of Docker Desktop
+  ([settings.md](research/settings.md#--json-req-ux-008)).
+
+#### How it reads Docker Desktop
+
+Only through Docker Desktop's Docker Engine API, by a client (`internal/desktopimport/source`)
+that can send a GET to a fixed list of read-only endpoints (`/_ping`, `/info`, `/version`,
+`/images/json`, `/images/{name}/json`, `/images/get`, `/volumes`, `/volumes/{name}`,
+`/containers/json`, `/containers/{id}/json`, `/containers/{id}/archive`, `/system/df`) and
+nothing else, with one exception, decided on purpose: copying a volume needs the archive
+API, and that works on a container. So for each volume it reads, the command creates a
+**helper container** in Docker Desktop that
+
+- mounts the volume **read-only** (and never copies image content into it),
+- is created from an image already there (the smallest tagged one), so nothing is
+  pulled,
+- has no network and an entrypoint that does not exist, and is **never started**,
+- is labelled `dev.hyperbutler.import=helper`,
+- is removed right after the read, also on an error or Ctrl+C (a killed command's helper
+  is removed by the next run, after checking it is one: the label, the entrypoint, state
+  "created", never started).
+
+That is a short-lived entry in Docker Desktop's container list and a small snapshot on its
+disk while it exists; the volume itself is never written. Without any image in Docker
+Desktop, volumes are skipped with a message (pull a small image there, or use the manual
+steps). A read-only way without a container does not exist in the Docker API: `system df`
+gives sizes only, and the volume API has no content endpoint. The client cannot tag,
+delete, prune, stop, start, exec or attach; its tests fail if it gains a method or
+sends anything else. In hyperbutler the command creates helpers the same way (writable),
+volumes with Docker Desktop's labels (so `docker compose` takes them as its own) plus
+`dev.hyperbutler.import.source`, and loads images; when hyperbutler has no image for its
+helper, Docker Desktop's helper image is copied for the time of the import and removed
+afterwards.
+
+Images stream from `GET /images/get` straight into hyperbutler's `POST /images/load`, and
+volumes from the helper's archive straight into `PUT /containers/{id}/archive` of
+hyperbutler's helper: nothing is buffered whole in memory or written to a file on
+Windows, and nothing is extracted on Windows (dockerd extracts the archive inside the VM).
+
+With the containerd image store (Docker Desktop's default for new installs, and
+hyperbutler's), an image's id is its index or manifest digest. `images/get` of a
+multi-platform image exports the whole index with only the platforms that were pulled
+(seen with `alpine:3.22`: the index digest, its manifest for linux/amd64); hyperbutler's
+dockerd loads it and keeps the same id. When one engine uses the containerd store and the
+other does not, the ids differ for the same image, and an image counts as the same when
+its layers, creation time and platform match.
+
+Checked on 2026-11-01 against a second hyperbutler installation serving
+`\\.\pipe\dockerDesktopLinuxEngine` (dockerd 29.9 with the containerd image store), not
+against Docker Desktop itself: busybox (two tags) and alpine imported and the ids equal;
+a volume with nested files, owners, modes 750 and 600, a symbolic and a hard link, and a
+300 MiB volume, imported with equal md5s of their file lists and contents; a volume a
+running container mounts refused; an import killed during a 400 MiB copy left a helper on
+each side and a half-filled volume, which the next run removed before copying it again;
+a second run copied 0 bytes and exited 0; the source's images, volumes, volume md5s and
+`docker ps -a` were identical before and after, and alpine still ran there.
+
+#### Adversarial review (2026-11-01)
+
+- **Writes to Docker Desktop.** Only the helper container: create and remove. A mount of
+  a volume that does not exist would create it, so the helper is created only after the
+  volume is looked up; if it is deleted in that instant, Docker Desktop gets a new empty
+  volume, and the check after the run reports "volume X is new". Removal is by id, only of
+  helpers this run created or ones verified as helpers, never forced.
+- **Leftover helpers.** Removed on every path (deferred, on a context that outlives a
+  cancel, 30 s each); a failure to remove is printed with the `docker rm` line; a kill is
+  cleaned up by the next run, and the check after the run lists any helper still there.
+  Two imports at the same time could remove each other's helpers; run one at a time.
+- **Partial imports.** A failed or canceled load removes the tags it added and the image
+  if it was not there; a failed, canceled or mismatching volume copy removes the volume
+  it created. A kill between creating a volume in hyperbutler and creating its helper (one
+  API call) leaves an empty labelled volume that the next run reports as a conflict
+  (open). `--overwrite-volumes` deletes hyperbutler's volume before copying, so a failed
+  overwrite leaves none.
+- **Name injection.** Names from the command line are checked (the MCP server's checks,
+  now `internal/dockerapi`) before anything is sent; names and ids from either engine are
+  checked before they go into a path; query values are URL-encoded.
+- **Huge streams.** Images and volumes are streamed, never held; JSON answers are bounded
+  (8 MiB), error bodies (64 KiB) and the load answer (4 MiB) too. There is no limit on an
+  image's or volume's size or on the time a copy takes (Ctrl+C stops it), and no check of
+  hyperbutler's free space first (its free-space guard and dockerd's errors apply).
+- **A malicious archive from the source.** The checker refuses entries outside the volume
+  (`..`, absolute names, backslashes, names not under `v/`), hard links pointing out of
+  it, unexpected entry types, a missing or repeated root and short contents, before they
+  reach hyperbutler, and re-encodes the archive; dockerd extracts it inside the VM with its
+  own protections. hyperbutler never extracts an archive on Windows. Symbolic links are
+  passed as they are (they resolve inside a container, as with `docker cp`); setuid bits
+  and device nodes are kept as `docker cp` keeps them. An image archive is passed to
+  dockerd's load unread, as `docker load` would. Fuzzed: the checker, the load answer and
+  the endpoint parser.
+- **Verification gaps.** The volume hash leaves out times and extended attributes (file
+  capabilities, ACLs), so a copy that lost those still verifies. The hash relies on both
+  dockerds walking the volume in the same (lexical) order; a different order fails safe
+  (the copy is removed). An image's RepoDigests are not carried over. With different image
+  stores on the two sides, image identity falls back to layers, creation time and
+  platform.
+
+### By hand (the fallback)
+
+With both running, stream images and volumes from one context to the other: Docker
+Desktop's context is `desktop-linux`, hyperbutler's is `hyperbutler`.
+
+#### Images
 
 ```powershell
 docker --context desktop-linux save -o "$env:TEMP\images.tar" myapp:1 postgres:16
@@ -121,7 +275,7 @@ EOF or a checksum error. Use `-o` and `-i` with a file as above, or run the pipe
 cmd: `cmd /c "docker --context desktop-linux save myapp:1 | docker --context hyperbutler load"`.
 (PowerShell 7.4 and later pass bytes through a pipe between two programs unchanged.)
 
-### Named volumes
+#### Named volumes
 
 A volume is copied with `tar` in a small container on each side: one reads the volume
 in Docker Desktop, the other writes it in hyperbutler. Again with cmd's pipe, which keeps

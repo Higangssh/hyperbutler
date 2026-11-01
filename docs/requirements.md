@@ -207,7 +207,7 @@ Status on the reference machine (2026-10-31, `hyperbutler-dev` with the user-mod
 | REQ-UX-019 | Broken credential helpers are named. | `start` and `doctor` warn when `config.json`'s `credsStore` or `credHelpers` names a helper that is not on PATH, with the fix. hyperbutler never edits those keys. | P1 | S3.6 |
 | REQ-UX-021 | Moving from Docker Desktop is documented. | `save`/`load` and a volume `tar` between contexts, with the PowerShell 5.1 pipe caveat. | P1 | S3.7 |
 | REQ-UX-022 | The update check only tells. | At most once a day, `start` and `status` ask GitHub's release API over HTTPS whether a newer release exists, sending no identifier beyond what any HTTPS request carries (no install ID, no usage data). It only prints a note with the release URL: it never downloads or installs anything. `config set updateCheck false` turns it off, and `bench/no-telemetry` shows nothing else leaves (REQ-UX-005). | P1 | A2 A12 |
-| REQ-UX-023 | Moving from Docker Desktop is one command. | `hyperbutler import --from-desktop` lists Docker Desktop's images and volumes through its own Docker API (its running engine, read-only), copies the ones the user picks into hyperbutler, and verifies each copy (image IDs, a volume content hash). It never changes or deletes anything on the Docker Desktop side, uses no Docker Desktop files directly, and says what it skipped and why. `--dry-run` only lists. | P1 | A16 S3.7 |
+| REQ-UX-023 | Moving from Docker Desktop is one command. | `hyperbutler import --from-desktop` lists Docker Desktop's images and volumes through its own Docker API (its running engine, read-only), copies the ones the user picks into hyperbutler, and verifies each copy (image IDs, a volume content hash). It is a copy: Docker Desktop's images, volumes and containers are unchanged and keep working; checked after every run. It never changes or deletes anything on the Docker Desktop side, uses no Docker Desktop files directly, and says what it skipped and why. `--dry-run` only lists. | P1 | A16 S3.7 |
 
 Status of the settings requirements (2026-10-31, `hyperbutler start`; details in
 [settings.md](research/settings.md)):
@@ -364,6 +364,19 @@ Status of the 0.2 usage requirements (2026-11-01; checked on one machine, Window
   `hyperbutler` contexts, a cmd pipe, the PowerShell 5.1 binary pipe caveat, and a
   named volume copied with `tar` in a busybox container on each side (by cmd pipe or a
   file). Not run against Docker Desktop.
+- REQ-UX-023: met on one machine, against a stand-in (2026-11-01). `hyperbutler import
+  --from-desktop` (internal/desktopimport, docs/tools.md) reaches Docker Desktop only
+  through a client that sends GETs to a fixed list of read-only endpoints and creates and
+  removes one never-started, read-only helper container per volume read; it skips what is
+  already in hyperbutler (same image id, same volume content hash), adds only missing
+  tags, refuses conflicts and volumes that running containers mount, verifies every copy
+  and removes a bad or interrupted one from hyperbutler only, and compares Docker Desktop's
+  images, volumes, volume hashes and containers before and after every run (unit tests
+  against two fake engines; 3 fuzz targets). Docker Desktop itself was not available: a
+  second hyperbutler installation served `\\.\pipe\dockerDesktopLinuxEngine` (dockerd 29
+  with the containerd image store). busybox, alpine (an index) and two volumes imported and
+  verified, a second run copied 0 bytes, a killed run was cleaned up by the next, and the
+  source's images, volumes, volume md5s and containers were identical before and after.
 - REQ-API-003: met (docs/tools.md): `DOCKER_HOST` per shell and per user,
   `~/.testcontainers.properties`, VS Code and JetBrains settings, and `config set pipe
   \\.\pipe\docker_engine` as the opt-in, which warns when Docker Desktop is installed or

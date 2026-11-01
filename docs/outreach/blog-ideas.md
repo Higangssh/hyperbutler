@@ -157,6 +157,13 @@ surprising. Numbers are from the maintainer's Windows 11 Home laptop unless note
   because gVisor's reset error and Linux's `ECONNRESET` are both "connection reset by
   peer", and the relay told the two apart by text. On Windows the socket error reads
   differently, so the bug only existed on the platform the code does not ship on.
+- **Proving a copy is a copy:** importing from Docker Desktop needs one write there,
+  because the Docker API reads a volume only through a container. The import creates a
+  never-started, read-only helper, hashes every volume it reads before, during and after
+  the copy, and compares Docker Desktop's images, volumes and containers before and
+  after every run. The three hashes also catch a volume that changes under the copy.
+  Tested against a second hyperbutler serving Docker Desktop's pipe name, and a run
+  killed mid-copy is cleaned up by the next one.
 
 ## Still to measure before writing
 

@@ -379,8 +379,8 @@ used (1 certificate, no error), and `ca-extra.pem` has one ACE, the user's; `uni
 
 ## --json (REQ-UX-008)
 
-`status`, `version`, `config list`, `config get`, `config path`, `diagnose` and `uninstall`
-take `--json`. Every document is one object with `"schema": 1`. Within a schema version
+`status`, `version`, `config list`, `config get`, `config path`, `diagnose`, `uninstall`,
+`doctor` and `import` take `--json`. Every document is one object with `"schema": 1`. Within a schema version
 fields are only added; removing or renaming one means a new version.
 `cmd/hyperbutler/schema_test.go` pins every field name, so a change fails the tests.
 
@@ -450,6 +450,21 @@ fields are only added; removing or renaming one means a new version.
   `guest-disk`, `autostart`. doctor reads only: the registry, `computecore.dll`, HCS's
   list of compute systems, the pipe file system's listing (no pipe is opened), PATH,
   `docker --version`, the docker CLI's config.json and Task Scheduler (`schtasks /Query`).
+- `import --from-desktop` (added for 0.2, REQ-UX-023; [docs/tools.md](../tools.md)):
+  `schema`, `dryRun`, `source` (`pipe`, `via`: `context` for the `desktop-linux`
+  context's endpoint, `default` for `\\.\pipe\dockerDesktopLinuxEngine`, and `version`),
+  `target` (hyperbutler's pipe), `items`, `skipped`, `bytesCopied`, `canceled`, `ok`
+  (false when an item failed or was refused, the import was canceled, or Docker Desktop
+  changed; the exit code is then 1), `notes`, and after a run `sourceCheck`:
+  `unchanged`, `images`, `volumes`, `containers` (Docker Desktop's counts after the run),
+  `hashedVolumes` (volumes whose content hash was compared before and after),
+  `differences` and `warnings`. Each item (and each `skipped` one, left out by
+  `--all-images` or `--all-volumes`) has `kind` (`image`, `volume`), `name`, `id`,
+  `tags`, `sizeBytes` (-1: unknown), `status` (before the run: `new`, `already`,
+  `partial`, `conflict`, `exists`, `unsupported`), `outcome` (`imported`, `tagged`,
+  `already`, `refused`, `failed`, `canceled`; empty in a dry run), `bytesCopied`,
+  `reason`, `missingTags`, `addedTags`, `usedBy` (running Docker Desktop containers that
+  mount the volume) and `hash` (a volume's verified content hash, `sha256:...`).
 
 ## Tests and fuzzing
 

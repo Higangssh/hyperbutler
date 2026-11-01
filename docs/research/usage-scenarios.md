@@ -67,7 +67,7 @@ For each scenario:
 | S3.4 | Both publish the same port | fixed (Docker Desktop not run) | REQ-NET-005 (new), REQ-NET-001 |
 | S3.5 | `host.docker.internal` differences | small (documented) | REQ-NET-004 |
 | S3.6 | Compose plugin and credential helper (`credsStore: desktop`) | done (2026-11-01) | REQ-UX-019 |
-| S3.7 | Moving images and volumes from Docker Desktop | done (docs, 2026-11-01; not run against Desktop) | REQ-UX-021 |
+| S3.7 | Moving images and volumes from Docker Desktop | done (docs, 2026-11-01; `import --from-desktop` for 0.2, run against a stand-in, not Desktop) | REQ-UX-021, REQ-UX-023 |
 | S3.8 | WSL 2–based Docker Desktop and hyperbutler's VM at the same time | unknown, needs a bench | REQ-PLAT-004 |
 | S4.1 | PowerShell, cmd, Git Bash | small | REQ-API-001 |
 | S4.2 | VS Code Docker extension and Dev Containers | unknown, likely none | REQ-API-002 |
@@ -676,6 +676,15 @@ Facts from the code that the scenarios below rely on
   `hyperbutler import --from desktop-linux [--images] [--volumes NAME...]` could do the
   same with progress; it would talk only to the two pipes.
 - **Done (2026-11-01):** docs/tools.md, with the PowerShell 5.1 caveat. Not run against Docker Desktop. REQ-UX-021.
+- **Update (2026-11-01, for 0.2):** `hyperbutler import --from-desktop` (REQ-UX-023) does
+  it in one command, through the two engines' pipes only: it lists Docker Desktop's images
+  and volumes with what hyperbutler already has (new, already imported, partly present,
+  conflict), copies the picked ones with progress, verifies each (image ids, a volume
+  content hash), copies nothing on a second run, and checks after every run that Docker
+  Desktop's images, volumes and containers are unchanged. A volume a running container
+  mounts is refused until the container is stopped in Docker Desktop. The manual steps stay
+  as the fallback. Run against a second hyperbutler installation serving Docker Desktop's
+  pipe, not against Docker Desktop itself.
 
 ### S3.8 WSL 2–based Docker Desktop and hyperbutler's VM together
 
