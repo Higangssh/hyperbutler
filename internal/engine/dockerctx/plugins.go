@@ -37,7 +37,8 @@ func ExtraPluginDirs(config []byte) ([]string, error) {
 // SetExtraPluginDir returns config with dir added to (want) or removed from
 // "cliPluginsExtraDirs". Other entries and every other key keep their values; the key
 // is dropped when removing dir leaves it empty. Paths compare as Windows does
-// (cleaned, case-insensitive).
+// (cleaned, case-insensitive). With want false it is what an uninstall uses to take
+// hyperbutler's clients\cli-plugins out again (Store.RemovePluginDir does it in place).
 func SetExtraPluginDir(config []byte, dir string, want bool) ([]byte, error) {
 	if dir == "" || !utf8.ValidString(dir) || !filepath.IsAbs(dir) {
 		return nil, fmt.Errorf("dockerctx: plugin directory %q must be an absolute UTF-8 path", dir)
@@ -153,6 +154,22 @@ func (s Store) SyncPluginDir(dir, plugin string, systemDirs []string) (PluginSyn
 	}
 	r.Changed = true
 	return r, nil
+}
+
+// RemovePluginDir takes dir out of cliPluginsExtraDirs, if it is there.
+func (s Store) RemovePluginDir(dir string) error {
+	b, err := readBounded(s.configPath())
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	out, err := SetExtraPluginDir(b, dir, false)
+	if err != nil || bytes.Equal(out, b) {
+		return err
+	}
+	return writeAtomic(s.configPath(), out)
 }
 
 func isFile(p string) bool {

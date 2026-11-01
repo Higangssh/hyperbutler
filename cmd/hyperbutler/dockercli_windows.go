@@ -17,20 +17,25 @@ import (
 	"github.com/Higangssh/hyperbutler/internal/engine/dockerctx"
 )
 
-// The release zip carries the docker CLI and the compose plugin next to hyperbutler.exe
-// (dist/clients.lock). hyperbutler never copies them anywhere and never changes PATH: a
+// The release zip carries the docker CLI and the compose plugin in clients\ next to
+// hyperbutler.exe (dist/clients.lock): clients\docker.exe and
+// clients\cli-plugins\docker-compose.exe. The README puts the hyperbutler folder on PATH,
+// and clients\ only for someone without a docker CLI, so a docker CLI installed later
+// is not shadowed. hyperbutler never copies them anywhere and never changes PATH: a
 // docker.exe already on PATH (Docker Desktop's, a standalone install, a package
-// manager's) stays the one `docker` runs, and the hyperbutler context works with any of
-// them.
+// manager's) stays the one `docker` runs, and the hyperbutler context works with any
+// of them.
 const (
+	clientsDirName = "clients"
 	bundledCLIName = "docker.exe"
 	composePlugin  = "docker-compose.exe"
 	pluginsDirName = "cli-plugins"
 )
 
 // minCLIMajor and minCLIMinor: the oldest docker CLI the guest's dockerd accepts. Docker
-// Engine 29 refuses API versions below 1.40 by default (daemon/config:
-// defaultMinAPIVersion), and API 1.40 is docker 19.03. Newer CLIs negotiate down to the
+// Engine 29.9.2 refuses API versions below 1.40 unless configured otherwise
+// (daemon/config/config.go: defaultMinAPIVersion = "1.40"; a running guest reports
+// MinAPIVersion 1.40), and API 1.40 is docker 19.03. Newer CLIs negotiate down to the
 // engine's version, so there is no upper limit.
 const (
 	minCLIMajor, minCLIMinor = 19, 3
@@ -41,7 +46,7 @@ const (
 // dockerCLI is the docker.exe that a plain `docker` runs in this environment.
 type dockerCLI struct {
 	Path    string // "" if there is none on PATH
-	Bundled string // the docker.exe next to hyperbutler.exe, if there is one
+	Bundled string // clients\docker.exe next to hyperbutler.exe, if there is one
 }
 
 func (c dockerCLI) usesBundled() bool { return c.Path != "" && engine.SamePath(c.Path, c.Bundled) }
@@ -54,9 +59,17 @@ func exeDir() string {
 	return filepath.Dir(exe)
 }
 
+// clientsDir is where the release zip puts the bundled clients, or "" if unknown.
+func clientsDir() string {
+	if d := exeDir(); d != "" {
+		return filepath.Join(d, clientsDirName)
+	}
+	return ""
+}
+
 func findDockerCLI() dockerCLI {
 	var c dockerCLI
-	if d := exeDir(); d != "" {
+	if d := clientsDir(); d != "" {
 		if p := filepath.Join(d, bundledCLIName); isRegular(p) {
 			c.Bundled = p
 		}
@@ -87,13 +100,17 @@ func cliTooOld(major, minor int) bool {
 	return major < minCLIMajor || major == minCLIMajor && minor < minCLIMinor
 }
 
+// pathAdvice is the PowerShell line that puts dir first on this shell's PATH.
+func pathAdvice(dir string) string { return fmt.Sprintf(`$env:Path = "%s;$env:Path"`, dir) }
+
 // checkDockerCLI says which docker CLI `docker` runs and warns when it is too old for
 // the guest's dockerd, with the fix. It runs only `docker --version`, which does not
 // contact any engine.
 func checkDockerCLI(c dockerCLI, stdout, stderr io.Writer) {
 	if c.Path == "" {
 		if c.Bundled != "" {
-			_, _ = fmt.Fprintf(stderr, "hyperbutler: note: no docker CLI on PATH. The one that comes with hyperbutler is %s; add its folder to PATH (README, Quick start).\n", c.Bundled)
+			_, _ = fmt.Fprintf(stderr, "hyperbutler: note: no docker CLI on PATH. hyperbutler comes with one, %s; add its folder to your PATH (README, Quick start), or for this shell:\n          %s\n",
+				c.Bundled, pathAdvice(filepath.Dir(c.Bundled)))
 		} else {
 			_, _ = fmt.Fprintln(stderr, "hyperbutler: note: no docker CLI on PATH; the Docker API is still served on the pipe above.")
 		}
@@ -103,21 +120,25 @@ func checkDockerCLI(c dockerCLI, stdout, stderr io.Writer) {
 	defer cancel()
 	out, err := exec.CommandContext(ctx, c.Path, "--version").Output() //nolint:gosec // G204: the docker CLI on the user's own PATH
 	major, minor, ok := parseCLIVersion(string(out))
+	which := "on PATH"
+	if c.usesBundled() {
+		which = "bundled"
+	}
 	if err != nil || !ok {
-		return // a wrapper or an unusual build: nothing to say
+		_, _ = fmt.Fprintf(stdout, "docker CLI: %s (%s).\n", c.Path, which)
+		return // a wrapper or an unusual build: nothing more to say
 	}
 	if !cliTooOld(major, minor) {
-		if !c.usesBundled() && c.Bundled != "" {
-			_, _ = fmt.Fprintf(stdout, "docker CLI: %s (%d.%d, found on PATH; the bundled one is not used).\n", c.Path, major, minor)
-		}
+		_, _ = fmt.Fprintf(stdout, "docker CLI: %s (%s, %d.%d).\n", c.Path, which, major, minor)
 		return
 	}
 	_, _ = fmt.Fprintf(stderr, "hyperbutler: warning: the docker CLI on PATH, %s, is version %d.%d. hyperbutler's Docker Engine needs API %s (docker %s) or later, so its commands will fail with \"client version ... is too old\".\n",
 		c.Path, major, minor, minAPIVersion, minCLIVersion)
 	if c.Bundled != "" {
-		_, _ = fmt.Fprintf(stderr, "        Use the docker CLI that comes with hyperbutler: %s, or put its folder first in this shell's PATH:\n          $env:Path = \"%s;$env:Path\"\n", c.Bundled, filepath.Dir(c.Bundled))
+		_, _ = fmt.Fprintf(stderr, "        Use the docker CLI that comes with hyperbutler, %s: put its folder first on PATH, or for this shell:\n          %s\n",
+			c.Bundled, pathAdvice(filepath.Dir(c.Bundled)))
 	} else {
-		_, _ = fmt.Fprintln(stderr, "        Update the docker CLI, or use the one in the hyperbutler release zip.")
+		_, _ = fmt.Fprintln(stderr, "        Update the docker CLI, or use the one in the hyperbutler release zip (clients\\docker.exe).")
 	}
 }
 
@@ -126,7 +147,7 @@ func checkDockerCLI(c dockerCLI, stdout, stderr io.Writer) {
 // CLI's plugin search. It runs with the context management (context.manage), since it
 // edits the same config.json.
 func syncCompose(store dockerctx.Store, stdout, stderr io.Writer) {
-	d := exeDir()
+	d := clientsDir()
 	if d == "" || !isRegular(filepath.Join(d, pluginsDirName, composePlugin)) {
 		return
 	}

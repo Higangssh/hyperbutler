@@ -118,6 +118,20 @@ func TestSyncPluginDir(t *testing.T) {
 		t.Fatalf("user copy: %+v %v", r, err)
 	}
 
+	// Delete takes the bundled directory out again.
+	if err := os.Remove(user); err != nil {
+		t.Fatal(err)
+	}
+	if r, err := s.SyncPluginDir(bundled, plugin, []string{system}); err != nil || !r.Listed || !listed() {
+		t.Fatalf("relisted: %+v %v", r, err)
+	}
+	if err := s.RemovePluginDir(bundled); err != nil || listed() {
+		t.Fatalf("remove: %v", err)
+	}
+	if err := (Store{Dir: t.TempDir()}).RemovePluginDir(bundled); err != nil {
+		t.Fatalf("remove without config.json: %v", err)
+	}
+
 	if _, err := s.SyncPluginDir(bundled, `..\x.exe`, nil); err == nil {
 		t.Error("a plugin path was accepted as a name")
 	}

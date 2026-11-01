@@ -487,6 +487,17 @@ func cmdRestart(args []string, stdout, stderr io.Writer) error {
 	return restart(*imageDir, *timeout, stdout, stderr)
 }
 
+// restartImageDir is the image directory a restart without --image-dir uses: the one
+// the engine ran (state.json). A release build is pinned to the image next to it, so
+// after a side-by-side upgrade the old folder's image would only be refused: it then
+// uses its own (""), and says so (ignored).
+func restartImageDir(stateDir, exeDir string, pinned bool) (dir string, ignored bool) {
+	if !pinned || stateDir == "" || (exeDir != "" && engine.SamePath(stateDir, exeDir)) {
+		return stateDir, false
+	}
+	return "", true
+}
+
 // restart stops hyperbutler if it runs and starts it again, with the same guest image
 // unless imageDir says otherwise.
 func restart(imageDir string, timeout time.Duration, stdout, stderr io.Writer) error {
@@ -496,7 +507,12 @@ func restart(imageDir string, timeout time.Duration, stdout, stderr io.Writer) e
 	}
 	if imageDir == "" {
 		if st, err := engine.LoadState(in.l); err == nil && st.ImageDir != "" {
-			imageDir = st.ImageDir
+			_, pinned := engine.ImagePin()
+			var ignored bool
+			imageDir, ignored = restartImageDir(st.ImageDir, exeDir(), pinned)
+			if ignored {
+				_, _ = fmt.Fprintf(stderr, "hyperbutler: the engine ran the guest image in %s; this release build boots its own, next to it in %s.\n", st.ImageDir, exeDir())
+			}
 		}
 	}
 	if err := cmdStop(nil, stdout, stderr); err != nil {

@@ -861,6 +861,11 @@ func cmdDelete(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 		if err := store.Remove(contextName); err != nil && !errors.Is(err, dockerctx.ErrNotOurs) {
 			failed = append(failed, "docker context: "+err.Error())
 		}
+		if d := clientsDir(); d != "" {
+			if err := store.RemovePluginDir(filepath.Join(d, pluginsDirName)); err != nil {
+				failed = append(failed, "docker compose plugin registration: "+err.Error())
+			}
+		}
 	}
 	if len(failed) > 0 {
 		return fmt.Errorf("delete: could not remove:\n  %s", strings.Join(failed, "\n  "))

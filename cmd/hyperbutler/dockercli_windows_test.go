@@ -34,6 +34,29 @@ func TestParseCLIVersion(t *testing.T) {
 	}
 }
 
+// After a side-by-side upgrade, a pinned build restarts with its own image, not the one
+// the old engine ran (which it would refuse).
+func TestRestartImageDir(t *testing.T) {
+	newDir, oldDir := `C:\hb\new`, `C:\hb\old`
+	for _, c := range []struct {
+		state, exe string
+		pinned     bool
+		want       string
+		ignored    bool
+	}{
+		{oldDir, newDir, false, oldDir, false}, // development build: as before
+		{oldDir, newDir, true, "", true},
+		{newDir, newDir, true, newDir, false},
+		{`c:\HB\new\`, newDir, true, `c:\HB\new\`, false},
+		{"", newDir, true, "", false},
+	} {
+		got, ignored := restartImageDir(c.state, c.exe, c.pinned)
+		if got != c.want || ignored != c.ignored {
+			t.Errorf("restartImageDir(%q, %q, %v) = %q, %v; want %q, %v", c.state, c.exe, c.pinned, got, ignored, c.want, c.ignored)
+		}
+	}
+}
+
 // fakeDocker writes a docker.cmd that prints version, and puts only its folder on PATH.
 func fakeDocker(t *testing.T, version string) string {
 	t.Helper()
@@ -68,7 +91,7 @@ func TestCheckDockerCLI(t *testing.T) {
 	out.Reset()
 	errb.Reset()
 	checkDockerCLI(c, &out, &errb)
-	if errb.Len() != 0 || !strings.Contains(out.String(), "found on PATH") {
+	if errb.Len() != 0 || !strings.Contains(out.String(), "(on PATH, 29.9)") {
 		t.Errorf("current CLI: out %q err %q", out.String(), errb.String())
 	}
 
