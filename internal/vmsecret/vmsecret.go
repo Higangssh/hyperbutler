@@ -5,8 +5,14 @@
 // anything, compare them in constant time, and close the connection on a mismatch
 // without writing a byte, so a peer learns nothing but that it was refused.
 //
+// The services the guest connects to (the share server and the plain network link,
+// guest to host) run the other way round: the host's listener writes the secret right
+// after it accepts, and the guest reads it (Verify) before it writes anything, so a
+// listener another host user put on a wildcard VM id is never served.
+//
 // The hvsock connect descriptors already allow only the owner's SID; the secret is the
-// barrier that remains if a platform does not enforce them.
+// barrier that remains if a platform does not enforce them, and the only one in front of
+// the guest-initiated services, whose wildcard listeners no descriptor covers.
 //
 // A Secret never prints: every fmt verb renders it as "[redacted]", so it cannot reach a
 // log through a %v of a struct that holds it. Hex is the one way to get its text, for
@@ -180,9 +186,10 @@ func Send(w io.Writer, s Secret) error {
 	return err
 }
 
-// DefaultTimeout is how long Admit waits for the secret. The host writes it in the same
-// dial call that connects (transport.HvsockDialer), before the connection is used, so a
-// peer that has not sent 32 bytes by then is not the host.
+// DefaultTimeout is how long Admit and Verify wait for the secret. The host writes it in
+// the same dial call that connects (transport.HvsockDialer), or right after it accepts a
+// guest's connection, before the connection is used, so a peer that has not sent 32
+// bytes by then is not the host.
 const DefaultTimeout = time.Second
 
 // DeadlineReader is a connection whose reads can be bounded.
@@ -206,6 +213,12 @@ func Admit(c DeadlineReader, want Secret, timeout time.Duration) error {
 	}
 	return c.SetReadDeadline(time.Time{})
 }
+
+// Verify is Admit for a connection the guest made: it checks, within DefaultTimeout,
+// that the host listener c reached begins with want, before the guest writes anything
+// to it. On an error the caller closes c without writing to it and connects again later
+// (with a backoff: a listener that is not the host must not make the guest spin).
+func Verify(c DeadlineReader, want Secret) error { return Admit(c, want, DefaultTimeout) }
 
 // Conn is a connection a Gate admits.
 type Conn interface {

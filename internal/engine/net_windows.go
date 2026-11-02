@@ -195,27 +195,7 @@ func (g *guestNet) start(ctx context.Context, vmid guid.GUID, secret vmsecret.Se
 			g.dialGuest(dctx, vmid, secret, func() { linkUp("offload, link CRC " + g.cfg.LinkCRC.String()) })
 		}()
 	}
-	go func() {
-		for {
-			c, err := ln.Accept()
-			if err != nil {
-				return
-			}
-			if offload, known := g.st.Offloading(); known && offload {
-				// The link is in offload mode for good; a guest program that dials
-				// the host is refused quietly, however often it tries.
-				_ = c.Close()
-				g.log.Debug("refused a plain guest link: the link is in offload mode")
-				continue
-			}
-			linkUp("plain")
-			go func() {
-				if err := g.st.ServeConn(c); err != nil && ctx.Err() == nil {
-					g.log.Warn("guest network link ended", "err", err)
-				}
-			}()
-		}
-	}()
+	go g.servePlain(ctx, ln, secret, func() { linkUp("plain") })
 	for _, p := range g.publish {
 		if _, err := g.st.Publish(p); err != nil {
 			return err
@@ -226,6 +206,39 @@ func (g *guestNet) start(ctx context.Context, vmid guid.GUID, secret vmsecret.Se
 		step("host gateway: host.docker.internal is %s, forwarding to this host's loopback (%s)", a, hg)
 	}
 	return nil
+}
+
+// servePlain accepts the guest forwarder's plain-mode links on ln until it is closed.
+// Each begins with secret, the VM's (ADR 0004 rule 6), which netfwd checks before it
+// sends a frame: a listener of another user on a wildcard VM id cannot send it, so the
+// guest's network never comes up through one.
+func (g *guestNet) servePlain(ctx context.Context, ln net.Listener, secret vmsecret.Secret, linkUp func()) {
+	for {
+		c, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		if offload, known := g.st.Offloading(); known && offload {
+			// The link is in offload mode for good; a guest program that dials
+			// the host is refused quietly, however often it tries.
+			_ = c.Close()
+			g.log.Debug("refused a plain guest link: the link is in offload mode")
+			continue
+		}
+		go func() {
+			if err := transport.SendSecret(c, secret); err != nil {
+				_ = c.Close()
+				if ctx.Err() == nil {
+					g.log.Warn("guest network link refused", "err", err)
+				}
+				return
+			}
+			linkUp()
+			if err := g.st.ServeConn(c); err != nil && ctx.Err() == nil {
+				g.log.Warn("guest network link ended", "err", err)
+			}
+		}()
+	}
 }
 
 // dialGuest connects to the guest forwarder in offload mode (netfwd -vnet listens on

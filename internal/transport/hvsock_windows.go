@@ -4,13 +4,10 @@ package transport
 
 import (
 	"context"
-	"fmt"
 	"net"
 	"time"
 
 	"github.com/Microsoft/go-winio"
-
-	"github.com/Higangssh/hyperbutler/internal/vmsecret"
 )
 
 // HvsockDialer dials an AF_HYPERV socket in a utility VM, typically the guest's dockerd
@@ -22,21 +19,6 @@ type HvsockDialer struct {
 	Retries uint
 	// RetryWait is the pause between attempts.
 	RetryWait time.Duration
-}
-
-// secretWriteTimeout bounds the write of the VM secret on a new connection: 32 bytes
-// into an empty socket buffer.
-const secretWriteTimeout = 5 * time.Second
-
-// sendSecret writes the VM secret as the first bytes of c (ADR 0004 rule 6).
-func sendSecret(c net.Conn, s vmsecret.Secret) error {
-	if err := c.SetWriteDeadline(time.Now().Add(secretWriteTimeout)); err != nil {
-		return err
-	}
-	if err := vmsecret.Send(c, s); err != nil {
-		return fmt.Errorf("transport: send the VM secret: %w", err)
-	}
-	return c.SetWriteDeadline(time.Time{})
 }
 
 // DialContext connects to d.Target, and sends the target's secret first if it has one.
@@ -64,7 +46,7 @@ func (d *HvsockDialer) DialContext(ctx context.Context) (net.Conn, error) {
 			return
 		}
 		if !d.Target.Secret.IsZero() {
-			if err := sendSecret(c, d.Target.Secret); err != nil {
+			if err := SendSecret(c, d.Target.Secret); err != nil {
 				_ = c.Close()
 				ch <- result{nil, err}
 				return

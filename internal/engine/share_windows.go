@@ -21,6 +21,7 @@ import (
 
 	"github.com/Higangssh/hyperbutler/internal/share"
 	"github.com/Higangssh/hyperbutler/internal/transport"
+	"github.com/Higangssh/hyperbutler/internal/vmsecret"
 	"github.com/Higangssh/hyperbutler/internal/vmtemplate"
 )
 
@@ -80,17 +81,21 @@ func setupShares(sc ShareConfig, log *slog.Logger) (s *shareService) {
 }
 
 // listen starts accepting the guest relay's connections on the VM's hvsock address.
-func (s *shareService) listen(vmid guid.GUID) error {
+// Each begins with secret, the VM's (ADR 0004 rule 6), which the guest checks before it
+// mounts: a listener of another user on a wildcard VM id cannot send it.
+func (s *shareService) listen(vmid guid.GUID, secret vmsecret.Secret) error {
 	ln, err := winio.ListenHvsock(&winio.HvsockAddr{VMID: vmid, ServiceID: s.svc})
 	if err != nil {
 		return fmt.Errorf("listen hvsock %s: %w", s.svc, err)
 	}
-	s.serve(ln)
+	s.serve(ln, secret)
 	return nil
 }
 
-// serve accepts on ln until close and runs share.Server.Serve for each connection.
-func (s *shareService) serve(ln net.Listener) {
+// serve accepts on ln until close and, for each connection, sends secret and then runs
+// share.Server.Serve. The secret goes first, before the guest's HELLO: the guest reads
+// it before it writes anything.
+func (s *shareService) serve(ln net.Listener, secret vmsecret.Secret) {
 	s.mu.Lock()
 	if s.closed {
 		s.mu.Unlock()
@@ -131,7 +136,10 @@ func (s *shareService) serve(ln net.Listener) {
 			s.mu.Unlock()
 			go func() {
 				defer s.wg.Done()
-				err := s.srv.Serve(c)
+				err := transport.SendSecret(c, secret)
+				if err == nil {
+					err = s.srv.Serve(c)
+				}
 				s.mu.Lock()
 				delete(s.conns, c)
 				closed := s.closed

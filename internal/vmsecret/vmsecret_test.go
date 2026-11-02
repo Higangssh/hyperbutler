@@ -210,3 +210,72 @@ func FuzzFromCmdline(f *testing.F) {
 		}
 	})
 }
+
+// Verify is the guest's check of a host listener: a listener that sends the wrong
+// secret, or nothing, is refused (the latter after DefaultTimeout), and one that sends
+// the right one leaves the connection with no deadline and nothing past it consumed.
+func TestVerify(t *testing.T) {
+	s := testSecret()
+	wrong := s
+	wrong[0] ^= 1
+	for name, send := range map[string][]byte{"wrong": wrong[:], "zero": make([]byte, Size), "nothing": nil} {
+		a, b := net.Pipe()
+		go func() {
+			if send != nil {
+				_, _ = a.Write(send)
+			}
+		}()
+		start := time.Now()
+		err := Verify(b, s)
+		if !errors.Is(err, ErrMismatch) {
+			t.Errorf("%s: %v, want ErrMismatch", name, err)
+		}
+		if d := time.Since(start); d > DefaultTimeout+2*time.Second {
+			t.Errorf("%s: took %v", name, d)
+		}
+		_ = a.Close()
+		_ = b.Close()
+	}
+
+	a, b := net.Pipe()
+	defer a.Close()
+	defer b.Close()
+	go func() {
+		_ = Send(a, s)
+		_, _ = a.Write([]byte("hello"))
+	}()
+	if err := Verify(b, s); err != nil {
+		t.Fatal(err)
+	}
+	rest := make([]byte, 5)
+	if _, err := io.ReadFull(b, rest); err != nil || string(rest) != "hello" {
+		t.Fatalf("after Verify: %q, %v", rest, err)
+	}
+}
+
+// Check is the parser both directions share: it accepts exactly the inputs that begin
+// with the wanted secret, and never reads past its 32 bytes.
+func FuzzCheck(f *testing.F) {
+	s := testSecret()
+	f.Add(s[:])
+	f.Add(append(s[:], "GET /"...))
+	f.Add(s[:Size-1])
+	f.Add(make([]byte, Size))
+	f.Add([]byte{})
+	f.Fuzz(func(t *testing.T, in []byte) {
+		for _, want := range []Secret{s, {}} {
+			r := bytes.NewReader(in)
+			err := Check(r, want)
+			ok := !want.IsZero() && len(in) >= Size && bytes.Equal(in[:Size], want[:])
+			if (err == nil) != ok {
+				t.Fatalf("Check(%x, zero=%v) = %v, want ok=%v", in, want.IsZero(), err, ok)
+			}
+			if err != nil && !errors.Is(err, ErrMismatch) {
+				t.Fatalf("Check error %v is not ErrMismatch", err)
+			}
+			if read := len(in) - r.Len(); read > Size {
+				t.Fatalf("Check read %d bytes", read)
+			}
+		}
+	})
+}

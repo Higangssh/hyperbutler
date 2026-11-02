@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/Higangssh/hyperbutler/internal/share"
+	"github.com/Higangssh/hyperbutler/internal/vmsecret"
 	"github.com/Higangssh/hyperbutler/internal/vmtemplate"
 )
 
@@ -45,11 +46,8 @@ func TestShareServiceSurvivesAcceptError(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	s.serve(&flakyListener{Listener: ln})
-	c, err := net.Dial("tcp", ln.Addr().String())
-	if err != nil {
-		t.Fatal(err)
-	}
+	s.serve(&flakyListener{Listener: ln}, testVMSecret)
+	c := dialShare(t, ln.Addr().String())
 	defer c.Close()
 	if _, err := c.Write(helloFrame(0)); err != nil {
 		t.Fatal(err)
@@ -79,6 +77,66 @@ func TestSetupSharesOff(t *testing.T) {
 	}
 }
 
+// dialShare connects to the share server at addr as the guest relay does: it checks
+// that the server sends the VM secret first (vmsecret.Verify) before it writes.
+func dialShare(t *testing.T, addr string) net.Conn {
+	t.Helper()
+	c, err := net.Dial("tcp", addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := vmsecret.Verify(c, testVMSecret); err != nil {
+		_ = c.Close()
+		t.Fatalf("the share server did not send the VM secret first: %v", err)
+	}
+	return c
+}
+
+// ADR 0004 (Two-account run): every connection the share server accepts begins with
+// the VM secret, the guest's proof that the listener is its own host's; without a
+// secret the server closes the connection having written nothing, and nothing mounts.
+func TestShareServiceSendsSecretFirst(t *testing.T) {
+	s := setupShares(ShareConfig{}, slog.New(slog.DiscardHandler))
+	defer s.close()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.serve(ln, vmsecret.Secret{})
+	c, err := net.Dial("tcp", ln.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	_ = c.SetReadDeadline(time.Now().Add(5 * time.Second))
+	if b, err := io.ReadAll(c); len(b) != 0 {
+		t.Fatalf("a server without a secret wrote %d byte(s) (%v)", len(b), err)
+	}
+	if s.srv.Mounted() {
+		t.Fatal("mounted without a secret")
+	}
+
+	s2 := setupShares(ShareConfig{}, slog.New(slog.DiscardHandler))
+	defer s2.close()
+	ln2, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s2.serve(ln2, testVMSecret)
+	c2 := dialShare(t, ln2.Addr().String())
+	defer c2.Close()
+	if _, err := c2.Write(helloFrame(0)); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for !s2.srv.Mounted() {
+		if time.Now().After(deadline) {
+			t.Fatal("the session after the secret never started")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
 // helloFrame is the relay's first frame on a connection (relay.helloFrame).
 func helloFrame(queue uint32) []byte {
 	b := make([]byte, 48)
@@ -97,16 +155,13 @@ func TestShareServiceCloseEndsConnections(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	s.serve(ln)
+	s.serve(ln, testVMSecret)
 	if _, err := s.rewriteCreate([]byte(`{"HostConfig":{"Binds":["C:\\x:/x"]}}`)); err == nil || !strings.Contains(err.Error(), "not mounted") {
 		t.Fatalf("rewrite before the guest mounted: %v", err)
 	}
 	var clients []net.Conn
 	for i, first := range [][]byte{helloFrame(0), helloFrame(0)[:20]} {
-		c, err := net.Dial("tcp", ln.Addr().String())
-		if err != nil {
-			t.Fatal(err)
-		}
+		c := dialShare(t, ln.Addr().String())
 		defer c.Close()
 		if _, err := c.Write(first); err != nil {
 			t.Fatal(err)
@@ -151,7 +206,7 @@ func TestShareServiceCloseEndsConnections(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	s.serve(ln2)
+	s.serve(ln2, testVMSecret)
 	if _, err := ln2.Accept(); err == nil {
 		t.Fatal("listener still open")
 	}
