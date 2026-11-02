@@ -82,6 +82,8 @@ func (m *fuzzModel) check(t *testing.T, req proto.Request, rep proto.Reply) {
 		status()
 	case proto.OpSetDataLocation:
 		wantErr(proto.CodeInvalidHandle)
+	case proto.OpOpenEndpoint:
+		wantErr(proto.CodeWrongEndpoint)
 	case proto.OpResize:
 		cpus, mem := m.cpus, m.mem
 		if req.CPUs != 0 {
@@ -101,11 +103,40 @@ func (m *fuzzModel) check(t *testing.T, req proto.Request, rep proto.Reply) {
 	}
 }
 
-// FuzzServeConn feeds arbitrary bytes to ServeConn as the client stream. ServeConn must
-// return, never panic, and write only whole, valid reply frames: exactly one per request
-// it decoded plus at most one error reply for the frame that ended the connection. Each
-// reply must match a model of the server running on FakeBackend with a peer whose
-// handles can never be duplicated.
+// fuzzEndpoint is the per-user endpoint name the shared endpoint's opener hands out.
+const fuzzEndpoint = `\\.\pipe\hyperbutler-broker-fuzz`
+
+// checkShared is the model of the shared endpoint: version and open-endpoint are
+// answered, every other verb is refused, and no reply carries VM state or a secret.
+func checkShared(t *testing.T, req proto.Request, rep proto.Reply) {
+	t.Helper()
+	if !rep.Secret.IsZero() || rep.VMID != ([16]byte{}) {
+		t.Fatalf("%v: the shared endpoint sent VM state: %+v", req.Op, rep)
+	}
+	var want proto.Reply
+	switch req.Op {
+	case proto.OpVersion:
+		want = proto.Reply{Type: proto.ReplyFlag | uint8(req.Op), ProtoVersion: proto.Version, BrokerVersion: "fuzz-1"}
+	case proto.OpOpenEndpoint:
+		want = proto.Reply{Type: proto.ReplyFlag | uint8(req.Op), PipeName: fuzzEndpoint}
+	default:
+		if !rep.IsError() || rep.Code != proto.CodeWrongEndpoint {
+			t.Fatalf("%v on the shared endpoint: reply %+v, want CodeWrongEndpoint", req.Op, rep)
+		}
+		return
+	}
+	if rep != want {
+		t.Fatalf("%v: reply %+v, want %+v", req.Op, rep, want)
+	}
+}
+
+// FuzzServeConn feeds arbitrary bytes to ServeConn as the client stream, once on the
+// caller's own endpoint and once on the shared endpoint. ServeConn must return, never
+// panic, and write only whole, valid reply frames: exactly one per request it decoded
+// plus at most one error reply for the frame that ended the connection. Each reply must
+// match a model of the server running on FakeBackend with a peer whose handles can never
+// be duplicated; on the shared endpoint, only version and open-endpoint are served and
+// no reply carries a VM's state or secret.
 func FuzzServeConn(f *testing.F) {
 	cat := func(parts ...[]byte) []byte { return bytes.Join(parts, nil) }
 	version := fuzzReq(proto.Request{Op: proto.OpVersion})
@@ -140,104 +171,121 @@ func FuzzServeConn(f *testing.F) {
 	f.Add(cat(pause, resume, startNet, status, pause))
 	f.Add(cat(status, []byte{0, 5, 1, byte(proto.OpPause), 17, 1, 0}))    // resume false encoded
 	f.Add(cat(status, []byte{0, 5, 1, byte(proto.OpStart), 12, 1, 0x80})) // unknown feature
+	open := fuzzReq(proto.Request{Op: proto.OpOpenEndpoint})
+	f.Add(open)
+	f.Add(cat(version, open, open, status, start, stop, setDL, resize, pause))
+	f.Add(cat(open, []byte{0, 5, 1, byte(proto.OpOpenEndpoint), 18, 1, 'x'})) // a field on open-endpoint
+	f.Add(cat(open, []byte{0, 2, 1, 0x88}))                                   // the open reply as a request
 
 	f.Fuzz(func(t *testing.T, in []byte) {
-		s, err := New(Config{Backend: NewFakeBackend(), Version: "fuzz-1"})
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer s.Close()
-		conn := &fuzzConn{r: bytes.NewReader(in)}
-		peer := &fuzzPeer{}
-		done := make(chan error, 1)
-		go func() { done <- s.ServeConn(context.Background(), conn, peer) }()
-		var serveErr error
-		select {
-		case serveErr = <-done:
-		case <-time.After(10 * time.Second):
-			t.Fatalf("ServeConn did not return for %x", in)
-		}
-
-		// Work out what the server should have done, frame by frame.
-		var (
-			buf      [proto.MaxFrameSize]byte
-			reqs     []proto.Request
-			framesIn int
-			endsBad  bool // the stream ends with a frame that earns an error reply
-			endCode  proto.Code
-			cleanEOF bool
-		)
-		in2 := bytes.NewReader(in)
-	parse:
-		for {
-			b, err := proto.ReadFrame(in2, &buf)
-			switch {
-			case errors.Is(err, io.EOF):
-				cleanEOF = true
-				break parse
-			case errors.Is(err, proto.ErrFrameTooLarge), errors.Is(err, proto.ErrInvalid):
-				endsBad, endCode = true, proto.CodeBadRequest
-				break parse
-			case err != nil:
-				break parse
-			}
-			framesIn++
-			req, err := proto.DecodeRequest(b)
-			if err != nil {
-				endsBad, endCode = true, proto.CodeBadRequest
-				if errors.Is(err, proto.ErrUnsupportedVersion) {
-					endCode = proto.CodeUnsupportedVersion
-				}
-				break parse
-			}
-			reqs = append(reqs, req)
-		}
-		if cleanEOF != (serveErr == nil) {
-			t.Fatalf("ServeConn(%x) = %v; clean EOF expected: %v", in, serveErr, cleanEOF)
-		}
-		if want := min(framesIn, 1); peer.identifies != want {
-			t.Fatalf("Identify called %d times for %d frames", peer.identifies, framesIn)
-		}
-
-		out := conn.out.Bytes()
-		if len(out) > (framesIn+1)*proto.MaxFrameSize {
-			t.Fatalf("%d bytes written for %d frames", len(out), framesIn)
-		}
-		var replies []proto.Reply
-		or := bytes.NewReader(out)
-		for {
-			b, err := proto.ReadFrame(or, &buf)
-			if errors.Is(err, io.EOF) {
-				break
-			}
-			if err != nil {
-				t.Fatalf("output %x does not split into frames: %v", out, err)
-			}
-			rep, err := proto.DecodeReply(b)
-			if err != nil {
-				t.Fatalf("server wrote invalid reply %x: %v", b, err)
-			}
-			replies = append(replies, rep)
-		}
-		if len(replies) > framesIn+1 {
-			t.Fatalf("%d replies for %d request frames", len(replies), framesIn)
-		}
-		want := len(reqs)
-		if endsBad {
-			want++
-		}
-		if len(replies) != want {
-			t.Fatalf("input %x: %d replies, want %d (%d requests, bad end %v)", in, len(replies), want, len(reqs), endsBad)
-		}
-		m := fuzzModel{cpus: 2, mem: 2048}
-		for i, req := range reqs {
-			m.check(t, req, replies[i])
-		}
-		if endsBad {
-			last := replies[len(replies)-1]
-			if !last.IsError() || last.Code != endCode {
-				t.Fatalf("final reply %+v, want error code %d", last, endCode)
-			}
+		for _, owner := range []string{fuzzSID, ""} {
+			serveFuzz(t, in, owner)
 		}
 	})
+}
+
+// serveFuzz is one FuzzServeConn run on the endpoint of owner ("" for the shared one).
+func serveFuzz(t *testing.T, in []byte, owner string) {
+	s, err := New(Config{Backend: NewFakeBackend(), Version: "fuzz-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	s.opener = func(string) (string, error) { return fuzzEndpoint, nil }
+	conn := &fuzzConn{r: bytes.NewReader(in)}
+	peer := &fuzzPeer{}
+	done := make(chan error, 1)
+	go func() { done <- s.ServeConn(context.Background(), conn, peer, owner) }()
+	var serveErr error
+	select {
+	case serveErr = <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatalf("ServeConn did not return for %x", in)
+	}
+
+	// Work out what the server should have done, frame by frame.
+	var (
+		buf      [proto.MaxFrameSize]byte
+		reqs     []proto.Request
+		framesIn int
+		endsBad  bool // the stream ends with a frame that earns an error reply
+		endCode  proto.Code
+		cleanEOF bool
+	)
+	in2 := bytes.NewReader(in)
+parse:
+	for {
+		b, err := proto.ReadFrame(in2, &buf)
+		switch {
+		case errors.Is(err, io.EOF):
+			cleanEOF = true
+			break parse
+		case errors.Is(err, proto.ErrFrameTooLarge), errors.Is(err, proto.ErrInvalid):
+			endsBad, endCode = true, proto.CodeBadRequest
+			break parse
+		case err != nil:
+			break parse
+		}
+		framesIn++
+		req, err := proto.DecodeRequest(b)
+		if err != nil {
+			endsBad, endCode = true, proto.CodeBadRequest
+			if errors.Is(err, proto.ErrUnsupportedVersion) {
+				endCode = proto.CodeUnsupportedVersion
+			}
+			break parse
+		}
+		reqs = append(reqs, req)
+	}
+	if cleanEOF != (serveErr == nil) {
+		t.Fatalf("ServeConn(%x) = %v; clean EOF expected: %v", in, serveErr, cleanEOF)
+	}
+	if want := min(framesIn, 1); peer.identifies != want {
+		t.Fatalf("Identify called %d times for %d frames", peer.identifies, framesIn)
+	}
+
+	out := conn.out.Bytes()
+	if len(out) > (framesIn+1)*proto.MaxFrameSize {
+		t.Fatalf("%d bytes written for %d frames", len(out), framesIn)
+	}
+	var replies []proto.Reply
+	or := bytes.NewReader(out)
+	for {
+		b, err := proto.ReadFrame(or, &buf)
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			t.Fatalf("output %x does not split into frames: %v", out, err)
+		}
+		rep, err := proto.DecodeReply(b)
+		if err != nil {
+			t.Fatalf("server wrote invalid reply %x: %v", b, err)
+		}
+		replies = append(replies, rep)
+	}
+	if len(replies) > framesIn+1 {
+		t.Fatalf("%d replies for %d request frames", len(replies), framesIn)
+	}
+	want := len(reqs)
+	if endsBad {
+		want++
+	}
+	if len(replies) != want {
+		t.Fatalf("input %x: %d replies, want %d (%d requests, bad end %v)", in, len(replies), want, len(reqs), endsBad)
+	}
+	m := fuzzModel{cpus: 2, mem: 2048}
+	for i, req := range reqs {
+		if owner == "" {
+			checkShared(t, req, replies[i])
+		} else {
+			m.check(t, req, replies[i])
+		}
+	}
+	if endsBad {
+		last := replies[len(replies)-1]
+		if !last.IsError() || last.Code != endCode {
+			t.Fatalf("final reply %+v, want error code %d", last, endCode)
+		}
+	}
 }

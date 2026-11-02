@@ -7,6 +7,8 @@ import (
 	"io"
 	"strings"
 	"testing"
+
+	"github.com/Higangssh/hyperbutler/internal/vmsecret"
 )
 
 // frame builds a raw frame from a type and raw field bytes, with a correct length.
@@ -73,7 +75,8 @@ func TestReplyRoundTrip(t *testing.T) {
 func TestEncodeRejectsInvalid(t *testing.T) {
 	for _, r := range []Request{
 		{},
-		{Op: 8},
+		{Op: 9},
+		{Op: OpOpenEndpoint, Force: true},
 		{Op: OpStart, Force: true},
 		{Op: OpStatus, Handle: 4},
 		{Op: OpResize},
@@ -125,7 +128,8 @@ func TestDecodeStrict(t *testing.T) {
 		{"oversize", append(frame(Version, uint8(OpStart)), make([]byte, MaxFrameSize)...)},
 		{"version 0", frame(0, uint8(OpStart))},
 		{"version 2", frame(2, uint8(OpStart))},
-		{"unknown op", frame(Version, 8)},
+		{"unknown op", frame(Version, 9)},
+		{"open-endpoint with a field", frame(Version, uint8(OpOpenEndpoint), 1, 1, 1)},
 		{"op 0", frame(Version, 0)},
 		{"reply as request", frame(Version, ReplyFlag|uint8(OpStop))},
 		{"unknown tag", frame(Version, uint8(OpStart), 1, 1, 1)},
@@ -166,7 +170,7 @@ func TestDecodeReplyStrict(t *testing.T) {
 		frame(Version, ReplyFlag|uint8(OpStatus), 7, 1, 2),  // CPUs, memory missing
 		frame(Version, uint8(OpStatus)),                     // request as reply
 		frame(Version, ReplyFlag|uint8(OpStop), 8, 16),      // VMID truncated
-		frame(Version, ReplyFlag|8),                         // unknown reply
+		frame(Version, ReplyFlag|9),                         // unknown reply
 		frame(Version, ReplyFlag|uint8(OpVersion), 5, 1, 1), // broker version missing
 	} {
 		if r, err := DecodeReply(in); !errors.Is(err, ErrInvalid) {
@@ -328,5 +332,80 @@ func TestDecodeDoesNotAllocateMuch(t *testing.T) {
 	n := testing.AllocsPerRun(100, func() { _, _ = DecodeRequest(b) })
 	if n > 1 {
 		t.Fatalf("DecodeRequest allocates %v times per call", n)
+	}
+}
+
+func testSecret() vmsecret.Secret {
+	var s vmsecret.Secret
+	for i := range s {
+		s[i] = byte(0xa0 + i)
+	}
+	return s
+}
+
+// The open-endpoint verb and the VM secret (ADR 0004 rules 5 and 6, M3).
+func TestEndpointAndSecret(t *testing.T) {
+	sec := testSecret()
+	id := [16]byte{7}
+	for _, r := range []Reply{
+		{Type: ReplyFlag | uint8(OpOpenEndpoint), PipeName: `\\.\pipe\hyperbutler-broker-00112233445566778899aabbccddeeff`},
+		{Type: ReplyFlag | uint8(OpStart), State: StateRunning, CPUs: 2, MemoryMB: 2048, VMID: id, Secret: sec},
+		{Type: ReplyFlag | uint8(OpStatus), State: StatePaused, CPUs: 2, MemoryMB: 2048, VMID: id, DataLocationSet: true, Secret: sec},
+		{Type: ReplyFlag | uint8(OpPause), State: StateRunning, CPUs: 2, MemoryMB: 2048, VMID: id, Secret: sec},
+		{Type: TypeError, Code: CodeWrongEndpoint, Message: "x"},
+		{Type: TypeError, Code: CodeEndpointSquatted},
+	} {
+		b, err := EncodeReply(r)
+		if err != nil {
+			t.Fatalf("encode %+v: %v", r, err)
+		}
+		got, err := DecodeReply(b)
+		if err != nil || got != r {
+			t.Fatalf("round trip %+v: %+v, %v", r, got, err)
+		}
+	}
+	if b, err := EncodeRequest(Request{Op: OpOpenEndpoint}); err != nil || !bytes.Equal(b, []byte{0, 2, Version, uint8(OpOpenEndpoint)}) {
+		t.Fatalf("open-endpoint request %x, %v", b, err)
+	}
+	for name, r := range map[string]Reply{
+		"secret while stopped":    {Type: ReplyFlag | uint8(OpStatus), State: StateStopped, CPUs: 2, MemoryMB: 2048, Secret: sec},
+		"secret without VM id":    {Type: ReplyFlag | uint8(OpStatus), State: StateRunning, CPUs: 2, MemoryMB: 2048, Secret: sec},
+		"secret on stop":          {Type: ReplyFlag | uint8(OpStop), Secret: sec},
+		"secret on version":       {Type: ReplyFlag | uint8(OpVersion), ProtoVersion: 1, BrokerVersion: "v", Secret: sec},
+		"secret on error":         {Type: TypeError, Code: CodeBusy, Secret: sec},
+		"secret on open-endpoint": {Type: ReplyFlag | uint8(OpOpenEndpoint), PipeName: `\\.\pipe\x`, Secret: sec},
+		"no pipe name":            {Type: ReplyFlag | uint8(OpOpenEndpoint)},
+		"pipe name on status":     {Type: ReplyFlag | uint8(OpStatus), State: StateStopped, CPUs: 2, MemoryMB: 2048, PipeName: "x"},
+		"pipe name too long":      {Type: ReplyFlag | uint8(OpOpenEndpoint), PipeName: strings.Repeat("p", MaxPipeNameLen+1)},
+		"pipe name control char":  {Type: ReplyFlag | uint8(OpOpenEndpoint), PipeName: "a\tb"},
+	} {
+		if _, err := EncodeReply(r); !errors.Is(err, ErrInvalid) {
+			t.Errorf("%s: EncodeReply = %v, want ErrInvalid", name, err)
+		}
+	}
+	running := frame(Version, ReplyFlag|uint8(OpStatus), append(append(fuzzU32(tagCPUs, 2), fuzzU32(tagMemoryMB, 2048)...),
+		tagState, 1, uint8(StateRunning), tagVMID, 16, 7, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)...)
+	if _, err := DecodeReply(running); err != nil {
+		t.Fatal(err)
+	}
+	withSecret := func(v []byte) []byte {
+		b := append(append([]byte{}, running...), tagSecret, uint8(len(v)))
+		b = append(b, v...)
+		binary.BigEndian.PutUint16(b, uint16(len(b)-2))
+		return b
+	}
+	if r, err := DecodeReply(withSecret(sec[:])); err != nil || r.Secret != sec {
+		t.Fatalf("secret reply: %v", err)
+	}
+	for name, in := range map[string][]byte{
+		"zero secret":               withSecret(make([]byte, vmsecret.Size)),
+		"short secret":              withSecret(sec[:vmsecret.Size-1]),
+		"long secret":               withSecret(append(sec[:], 1)),
+		"open reply without a name": frame(Version, ReplyFlag|uint8(OpOpenEndpoint)),
+		"open reply empty name":     frame(Version, ReplyFlag|uint8(OpOpenEndpoint), tagPipeName, 0),
+	} {
+		if r, err := DecodeReply(in); !errors.Is(err, ErrInvalid) {
+			t.Errorf("%s: DecodeReply(%x) = %+v, %v; want ErrInvalid", name, in, r, err)
+		}
 	}
 }

@@ -2,7 +2,9 @@
 //
 // It carries only the ADR 0004 verbs: start (create) the caller's VM, stop it, query its
 // status, resize it within fixed limits, set its data location by handle, pause or resume
-// it (Implementation decision 2), and report the broker version. There is deliberately no
+// it (Implementation decision 2), report the broker version, and open the caller's own
+// endpoint (rule 5, served on the shared endpoint only); a status reply on the owner's
+// own endpoint carries the running VM's secret (rule 6). There is deliberately no
 // field for a path, a command line, a share, an identity, or an HCS document (ADR 0004
 // rules 1, 4 and 7). A start carries the VM's features and network as typed values (an
 // IPv4 subnet, an MTU in a fixed range, flags), which the broker renders itself
@@ -34,6 +36,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+
+	"github.com/Higangssh/hyperbutler/internal/vmsecret"
 )
 
 // Version is the only protocol version this package speaks. A future version must keep
@@ -63,9 +67,14 @@ const (
 	// OpPause pauses the caller's running VM, or resumes it with Resume (the free-space
 	// guard, REQ-DISK-004 and REQ-DISK-010).
 	OpPause Op = 7
+	// OpOpenEndpoint asks the shared endpoint for the caller's own endpoint (ADR 0004
+	// rule 5): the broker creates it if it does not exist yet and replies with its pipe
+	// name. It is the only verb besides OpVersion that the shared endpoint serves, and
+	// the only one a per-user endpoint refuses.
+	OpOpenEndpoint Op = 8
 )
 
-func (o Op) valid() bool { return o >= OpVersion && o <= OpPause }
+func (o Op) valid() bool { return o >= OpVersion && o <= OpOpenEndpoint }
 
 func (o Op) String() string {
 	switch o {
@@ -83,6 +92,8 @@ func (o Op) String() string {
 		return "set-data-location"
 	case OpPause:
 		return "pause"
+	case OpOpenEndpoint:
+		return "open-endpoint"
 	}
 	return fmt.Sprintf("op(%d)", uint8(o))
 }
@@ -107,6 +118,8 @@ const (
 	MaxHandle     = 0xFFFFFFFF
 	MaxVersionLen = 64
 	MaxMessageLen = 200
+	// MaxPipeNameLen bounds the pipe name of an open-endpoint reply.
+	MaxPipeNameLen = 128
 	// MinMTU and MaxMTU bound the guest link MTU (the network stack's own range).
 	MinMTU = 576
 	MaxMTU = 65520
@@ -169,7 +182,13 @@ const (
 	CodeImageRejected        Code = 11 // the broker's guest image failed its checks
 	CodeDiskRejected         Code = 12 // the data disk below the data location failed its checks
 	CodeLeaseHeld            Code = 13 // the VM runs under another connection's lease
-	maxCode                       = CodeLeaseHeld
+	// CodeWrongEndpoint: the verb is not served on this endpoint. The shared endpoint
+	// serves only version and open-endpoint; a per-user endpoint serves everything else.
+	CodeWrongEndpoint Code = 14
+	// CodeEndpointSquatted: the caller's per-user pipe name is already taken by a pipe
+	// the broker did not create. The broker does not fall back to another name.
+	CodeEndpointSquatted Code = 15
+	maxCode                   = CodeEndpointSquatted
 )
 
 func (c Code) valid() bool { return c >= CodeBadRequest && c <= maxCode }
@@ -216,12 +235,19 @@ type Reply struct {
 	ProtoVersion  uint8
 	BrokerVersion string
 
-	// OpStart, OpStatus and OpResize.
+	// OpStart, OpStatus, OpResize and OpPause.
 	State           State
 	CPUs            uint32
 	MemoryMB        uint32
 	VMID            [16]byte // the runtime id in RFC 4122 byte order; zero when no VM exists
 	DataLocationSet bool
+	// Secret is the running VM's secret (ADR 0004 rule 6), which the owner's hvsock
+	// connections to the guest begin with. Only the owner's own endpoint sends it; it is
+	// zero when no VM runs, and never printed (vmsecret.Secret).
+	Secret vmsecret.Secret
+
+	// OpOpenEndpoint: the caller's own endpoint.
+	PipeName string
 }
 
 // IsError reports whether r is an error reply.
@@ -258,7 +284,9 @@ const (
 	tagNetMTU          = 15
 	tagNetFlags        = 16
 	tagResume          = 17
-	maxTag             = tagResume
+	tagPipeName        = 18
+	tagSecret          = 19
+	maxTag             = tagSecret
 )
 
 type kind uint8
@@ -272,6 +300,7 @@ const (
 	kindGUID   // 16 bytes, not all zero
 	kindIPv4   // 4 bytes in network order, not all zero
 	kindString // 1..max bytes of printable ASCII
+	kindSecret // vmsecret.Size bytes, not all zero
 )
 
 type fieldSpec struct {
@@ -296,6 +325,8 @@ var (
 	optGUID   = &fieldSpec{kind: kindGUID}
 	reqVerStr = &fieldSpec{kind: kindString, required: true, max: MaxVersionLen}
 	optMsgStr = &fieldSpec{kind: kindString, max: MaxMessageLen}
+	reqPipe   = &fieldSpec{kind: kindString, required: true, max: MaxPipeNameLen}
+	optSecret = &fieldSpec{kind: kindSecret}
 )
 
 var statusSchema = schema{
@@ -304,6 +335,7 @@ var statusSchema = schema{
 	tagMemoryMB:        reqU32,
 	tagVMID:            optGUID,
 	tagDataLocationSet: optBool,
+	tagSecret:          optSecret,
 }
 
 var schemas = map[uint8]*schema{
@@ -315,6 +347,7 @@ var schemas = map[uint8]*schema{
 	uint8(OpResize):          {tagCPUs: optU32, tagMemoryMB: optU32},
 	uint8(OpSetDataLocation): {tagHandle: reqU64},
 	uint8(OpPause):           {tagResume: optBool},
+	uint8(OpOpenEndpoint):    {},
 
 	ReplyFlag | uint8(OpVersion):         {tagProtoVersion: reqU8, tagBrokerVersion: reqVerStr},
 	ReplyFlag | uint8(OpStart):           &statusSchema,
@@ -323,6 +356,7 @@ var schemas = map[uint8]*schema{
 	ReplyFlag | uint8(OpResize):          &statusSchema,
 	ReplyFlag | uint8(OpSetDataLocation): {},
 	ReplyFlag | uint8(OpPause):           &statusSchema,
+	ReplyFlag | uint8(OpOpenEndpoint):    {tagPipeName: reqPipe},
 	TypeError:                            {tagCode: reqU16, tagMessage: optMsgStr},
 }
 
@@ -333,6 +367,7 @@ type fields struct {
 	str     [maxTag + 1]string
 	guid    [16]byte
 	ipv4    [4]byte
+	secret  vmsecret.Secret
 }
 
 // The u8, u16 and u32 accessors narrow a decoded number to its tag's wire width.
@@ -367,6 +402,8 @@ func kindSize(k kind) int {
 		return 16
 	case kindIPv4:
 		return 4
+	case kindSecret:
+		return vmsecret.Size
 	}
 	return -1
 }
@@ -455,6 +492,11 @@ func decodeFrame(b []byte) (uint8, *fields, error) {
 				copy(f.ipv4[:], v)
 				if f.ipv4 == ([4]byte{}) {
 					return 0, nil, invalid("tag %d: zero address", tag)
+				}
+			case kindSecret:
+				copy(f.secret[:], v)
+				if f.secret.IsZero() {
+					return 0, nil, invalid("tag %d: zero secret", tag)
 				}
 			}
 			// An optional number is encoded only when it is not zero (canonical form).
@@ -605,6 +647,8 @@ func DecodeReply(b []byte) (Reply, error) {
 		MemoryMB:        f.u32(tagMemoryMB),
 		VMID:            f.guid,
 		DataLocationSet: f.num[tagDataLocationSet] == 1,
+		Secret:          f.secret,
+		PipeName:        f.str[tagPipeName],
 	}
 	if err := r.Validate(); err != nil {
 		return Reply{}, err
@@ -629,6 +673,8 @@ func (r *Reply) Validate() error {
 		tagMemoryMB:        r.MemoryMB != 0,
 		tagVMID:            r.VMID != [16]byte{},
 		tagDataLocationSet: r.DataLocationSet,
+		tagPipeName:        r.PipeName != "",
+		tagSecret:          !r.Secret.IsZero(),
 	}
 	for tag, isSet := range set {
 		if isSet && sc[tag] == nil {
@@ -640,6 +686,9 @@ func (r *Reply) Validate() error {
 	}
 	if !printableASCII([]byte(r.BrokerVersion)) || len(r.BrokerVersion) > MaxVersionLen {
 		return invalid("bad broker version")
+	}
+	if !printableASCII([]byte(r.PipeName)) || len(r.PipeName) > MaxPipeNameLen {
+		return invalid("bad pipe name")
 	}
 	switch {
 	case r.Type == TypeError:
@@ -653,9 +702,17 @@ func (r *Reply) Validate() error {
 		if r.CPUs == 0 || r.CPUs > MaxCPUs || r.MemoryMB < MinMemoryMB || r.MemoryMB > MaxMemoryMB {
 			return invalid("status: %d CPUs, %d MB", r.CPUs, r.MemoryMB)
 		}
+		// A secret belongs to a VM that exists.
+		if !r.Secret.IsZero() && (r.State == StateStopped || r.VMID == [16]byte{}) {
+			return invalid("status: a secret without a running VM")
+		}
 	case r.Type == ReplyFlag|uint8(OpVersion):
 		if r.ProtoVersion == 0 || r.BrokerVersion == "" {
 			return invalid("version reply: missing fields")
+		}
+	case r.Type == ReplyFlag|uint8(OpOpenEndpoint):
+		if r.PipeName == "" {
+			return invalid("open-endpoint reply: no pipe name")
 		}
 	}
 	return nil
@@ -759,6 +816,10 @@ func EncodeReply(r Reply) ([]byte, error) {
 		e.u16(tagCode, uint16(r.Code))
 	}
 	e.str(tagMessage, r.Message)
+	e.str(tagPipeName, r.PipeName)
+	if !r.Secret.IsZero() {
+		e.field(tagSecret, r.Secret[:])
+	}
 	return e.finish()
 }
 

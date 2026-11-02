@@ -28,6 +28,7 @@ import (
 	"github.com/Higangssh/hyperbutler/internal/netstack"
 	"github.com/Higangssh/hyperbutler/internal/socktable"
 	"github.com/Higangssh/hyperbutler/internal/transport"
+	"github.com/Higangssh/hyperbutler/internal/vmsecret"
 	"github.com/Higangssh/hyperbutler/internal/vmtemplate"
 )
 
@@ -173,7 +174,7 @@ func (f levelFilter) WithGroup(n string) slog.Handler {
 
 // start listens for the guest forwarder on the VM's hvsock address and opens the static
 // publishes.
-func (g *guestNet) start(ctx context.Context, vmid guid.GUID, step func(string, ...any)) error {
+func (g *guestNet) start(ctx context.Context, vmid guid.GUID, secret vmsecret.Secret, step func(string, ...any)) error {
 	ln, err := winio.ListenHvsock(&winio.HvsockAddr{VMID: vmid, ServiceID: g.svc})
 	if err != nil {
 		return fmt.Errorf("listen hvsock %s: %w", g.svc, err)
@@ -191,7 +192,7 @@ func (g *guestNet) start(ctx context.Context, vmid guid.GUID, step func(string, 
 		g.dialCancel, g.dialDone = cancel, make(chan struct{})
 		go func() {
 			defer close(g.dialDone)
-			g.dialGuest(dctx, vmid, func() { linkUp("offload, link CRC " + g.cfg.LinkCRC.String()) })
+			g.dialGuest(dctx, vmid, secret, func() { linkUp("offload, link CRC " + g.cfg.LinkCRC.String()) })
 		}()
 	}
 	go func() {
@@ -231,8 +232,9 @@ func (g *guestNet) start(ctx context.Context, vmid guid.GUID, step func(string, 
 // the link's vsock port) and serves each connection until ctx ends, dialing again when
 // a link ends (netfwd restarted). A guest image whose netfwd dials the host instead
 // gets a plain link through the listener, and dialing stops once that link is up.
-func (g *guestNet) dialGuest(ctx context.Context, vmid guid.GUID, linkUp func()) {
-	d := &transport.HvsockDialer{Target: transport.HvsockTarget{VMID: vmid, ServiceID: g.svc}}
+func (g *guestNet) dialGuest(ctx context.Context, vmid guid.GUID, secret vmsecret.Secret, linkUp func()) {
+	// netfwd -vnet requires the VM secret first (ADR 0004 rule 6).
+	d := &transport.HvsockDialer{Target: transport.HvsockTarget{VMID: vmid, ServiceID: g.svc, Secret: secret}}
 	wait := 50 * time.Millisecond
 	for ctx.Err() == nil {
 		if offload, known := g.st.Offloading(); known && !offload {

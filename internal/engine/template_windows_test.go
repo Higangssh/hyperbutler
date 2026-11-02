@@ -14,8 +14,12 @@ import (
 	"github.com/Higangssh/hyperbutler/internal/netstack/frame"
 	"github.com/Higangssh/hyperbutler/internal/transport"
 	"github.com/Higangssh/hyperbutler/internal/vm"
+	"github.com/Higangssh/hyperbutler/internal/vmsecret"
 	"github.com/Higangssh/hyperbutler/internal/vmtemplate"
 )
+
+// testVMSecret is a fixed VM secret for documents built in tests.
+var testVMSecret = vmsecret.Secret{1, 2, 3}
 
 // legacyInput is what Run assembled the VM document from before vmtemplate existed.
 type legacyInput struct {
@@ -76,7 +80,8 @@ func legacyConfig(t *testing.T, in legacyInput, sddl string) *vm.Config {
 		shareSvcs = []vm.Service{{ID: transport.VsockServiceID(SharePort), BindSDDL: sddl}}
 		shareArgs = fmt.Sprintf(" hyperbutler.share=%d", SharePort)
 	}
-	cmdline := in.cmdline + vmtemplate.HashTableArgs(in.memoryMB) + netArgs + shareArgs + in.extraCmdLine
+	// M3 added the VM secret (ADR 0004 rule 6) after the hash table sizes.
+	cmdline := in.cmdline + vmtemplate.HashTableArgs(in.memoryMB) + " hyperbutler.secret=" + testVMSecret.Hex() + netArgs + shareArgs + in.extraCmdLine
 	if in.daemonCfg {
 		cmdline += " hyperbutler.daemoncfg=1"
 	}
@@ -118,7 +123,7 @@ func legacyConfig(t *testing.T, in legacyInput, sddl string) *vm.Config {
 func templateConfig(t *testing.T, in legacyInput, sid string) *vm.Config {
 	t.Helper()
 	spec := &vmtemplate.Spec{
-		Owner: VMOwner, UserSID: sid, MemoryMB: in.memoryMB, CPUs: in.cpus,
+		Owner: VMOwner, UserSID: sid, Secret: testVMSecret, MemoryMB: in.memoryMB, CPUs: in.cpus,
 		Kernel: in.kernel, Initrd: in.initrd, System: in.system, Data: in.data, BlankData: in.blank,
 		Share: in.share, DaemonConfig: in.daemonCfg, ConsolePipe: `\\.\pipe\` + in.vmID + "-com1",
 		Dev: vmtemplate.Dev{CmdLine: in.cmdline, ExtraCmdLine: in.extraCmdLine, ExtraServices: in.extraServices},

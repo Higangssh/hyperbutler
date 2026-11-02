@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"testing/iotest"
+
+	"github.com/Higangssh/hyperbutler/internal/vmsecret"
 )
 
 // fuzzFrame builds a raw frame with a correct length prefix.
@@ -55,7 +57,7 @@ func fuzzRequestSeeds() [][]byte {
 		fuzzFrame(Version, 2, make([]byte, MaxFrameSize-4)...), // exactly MaxFrameSize, junk fields
 		fuzzFrame(0, uint8(OpStart)),
 		fuzzFrame(2, uint8(OpStart)),
-		fuzzFrame(Version, 8),
+		fuzzFrame(Version, 9),
 		fuzzFrame(Version, 0),
 		fuzzFrame(Version, ReplyFlag|uint8(OpStop)),
 		fuzzFrame(Version, uint8(OpStop), 200, 0),
@@ -88,6 +90,7 @@ func fuzzRequestSeeds() [][]byte {
 		{Op: OpStart, Features: FeatureShare | FeatureDaemonConfig},
 		{Op: OpPause},
 		{Op: OpPause, Resume: true},
+		{Op: OpOpenEndpoint},
 	} {
 		b, err := EncodeRequest(r)
 		if err != nil {
@@ -95,11 +98,24 @@ func fuzzRequestSeeds() [][]byte {
 		}
 		out = append(out, b)
 	}
+	out = append(out,
+		fuzzFrame(Version, uint8(OpOpenEndpoint), tagPipeName, 1, 'x'), // a reply's field on the request
+		fuzzFrame(Version, uint8(OpStatus), tagSecret, 32),             // a secret on a request
+	)
 	return out
+}
+
+// fuzzSecretField is a status reply's secret field with value v.
+func fuzzSecretField(v []byte) []byte {
+	return append([]byte{tagSecret, byte(len(v))}, v...)
 }
 
 func fuzzReplySeeds() [][]byte {
 	id := [16]byte{1, 2, 3}
+	var sec vmsecret.Secret
+	for i := range sec {
+		sec[i] = byte(i + 1)
+	}
 	var out [][]byte
 	for _, r := range []Reply{
 		{Type: ReplyFlag | uint8(OpVersion), ProtoVersion: Version, BrokerVersion: "0.1.0-dev"},
@@ -115,6 +131,12 @@ func fuzzReplySeeds() [][]byte {
 		{Type: TypeError, Code: CodeLeaseHeld, Message: "VM runs under another connection"},
 		{Type: TypeError, Code: CodeImageRejected},
 		{Type: TypeError, Code: CodeDiskRejected},
+		{Type: ReplyFlag | uint8(OpOpenEndpoint), PipeName: `\\.\pipe\hyperbutler-broker-00112233445566778899aabbccddeeff`},
+		{Type: ReplyFlag | uint8(OpOpenEndpoint), PipeName: strings.Repeat("~", MaxPipeNameLen)},
+		{Type: ReplyFlag | uint8(OpStart), State: StateRunning, CPUs: 2, MemoryMB: 2048, VMID: id, DataLocationSet: true, Secret: sec},
+		{Type: ReplyFlag | uint8(OpStatus), State: StatePaused, CPUs: 2, MemoryMB: 2048, VMID: id, Secret: sec},
+		{Type: TypeError, Code: CodeWrongEndpoint, Message: "use your own endpoint"},
+		{Type: TypeError, Code: CodeEndpointSquatted},
 	} {
 		b, err := EncodeReply(r)
 		if err != nil {
@@ -122,6 +144,17 @@ func fuzzReplySeeds() [][]byte {
 		}
 		out = append(out, b)
 	}
+	stopped := append(append(fuzzU32(2, 2), fuzzU32(3, 2048)...), 7, 1, 1)
+	running := append(append(append(fuzzU32(2, 2), fuzzU32(3, 2048)...), 7, 1, 2, 8, 16), id[:]...)
+	out = append(out,
+		fuzzFrame(Version, ReplyFlag|uint8(OpOpenEndpoint)),                                           // no pipe name
+		fuzzFrame(Version, ReplyFlag|uint8(OpOpenEndpoint), tagPipeName, 2, 'a', 0x7f),                // control character
+		fuzzFrame(Version, ReplyFlag|uint8(OpStatus), append(stopped, fuzzSecretField(sec[:])...)...), // secret without a VM
+		fuzzFrame(Version, ReplyFlag|uint8(OpStatus), append(running, fuzzSecretField(make([]byte, 32))...)...),
+		fuzzFrame(Version, ReplyFlag|uint8(OpStatus), append(running, fuzzSecretField(sec[:31])...)...),
+		fuzzFrame(Version, ReplyFlag|uint8(OpStop), fuzzSecretField(sec[:])...),
+		fuzzFrame(Version, TypeError, append([]byte{10, 2, 9, 0}, fuzzSecretField(sec[:])...)...),
+	)
 	out = append(out,
 		fuzzFrame(Version, ReplyFlag|uint8(OpPause), append(append(fuzzU32(2, 2), fuzzU32(3, 2048)...), 7, 1, 4)...), // state 4
 		fuzzFrame(Version, TypeError),
@@ -133,7 +166,7 @@ func fuzzReplySeeds() [][]byte {
 		fuzzFrame(Version, ReplyFlag|uint8(OpStatus), 7, 1, 2),
 		fuzzFrame(Version, uint8(OpStatus)),
 		fuzzFrame(Version, ReplyFlag|uint8(OpStop), 8, 16),
-		fuzzFrame(Version, ReplyFlag|8),
+		fuzzFrame(Version, ReplyFlag|9),
 		fuzzFrame(Version, ReplyFlag|uint8(OpVersion), 5, 1, 1),
 		fuzzFrame(Version, ReplyFlag|uint8(OpVersion), 5, 1, 0, 6, 1, 'v'), // proto version 0 encoded
 		fuzzFrame(Version, ReplyFlag|uint8(OpStatus), append(append(fuzzU32(2, 2), fuzzU32(3, 2048)...), 7, 1, 1, 8, 16, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)...), // zero VMID

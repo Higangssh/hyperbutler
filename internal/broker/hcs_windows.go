@@ -20,6 +20,7 @@ import (
 	"github.com/Higangssh/hyperbutler/guest/image"
 	"github.com/Higangssh/hyperbutler/internal/imageset"
 	"github.com/Higangssh/hyperbutler/internal/vm"
+	"github.com/Higangssh/hyperbutler/internal/vmsecret"
 	"github.com/Higangssh/hyperbutler/internal/vmtemplate"
 )
 
@@ -163,7 +164,13 @@ type hcsVM struct {
 	sysGranted bool // the system disk carries an entry for account
 	cpus       uint32
 	memoryMB   uint32
+	// secret is unexported, so fmt would print its bytes; Format below keeps an hcsVM
+	// from ever printing it.
+	secret vmsecret.Secret
 }
+
+// Format prints an hcsVM as its compute system name only, never its secret.
+func (v hcsVM) Format(f fmt.State, _ rune) { _, _ = fmt.Fprintf(f, "hcsVM{%s}", v.name) }
 
 // NewHCSBackend returns a backend that boots the image in the image folder next to the
 // running executable.
@@ -456,8 +463,12 @@ func (b *HCSBackend) Start(ctx context.Context, spec VMSpec) (VMStatus, error) {
 	if err := img.grantSystem(v); err != nil {
 		return VMStatus{}, err
 	}
+	// A fresh secret for each start (ADR 0004 rule 6), from crypto/rand only.
+	if v.secret, err = vmsecret.New(); err != nil {
+		return VMStatus{}, err
+	}
 	n, err := vmtemplate.Build(&vmtemplate.Spec{
-		Owner: OwnerTag(spec.Owner), UserSID: spec.Owner,
+		Owner: OwnerTag(spec.Owner), UserSID: spec.Owner, Secret: v.secret,
 		MemoryMB: int(spec.MemoryMB), CPUs: int(spec.CPUs),
 		Kernel: img.set.Kernel, Initrd: img.set.Initrd, System: img.set.System,
 		Data: v.disk.Path(), BlankData: spec.BlankDisk,
@@ -529,7 +540,7 @@ func (v *hcsVM) status(running, paused bool) VMStatus {
 	if !running {
 		return VMStatus{}
 	}
-	return VMStatus{Running: true, Paused: paused, ID: v.rid.ToArray(), CPUs: v.cpus, MemoryMB: v.memoryMB}
+	return VMStatus{Running: true, Paused: paused, ID: v.rid.ToArray(), CPUs: v.cpus, MemoryMB: v.memoryMB, Secret: v.secret}
 }
 
 // statusLocked asks HCS for the state of s's VM; a stopped VM is released and

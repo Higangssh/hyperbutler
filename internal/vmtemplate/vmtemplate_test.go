@@ -12,11 +12,23 @@ import (
 
 	"github.com/Higangssh/hyperbutler/internal/transport"
 	"github.com/Higangssh/hyperbutler/internal/vm"
+	"github.com/Higangssh/hyperbutler/internal/vmsecret"
 )
 
 var update = flag.Bool("update", false, "rewrite the golden documents in testdata")
 
 const sid = "S-1-5-21-1000-2000-3000-1001"
+
+// goldenSecret is a fixed secret, so the golden documents stay the same.
+var goldenSecret = func() vmsecret.Secret {
+	var s vmsecret.Secret
+	for i := range s {
+		s[i] = byte(0x10 + i)
+	}
+	return s
+}()
+
+const goldenSecretArg = " hyperbutler.secret=101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f"
 
 func defaultNet() *Net {
 	return &Net{Subnet: netip.MustParsePrefix("192.168.127.0/24"), MTU: 9000, Offload: true, HostGateway: true}
@@ -26,26 +38,26 @@ func defaultNet() *Net {
 // the broker boot it, an initramfs-only development image, and a bare VM.
 var golden = map[string]*Spec{
 	"release": {
-		Owner: "hyperbutler", UserSID: sid, MemoryMB: 4096, CPUs: 2,
+		Owner: "hyperbutler", UserSID: sid, Secret: goldenSecret, MemoryMB: 4096, CPUs: 2,
 		Kernel: `C:\Program Files\hyperbutler\image\vmlinuz-virt`, Initrd: `C:\Program Files\hyperbutler\image\initramfs-stage1.gz`,
 		System: `C:\Program Files\hyperbutler\image\system.vhd`, Data: `C:\Users\u\AppData\Local\hyperbutler\data.vhdx`,
 		Net: defaultNet(), Share: true, DaemonConfig: true,
 		ConsolePipe: `\\.\pipe\hyperbutler-0a1b2c3d-112233445566-com1`,
 	},
 	"release-blank-12g": {
-		Owner: "hyperbutler", UserSID: sid, MemoryMB: 12288, CPUs: 8,
+		Owner: "hyperbutler", UserSID: sid, Secret: goldenSecret, MemoryMB: 12288, CPUs: 8,
 		Kernel: `C:\img\vmlinuz-virt`, Initrd: `C:\img\initramfs-stage1.gz`, System: `C:\img\system.vhd`,
 		Data: `D:\hb\data.vhdx`, BlankData: true,
 		Net:   &Net{Subnet: netip.MustParsePrefix("10.20.30.0/26"), MTU: 1500, CRC: CRCStrict, Offload: true},
 		Share: true,
 	},
 	"initramfs-plain-net": {
-		Owner: "hyperbutler", UserSID: sid, MemoryMB: 2048, CPUs: 1,
+		Owner: "hyperbutler", UserSID: sid, Secret: goldenSecret, MemoryMB: 2048, CPUs: 1,
 		Kernel: `C:\img\vmlinuz-virt`, Initrd: `C:\img\initramfs-hyperbutler.gz`, Data: `C:\d\data.vhdx`,
 		Net: &Net{Subnet: netip.MustParsePrefix("192.168.127.0/24"), MTU: 9000, CRC: CRCOff},
 	},
 	"bare-dev": {
-		UserSID: sid, MemoryMB: 1024, CPUs: 1, Kernel: `C:\k`, Initrd: `C:\i`,
+		UserSID: sid, Secret: goldenSecret, MemoryMB: 1024, CPUs: 1, Kernel: `C:\k`, Initrd: `C:\i`,
 		Dev: Dev{CmdLine: "console=ttyS0", ExtraCmdLine: " rdinit=/bench", ExtraServices: []vm.Service{{ID: transport.VsockServiceID(9), BindSDDL: "D:P"}}},
 	},
 }
@@ -92,7 +104,7 @@ func TestBuildCmdLine(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := DefaultCmdLine +
+	want := DefaultCmdLine + goldenSecretArg +
 		" hyperbutler.net=1024 hyperbutler.mtu=9000 hyperbutler.ip=192.168.127.2/24 hyperbutler.gw=192.168.127.1 hyperbutler.dns=192.168.127.1" +
 		" hyperbutler.hostgw=192.168.127.254 hyperbutler.netvnet=1 hyperbutler.share=2385 hyperbutler.daemoncfg=1" +
 		" hyperbutler.data=lun:0 hyperbutler.system=lun:1"
@@ -136,6 +148,9 @@ func TestBuildRejects(t *testing.T) {
 		"cpus":            func(s *Spec) { s.CPUs = 0 },
 		"relative kernel": func(s *Spec) { s.Kernel = "vmlinuz" },
 		"same disk twice": func(s *Spec) { s.System = s.Data },
+		"no secret":       func(s *Spec) { s.Secret = vmsecret.Secret{} },
+		"dev secret":      func(s *Spec) { s.Dev.ExtraCmdLine = " hyperbutler.secret=" + goldenSecret.Hex() },
+		"dev base secret": func(s *Spec) { s.Dev.CmdLine = "console=ttyS0 hyperbutler.secret=00" },
 		"duplicate service": func(s *Spec) {
 			s.Dev.ExtraServices = []vm.Service{{ID: transport.VsockServiceID(DockerPort), ConnectSDDL: "D:P"}}
 		},
@@ -148,6 +163,70 @@ func TestBuildRejects(t *testing.T) {
 	}
 	if _, err := Build(base()); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// The command line carries the secret exactly once, rendered from the typed field and
+// nothing else, and the guest's parser reads back that same secret. Every hvsock
+// service of every shape of VM allows the owner's SID only (ADR 0004 rule 6).
+func TestSecretAndDescriptors(t *testing.T) {
+	userOnly, _ := vm.UserOnlySDDL(sid)
+	for name, g := range golden {
+		t.Run(name, func(t *testing.T) {
+			s := *g
+			for range 2 {
+				var err error
+				if s.Secret, err = vmsecret.New(); err != nil {
+					t.Fatal(err)
+				}
+				c, err := Build(&s)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if n := strings.Count(c.KernelCmdLine, vmsecret.CmdlineKey); n != 1 {
+					t.Fatalf("%d secrets on %q", n, c.KernelCmdLine)
+				}
+				got, err := vmsecret.FromCmdline(c.KernelCmdLine)
+				if err != nil || got != s.Secret {
+					t.Fatalf("the guest reads back another secret (%v)", err)
+				}
+				doc, err := c.Document()
+				if err != nil {
+					t.Fatal(err)
+				}
+				if n := bytes.Count(doc, []byte(s.Secret.Hex())); n != 1 {
+					t.Fatalf("the secret appears %d times in the document", n)
+				}
+				if name == "bare-dev" {
+					continue // its extra service has a developer's own descriptor
+				}
+				for _, svc := range c.Services {
+					if svc.ConnectSDDL == "" && svc.BindSDDL == "" {
+						t.Errorf("service %s has no descriptor", svc.ID)
+					}
+					for _, d := range []string{svc.ConnectSDDL, svc.BindSDDL} {
+						if d != "" && d != userOnly {
+							t.Errorf("service %s has descriptor %q", svc.ID, d)
+						}
+					}
+				}
+			}
+		})
+	}
+	// Plain (guest-dials-host) network and the share: the host may only listen there,
+	// and only as the owner.
+	s := *golden["initramfs-plain-net"]
+	s.Share = true
+	c, err := Build(&s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, svc := range c.Services {
+		if svc.ID == transport.VsockServiceID(NetPort) || svc.ID == transport.VsockServiceID(SharePort) {
+			if svc.ConnectSDDL != "" || svc.BindSDDL != userOnly {
+				t.Errorf("guest-initiated service %s: connect %q, bind %q", svc.ID, svc.ConnectSDDL, svc.BindSDDL)
+			}
+		}
 	}
 }
 

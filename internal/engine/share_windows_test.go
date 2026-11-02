@@ -69,7 +69,7 @@ func TestSetupSharesOff(t *testing.T) {
 	}
 	s := setupShares(ShareConfig{}, slog.Default())
 	defer s.close()
-	c, err := vmtemplate.Build(&vmtemplate.Spec{UserSID: "S-1-5-21-1", MemoryMB: 1024, CPUs: 1, Kernel: `C:\k`, Initrd: `C:\i`, Share: true})
+	c, err := vmtemplate.Build(&vmtemplate.Spec{UserSID: "S-1-5-21-1", Secret: testVMSecret, MemoryMB: 1024, CPUs: 1, Kernel: `C:\k`, Initrd: `C:\i`, Share: true})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -11,7 +11,7 @@
       "LinuxKernelDirect": {
         "KernelFilePath": "C:\\img\\vmlinuz-virt",
         "InitRdPath": "C:\\img\\initramfs-stage1.gz",
-        "KernelCmdLine": "quiet swiotlb=noforce page_reporting.page_reporting_order=0 dhash_entries=524288 ihash_entries=262144 hyperbutler.net=1024 hyperbutler.mtu=1500 hyperbutler.ip=10.20.30.2/26 hyperbutler.gw=10.20.30.1 hyperbutler.dns=10.20.30.1 hyperbutler.netvnet=1 hyperbutler.netcrc=strict hyperbutler.share=2385 hyperbutler.data=lun:0 hyperbutler.newdisk=1 hyperbutler.system=lun:1"
+        "KernelCmdLine": "quiet swiotlb=noforce page_reporting.page_reporting_order=0 dhash_entries=524288 ihash_entries=262144 hyperbutler.secret=101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f hyperbutler.net=1024 hyperbutler.mtu=1500 hyperbutler.ip=10.20.30.2/26 hyperbutler.gw=10.20.30.1 hyperbutler.dns=10.20.30.1 hyperbutler.netvnet=1 hyperbutler.netcrc=strict hyperbutler.share=2385 hyperbutler.data=lun:0 hyperbutler.newdisk=1 hyperbutler.system=lun:1"
       }
     },
     "ComputeTopology": {

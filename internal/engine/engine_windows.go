@@ -366,7 +366,9 @@ func Run(ctx context.Context, cfg Config) (err error) {
 	if cfg.OnCreated != nil {
 		cfg.OnCreated(info.VMID, vmid)
 	}
-	target := transport.HvsockTarget{VMID: vmid, ServiceID: dockerSvc}
+	// Every connection to the guest begins with the VM secret (ADR 0004 rule 6), and
+	// every dial of the guest's Docker API goes through target.
+	target := transport.HvsockTarget{VMID: vmid, ServiceID: dockerSvc, Secret: info.Secret}
 	step("runtime id %s", vmid)
 	var rewrite transport.CreateRewriter
 	if shares != nil {
@@ -388,14 +390,14 @@ func Run(ctx context.Context, cfg Config) (err error) {
 	}()
 
 	if gnet != nil {
-		if err := gnet.start(runCtx, vmid, step); err != nil {
+		if err := gnet.start(runCtx, vmid, info.Secret, step); err != nil {
 			return err
 		}
 	}
 
 	// The guest control channel and, with a data disk, the free-space guard.
 	sup := &guestctl.Supervisor{
-		Dial: guestctl.HvsockDialer(vmid),
+		Dial: guestctl.HvsockDialer(vmid, info.Secret),
 		// An hvsock connect to a port nobody listens on yet waits for the whole timeout,
 		// and dockerd waits for hyperbutlerd's first budget: a short timeout lets the first
 		// connect land soon after hyperbutlerd listens (about 0.3 s into a system-disk boot).

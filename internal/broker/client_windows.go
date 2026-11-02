@@ -54,50 +54,109 @@ const (
 	clientStartTimeout = 3 * time.Minute
 )
 
-// Dial connects to the broker's pipe. It connects at impersonation level, which the
-// broker requires to identify the caller and take handles from it, and so it first
-// checks who created the pipe: a squatter could otherwise impersonate this user. The
-// pipe's owner must be SYSTEM, a service account (S-1-5-80-...), or this user (a
-// broker run in the foreground by the same user, which can impersonate no one else).
-func Dial(ctx context.Context, pipe string) (*Client, error) {
-	if err := transport.ValidatePipeName(pipe); err != nil {
+// Dial connects to this user's own endpoint of the broker whose shared endpoint is
+// shared (ADR 0004 rule 5): it asks the shared endpoint to open it, checks that the
+// name it got back has the form of this user's endpoint (ValidUserPipeName: its SID's
+// hash and a random suffix), connects there, and checks that the same account owns both
+// pipes. Every VM verb is served on the user's own endpoint only. Nothing is cached: the
+// name changes when the broker restarts or retires the endpoint.
+//
+// Both connections are made at impersonation level, which the broker requires to
+// identify the caller and take handles from it, and so each first checks who created
+// the pipe: a squatter could otherwise impersonate this user. The pipe's owner must be
+// SYSTEM, a service account (S-1-5-80-...), or this user (a broker run in the foreground
+// by the same user, which can impersonate no one else).
+func Dial(ctx context.Context, shared string) (*Client, error) {
+	if err := transport.ValidatePipeName(shared); err != nil {
 		return nil, err
-	}
-	c, err := winio.DialPipeAccessImpLevel(ctx, pipe, windows.GENERIC_READ|windows.GENERIC_WRITE, winio.PipeImpLevelImpersonation)
-	if err != nil {
-		return nil, fmt.Errorf("broker: connect to %s: %w", pipe, err)
-	}
-	if err := checkPipeOwner(c); err != nil {
-		_ = c.Close()
-		return nil, fmt.Errorf("broker: %s: %w", pipe, err)
-	}
-	return &Client{c: c}, nil
-}
-
-// checkPipeOwner checks the owner of the pipe c is connected to. The owner of a new
-// object can only be its creator's own user or group SID (without SeRestorePrivilege),
-// so it says who made the pipe.
-func checkPipeOwner(c net.Conn) error {
-	fd, ok := c.(interface{ Fd() uintptr })
-	if !ok {
-		return errors.New("cannot read the pipe's owner")
-	}
-	sd, err := windows.GetSecurityInfo(windows.Handle(fd.Fd()), windows.SE_KERNEL_OBJECT, windows.OWNER_SECURITY_INFORMATION)
-	if err != nil {
-		return fmt.Errorf("read the pipe's owner: %w", err)
-	}
-	owner, _, err := sd.Owner()
-	if err != nil || owner == nil {
-		return fmt.Errorf("read the pipe's owner: %w", err)
 	}
 	self, err := processSID()
 	if err != nil {
-		return err
+		return nil, err
+	}
+	r, brokerSID, err := openEndpoint(ctx, shared)
+	if err != nil {
+		return nil, err
+	}
+	if !ValidUserPipeName(shared, self, r.PipeName) || transport.ValidatePipeName(r.PipeName) != nil {
+		// The client connects only to a name of this user's own form.
+		return nil, fmt.Errorf("broker: %s named endpoint %q, which is not this user's", shared, r.PipeName)
+	}
+	c, owner, err := dialPipe(ctx, r.PipeName)
+	if err != nil {
+		return nil, err
+	}
+	if owner != brokerSID {
+		_ = c.Close()
+		return nil, fmt.Errorf("broker: %s belongs to %s, the shared endpoint to %s", r.PipeName, owner, brokerSID)
+	}
+	return c, nil
+}
+
+// openEndpoint asks the shared endpoint for this user's own endpoint. A busy broker or
+// a connection the broker dropped (it gives instances back at once to clients over their
+// cap, or silent for too long) is tried again until ctx ends; any other error is final.
+func openEndpoint(ctx context.Context, shared string) (proto.Reply, string, error) {
+	for wait := 50 * time.Millisecond; ; wait = min(2*wait, time.Second) {
+		sc, owner, err := dialPipe(ctx, shared)
+		if err != nil {
+			return proto.Reply{}, "", err
+		}
+		r, err := sc.Do(proto.Request{Op: proto.OpOpenEndpoint})
+		_ = sc.Close()
+		if err == nil {
+			return r, owner, nil
+		}
+		var re *ReplyError
+		if errors.As(err, &re) && re.Code != proto.CodeBusy {
+			return proto.Reply{}, "", fmt.Errorf("broker: open this user's endpoint: %w", err)
+		}
+		select {
+		case <-ctx.Done():
+			return proto.Reply{}, "", fmt.Errorf("broker: open this user's endpoint: %w", err)
+		case <-time.After(wait):
+		}
+	}
+}
+
+// dialPipe connects to one broker pipe after checking its owner, which it returns.
+func dialPipe(ctx context.Context, pipe string) (*Client, string, error) {
+	c, err := winio.DialPipeAccessImpLevel(ctx, pipe, windows.GENERIC_READ|windows.GENERIC_WRITE, winio.PipeImpLevelImpersonation)
+	if err != nil {
+		return nil, "", fmt.Errorf("broker: connect to %s: %w", pipe, err)
+	}
+	owner, err := checkPipeOwner(c)
+	if err != nil {
+		_ = c.Close()
+		return nil, "", fmt.Errorf("broker: %s: %w", pipe, err)
+	}
+	return &Client{c: c}, owner, nil
+}
+
+// checkPipeOwner checks the owner of the pipe c is connected to and returns it. The
+// owner of a new object can only be its creator's own user or group SID (without
+// SeRestorePrivilege), so it says who made the pipe.
+func checkPipeOwner(c net.Conn) (string, error) {
+	fd, ok := c.(interface{ Fd() uintptr })
+	if !ok {
+		return "", errors.New("cannot read the pipe's owner")
+	}
+	sd, err := windows.GetSecurityInfo(windows.Handle(fd.Fd()), windows.SE_KERNEL_OBJECT, windows.OWNER_SECURITY_INFORMATION)
+	if err != nil {
+		return "", fmt.Errorf("read the pipe's owner: %w", err)
+	}
+	owner, _, err := sd.Owner()
+	if err != nil || owner == nil {
+		return "", fmt.Errorf("read the pipe's owner: %w", err)
+	}
+	self, err := processSID()
+	if err != nil {
+		return "", err
 	}
 	if !trustedPipeOwner(owner.String(), self) {
-		return fmt.Errorf("the pipe belongs to %s, not to the broker", owner)
+		return "", fmt.Errorf("the pipe belongs to %s, not to the broker", owner)
 	}
-	return nil
+	return owner.String(), nil
 }
 
 // trustedPipeOwner is the owner rule of checkPipeOwner.

@@ -17,11 +17,11 @@ func TestParseHvsockTarget(t *testing.T) {
 		want    HvsockTarget
 		wantErr bool
 	}{
-		{in: testVM + ":vsock:2375", want: HvsockTarget{vm, port2375}},
-		{in: "{" + strings.ToUpper(testVM) + "}:vsock:2375", want: HvsockTarget{vm, port2375}},
-		{in: testVM + ":00000947-facb-11e6-bd58-64006a7986d3", want: HvsockTarget{vm, port2375}},
-		{in: testVM + ":vsock:0", want: HvsockTarget{vm, VsockServiceID(0)}},
-		{in: testVM + ":vsock:4294967295", want: HvsockTarget{vm, VsockServiceID(0xffffffff)}},
+		{in: testVM + ":vsock:2375", want: HvsockTarget{VMID: vm, ServiceID: port2375}},
+		{in: "{" + strings.ToUpper(testVM) + "}:vsock:2375", want: HvsockTarget{VMID: vm, ServiceID: port2375}},
+		{in: testVM + ":00000947-facb-11e6-bd58-64006a7986d3", want: HvsockTarget{VMID: vm, ServiceID: port2375}},
+		{in: testVM + ":vsock:0", want: HvsockTarget{VMID: vm, ServiceID: VsockServiceID(0)}},
+		{in: testVM + ":vsock:4294967295", want: HvsockTarget{VMID: vm, ServiceID: VsockServiceID(0xffffffff)}},
 		{in: "", wantErr: true},
 		{in: testVM, wantErr: true},
 		{in: testVM + ":", wantErr: true},

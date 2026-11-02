@@ -13,6 +13,7 @@ import (
 
 	"github.com/Higangssh/hyperbutler/internal/imageset"
 	"github.com/Higangssh/hyperbutler/internal/vm"
+	"github.com/Higangssh/hyperbutler/internal/vmsecret"
 	"github.com/Higangssh/hyperbutler/internal/vmtemplate"
 )
 
@@ -36,6 +37,9 @@ type RuntimeInfo struct {
 	VMID string
 	// RuntimeID is the VM's runtime GUID: the VM ID hvsock addresses.
 	RuntimeID guid.GUID
+	// Secret is the VM's secret (ADR 0004 rule 6), which every hvsock connection to the
+	// guest begins with. Both providers make one per boot, the broker on its side.
+	Secret vmsecret.Secret
 }
 
 // Pauser pauses and resumes a VM (the free-space guard's last resort).
@@ -96,8 +100,14 @@ func (p *hcsProvider) Boot(ctx context.Context, bs BootSpec) (_ Lease, _ Runtime
 		}
 	}()
 	consolePipe := `\\.\pipe\` + cfg.VMID + "-com1"
+	// A fresh secret per boot, as the broker makes one per start: both modes give the
+	// guest the same barrier.
+	secret, err := vmsecret.New()
+	if err != nil {
+		return nil, RuntimeInfo{}, err
+	}
 	spec := &vmtemplate.Spec{
-		Owner: VMOwner, UserSID: p.sid,
+		Owner: VMOwner, UserSID: p.sid, Secret: secret,
 		MemoryMB: bs.MemoryMB, CPUs: bs.CPUs,
 		Kernel: p.kernel, Initrd: p.initrd,
 		Net: bs.Net, Share: bs.Share, DaemonConfig: bs.DaemonConfig,
@@ -162,7 +172,7 @@ func (p *hcsProvider) Boot(ctx context.Context, bs BootSpec) (_ Lease, _ Runtime
 	if err != nil {
 		return nil, RuntimeInfo{}, err
 	}
-	return l, RuntimeInfo{VMID: cfg.VMID, RuntimeID: rid}, nil
+	return l, RuntimeInfo{VMID: cfg.VMID, RuntimeID: rid, Secret: secret}, nil
 }
 
 // hcsLease is a compute system this process created.

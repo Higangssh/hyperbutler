@@ -6,6 +6,8 @@ import (
 	"context"
 	"crypto/rand"
 	"sync"
+
+	"github.com/Higangssh/hyperbutler/internal/vmsecret"
 )
 
 // FakeBackend is an in-memory Backend for tests and for running the broker without HCS.
@@ -52,7 +54,11 @@ func (f *FakeBackend) Start(_ context.Context, spec VMSpec) (VMStatus, error) {
 	if vm, ok := f.vms[spec.Owner]; ok {
 		return *vm, nil
 	}
-	vm := &VMStatus{Running: true, CPUs: spec.CPUs, MemoryMB: spec.MemoryMB}
+	secret, err := vmsecret.New()
+	if err != nil {
+		return VMStatus{}, err
+	}
+	vm := &VMStatus{Running: true, CPUs: spec.CPUs, MemoryMB: spec.MemoryMB, Secret: secret}
 	_, _ = rand.Read(vm.ID[:])
 	vm.ID[0] |= 1 // never all zero
 	f.vms[spec.Owner] = vm

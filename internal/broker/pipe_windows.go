@@ -57,7 +57,10 @@ func PipeSDDL(serverSID, clientSID string) string {
 type PipeConfig struct {
 	// Name is a local pipe name (transport.ValidatePipeName).
 	Name string
-	// ClientSID is the only user that may connect. Empty means interactive users.
+	// ClientSID is the only user that may connect, and the pipe is that user's own
+	// endpoint: Serve serves every VM verb on it, for that user only. Empty means
+	// interactive users, and the pipe is the shared endpoint: Serve serves only the
+	// version and open-endpoint verbs on it (ADR 0004 rule 5).
 	ClientSID string
 	// Instances is the number of concurrent connections (1..16, default 4).
 	Instances int
@@ -68,6 +71,7 @@ type PipeConfig struct {
 // byte-mode, overlapped, and rejects remote clients.
 type PipeListener struct {
 	name  string
+	owner string         // PipeConfig.ClientSID: "" for the shared endpoint
 	stop  windows.Handle // manual-reset event, set by Close
 	insts []*pipeInstance
 
@@ -116,7 +120,7 @@ func ListenPipe(cfg PipeConfig) (*PipeListener, error) {
 	if err != nil {
 		return nil, err
 	}
-	l := &PipeListener{name: cfg.Name, stop: stop}
+	l := &PipeListener{name: cfg.Name, owner: cfg.ClientSID, stop: stop}
 	for i := 0; i < n; i++ {
 		flags := uint32(windows.PIPE_ACCESS_DUPLEX | windows.FILE_FLAG_OVERLAPPED)
 		if i == 0 {
@@ -206,7 +210,7 @@ func (s *Server) Serve(l *PipeListener) error {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			s.serveInstance(ctx, inst)
+			s.serveInstance(ctx, inst, l.owner)
 		}()
 	}
 	wg.Wait()
@@ -216,7 +220,7 @@ func (s *Server) Serve(l *PipeListener) error {
 // ErrListenerClosed is returned by Serve on a closed listener.
 var ErrListenerClosed = errors.New("broker: listener closed")
 
-func (s *Server) serveInstance(ctx context.Context, inst *pipeInstance) {
+func (s *Server) serveInstance(ctx context.Context, inst *pipeInstance, owner string) {
 	backoff := 100 * time.Millisecond
 	for {
 		err := inst.connect()
@@ -241,10 +245,15 @@ func (s *Server) serveInstance(ctx context.Context, inst *pipeInstance) {
 		}
 		backoff = 100 * time.Millisecond
 		peer := &pipePeer{h: inst.h}
-		if err := s.ServeConn(ctx, inst, peer); err != nil && !errors.Is(err, errStopped) {
+		err = s.ServeConn(ctx, inst, peer, owner)
+		if err != nil && !errors.Is(err, errStopped) && !errors.Is(err, errRefusedEarly) {
 			s.cfg.Logf("broker: connection: %v", err)
 		}
-		inst.linger()
+		// A connection refused before it said anything, or that sent nothing in time,
+		// gives the instance back at once: lingering would let silent clients hold it.
+		if !errors.Is(err, errRefusedEarly) && !errors.Is(err, os.ErrDeadlineExceeded) {
+			inst.linger()
+		}
 		// A data-location check abandoned after its timeout may still hold the peer. Once
 		// the peer is closed it can no longer impersonate or query the pipe, so it can
 		// never act as the next client of this instance.
@@ -499,6 +508,34 @@ func impersonate(p *pipePeer, fn func() error) error {
 }
 
 func (p *pipePeer) Impersonate(fn func() error) error { return impersonate(p, fn) }
+
+// ClientProcessUser returns the user of the pipe's client process, read before any
+// frame (processUserPeer). It is only a counting key for the shared endpoint's
+// connection cap: the process may exit and its ID be reused, so it never identifies
+// the caller.
+func (p *pipePeer) ClientProcessUser() (string, error) {
+	var pid uint32
+	if err := p.withPipe(func(h windows.Handle) error {
+		return windows.GetNamedPipeClientProcessId(h, &pid)
+	}); err != nil {
+		return "", err
+	}
+	proc, err := windows.OpenProcess(windows.PROCESS_QUERY_LIMITED_INFORMATION, false, pid)
+	if err != nil {
+		return "", err
+	}
+	defer func() { _ = windows.CloseHandle(proc) }()
+	var tok windows.Token
+	if err := windows.OpenProcessToken(proc, windows.TOKEN_QUERY, &tok); err != nil {
+		return "", err
+	}
+	defer func() { _ = tok.Close() }()
+	tu, err := tok.GetTokenUser()
+	if err != nil {
+		return "", err
+	}
+	return tu.User.Sid.String(), nil
+}
 
 func (p *pipePeer) Identify() (Identity, error) {
 	var id Identity

@@ -17,6 +17,7 @@ import (
 
 	"github.com/Higangssh/hyperbutler/internal/broker"
 	"github.com/Higangssh/hyperbutler/internal/broker/proto"
+	"github.com/Higangssh/hyperbutler/internal/vmsecret"
 	"github.com/Higangssh/hyperbutler/internal/vmtemplate"
 )
 
@@ -61,11 +62,16 @@ type fakeBrokerClient struct {
 	pauses  []bool
 	closed  bool
 	statusN int
+	// noSecret makes Start reply without a VM secret.
+	noSecret bool
 }
 
 func (f *fakeBrokerClient) SetDataLocation(windows.Handle) error { return nil }
 func (f *fakeBrokerClient) Start(proto.Request) (proto.Reply, error) {
-	return proto.Reply{State: proto.StateRunning, VMID: [16]byte{1}}, nil
+	if f.noSecret {
+		return proto.Reply{State: proto.StateRunning, VMID: [16]byte{1}}, nil
+	}
+	return proto.Reply{State: proto.StateRunning, VMID: [16]byte{1}, Secret: vmsecret.Secret{9}}, nil
 }
 func (f *fakeBrokerClient) Status() (proto.Reply, error) {
 	f.mu.Lock()
@@ -120,7 +126,7 @@ func bootFake(t *testing.T, c *fakeBrokerClient) Lease {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if info.VMID != "" || info.RuntimeID.ToArray() != [16]byte{1} {
+	if info.VMID != "" || info.RuntimeID.ToArray() != [16]byte{1} || info.Secret != (vmsecret.Secret{9}) {
 		t.Fatalf("runtime info %+v", info)
 	}
 	return l
@@ -170,9 +176,26 @@ func TestBrokerLeaseGone(t *testing.T) {
 	l.Close()
 }
 
-// TestBrokerProviderPipe boots through a broker served on a real pipe (with the fake
-// backend): the data directory is passed by handle and accepted, the start carries the
-// spec, and closing the lease stops the VM.
+// A broker that starts a VM but gives no secret is refused: the guest would serve
+// nothing.
+func TestBrokerProviderNeedsSecret(t *testing.T) {
+	c := &fakeBrokerClient{state: proto.StateRunning, noSecret: true}
+	saved := dialBroker
+	dialBroker = func(context.Context, string) (brokerClient, error) { return c, nil }
+	t.Cleanup(func() { dialBroker = saved })
+	p := &brokerProvider{pipe: `\\.\pipe\x`, dataDir: t.TempDir(), log: slog.New(slog.DiscardHandler)}
+	if _, _, err := p.Boot(context.Background(), BootSpec{CPUs: 1, MemoryMB: 1024}); err == nil {
+		t.Fatal("booted without a VM secret")
+	}
+	if !c.closed {
+		t.Fatal("the lease was not closed")
+	}
+}
+
+// TestBrokerProviderPipe boots through a broker served on real pipes (with the fake
+// backend), the shared endpoint and then this user's own: the data directory is passed
+// by handle and accepted, the start carries the spec and returns the VM secret, and
+// closing the lease stops the VM.
 func TestBrokerProviderPipe(t *testing.T) {
 	sid, err := currentUserSID()
 	if err != nil {
@@ -185,13 +208,13 @@ func TestBrokerProviderPipe(t *testing.T) {
 	}
 	defer srv.Close()
 	pipe := fmt.Sprintf(`\\.\pipe\hyperbutler_engine_test_%d_broker`, windows.GetCurrentProcessId())
-	ln, err := broker.ListenPipe(broker.PipeConfig{Name: pipe, ClientSID: sid, Instances: 2})
+	eps, err := broker.ListenEndpoints(srv, broker.EndpointsConfig{Name: pipe, Instances: 2, UserInstances: 2})
 	if err != nil {
 		t.Fatal(err)
 	}
 	done := make(chan error, 1)
-	go func() { done <- srv.Serve(ln) }()
-	defer func() { ln.Close(); <-done }()
+	go func() { done <- eps.Serve() }()
+	defer func() { eps.Close(); <-done }()
 
 	data := filepath.Join(t.TempDir(), "data")
 	if err := MkdirPrivate(data); err != nil {
@@ -203,8 +226,8 @@ func TestBrokerProviderPipe(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if info.RuntimeID.ToArray() == ([16]byte{}) {
-		t.Fatal("no runtime id")
+	if info.RuntimeID.ToArray() == ([16]byte{}) || info.Secret.IsZero() {
+		t.Fatal("no runtime id or no secret")
 	}
 	if s, err := l.State(); err != nil || s != "Running" {
 		t.Fatalf("state %q, %v", s, err)
