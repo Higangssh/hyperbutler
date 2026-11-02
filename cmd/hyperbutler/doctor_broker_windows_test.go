@@ -62,6 +62,7 @@ var brokerCases = []struct {
 	dial   bool
 }{
 	{"not installed", fakeBroker{}, doctorInfo, "doctor.broker.absent", "", false},
+	{"disabled", fakeBroker{st: broker.ServiceState{Installed: true, State: svc.Stopped, Disabled: true}}, doctorFail, "doctor.broker.disabled", "doctor.fix.brokerEnable", false},
 	{"not installed, no HCS access", fakeBroker{noHCS: true}, doctorWarn, "doctor.broker.absentNoAccess", "doctor.fix.brokerInstall", false},
 	{"not installed, no HCS access, pipe taken", fakeBroker{noHCS: true, pipe: true}, doctorWarn, "doctor.broker.squatted", "doctor.fix.brokerSquatted", false},
 	{"not installed, pipe taken", fakeBroker{pipe: true}, doctorWarn, "doctor.broker.squatted", "doctor.fix.brokerSquatted", false},

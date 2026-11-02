@@ -30,7 +30,14 @@
 <Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
      xmlns:ui="http://wixtoolset.org/schemas/v4/wxs/ui"
      xmlns:util="http://wixtoolset.org/schemas/v4/wxs/util">
-  <Package Name="hyperbutler" Manufacturer="hyperbutler" Version="$(var.ProductVersion)"
+  <!-- The -FailForTest MSI names itself so, in Apps too, and installs only with
+       FAILTESTACK=1, so it is never mistaken for a release. -->
+  <?if $(var.FailForTest) = 1 ?>
+  <?define HbProductName = "hyperbutler FAILTEST" ?>
+  <?else?>
+  <?define HbProductName = "hyperbutler" ?>
+  <?endif?>
+  <Package Name="$(var.HbProductName)" Manufacturer="hyperbutler" Version="$(var.ProductVersion)"
            UpgradeCode="7280F4EA-D72B-40D2-A391-68035BD73997" Scope="perMachine" Language="1033"
            InstallerVersion="500">
     <SummaryInformation Description="hyperbutler $(var.Version): a Docker engine for Windows in a small Hyper-V VM, without WSL" />
@@ -132,9 +139,15 @@
          executable or one an upgrade's removal deleted. It runs after InstallFiles, its
          rollback (uninstall) before them on the way back; the uninstall runs before
          RemoveFiles, so the service is stopped and gone before its files are, and its
-         rollback (install) runs after RemoveFiles' rollback restored them. A failure does
-         not stop the install: setup records it (LastResult), and start then runs the VM
-         in its own process, which doctor explains. -->
+         rollback (install) runs after RemoveFiles' rollback restored them. On a first
+         install a failure fails the install, which rolls back: without the service the
+         product does not work as the installer says (HbBrokerInstallFirst, Return
+         check). On an upgrade or a repair it does not stop the install (HbBrokerInstall):
+         setup records it (LastResult), and doctor and start explain it. -->
+    <SetProperty Id="HbBrokerInstallFirst" Before="HbBrokerInstallFirst" Sequence="execute"
+                 Value="&quot;[#HyperbutlerExe]&quot; setup broker install" />
+    <CustomAction Id="HbBrokerInstallFirst" BinaryRef="Wix4UtilCA_X64" DllEntry="WixQuietExec64"
+                  Execute="deferred" Impersonate="no" Return="check" />
     <SetProperty Id="HbBrokerInstall" Before="HbBrokerInstall" Sequence="execute"
                  Value="&quot;[#HyperbutlerExe]&quot; setup broker install" />
     <CustomAction Id="HbBrokerInstall" BinaryRef="Wix4UtilCA_X64" DllEntry="WixQuietExec64"
@@ -192,18 +205,25 @@
       <!-- First install, upgrade and repair. The rollback only where this install made
            the service: a failed repair keeps the one it found. -->
       <Custom Action="HbBrokerInstallRollback" After="InstallFiles" Condition="NOT Installed AND NOT REMOVE~=&quot;ALL&quot;" />
-      <Custom Action="HbBrokerInstall" After="HbBrokerInstallRollback" Condition="NOT REMOVE~=&quot;ALL&quot;" />
+      <Custom Action="HbBrokerInstallFirst" After="HbBrokerInstallRollback" Condition="NOT Installed AND NOT WIX_UPGRADE_DETECTED" />
+      <Custom Action="HbBrokerInstall" After="HbBrokerInstallFirst" Condition="NOT REMOVE~=&quot;ALL&quot; AND (Installed OR WIX_UPGRADE_DETECTED)" />
       <!-- Takes out only this install's account, and only if this install recorded it. -->
       <Custom Action="HbAddHyperVAdminRollback" After="HbBrokerInstall" Condition="NOT Installed AND ADDHYPERVADMIN=&quot;1&quot;" />
       <Custom Action="HbAddHyperVAdmin" After="HbAddHyperVAdminRollback" Condition="NOT Installed AND ADDHYPERVADMIN=&quot;1&quot;" />
       <Custom Action="HbEnableVMP" After="HbAddHyperVAdmin" Condition="NOT Installed AND ENABLEVMP=&quot;1&quot; AND NOT VMCOMPUTEPRESENT" />
-      <Custom Action="HbDropHyperVAdmins" Before="InstallFinalize" Condition="WIX_UPGRADE_DETECTED AND NOT REMOVE~=&quot;ALL&quot; AND NOT ADDHYPERVADMIN=&quot;1&quot;" />
+      <!-- NOT Installed: WIX_UPGRADE_DETECTED is a public property a standard user could
+           pass to a repair (which runs as SYSTEM); only a real upgrade, an install of
+           this product while it is not installed yet, which needs an administrator, may
+           take accounts out of the group. -->
+      <Custom Action="HbDropHyperVAdmins" Before="InstallFinalize" Condition="NOT Installed AND WIX_UPGRADE_DETECTED AND NOT REMOVE~=&quot;ALL&quot; AND NOT ADDHYPERVADMIN=&quot;1&quot;" />
       <ScheduleReboot After="InstallFinalize" Condition="NOT Installed AND ENABLEVMP=&quot;1&quot; AND NOT VMCOMPUTEPRESENT" />
     </InstallExecuteSequence>
     <?if $(var.FailForTest) = 1 ?>
     <!-- build-msi.ps1 -FailForTest only (never a release): WIXFAILWHENDEFERRED=1 fails the
          install just before InstallFinalize, to test the rollbacks (docs/install.md). -->
     <util:FailWhenDeferred />
+    <Launch Condition="FAILTESTACK=&quot;1&quot; OR Installed"
+            Message="This is a test build of hyperbutler that fails on purpose (build-msi.ps1 -FailForTest), not a release. Install it only for the rollback test, with FAILTESTACK=1." />
     <?endif?>
 
     <UI Id="HbUI">

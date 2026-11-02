@@ -18,7 +18,10 @@ package main
 //   - a service registered otherwise (another executable, an older layout) is removed
 //     and registered again;
 //   - a service that is deleted but not gone yet (the uninstall of the product this one
-//     upgrades deleted it while a handle to it was open) is waited for.
+//     upgrades deleted it while a handle to it was open) is waited for;
+//   - a service an administrator disabled is left alone (recorded as a note in
+//     LastResult); one that was deleted is registered again, which is what a repair is
+//     for.
 //
 // uninstall stops and deletes the service and its event log source; a service that is
 // not installed is not an error.
@@ -137,6 +140,11 @@ func setupBrokerInstall(m brokerService, exe string, stdout io.Writer) error {
 	if err != nil {
 		return fail(err)
 	}
+	if installed && have.StartType == windows.SERVICE_DISABLED {
+		// An administrator turned it off: a repair, which a standard user can start, must
+		// not turn it back on, so it is left as it is, DACL included.
+		return &setupNote{broker.ServiceName + " is disabled; left as an administrator set it"}
+	}
 	if installed && sameBrokerConfig(have, cfg) {
 		err := m.secure()
 		if err == nil && state != svc.Running {
@@ -166,11 +174,18 @@ func setupBrokerInstall(m brokerService, exe string, stdout io.Writer) error {
 	return nil
 }
 
-// startBroker starts the service, which is in state, and waits until it runs.
+// startBroker starts the service, which is in state, and waits until it runs. It starts
+// it once: a service that is stopped again after that has failed (its recovery actions
+// may still restart it), and is not started over and over until the wait runs out.
 func startBroker(m brokerService, state svc.State) error {
 	deadline := time.Now().Add(m.wait)
+	started := false
 	for state != svc.Running {
 		if state == svc.Stopped {
+			if started {
+				return fmt.Errorf("%s stopped again after it was started (the Application event log, source %s, says why)", broker.ServiceName, broker.EventSource)
+			}
+			started = true
 			if err := m.start(); err != nil {
 				return err
 			}
@@ -185,9 +200,6 @@ func startBroker(m brokerService, state svc.State) error {
 		}
 		if !installed {
 			return windows.ERROR_SERVICE_MARKED_FOR_DELETE // it went away under us
-		}
-		if st == svc.Stopped && state != svc.Stopped {
-			return fmt.Errorf("%s stopped again (the Application event log, source %s, says why)", broker.ServiceName, broker.EventSource)
 		}
 		state = st
 	}

@@ -10,9 +10,11 @@ import (
 	"testing"
 	"time"
 
+	"golang.org/x/sys/windows"
 	"golang.org/x/sys/windows/svc"
 
 	"github.com/Higangssh/hyperbutler/internal/broker"
+	"github.com/Higangssh/hyperbutler/internal/engine"
 )
 
 // fakeService is a broker service whose state follows a script: each query returns the
@@ -80,21 +82,21 @@ func TestChooseBackend(t *testing.T) {
 			svc:      fakeService{states: []broker.ServiceState{stopped}, afterRun: []broker.ServiceState{svcState(svc.StartPending), svcState(svc.StartPending), running}},
 			wantPipe: broker.ServicePipe, starts: 1},
 		{name: "auto, stopped, start refused", backend: backendAuto,
-			svc:      fakeService{states: []broker.ServiceState{stopped}, startErr: errors.New("access denied")},
-			wantNote: "could not be started: access denied", starts: 1},
+			svc:     fakeService{states: []broker.ServiceState{stopped}, startErr: errors.New("access denied")},
+			wantErr: true, starts: 1},
 		{name: "auto, starts and stops again", backend: backendAuto,
-			svc:      fakeService{states: []broker.ServiceState{stopped}, afterRun: []broker.ServiceState{svcState(svc.StartPending), stopped}},
-			wantNote: "stopped while it was starting", starts: 1},
+			svc:     fakeService{states: []broker.ServiceState{stopped}, afterRun: []broker.ServiceState{svcState(svc.StartPending), stopped}},
+			wantErr: true, starts: 1},
 		{name: "auto, stopping, then starts", backend: backendAuto,
 			svc:      fakeService{states: []broker.ServiceState{svcState(svc.StopPending), stopped}, afterRun: []broker.ServiceState{running}},
 			wantPipe: broker.ServicePipe, starts: 1},
 		{name: "auto, pending too long", backend: backendAuto,
-			svc:      fakeService{states: []broker.ServiceState{svcState(svc.StartPending)}},
-			wantNote: "still starting after 10s"},
+			svc:     fakeService{states: []broker.ServiceState{svcState(svc.StartPending)}},
+			wantErr: true},
 		{name: "auto, uninstalled while waiting", backend: backendAuto,
-			svc:      fakeService{states: []broker.ServiceState{svcState(svc.StartPending), {}}},
-			wantNote: "uninstalled"},
-		{name: "auto, query fails", backend: backendAuto, svc: fakeService{queryErr: errors.New("no SCM")}, wantNote: "no SCM"},
+			svc:     fakeService{states: []broker.ServiceState{svcState(svc.StartPending), {}}},
+			wantErr: true},
+		{name: "auto, query fails", backend: backendAuto, svc: fakeService{queryErr: errors.New("no SCM")}, wantErr: true},
 		{name: "broker, running", backend: backendBroker, svc: fakeService{states: []broker.ServiceState{running}}, wantPipe: broker.ServicePipe},
 		{name: "broker, not installed", backend: backendBroker, svc: fakeService{states: []broker.ServiceState{{}}}, wantErr: true},
 		{name: "broker, start refused", backend: backendBroker, svc: fakeService{states: []broker.ServiceState{stopped}, startErr: errors.New("access denied")}, wantErr: true, starts: 1},
@@ -111,8 +113,13 @@ func TestChooseBackend(t *testing.T) {
 			continue
 		}
 		if tc.wantErr {
-			if tc.backend == backendBroker && !tc.custom && !errors.Is(err, errNoBrokerService) {
-				t.Errorf("%s: %v is not errNoBrokerService", tc.name, err)
+			// Every error about the service itself carries the code the window shows.
+			var be *brokerStartError
+			if !tc.custom && (!errors.Is(err, errNoBrokerService) || !errors.As(err, &be) || be.code != engine.CodeBrokerUnavailable) {
+				t.Errorf("%s: %v is not a coded broker start error", tc.name, err)
+			}
+			if f.starts != tc.starts {
+				t.Errorf("%s: %d starts, want %d", tc.name, f.starts, tc.starts)
 			}
 			continue
 		}
@@ -139,5 +146,47 @@ func TestCustomImageDir(t *testing.T) {
 	}
 	if !customImageDir(filepath.Join(t.TempDir(), "image")) {
 		t.Error("another folder does not count as a custom one")
+	}
+}
+
+// TestRecordStartFailure: a start the broker service kept from spawning the engine
+// leaves a failed state.json with the code the window maps to HB-VM-005, keeping the
+// past runtime ids; any other error writes nothing.
+func TestRecordStartFailure(t *testing.T) {
+	dir := t.TempDir()
+	in := &install{l: engine.Layout{Home: dir, Data: dir}}
+	if err := engine.SaveState(in.l, &engine.State{Phase: engine.PhaseStopped, PastRuntimeIDs: []string{"a-b"}}); err != nil {
+		t.Fatal(err)
+	}
+	in.recordStartFailure(errors.New("not the broker's"))
+	if st, _ := engine.LoadState(in.l); st.Phase != engine.PhaseStopped {
+		t.Fatalf("a plain error changed the state: %+v", st)
+	}
+	f := fakeService{states: []broker.ServiceState{svcState(svc.Stopped)}, startErr: windows.ERROR_ACCESS_DENIED}
+	_, err := chooseBackend(backendAuto, "", false, f.probe(), io.Discard)
+	in.recordStartFailure(err)
+	st, lerr := engine.LoadState(in.l)
+	if lerr != nil || st.Phase != engine.PhaseFailed || st.ErrorCode != engine.CodeBrokerUnavailable || st.PID != 0 ||
+		len(st.PastRuntimeIDs) != 1 || !strings.Contains(st.Error, "interactive") {
+		t.Fatalf("%+v, %v", st, lerr)
+	}
+}
+
+// TestStartHint: a token that is not interactive, or a disabled service, is told what
+// to do instead of being pointed at Hyper-V Administrators.
+func TestStartHint(t *testing.T) {
+	for _, tc := range []struct {
+		err  error
+		want string
+	}{
+		{windows.ERROR_ACCESS_DENIED, "interactive sign-in"},
+		{windows.ERROR_SERVICE_DISABLED, "disabled it"},
+		{errors.New("something else"), "sc.exe start"},
+	} {
+		f := fakeService{states: []broker.ServiceState{svcState(svc.Stopped)}, startErr: tc.err}
+		_, err := chooseBackend(backendAuto, "", false, f.probe(), io.Discard)
+		if err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("%v: %v", tc.err, err)
+		}
 	}
 }

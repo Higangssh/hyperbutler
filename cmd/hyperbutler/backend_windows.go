@@ -47,15 +47,30 @@ type backendChoice struct {
 	note string
 }
 
-// errNoBrokerService is the --backend broker error when the service cannot be used.
-var errNoBrokerService = errors.New("--backend broker")
+// errNoBrokerService is what the error of a start that needs the broker service and
+// cannot use it wraps.
+var errNoBrokerService = errors.New("the broker service cannot be used")
+
+// brokerStartError is a start that did not spawn the engine because the broker
+// service is installed but cannot be used: code is the engine's error code
+// (CodeBrokerUnavailable), which start records in state.json for the window.
+type brokerStartError struct {
+	code string
+	err  error
+}
+
+func (e *brokerStartError) Error() string { return e.err.Error() }
+func (e *brokerStartError) Unwrap() error { return e.err }
 
 // chooseBackend picks how start boots the VM from --backend, --broker and whether
 // --image-dir names an image of the caller's (customImage: the broker boots only its
 // own). For auto and broker it uses the broker service when it runs, starts it when it
-// is stopped (or waits for it while it starts or stops), and gives it up to p.wait; auto
-// then falls back to the engine process and says why, broker fails. progress is told
-// when it starts the service.
+// is stopped (or waits for it while it starts or stops), and gives it up to p.wait. A
+// service that is installed but cannot be used is an error for both: an administrator
+// installed it to be used, so running the VM in the engine process instead would only
+// fail differently, or hide the problem (ADR 0004 rule 5). Only auto without the
+// service at all falls back to the engine process, and says why. progress is told when
+// it starts the service.
 func chooseBackend(backend, brokerPipe string, customImage bool, p serviceProbe, progress io.Writer) (backendChoice, error) {
 	switch {
 	case brokerPipe != "":
@@ -70,14 +85,44 @@ func chooseBackend(backend, brokerPipe string, customImage bool, p serviceProbe,
 	case customImage:
 		return backendChoice{}, nil // a developer's own image boots in the engine process
 	}
-	why, err := serviceUsable(p, progress)
-	if err == nil {
+	installed, err := serviceUsable(p, progress)
+	switch {
+	case err == nil:
 		return backendChoice{pipe: broker.ServicePipe}, nil
+	case !installed && backend == backendAuto:
+		return backendChoice{note: err.Error()}, nil
 	}
-	if backend == backendBroker {
-		return backendChoice{}, fmt.Errorf("%w: %w; see hyperbutler doctor", errNoBrokerService, err)
+	return backendChoice{}, &brokerStartError{code: engine.CodeBrokerUnavailable,
+		err: fmt.Errorf("%w: %w; hyperbutler doctor checks it (--backend hcs runs the VM without it, which needs Hyper-V Administrators or elevation)", errNoBrokerService, err)}
+}
+
+// startHint is what serviceUsable says when this user could not start the service: the
+// service lets interactive sign-ins start it, and nothing else.
+func startHint(err error) string {
+	switch {
+	case errors.Is(err, windows.ERROR_SERVICE_DISABLED):
+		return "an administrator disabled it; an administrator enables it again (sc.exe config " + broker.ServiceName + " start= delayed-auto) or repairs hyperbutler"
+	case errors.Is(err, windows.ERROR_ACCESS_DENIED):
+		return "only an interactive sign-in may start it (not ssh, a service or a scheduled task without one): start hyperbutler from your desktop, or an administrator runs sc.exe start " + broker.ServiceName
 	}
-	return backendChoice{note: why}, nil
+	return "an administrator runs sc.exe start " + broker.ServiceName + "; the Application event log (source " + broker.EventSource + ") says why it does not run"
+}
+
+// recordStartFailure records a start that failed before the engine was spawned, because
+// the broker service cannot be used (a brokerStartError), as a failed state.json with
+// its code, so the window explains it as it does an engine's failure (HB-VM-005). It
+// runs under the operations lock, with no engine running; the past runtime ids stay.
+func (in *install) recordStartFailure(err error) {
+	var be *brokerStartError
+	if !errors.As(err, &be) {
+		return
+	}
+	st := &engine.State{}
+	if prev, lerr := engine.LoadState(in.l); lerr == nil {
+		st.PastRuntimeIDs, st.Pipe, st.DataDir = prev.PastRuntimeIDs, prev.Pipe, prev.DataDir
+	}
+	st.Phase, st.Error, st.ErrorCode = engine.PhaseFailed, err.Error(), be.code
+	_ = engine.SaveState(in.l, st)
 }
 
 // customImageDir reports whether start's --image-dir names an image other than the one
@@ -101,42 +146,41 @@ func canUseHCS() bool {
 }
 
 // serviceUsable reports whether the broker service runs, after starting it if it is
-// stopped. Otherwise it says why not: why for the log, err for an error.
-func serviceUsable(p serviceProbe, progress io.Writer) (why string, err error) {
+// stopped; otherwise err says why not, and installed whether the service exists (a
+// failed query counts as installed: auto must not fall back on it).
+func serviceUsable(p serviceProbe, progress io.Writer) (installed bool, err error) {
 	st, err := p.query()
 	if err != nil {
-		return "cannot read the broker service's state: " + err.Error(), err
+		return true, fmt.Errorf("cannot read the broker service's state: %w", err)
 	}
 	if !st.Installed {
-		return "the broker service (" + broker.ServiceName + ") is not installed", errors.New("the broker service is not installed")
+		return false, errors.New("the broker service (" + broker.ServiceName + ") is not installed")
 	}
 	deadline := p.now().Add(p.wait)
 	started := false
 	for {
 		switch {
 		case st.State == svc.Running:
-			return "", nil
+			return true, nil
 		case st.State == svc.Stopped && !started:
 			started = true
 			_, _ = fmt.Fprintln(progress, "hyperbutler: starting the broker service...")
 			if err := p.start(); err != nil {
-				return "the broker service is installed but stopped, and could not be started: " + err.Error(), err
+				return true, fmt.Errorf("the broker service is stopped, and this account cannot start it (%w): %s", err, startHint(err))
 			}
 		case st.State == svc.Stopped:
 			// It started and stopped again: its event log says why.
-			err := fmt.Errorf("the broker service stopped while it was starting (the Application event log, source %s, says why)", broker.EventSource)
-			return err.Error(), err
+			return true, fmt.Errorf("the broker service stopped while it was starting (the Application event log, source %s, says why)", broker.EventSource)
 		}
 		if !p.now().Before(deadline) {
-			err := fmt.Errorf("the broker service is still %s after %v", broker.StateName(st.State), p.wait)
-			return err.Error(), err
+			return true, fmt.Errorf("the broker service is still %s after %v", broker.StateName(st.State), p.wait)
 		}
 		p.sleep(p.tick)
 		if st, err = p.query(); err != nil {
-			return "cannot read the broker service's state: " + err.Error(), err
+			return true, fmt.Errorf("cannot read the broker service's state: %w", err)
 		}
 		if !st.Installed {
-			return "the broker service was uninstalled", errors.New("the broker service was uninstalled")
+			return true, errors.New("the broker service was uninstalled while it was starting")
 		}
 	}
 }

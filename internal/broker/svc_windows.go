@@ -394,6 +394,9 @@ type ServiceState struct {
 	Installed bool
 	State     svc.State
 	PID       uint32
+	// Disabled: its start type is disabled (false also when the configuration cannot be
+	// read, which needs SERVICE_QUERY_CONFIG).
+	Disabled bool
 }
 
 // QueryService reads a service's state with the rights any user has: it connects to
@@ -421,7 +424,17 @@ func QueryService(name string) (ServiceState, error) {
 	if err != nil {
 		return ServiceState{}, fmt.Errorf("query service %s: %w", name, err)
 	}
-	return ServiceState{Installed: true, State: q.State, PID: q.ProcessId}, nil
+	st := ServiceState{Installed: true, State: q.State, PID: q.ProcessId}
+	// The start type, with SERVICE_QUERY_CONFIG, which the SCM's default DACL (and the
+	// broker's) gives interactive users; without it, Disabled stays false.
+	if h2, err := windows.OpenService(m, n, windows.SERVICE_QUERY_CONFIG); err == nil {
+		s2 := &mgr.Service{Name: name, Handle: h2}
+		if c, err := s2.Config(); err == nil {
+			st.Disabled = c.StartType == windows.SERVICE_DISABLED
+		}
+		_ = s2.Close()
+	}
+	return st, nil
 }
 
 // RequestServiceStart asks the SCM to start the service with the rights a user may

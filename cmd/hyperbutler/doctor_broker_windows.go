@@ -135,9 +135,15 @@ func brokerCheck(p brokerProbe) DoctorCheck {
 		return c
 	case st.State == svc.Stopped && p.exists(pipe):
 		return squatted()
+	case st.State == svc.Stopped && st.Disabled:
+		// start does not fall back while the service is installed (ADR 0004, M4).
+		c.Status, c.Summary = doctorFail, "the broker service is disabled, so hyperbutler start cannot start the VM through it"
+		c.Fix = "An administrator enables it again: sc.exe config " + broker.ServiceName + " start= delayed-auto, then sc.exe start " + broker.ServiceName + " (a repair of hyperbutler leaves a disabled service alone)."
+		c.Msg, c.FixMsg = "doctor.broker.disabled", "doctor.fix.brokerEnable"
+		return c
 	case st.State == svc.Stopped:
 		c.Status, c.Summary = doctorWarn, "the broker service is installed but stopped; hyperbutler start starts it"
-		c.Fix = "An administrator starts it: sc.exe start " + broker.ServiceName + ". If it stops again, the Application event log (source " + broker.EventSource + ") says why."
+		c.Fix = "Run hyperbutler start from your desktop sign-in, which starts the service; or an administrator runs sc.exe start " + broker.ServiceName + ". If it stops again, the Application event log (source " + broker.EventSource + ") says why."
 		c.Msg, c.FixMsg = "doctor.broker.stopped", "doctor.fix.brokerStart"
 		return c
 	case st.State != svc.Running:

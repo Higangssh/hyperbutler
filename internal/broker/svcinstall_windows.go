@@ -441,7 +441,7 @@ type startError struct{ err error }
 func (e *startError) Error() string { return e.err.Error() }
 func (e *startError) Unwrap() error { return e.err }
 
-// UninstallService stops the service, waits for it to stop, deletes it and removes its
+// UninstallService deletes the service, stops it, waits for it to stop and removes its
 // event log source. A service that is not installed is not an error.
 func UninstallService(name string) error {
 	m, err := mgr.Connect()
@@ -458,6 +458,17 @@ func UninstallService(name string) error {
 		return fmt.Errorf("open the service: %w", err)
 	}
 	defer func() { _ = s.Close() }()
+	// Delete first, then stop: interactive users may start the service (serviceSDDL),
+	// and one that does so between a stop and a delete would leave it running, holding
+	// its file, under a deleted service. Once it is marked for deletion, StartService
+	// fails with ERROR_SERVICE_MARKED_FOR_DELETE. The SCM removes it when its process
+	// has ended, after the stop below.
+	marked := false
+	if err := s.Delete(); errors.Is(err, windows.ERROR_SERVICE_MARKED_FOR_DELETE) {
+		marked = true // an earlier uninstall deleted it already
+	} else if err != nil {
+		return fmt.Errorf("delete the service: %w", err)
+	}
 	var stopErr error
 	if q, err := s.Query(); err != nil || q.State != svc.Stopped {
 		if _, err := s.Control(svc.Stop); err != nil && !errors.Is(err, windows.ERROR_SERVICE_NOT_ACTIVE) {
@@ -466,12 +477,6 @@ func UninstallService(name string) error {
 			// The service gives up on a stop after serviceStopLimit and exits.
 			stopErr = waitService(s, svc.Stopped, serviceStopLimit+15*time.Second)
 		}
-	}
-	marked := false
-	if err := s.Delete(); errors.Is(err, windows.ERROR_SERVICE_MARKED_FOR_DELETE) {
-		marked = true // an earlier uninstall deleted it already
-	} else if err != nil {
-		return fmt.Errorf("delete the service: %w", err)
 	}
 	if err := eventlog.Remove(EventSource); err != nil && !errors.Is(err, windows.ERROR_FILE_NOT_FOUND) {
 		return fmt.Errorf("remove the event log source: %w", err)

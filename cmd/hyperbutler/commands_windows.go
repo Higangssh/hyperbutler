@@ -252,6 +252,7 @@ func cmdStart(args []string, stdout, stderr io.Writer) error {
 
 	choice, err := chooseBackend(*backend, *brokerPipe, customImageDir(*imageDir), machineService, stderr)
 	if err != nil {
+		in.recordStartFailure(err)
 		return err
 	}
 	if choice.note != "" && !canUseHCS() {

@@ -12,7 +12,8 @@ import (
 // TestSetupResultCheck: a failed installer step becomes a warning with its step and
 // error; a successful one, or nothing, adds no check.
 func TestSetupResultCheck(t *testing.T) {
-	for _, ok := range []string{"", "2026-11-02T01:17:47Z hyperv-admins add: ok", "2026-11-02T01:17:47Z vm-platform: ok"} {
+	for _, ok := range []string{"", "2026-11-02T01:17:47Z hyperv-admins add: ok", "2026-11-02T01:17:47Z vm-platform: ok",
+		"2026-11-03T01:17:47Z broker install: ok, hyperbutler-broker is disabled; left as an administrator set it"} {
 		if _, show := setupResultCheck(ok); show {
 			t.Errorf("%q shown", ok)
 		}

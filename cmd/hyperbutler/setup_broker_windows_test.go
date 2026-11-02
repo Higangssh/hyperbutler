@@ -121,6 +121,8 @@ func TestSetupBrokerInstall(t *testing.T) {
 		{name: "stopped, stops again", f: fakeSCM{installed: true, cfg: ours, state: svc.Stopped, startTo: svc.StartPending}, starts: 1, wantSecures: 1},
 		{name: "other executable", f: fakeSCM{installed: true, cfg: other, state: svc.Running}, ok: true, uninstalls: 1, installs: 1},
 		{name: "deleted, not gone", f: fakeSCM{installed: true, cfg: ours, state: svc.Stopped, deleted: true, gone: 3}, ok: true, installs: 1, wantSecures: 1},
+		// A start that leaves it stopped is tried once, not until the wait runs out.
+		{name: "stopped, start leaves it stopped", f: fakeSCM{installed: true, cfg: ours, state: svc.Stopped, startTo: svc.Stopped}, starts: 1, wantSecures: 1},
 		{name: "install fails", f: fakeSCM{installErr: errors.New("create the service: access denied")}, installs: 1},
 	} {
 		f := tc.f
@@ -146,6 +148,18 @@ func TestSetupBrokerInstall(t *testing.T) {
 		}
 		if tc.ok && (!f.installed || f.state != svc.Running || !sameBrokerConfig(f.cfg, want)) {
 			t.Errorf("%s: ends %+v", tc.name, f)
+		}
+	}
+
+	// A service an administrator disabled stays as it is (a repair a standard user starts
+	// must not turn it on again), whatever it runs: the outcome is a note, not a failure.
+	for _, c := range []mgr.Config{ours, other} {
+		c.StartType = windows.SERVICE_DISABLED
+		f := fakeSCM{installed: true, cfg: c, state: svc.Stopped}
+		err := setupBrokerInstall(f.service(), exe, io.Discard)
+		var note *setupNote
+		if !errors.As(err, &note) || f.installs != 0 || f.uninstalls != 0 || f.starts != 0 || f.secures != 0 {
+			t.Errorf("disabled %s: %v, %+v", c.BinaryPathName, err, f)
 		}
 	}
 

@@ -131,8 +131,19 @@ func cmdSetup(args []string, stdout, stderr io.Writer) error {
 	if err != nil || !removedAll {
 		setupRecord{registry.LOCAL_MACHINE, setupKey}.result(step, err)
 	}
+	var note *setupNote
+	if errors.As(err, &note) {
+		_, _ = fmt.Fprintln(stdout, note.msg)
+		return nil
+	}
 	return err
 }
+
+// setupNote is a verb's outcome that is not a failure but is worth recording, such as a
+// step left undone on purpose: LastResult says "ok, <note>", and the verb succeeds.
+type setupNote struct{ msg string }
+
+func (n *setupNote) Error() string { return n.msg }
 
 // brokerServiceRuns reports whether the broker service is installed and running.
 func brokerServiceRuns() bool {
@@ -222,7 +233,10 @@ func (r setupRecord) result(step string, err error) {
 	}
 	defer func() { _ = k.Close() }()
 	s := "ok"
-	if err != nil {
+	var note *setupNote
+	if errors.As(err, &note) {
+		s = "ok, " + note.msg
+	} else if err != nil {
 		s = err.Error()
 		if len(s) > 1024 {
 			s = s[:1024]

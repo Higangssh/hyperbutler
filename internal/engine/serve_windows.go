@@ -361,13 +361,14 @@ func Describe(code, pipe string) string {
 		return strings.TrimSpace(fmt.Sprintf(`
 The Host Compute Service (HCS) refused access.
 
-This start ran the VM in hyperbutler's own process, because the hyperbutler broker
-service is not installed or not running (hyperbutler doctor says which). Without the
-service, HCS needs your account in the local "Hyper-V Administrators" group.
+This start ran the VM in hyperbutler's own process: the hyperbutler broker service is
+not installed, or the start asked for that (--backend hcs, or --image-dir with a guest
+image of your own, which the service does not boot). Then HCS needs your account in the
+local "Hyper-V Administrators" group, or an elevated shell.
 
-Install hyperbutler with its installer (the .msi of the release): it installs the
-broker service, which starts the VM for you without any group membership. Then run
-hyperbutler start again.
+Without the service: install hyperbutler with its installer (the .msi of the release),
+which installs it; the service starts the VM for you without any group membership.
+Then run hyperbutler start again (without --backend hcs or --image-dir).
 
 Or, without the service (developer mode), an administrator adds you once with:
 

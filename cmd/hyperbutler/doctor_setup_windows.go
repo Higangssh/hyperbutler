@@ -33,7 +33,7 @@ func setupResultCheck(v string) (c DoctorCheck, ok bool) {
 		rest = v
 	}
 	step, detail, _ := strings.Cut(rest, ": ")
-	if detail == "ok" || strings.TrimSpace(rest) == "" {
+	if detail == "ok" || strings.HasPrefix(detail, "ok, ") || strings.TrimSpace(rest) == "" {
 		return c, false
 	}
 	if len(detail) > 300 {
@@ -41,7 +41,7 @@ func setupResultCheck(v string) (c DoctorCheck, ok bool) {
 	}
 	return DoctorCheck{ID: "installer", Status: doctorWarn,
 		Summary: "the installer's last setup step failed (" + step + "): " + detail,
-		Fix:     "Uninstall and install hyperbutler again (a repair does not redo this step), or do the step by hand (docs/install.md).",
+		Fix:     "Uninstall and install hyperbutler again (a repair redoes only the broker service step), or do the step by hand (docs/install.md).",
 		Msg:     "doctor.installer.failed", FixMsg: "doctor.fix.installer",
 		Args: msgArgs("step", step, "detail", detail)}, true
 }
