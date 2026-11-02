@@ -225,10 +225,11 @@ Taken by the owner before the HCS backend was written:
 
 - Does HCS accept a virtual service account that is a member of Hyper-V Administrators
   (option C)? This needs an elevated spike.
-- Which HvSocket security descriptor fields are honoured on Home, and does guest-initiated
-  connect need its own descriptor? Every service now carries the owner-only descriptor in
-  the field its direction uses (see "Per-user endpoints and the VM secret (M3)"); whether
-  Home enforces them is untested, and the per-VM secret is the barrier if it does not.
+- Answered 2026-11-02 (two-account run, below): Home enforces the connect descriptors. A
+  standard user's connects to another user's VM on 2375, 2380, 1024 and 2385 are refused
+  by the OS (WSAEACCES) before the guest sees them. Still open: a wildcard-VM listener
+  (`HV_GUID_WILDCARD`) on 1024 and 2385 is allowed for any user, and whether HCS would
+  route a guest-initiated connection to it before the owner's engine binds is untested.
 
 ## Adversarial review
 
@@ -694,10 +695,35 @@ user from listening there in the owner's place. A test checks every shape of VM.
   later change could have the host listener send it first, for the guest to check.
 - Host and guest image must match: an M3 host sends 32 bytes an older guest would pass
   to dockerd, and an M3 guest refuses an older host. They ship together in the MSI.
-- Whether Home enforces the HvSocket descriptors is the open question above; the
-  two-account plan below tests it.
+- Home enforces the HvSocket connect descriptors (two-account run below). It does not
+  stop another user from listening on a wildcard VM id for the guest-initiated services;
+  see the run's result.
 
-### Two-account test plan (M3, not run)
+### Two-account run (2026-11-02)
+
+Windows 11 Home 10.0.26200. The broker installed as the service (a dev build, with
+`-allow-unpinned-image`), A (`user`, in Hyper-V Administrators) running
+`hyperbutler start --broker \\.\pipe\hyperbutler-broker` with a container, B (`hbtest`,
+a standard user, removed from Hyper-V Administrators for the run) running
+`spike/xuser` through `runas`. 26 of 28 attempts were refused; A's container and a new
+`docker run` worked throughout and after.
+
+- Refused: B's status and stop reach only B's own (empty) endpoint; opening A's per-user
+  pipe and adding an instance to it (access denied); connects to A's VM on 2375, 2380,
+  1024 and 2385 with nothing, a zero secret, 31 bytes and a Docker request (WSAEACCES at
+  connect, so the guest's secret check was never reached); listening on A's VM id for
+  1024 and 2385 (address in use: A's engine holds them; whether the bind descriptor would
+  refuse B with them free is not shown); listing A's data directory and opening its disk.
+- **Not refused:** B can listen on the wildcard VM id for 1024 and 2385. While A's engine
+  holds its own VM-specific listeners, those win; in the window before they exist (A's
+  engine starting or restarting while the VM runs), A's guest might connect to B's
+  listener, which could then serve A's share or sit in A's network path. Fix: the
+  guest-initiated services check their listener too (the host sends the secret first,
+  as the limits above already suggest); then re-run this step.
+- Not run: steps 1.5 and 1.6 (squatting before the broker starts, holding the shared
+  endpoint) and step 3's VM restart.
+
+### Two-account test plan (M3)
 
 Machine with the broker installed (SYSTEM service, or `hyperbutler-broker -hcs-backend`
 run elevated), two local accounts: A (the owner, may be admin) and B (standard user, not
