@@ -11,15 +11,16 @@
 //   - -hcs-backend runs VMs through HCS, so it needs what HCS needs: elevation, or
 //     membership in Hyper-V Administrators. It boots only the guest image in the image\
 //     folder next to this executable, checked against the SHA-256 pin compiled in; a
-//     development build carries no pin and needs -allow-unpinned-image. At start it
-//     terminates the VMs that carry the broker's owner tag and that it does not run (left
-//     by an earlier broker), and on exit it terminates its own.
+//     development build carries no pin and needs -allow-unpinned-image, which a release
+//     build refuses. At start it terminates the VMs that carry its user's owner tag and
+//     that it does not run (left by an earlier broker), and on exit it terminates its own.
 //
 // Run as a normal user, it serves that user only.
 package main
 
 import (
 	"crypto/rand"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -33,6 +34,7 @@ import (
 
 	"github.com/Higangssh/hyperbutler/internal/broker"
 	"github.com/Higangssh/hyperbutler/internal/diag"
+	"github.com/Higangssh/hyperbutler/internal/imageset"
 )
 
 const defaultPipe = `\\.\pipe\hyperbutler-broker-dev`
@@ -59,8 +61,19 @@ func main() {
 	flag.BoolVar(&o.hcs, "hcs-backend", false, `run VMs through HCS (needs elevation or Hyper-V Administrators), from the image\ folder next to this executable`)
 	flag.BoolVar(&o.allowUnpinned, "allow-unpinned-image", false, "with -hcs-backend in a development build (no image pin compiled in): boot the image checked against its own image.json only")
 	flag.StringVar(&o.dcfg.MemoryLimit, "memlimit", defaultMemLimit, "Go soft memory limit, GOMEMLIMIT syntax (the GOMEMLIMIT variable wins)")
+	versionJSON := flag.Bool("version-json", false, "print the broker version and its guest image pin as JSON, and exit (dist/package.ps1 checks them)")
 	flag.StringVar(&o.dcfg.DebugPipe, "debug-pipe", "", `serve pprof and runtime stats on this pipe, current user only (off when empty), e.g. \\.\pipe\hyperbutler-broker-debug`)
 	flag.Parse()
+	if *versionJSON {
+		pin, pinned := imageset.Pin()
+		b, _ := json.Marshal(struct {
+			Version             string `json:"version"`
+			ImagePinned         bool   `json:"imagePinned"`
+			ImageManifestSha256 string `json:"imageManifestSha256,omitempty"`
+		}{version, pinned, pin})
+		fmt.Println(string(b))
+		return
+	}
 	if err := run(o); err != nil {
 		fmt.Fprintln(os.Stderr, "hyperbutler-broker:", err)
 		os.Exit(1)
@@ -73,6 +86,10 @@ func run(o options) error {
 	}
 	if o.allowUnpinned && !o.hcs {
 		return errors.New("-allow-unpinned-image needs -hcs-backend")
+	}
+	if _, pinned := imageset.Pin(); o.allowUnpinned && (pinned || version != "dev") {
+		// A release build boots only the image it was built with.
+		return errors.New("-allow-unpinned-image is for development builds only")
 	}
 	// The debug pipe's DACL names the user's SID, which an elevated token shares with
 	// the same user's medium-integrity processes. Exposing heap dumps and profiles of an
@@ -108,7 +125,9 @@ func run(o options) error {
 		}
 		// Runs after the server and the listener are closed, whose leases end first.
 		defer func() { _ = hb.Close() }()
-		if n := hb.Sweep(); n > 0 {
+		// In the foreground the broker serves its own user only, so it sweeps only that
+		// user's VMs; another user's broker may run theirs.
+		if n := hb.Sweep(broker.OwnerTag(user)); n > 0 {
 			log.Printf("terminated %d VM(s) an earlier broker left", n)
 		}
 		backend, what = hb, "HCS backend"

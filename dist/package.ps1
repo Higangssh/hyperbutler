@@ -182,6 +182,20 @@ try {
                 Fail "hyperbutler.exe reports image pin '$($vj.imageManifestSha256)', expected '$pin'"
             }
         } else { Warn "cannot run the amd64 hyperbutler.exe here to check its image pin" }
+
+        # The HCS access broker (ADR 0004), pinned to the same image.json and stamped with
+        # this version. It ships in the zip only; the MSI leaves it out until it installs it
+        # as a service.
+        $brokerExe = Join-Path $stage 'hyperbutler-broker.exe'
+        $brokerLdflags = "$ldflags -X main.version=$Version"
+        Exec go build -trimpath -buildvcs=true -ldflags $brokerLdflags -o $brokerExe ./cmd/hyperbutler-broker | Out-Null
+        if ($env:PROCESSOR_ARCHITECTURE -eq 'AMD64') {
+            $bj = (Exec $brokerExe -version-json) -join "`n" | ConvertFrom-Json
+            if ([bool]$bj.imagePinned -ne [bool]$pin -or ($pin -and $bj.imageManifestSha256 -ne $pin)) {
+                Fail "hyperbutler-broker.exe reports image pin '$($bj.imageManifestSha256)', expected '$pin'"
+            }
+            if ($bj.version -ne $Version) { Fail "hyperbutler-broker.exe reports version '$($bj.version)', expected '$Version'" }
+        } else { Warn "cannot run the amd64 hyperbutler-broker.exe here to check its image pin" }
         $goroot = (Exec go env GOROOT) | Select-Object -First 1
 
         # What the binary says about itself: its own version and the modules linked in.
@@ -520,6 +534,8 @@ try {
         "go: $goVersion",
         "build: GOOS=windows GOARCH=$goarch CGO_ENABLED=0 go build -trimpath -buildvcs=true -ldflags `"$ldflags`" ./cmd/hyperbutler",
         "hyperbutler.exe: $(Sha256 $exe)",
+        "broker build: GOOS=windows GOARCH=$goarch CGO_ENABLED=0 go build -trimpath -buildvcs=true -ldflags `"$brokerLdflags`" ./cmd/hyperbutler-broker",
+        "hyperbutler-broker.exe: $(Sha256 $brokerExe)",
         "guest image pin (image.json sha256): $(if ($pin) { $pin } else { 'none' })",
         'guest image:'
     ) + $imageLines + @('docker CLI and compose plugin (built from source, dist/clients.lock):') + $(if ($clientLines.Count) { $clientLines } else { @('  none (-NoClients)') })

@@ -328,23 +328,30 @@ HcsOpenComputeSystem (the startup sweep), and HcsGrantVmAccess on a probe file o
 (below). For each start:
 
 1. **Image.** Only `image\image.json` next to the broker executable is opened, with the
-   kernel, initramfs and system disk it names, all deny-write until the VM is gone, and
-   image.json checked against the SHA-256 pin compiled in (`internal/imageset`, the code
-   `hyperbutler.exe` uses; `-X ...imageset.pinnedManifest` pins both binaries). A build
-   without a pin refuses every start unless `-allow-unpinned-image` is given (development).
+   kernel, initramfs and system disk it names, and image.json checked against the SHA-256
+   pin compiled in (`internal/imageset`, the code `hyperbutler.exe` uses;
+   `-X ...imageset.pinnedManifest` pins both binaries, and `dist/package.ps1` builds both).
+   It is verified once, at the first start, and held deny-write for the broker's life, so
+   no start hashes it again and nothing can change it in between. A build without a pin
+   refuses every start unless `-allow-unpinned-image` is given, which only a development
+   build (version `dev`, no pin) accepts.
 2. **Data disk.** `data.vhdx` is opened relative to the validated data location handle,
    with `OBJ_DONT_REPARSE`, `FILE_OPEN_REPARSE_POINT` and `FILE_NON_DIRECTORY_FILE`, and
    must be a regular file on a local disk, not a reparse point, with one link, owned by
    the caller. The handle shares read and write but not delete, and keeps read access:
    a handle without data access takes no part in share-mode checks, so it would not stop
-   a rename. HCS gets the handle's `GetFinalPathNameByHandle` path.
+   a rename. HCS gets the handle's `GetFinalPathNameByHandle` path. The open is bounded
+   (10 s) like the data-location check: the caller could stall it with an oplock on its
+   own file or a ProjFS directory, and an abandoned open closes its handle when it returns.
 3. **Account.** The VM's runtime id comes from `vm.ProbeVMAccount`: HcsGrantVmAccess on
    a new file in the broker's private state directory, which also tells the access mask
    HCS grants. That mask, for `vm.AccountSID(runtimeID)`, is set on the data disk's
-   handle (removing entries of VM accounts a crash left), and read access on the system
-   disk's (reopened with `ReOpenFile`) unless the installer lets every VM read it. Both
-   are removed when the VM is released. A VM whose runtime id differs from the probe's is
-   terminated.
+   handle (removing entries of VM accounts a crash left: the disk is the user's alone).
+   The system disk, shared by every user's VM, gets read access for the account on a
+   handle reopened once with `ReOpenFile`, unless the installer lets every VM read it,
+   when it is not ACLed at all; only entries of VM accounts the broker does not run are
+   cleaned up there, and each release removes only its own. A VM whose runtime id differs
+   from the probe's is terminated.
 4. **Document.** `vmtemplate.Build` with the request's typed fields, the files above, the
    owner tag `hyperbutler-broker/<SID>` as HCS Owner, every service descriptor for the
    caller's SID only, and no console pipe (Implementation decision 7).
@@ -353,9 +360,12 @@ The connection whose start created the VM holds its lease: when it closes, the s
 terminates the VM. A start from another connection of the same user gets "lease held"; a
 forced stop ends the lease. Pause, resume, status and stop are owner-scoped. Status asks
 HCS for the state and releases a VM that stopped on its own. Resizing a running VM is not
-supported yet (the new size applies at the next start). At startup `-hcs-backend`
-terminates every compute system with the owner tag that it does not track; on exit it
-terminates its own.
+supported yet (the new size applies at the next start). Each owner's operations take
+that owner's lock only, so a start held up by HCS or a slow file delays no other user and
+no lease release; the request's context is checked before the uncancellable HCS calls.
+At startup the foreground `-hcs-backend` terminates the compute systems with its own
+user's owner tag that it does not track (another user's broker may run theirs); on exit
+it terminates its own.
 
 The client (`internal/broker/client_windows.go`) dials at impersonation level only after
 checking that the pipe's owner is SYSTEM, a service SID (`S-1-5-80-...`) or the user

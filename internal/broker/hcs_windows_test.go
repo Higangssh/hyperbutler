@@ -5,9 +5,11 @@ package broker
 import (
 	"context"
 	"errors"
+	"hash/crc32"
 	"net/netip"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -23,11 +25,13 @@ import (
 
 // fakeHCS is an hcsAPI that runs nothing: it records the documents it is given.
 type fakeHCS struct {
-	mu      sync.Mutex
-	rid     guid.GUID
-	created map[string]*vm.Config
-	systems map[string]*fakeSystem
-	list    []vm.Summary
+	mu sync.Mutex
+	// block, if set, holds every Create until it is closed; entered is signaled first.
+	block, entered chan struct{}
+	rid            guid.GUID
+	created        map[string]*vm.Config
+	systems        map[string]*fakeSystem
+	list           []vm.Summary
 	// wrongRID makes created systems report another runtime id than Probe.
 	wrongRID bool
 }
@@ -38,13 +42,17 @@ func newFakeHCS() *fakeHCS {
 }
 
 func (f *fakeHCS) Create(id string, cfg *vm.Config) (hcsSystem, error) {
+	if f.block != nil {
+		f.entered <- struct{}{}
+		<-f.block
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if _, err := cfg.Document(); err != nil {
 		return nil, err
 	}
 	f.created[id] = cfg
-	rid := f.rid
+	rid := f.ridFor(id)
 	if f.wrongRID {
 		rid.Data1++
 	}
@@ -63,11 +71,19 @@ func (f *fakeHCS) Open(id string) (hcsSystem, error) {
 
 func (f *fakeHCS) List() ([]vm.Summary, error) { return f.list, nil }
 
-func (f *fakeHCS) Probe(dir, _ string) (guid.GUID, uint32, error) {
+func (f *fakeHCS) Probe(dir, id string) (guid.GUID, uint32, error) {
 	if fi, err := os.Stat(dir); err != nil || !fi.IsDir() {
 		return guid.GUID{}, 0, errors.New("probe: no state directory")
 	}
-	return f.rid, windows.FILE_GENERIC_READ | windows.FILE_GENERIC_WRITE, nil
+	return f.ridFor(id), windows.FILE_GENERIC_READ | windows.FILE_GENERIC_WRITE, nil
+}
+
+// ridFor is the runtime id compute system id gets: f.rid with the name's hash, so each
+// VM has an account of its own.
+func (f *fakeHCS) ridFor(id string) guid.GUID {
+	r := f.rid
+	r.Data1 = crc32.ChecksumIEEE([]byte(id))
+	return r
 }
 
 type fakeSystem struct {
@@ -183,7 +199,7 @@ func TestHCSBackendStart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !st.Running || st.ID != f.api.rid.ToArray() || st.CPUs != 2 || st.MemoryMB != 2048 {
+	if !st.Running || st.ID == ([16]byte{}) || st.CPUs != 2 || st.MemoryMB != 2048 {
 		t.Fatalf("status %+v", st)
 	}
 	if len(f.api.created) != 1 {
@@ -232,7 +248,7 @@ func TestHCSBackendStart(t *testing.T) {
 		t.Fatalf("kernel %q is not from the image folder %q", cfg.KernelPath, f.image)
 	}
 	// The VM's account is on the data disk (and the system disk) while it runs.
-	account := vm.AccountSID(f.api.rid)
+	account := vm.AccountSID(f.api.ridFor(name))
 	if got, _ := vm.AccountsOnFile(f.disk); len(got) != 1 || got[0] != account {
 		t.Fatalf("accounts on the data disk: %v", got)
 	}
@@ -330,9 +346,9 @@ func TestHCSBackendRejectsDisk(t *testing.T) {
 	if !errors.Is(err, ErrDiskRejected) || len(f.api.created) != 0 {
 		t.Fatalf("hard-linked disk: %v", err)
 	}
-	// Nothing is left held: the image can be replaced again.
-	if err := os.WriteFile(filepath.Join(f.image, "vmlinuz-virt"), []byte("kernel"), 0o600); err != nil {
-		t.Fatalf("image still held after a refused start: %v", err)
+	// The data disk is not left held.
+	if err := os.Rename(f.disk, f.disk+".moved"); err != nil {
+		t.Fatalf("data disk still held after a refused start: %v", err)
 	}
 }
 
@@ -377,7 +393,7 @@ func TestHCSBackendSweep(t *testing.T) {
 		{ID: "hyperbutler-0a1b2c3d-112233", Owner: "hyperbutler", State: "Running"},
 		{ID: "wsl", Owner: "WSL", State: "Running"},
 	}
-	if n := f.be.Sweep(); n != 1 {
+	if n := f.be.Sweep(""); n != 1 {
 		t.Fatalf("swept %d", n)
 	}
 	if s := f.api.systems["hyperbutler-broker-0011"]; s == nil || !s.terminated {
@@ -390,5 +406,218 @@ func TestHCSBackendSweep(t *testing.T) {
 	}
 	if f.api.systems[mine].terminated {
 		t.Fatal("the tracked VM was terminated")
+	}
+}
+
+// One owner's start that HCS holds up delays no other owner's status or stop.
+func TestHCSBackendOwnersIndependent(t *testing.T) {
+	f := newHCSFixture(t, true)
+	f.api.block, f.api.entered = make(chan struct{}), make(chan struct{}, 1)
+	done := make(chan error, 1)
+	go func() {
+		_, err := f.be.Start(context.Background(), f.spec())
+		done <- err
+	}()
+	select {
+	case <-f.api.entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the start never reached Create")
+	}
+	t0 := time.Now()
+	if st, err := f.be.Status(context.Background(), sidB); err != nil || st.Running {
+		t.Fatalf("status of another owner: %+v, %v", st, err)
+	}
+	if err := f.be.Stop(context.Background(), sidB, true); !errors.Is(err, ErrNotRunning) {
+		t.Fatalf("stop of another owner: %v", err)
+	}
+	if err := f.be.Pause(context.Background(), sidB, false); !errors.Is(err, ErrNotRunning) {
+		t.Fatalf("pause of another owner: %v", err)
+	}
+	if d := time.Since(t0); d > time.Second {
+		t.Fatalf("another owner's requests took %v", d)
+	}
+	close(f.api.block)
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+}
+
+// batchOplock takes a batch oplock on path and never acknowledges its break, as a user
+// could on their own data disk to stall the broker's open of it.
+func batchOplock(t *testing.T, path string) (release func()) {
+	t.Helper()
+	p, err := windows.UTF16PtrFromString(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h, err := windows.CreateFile(p, windows.GENERIC_READ, windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE|windows.FILE_SHARE_DELETE,
+		nil, windows.OPEN_EXISTING, windows.FILE_FLAG_OVERLAPPED, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ev, err := windows.CreateEvent(nil, 1, 0, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ov := &windows.Overlapped{HEvent: ev}
+	const fsctlRequestBatchOplock = 0x00090008
+	err = windows.DeviceIoControl(h, fsctlRequestBatchOplock, nil, 0, nil, 0, nil, ov)
+	if !errors.Is(err, windows.ERROR_IO_PENDING) {
+		windows.CloseHandle(h)
+		windows.CloseHandle(ev)
+		t.Skipf("no batch oplock granted: %v", err)
+	}
+	return func() {
+		windows.CloseHandle(h)
+		windows.WaitForSingleObject(ev, 5000)
+		windows.CloseHandle(ev)
+		runtime.KeepAlive(ov)
+	}
+}
+
+// A data disk whose open the caller stalls (a batch oplock it never lets break) fails the
+// start within the bound, instead of holding the owner's lock for the break timeout.
+func TestHCSBackendDiskOpenBounded(t *testing.T) {
+	f := newHCSFixture(t, true)
+	f.be.cfg.diskTimeout = 300 * time.Millisecond
+	release := batchOplock(t, f.disk)
+	t0 := time.Now()
+	_, err := f.be.Start(context.Background(), f.spec())
+	d := time.Since(t0)
+	release() // lets the abandoned open finish and close its handle
+	if !errors.Is(err, ErrDiskRejected) || !strings.Contains(err.Error(), "in time") {
+		t.Fatalf("start: %v", err)
+	}
+	if d > 3*time.Second {
+		t.Fatalf("start took %v", d)
+	}
+	if len(f.api.created) != 0 {
+		t.Fatal("a VM was created")
+	}
+	// The owner is not stuck.
+	if st, err := f.be.Status(context.Background(), f.sid); err != nil || st.Running {
+		t.Fatalf("status: %+v, %v", st, err)
+	}
+}
+
+// A canceled request starts nothing.
+func TestHCSBackendHonoursContext(t *testing.T) {
+	f := newHCSFixture(t, true)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := f.be.Start(ctx, f.spec()); err == nil || len(f.api.created) != 0 {
+		t.Fatalf("canceled start: %v (%d created)", err, len(f.api.created))
+	}
+}
+
+// Two owners share the system disk: each VM's account is added and removed on its own,
+// and only entries of VMs the backend does not run (a crash's) are cleaned up.
+func TestHCSBackendSharedSystemDisk(t *testing.T) {
+	f := newHCSFixture(t, true)
+	me := currentSID(t)
+	// Owner B's disk is this user's file too; only the owner check is relaxed.
+	f.be.cfg.openDisk = func(dir windows.Handle, name, _ string) (*diskFile, error) { return openDataDisk(dir, name, me) }
+	system := filepath.Join(f.image, "system.vhd")
+	stale := vm.AccountPrefix + "9-9-9-9"
+	sp, _ := windows.UTF16PtrFromString(system)
+	sh, err := windows.CreateFile(sp, windows.READ_CONTROL|windows.WRITE_DAC, windows.FILE_SHARE_READ, nil, windows.OPEN_EXISTING, 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = grantHandle(sh, stale, windows.FILE_GENERIC_READ)
+	windows.CloseHandle(sh)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ctx := context.Background()
+	if _, err := f.be.Start(ctx, f.spec()); err != nil {
+		t.Fatal(err)
+	}
+	dirB := goodDir(t)
+	writeDisk(t, dirB)
+	specB := f.spec()
+	specB.Owner, specB.DataDir = sidB, &DataDir{h: dataDirHandle(t, dirB)}
+	if _, err := f.be.Start(ctx, specB); err != nil {
+		t.Fatal(err)
+	}
+	accounts := map[string]string{}
+	for name, c := range f.api.created {
+		accounts[strings.TrimPrefix(c.Owner, OwnerTagPrefix)] = vm.AccountSID(f.api.ridFor(name))
+	}
+	got, _ := vm.AccountsOnFile(system)
+	if len(got) != 2 || !contains(got, accounts[f.sid]) || !contains(got, accounts[sidB]) {
+		t.Fatalf("system disk accounts %v, want %v (stale %s removed)", got, accounts, stale)
+	}
+	if err := f.be.Stop(ctx, f.sid, true); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := vm.AccountsOnFile(system); len(got) != 1 || got[0] != accounts[sidB] {
+		t.Fatalf("after A's stop: %v, want only B's %s", got, accounts[sidB])
+	}
+	if err := f.be.Stop(ctx, sidB, true); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := vm.AccountsOnFile(system); len(got) != 0 {
+		t.Fatalf("after both stops: %v", got)
+	}
+}
+
+func contains(list []string, s string) bool {
+	for _, x := range list {
+		if x == s {
+			return true
+		}
+	}
+	return false
+}
+
+// An image the installer made readable by every VM is never ACLed.
+func TestHCSBackendVMReadableSystemDisk(t *testing.T) {
+	f := newHCSFixture(t, true)
+	system := filepath.Join(f.image, "system.vhd")
+	setDACL(t, system, "D:P(A;;FA;;;"+currentSID(t)+")(A;;FR;;;"+vm.VMGroupSID+")")
+	if _, err := f.be.Start(context.Background(), f.spec()); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := vm.AccountsOnFile(system); len(got) != 0 {
+		t.Fatalf("system disk accounts %v", got)
+	}
+}
+
+// The image is verified once and held for the backend's life: it cannot be replaced
+// between two starts.
+func TestHCSBackendImageHeld(t *testing.T) {
+	f := newHCSFixture(t, true)
+	ctx := context.Background()
+	if _, err := f.be.Start(ctx, f.spec()); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.be.Stop(ctx, f.sid, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(f.image, "vmlinuz-virt"), []byte("other"), 0o600); err == nil {
+		t.Fatal("the image was replaced between starts")
+	}
+	if _, err := f.be.Start(ctx, f.spec()); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A broker in the foreground sweeps only its user's VMs.
+func TestHCSBackendSweepOwnTagOnly(t *testing.T) {
+	f := newHCSFixture(t, true)
+	f.api.list = []vm.Summary{
+		{ID: "hyperbutler-broker-01", Owner: OwnerTag(f.sid), State: "Running"},
+		{ID: "hyperbutler-broker-02", Owner: OwnerTag(sidB), State: "Running"},
+	}
+	if n := f.be.Sweep(OwnerTag(f.sid)); n != 1 {
+		t.Fatalf("swept %d", n)
+	}
+	if _, opened := f.api.systems["hyperbutler-broker-02"]; opened {
+		t.Fatal("another user's VM was touched")
+	}
+	if s := f.api.systems["hyperbutler-broker-01"]; s == nil || !s.terminated {
+		t.Fatal("the user's own untracked VM was not terminated")
 	}
 }

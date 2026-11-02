@@ -78,6 +78,8 @@
       </Component>
       <Files Include="!(bindpath.stage)**">
         <Exclude Files="!(bindpath.stage)hyperbutler.exe" />
+        <!-- The HCS access broker ships in the zip only until the MSI installs it as a service. -->
+        <Exclude Files="!(bindpath.stage)hyperbutler-broker.exe" />
       </Files>
       <!-- The guest image: a VM's worker opens system.vhd as its own per-VM account, and a
            user cannot add that account to a file under Program Files (HcsGrantVmAccess needs
