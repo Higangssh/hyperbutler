@@ -103,7 +103,7 @@ func cmdSetup(args []string, stdout, stderr io.Writer) error {
 			_, _ = fmt.Fprintln(stdout, "the broker service does not run; the accounts the installer added stay in Hyper-V Administrators")
 			return nil
 		case args[1] == "remove":
-			removedAll = *all
+			removedAll = removesRecord(*all, *ifBroker)
 			err = setupRemoveHyperVAdmins(setupRecord{registry.LOCAL_MACHINE, setupKey}, *sid, stdout)
 		default:
 			return usagef("setup hyperv-admins: unknown verb %q", args[1])
@@ -152,6 +152,12 @@ func finishSetup(rec setupRecord, step string, err error, removedAll bool) {
 	}
 	rec.result(step, err)
 }
+
+// removesRecord reports whether a hyperv-admins remove takes the record away for good:
+// the uninstall's --all does, but an upgrade's --all --if-broker leaves the product
+// installed, so its outcome is recorded (else the upgrade would end with no LastResult,
+// not even the broker install's).
+func removesRecord(all, ifBroker bool) bool { return all && !ifBroker }
 
 // setupNote is a verb's outcome that is not a failure but is worth recording, such as a
 // step left undone on purpose: LastResult says "ok, <note>", and the verb succeeds.

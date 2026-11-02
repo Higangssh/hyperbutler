@@ -218,6 +218,16 @@ surprising. Numbers are from the maintainer's Windows 11 Home laptop unless note
   it off. Bisecting the profile pointed at one file, `Local State`: removing it before
   each start makes every launch a first launch, and 50 of 50 runs then held no socket
   ([gui.md](../gui.md#no-network-requests-req-ux-005)).
+
+- **The commit hash that outranked the release.** Installing v0.1.0-preview.1 over an
+  early development build left a product without its main executable, and the log said
+  nothing failed. That build's version was a bare commit, `26a483c`; the resource tool
+  read its leading digits as file version 26.0.0.0. Windows Installer saw an installed
+  `hyperbutler.exe` "newer" than the release's 0.1.0.0, skipped the copy, and a moment
+  later the upgrade's removal of the old product deleted the old file. One line in the
+  package script, and a reminder that Windows Installer compares four numbers, not what
+  you meant ([install.md](../install.md#run-of-2026-11-03)).
+
 ## Still to measure before writing
 
 - Side by side with Docker Desktop on WSL2 on the same machine (9P baselines need WSL).

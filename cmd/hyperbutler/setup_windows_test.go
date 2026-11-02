@@ -127,6 +127,31 @@ func (g fakeGroup) install(t *testing.T) {
 	}
 }
 
+// TestRemovesRecord: only the uninstall's remove --all drops the record; the upgrade's
+// remove --all --if-broker records its outcome, as the product stays.
+func TestRemovesRecord(t *testing.T) {
+	for _, c := range []struct{ all, ifBroker, want bool }{
+		{true, false, true}, {true, true, false}, {false, false, false}, {false, true, false},
+	} {
+		if got := removesRecord(c.all, c.ifBroker); got != c.want {
+			t.Errorf("removesRecord(all=%v, ifBroker=%v) = %v", c.all, c.ifBroker, got)
+		}
+	}
+	rec := testRecord(t)
+	if err := setupRemoveHyperVAdmins(rec, "", io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	finishSetup(rec, "hyperv-admins remove", nil, removesRecord(true, true))
+	k, err := registry.OpenKey(rec.root, rec.path, registry.QUERY_VALUE)
+	if err != nil {
+		t.Fatal("the upgrade's remove left no record:", err)
+	}
+	defer k.Close()
+	if s, _, _ := k.GetStringValue(setupResultValue); !strings.Contains(s, "hyperv-admins remove: ok") {
+		t.Errorf("LastResult %q", s)
+	}
+}
+
 // TestFinishSetupBrokerUninstall: a broker uninstall that succeeded (the uninstall's, or
 // a failed first install's rollback) leaves no record behind when it names no account;
 // with an account, or after a failure, it records the outcome.

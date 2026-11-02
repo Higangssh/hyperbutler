@@ -161,11 +161,17 @@ try {
     $exe = Join-Path $stage 'hyperbutler.exe'
     # The icon and version resource (cmd/hyperbutler/winres), stamped with this version. The
     # .syso files are git-ignored, so generating them leaves the tree clean for -buildvcs.
+    # The numeric file version is X.Y.Z.0 of a vX.Y.Z version, else 0.0.0.0: go-winres reads
+    # the leading digits of any string, so a bare commit (26a483c) became 26.0.0.0, which
+    # Windows Installer takes as newer than a release's hyperbutler.exe and then skips the
+    # release's copy while the upgrade removes the old one (docs/install.md).
     $resVersion = $Version.TrimStart('v')
+    $fileVersion = '0.0.0.0'
+    if ($Version -match '^v(\d+)\.(\d+)\.(\d+)(?:[-+]|$)') { $fileVersion = "$($Matches[1]).$($Matches[2]).$($Matches[3]).0" }
     $goSaved = EnterPinnedGoEnv
     try {
         Exec go run github.com/tc-hib/go-winres@v0.3.3 make --in cmd/hyperbutler/winres/winres.json `
-            --out cmd/hyperbutler/rsrc --arch 'amd64,arm64' --product-version $resVersion --file-version $resVersion | Out-Null
+            --out cmd/hyperbutler/rsrc --arch 'amd64,arm64' --product-version $resVersion --file-version $fileVersion | Out-Null
     } finally { ExitPinnedGoEnv $goSaved }
     $saved = $env:GOOS, $env:GOARCH, $env:CGO_ENABLED, $env:GOTOOLCHAIN, $env:GOFLAGS
     try {

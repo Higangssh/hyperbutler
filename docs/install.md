@@ -113,8 +113,8 @@ is never a release.
 ## Known gaps
 
 - English only; the window and the CLI follow your language, the installer does not yet.
-- The broker service install (M4) has not run from the MSI yet: the procedure below is
-  for the first run. The run of 2026-11-02 was before it.
+- The broker service install (M4) ran from the MSI once (2026-11-03, below), on one
+  machine; its steps with a second account (4, 7, 8) have not run yet.
 - Tested end to end on one machine (below) only with the basic progress window (`/qb`),
   on an account that was already in Hyper-V Administrators and with Virtual Machine
   Platform on. The options page and the DISM step have not run for real yet.
@@ -123,23 +123,25 @@ is never a release.
 - The upgrade's removal of the accounts an earlier installer added to Hyper-V
   Administrators has no rollback: it runs last, just before the install commits.
 
-## Test procedure: the broker service from the MSI (M4, not run yet)
+## Test procedure: the broker service from the MSI (M4)
 
-Run in an elevated PowerShell (each `msiexec` asks UAC once), on the machine with the
-earlier snapshot MSI installed (0.0.0, from 2026-11-02, which has no broker), from the
-repository root. `$m` is the new MSI, `$f` the `-FailForTest` build of the same stage,
+Run in an elevated PowerShell (each `msiexec` asks UAC once), on a machine with an
+earlier MSI without the broker installed (v0.1.0-preview.1), from the repository root.
+A plain snapshot MSI is version 0.0.0, which that release refuses as a downgrade: build
+the stage with `-Snapshot -Version v0.1.0-preview.N`, whose MSI version is 0.1.0 (the
+same-version upgrade a release over a preview makes). `$m` is the new MSI, `$f` the `-FailForTest` build of the same stage,
 `$log` a folder for the logs. The stage must hold a guest image that matches this
 hyperbutler (since M3 the host sends the VM secret, which an older guest refuses), with
 both executables pinned to its `image.json` (`package.ps1 -ImageDir` does both). Every
 step: record the outcome here.
 
-The MSIs for the first run (2026-11-03) were built from bcb1918 with the guest image of
-main's guest code (`package.ps1 -ImageDir $env:TEMP\hb-dev\wc\image -Snapshot`, image.json
-SHA-256 `757f5217…c68d`, which both executables report with `version --json` and
-`-version-json`):
+The MSIs for the first run (2026-11-03) were built from 02da1c3 with the guest image of
+main's guest code (`package.ps1 -ImageDir $env:TEMP\hb-dev\wc\image -Snapshot -Version
+v0.1.0-preview.2`, image.json SHA-256 `757f5217…c68d`, which both executables report with
+`version --json` and `-version-json`):
 
 ```
-$d = "$env:TEMP\hb-dev\m4msi\pkg"; $n = "hyperbutler-v0.1.0-preview.1-51-gbcb1918-windows-amd64-snapshot"
+$d = "$env:TEMP\hb-dev\m4msi\pkg2"; $n = "hyperbutler-v0.1.0-preview.2-windows-amd64-snapshot"
 $stage = "$d\$n"; $m = "$d\$n.msi"; $f = "$d\$n-failtest.msi"; $log = "$env:TEMP\hb-dev\m4msi\logs"
 mkdir $log -Force
 ```
@@ -153,7 +155,7 @@ mkdir $log -Force
      `START_TYPE AUTO_START (DELAYED)`, `SERVICE_START_NAME LocalSystem`;
      `sc.exe query hyperbutler-broker`: RUNNING; `sc.exe sdshow hyperbutler-broker`: IU has `RP`;
    - `reg query HKLM\SOFTWARE\hyperbutler\Setup /v LastResult`: the last step `ok`
-     (`broker install`, or `hyperv-admins remove` when it ran);
+     (`hyperv-admins remove`, which an upgrade runs last);
    - in the log, `HbBrokerInstall` ran after `InstallFiles`, `HbDropHyperVAdmins` before
      `InstallFinalize`, and the old product's removal right after `InstallInitialize`;
    - the group: unchanged (the 0.0.0 install recorded no one, the account was a member
@@ -181,8 +183,12 @@ mkdir $log -Force
 6. **Repair restores a deleted service, and leaves a running one alone:** elevated
    `sc.exe stop hyperbutler-broker`, `sc.exe delete hyperbutler-broker`; repair
    (`msiexec /fa $m /l*v $log\repair.log`): registered again and running. A second repair
-   with it running: its PID (`sc.exe queryex hyperbutler-broker`) is the same before and
-   after.
+   with it running: the log's `WixQuietExec64:` line says "hyperbutler-broker is installed
+   and running" (the step leaves it alone). Its PID still changes: `/fa` rewrites every
+   file, the running `hyperbutler-broker.exe` too, so Restart Manager stops the service
+   for the copy and starts it again ("RESTART MANAGER: Previously shut down applications
+   have been restarted"), as any repair that rewrites the file does; running VMs end with
+   it (HB-VM-004).
 7. **A standard user's repair does not touch the group:** elevated, give the record an
    account to remove: `& "C:\Program Files\hyperbutler\hyperbutler.exe" setup
    hyperv-admins add --sid <hbtest's SID>` (`wmic useraccount where name='hbtest' get
@@ -200,9 +206,11 @@ mkdir $log -Force
    - for the user (in the group): the start prints a warning that the service does not
      serve this sign-in and boots the VM in its own process; engine.log has the same
      warning; doctor's `broker` is a note. Then `hyperbutler stop` from the task.
-9. **Reinstall over itself** (`msiexec /i $m /l*v $log\same.log`, the same-version
-   upgrade): one product in Apps, the service running, a new PID, no stale service
-   (`sc.exe query hyperbutler-broker` once).
+9. **Reinstall over itself** (`msiexec /i $m /l*v $log\same.log`): the same MSI file
+   has the same product code, so this is a maintenance run, not an upgrade: one product
+   in Apps, the service running with the same PID. The same-version upgrade (another
+   build of the same version, a new product code) is step 1's: v0.1.0-preview.1 and the
+   test build are both 0.1.0.
 10. **The test MSI refuses a plain install:** `msiexec /i $f`: the message says it is a
     test build and wants `FAILTESTACK=1`; nothing changes.
 11. **Rollback of an upgrade:** `msiexec /i $f FAILTESTACK=1 WIXFAILWHENDEFERRED=1 /l*v
@@ -235,6 +243,43 @@ mkdir $log -Force
 
 Look in each log for `WixQuietExec64:` lines: they carry `hyperbutler setup`'s output
 ("installed and started hyperbutler-broker", "is installed and running", "uninstalled").
+
+### Run of 2026-11-03
+
+Windows 11 Home 26200, the MSIs above, `/passive` or `/qn` (every step's result is
+from the commands and the log the step names), the user in Hyper-V Administrators, the
+CLI with its own `HYPERBUTLER_HOME`:
+
+| Step | Result |
+| --- | --- |
+| 1 upgrade | Passed: the service as above (RUNNING, `IU` has `RP`), one product (0.1.0), the group unchanged, the old product removed after `InstallInitialize`, `HbBrokerInstall` after `InstallFiles`, `HbDropHyperVAdmins` last ("the record names no such account"). Two findings, below. |
+| 2 start | Passed: answered after 1.6 s, `hello-world` ran, `logs` shows the broker line, doctor `broker` ok (v0.1.0-preview.2, protocol 1), stop 1.6 s. |
+| 3 stopped service | Passed: "starting the broker service...", then booted through it. |
+| 5 disabled | Passed (as the user, not `hbtest`): the start failed in 48 ms with the message above, no HCS of its own; doctor `broker` FAIL (disabled); the repair left it DISABLED with that `LastResult` and the same SDDL. |
+| 6 repair | Passed: the deleted service came back, running. The repair with it running restarted it (Restart Manager, above), the step itself left it alone. |
+| 9 same MSI | A maintenance run (above); the same-version upgrade is step 1. |
+| 10 test MSI | Passed: refused with the test-build message, exit 1603. |
+| 11 upgrade rollback | Passed: "hyperbutler" (the same product code) and its service RUNNING from Program Files afterwards, and `hyperbutler start` works. |
+| 12 uninstall | Passed, with `sc.exe start` every 100 ms meanwhile: no service, no event log source, no folder, no `HKLM\SOFTWARE\hyperbutler`, no product, no restart asked, the group as before. |
+| 13 first-install rollback | Passed: the service was installed and started, then uninstalled by the rollback; nothing left. |
+| 14 squatted pipe | Passed: the service stopped at once (could not take its pipe), `HbBrokerInstallFirst` failed the install, nothing left. |
+| 15 silent first install | Passed: `LastResult` "broker install: ok", then step 2 again. |
+| 4, 7, 8 | Not run yet (they need the `hbtest` account's password). |
+
+Findings, fixed after the run:
+
+- An upgrade left no `LastResult`: its last step, `hyperv-admins remove --all
+  --if-broker`, deleted the record as the uninstall's `--all` does. Now only the
+  uninstall's does; the upgrade's records its outcome.
+- The machine had a development snapshot from before the first tag installed, and the
+  preview.1 install over it ended without `hyperbutler.exe` (so its `hyperbutler stop`
+  later failed, `0x80070002`): the snapshot's version was a bare commit (`26a483c`), which
+  go-winres read as file version 26.0.0.0, newer than preview.1's 0.1.0.0, so Windows
+  Installer skipped preview.1's copy ("Disallowing installation of component ... since
+  the same component with higher versioned keyfile exists") and then the removal of the
+  old product deleted the old one. `package.ps1` now stamps X.Y.Z.0 of a vX.Y.Z version
+  and 0.0.0.0 of anything else. Every build since the first tag had 0.1.0.0; a machine
+  with such an early snapshot uninstalls it first.
 
 ## Test on a real machine (2026-11-02)
 
