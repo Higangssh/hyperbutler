@@ -8,7 +8,7 @@
 # into a work folder next to the MSI, so the build never uses or changes a global WiX cache.
 #
 # The MSI version is the X.Y.Z of the stage's BUILDINFO.txt version when that is a release
-# tag or its -alpha/-beta/-rc; anything else (a snapshot) builds as 0.0.0, which any release
+# tag or its -alpha/-beta/-rc/-preview; anything else (a snapshot) builds as 0.0.0, which any release
 # upgrades. The MSI allows same-version upgrades, so v0.2.0 replaces v0.2.0-rc.1.
 
 [CmdletBinding()]
@@ -43,7 +43,7 @@ if (-not $version) { Fail 'BUILDINFO.txt names no version' }
 $productVersion = '0.0.0'
 # A release tag, or one of its pre-releases (-rc.1 and the like): not a `git describe` of a
 # later commit (v0.2.0-5-gabc1234) or a dirty tree, which would share the tag's version.
-if ($version -match '^v(\d{1,3})\.(\d{1,3})\.(\d{1,5})(?:-(?:alpha|beta|rc)(?:\.?\d+)?)?$') {
+if ($version -match '^v(\d{1,3})\.(\d{1,3})\.(\d{1,5})(?:-(?:alpha|beta|rc|preview)(?:\.?\d+)?)?$') {
     if ([int]$Matches[1] -gt 255 -or [int]$Matches[2] -gt 255 -or [int]$Matches[3] -gt 65535) { Fail "version $version does not fit an MSI version" }
     $productVersion = "$($Matches[1]).$($Matches[2]).$($Matches[3])"
 }

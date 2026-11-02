@@ -46,6 +46,7 @@ jobs:
     outputs:
       name: ${{ steps.pkg.outputs.name }}
       zip-sha256: ${{ steps.pkg.outputs.sha256 }}
+      msi-sha256: ${{ steps.msi.outputs.msi_sha256 }}
       sources-sha256: ${{ steps.src.outputs.sources }}
       inputs-sha256: ${{ steps.src.outputs.inputs }}
     defaults:
@@ -106,6 +107,20 @@ jobs:
           ./dist/package.ps1 -ImageDir $g -SourceBundle (Join-Path $g 'guest-sources.tar') `
             -ReleaseUrl $env:RELEASE_URL -Version $env:TAG -Out (Join-Path $env:RUNNER_TEMP 'dist')
 
+      # The MSI (docs/install.md), from the folder package.ps1 staged for the zip. WiX is the
+      # .NET tool at a pinned version; nuget.org serves it and its extensions, signed.
+      - name: Build the MSI
+        id: msi
+        env:
+          NAME: ${{ steps.pkg.outputs.name }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $tools = Join-Path $env:RUNNER_TEMP 'wix'
+          dotnet tool install wix --version 5.0.2 --tool-path $tools
+          if ($LASTEXITCODE -ne 0) { throw 'dotnet tool install wix failed' }
+          ./dist/msi/build-msi.ps1 -Stage (Join-Path $env:RUNNER_TEMP "dist/$env:NAME") -Wix (Join-Path $tools 'wix.exe') `
+            -Out (Join-Path $env:RUNNER_TEMP 'dist')
+
       - name: Stage the source bundle and the input mirror
         id: src
         env:
@@ -123,6 +138,7 @@ jobs:
           name: release-package
           path: |
             ${{ runner.temp }}/dist/*.zip
+            ${{ runner.temp }}/dist/*.msi
             ${{ runner.temp }}/dist/*-guest-sources.tar
             ${{ runner.temp }}/dist/*-guest-inputs.tar
           if-no-files-found: error
@@ -200,6 +216,7 @@ jobs:
           NAME: ${{ needs.package.outputs.name }}
           TAG: ${{ github.ref_name }}
           ZIP_SHA256: ${{ needs.package.outputs.zip-sha256 }}
+          MSI_SHA256: ${{ needs.package.outputs.msi-sha256 }}
           SRC_SHA256: ${{ needs.package.outputs.sources-sha256 }}
           INPUTS_SHA256: ${{ needs.package.outputs.inputs-sha256 }}
         run: |
@@ -207,15 +224,15 @@ jobs:
           cd "$RUNNER_TEMP/assets"
           src="hyperbutler-$TAG-guest-sources.tar"
           inputs="hyperbutler-$TAG-guest-inputs.tar"
-          printf '%s  %s\n' "$ZIP_SHA256" "$NAME.zip" "$SRC_SHA256" "$src" "$INPUTS_SHA256" "$inputs" |
+          printf '%s  %s\n' "$ZIP_SHA256" "$NAME.zip" "$MSI_SHA256" "$NAME.msi" "$SRC_SHA256" "$src" "$INPUTS_SHA256" "$inputs" |
             sha256sum --check --strict
           for f in *; do
             case "$f" in
-              "$NAME.zip" | "$src" | "$inputs" | "$NAME.spdx.json") ;;
+              "$NAME.zip" | "$NAME.msi" | "$src" | "$inputs" | "$NAME.spdx.json") ;;
               *) echo "unexpected file in the release assets: $f"; exit 1 ;;
             esac
           done
-          sha256sum "$NAME.zip" "$src" "$inputs" "$NAME.spdx.json" >SHA256SUMS
+          sha256sum "$NAME.zip" "$NAME.msi" "$src" "$inputs" "$NAME.spdx.json" >SHA256SUMS
           cat SHA256SUMS
 
       - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
@@ -235,6 +252,7 @@ jobs:
           cat >notes.md <<EOF
           Built by the Release workflow from $TAG ($GITHUB_SHA).
 
+          - \`$NAME.msi\`: the installer; it also adds PATH, Hyper-V Administrators (with consent) and Virtual Machine Platform (docs/install.md). Not code-signed yet: SmartScreen asks once (More info, Run anyway).
           - \`$NAME.zip\`: unzip, add the folder to PATH, run \`hyperbutler start\`.
           - \`hyperbutler-$TAG-guest-sources.tar\`: corresponding source of the guest image's GPL components.
           - \`hyperbutler-$TAG-guest-inputs.tar\`: the signed Alpine packages the guest image was built from.
@@ -246,4 +264,4 @@ jobs:
           EOF
           gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --draft --verify-tag "${pre[@]}" \
             --title "hyperbutler $TAG" --notes-file notes.md \
-            "$NAME.zip" "hyperbutler-$TAG-guest-sources.tar" "hyperbutler-$TAG-guest-inputs.tar" "$NAME.spdx.json" SHA256SUMS
+            "$NAME.zip" "$NAME.msi" "hyperbutler-$TAG-guest-sources.tar" "hyperbutler-$TAG-guest-inputs.tar" "$NAME.spdx.json" SHA256SUMS

@@ -137,6 +137,13 @@ Maintainer settings that the files cannot enforce:
 Tick every item in the release PR or issue, with a link to the evidence. A gate that is not
 met blocks the release. Changing a gate needs an ADR change, not a waiver here.
 
+**Preview releases** (`vX.Y.Z-preview.N`, decided 2026-11-02) are published as GitHub
+pre-releases before every gate is met, so people can try hyperbutler while the gates run.
+For a preview: sections 2 (licenses) and 3 (cut the release) apply in full; section 1's
+gates that are not met yet are listed by name in the release notes and in the README's
+status, never left out. The release `vX.Y.Z` itself still needs every gate below; the 24 h
+soak runs separately and its result goes here.
+
 ### 1. Release gates from the ADRs
 
 **ADR 0003 (implementation language: leak guardrails)**
