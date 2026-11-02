@@ -54,10 +54,13 @@ func (p Phase) Live() bool { return p == PhaseStarting || p == PhaseRunning || p
 // Error codes in State.ErrorCode, for the CLI to explain.
 const (
 	CodeHCSAccessDenied = "hcs-access-denied" // not in Hyper-V Administrators (ADR 0004)
-	CodePipeInUse       = "pipe-in-use"       // another program serves the Docker pipe
-	CodeAlreadyRunning  = "already-running"
-	CodeVMExited        = "vm-exited" // the guest powered off or crashed on its own
-	CodeDataDisk        = "data-disk"
+	// CodeHCSSignInPending: refused as above, but the account is in the group already;
+	// Windows applies the membership at the next sign-in (just after the MSI added it).
+	CodeHCSSignInPending = "hcs-sign-in-pending"
+	CodePipeInUse        = "pipe-in-use" // another program serves the Docker pipe
+	CodeAlreadyRunning   = "already-running"
+	CodeVMExited         = "vm-exited" // the guest powered off or crashed on its own
+	CodeDataDisk         = "data-disk"
 )
 
 // State is what the engine publishes about itself in state.json.

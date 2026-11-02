@@ -606,7 +606,10 @@ func (in *install) explainFailure(err error, st *engine.State, stderr io.Writer)
 		}
 		if ee.code == engine.CodeHCSAccessDenied {
 			_, _ = fmt.Fprintln(stderr)
-			if member, merr := inHyperVAdmins(); merr == nil && member {
+			if engine.HyperVAdminsSignInPending() {
+				// The engine saw no membership, but there is one now: added since.
+				_, _ = fmt.Fprintln(stderr, "Your account is in Hyper-V Administrators now, but this sign-in predates it: sign out and back in, then start again.")
+			} else if member, merr := inHyperVAdmins(); merr == nil && member {
 				_, _ = fmt.Fprintln(stderr, "Your sign-in token IS a member of Hyper-V Administrators, so the denial has another cause; see `hyperbutler logs`.")
 			} else if merr == nil {
 				_, _ = fmt.Fprintln(stderr, "Your current sign-in token is NOT a member of Hyper-V Administrators.")
@@ -619,13 +622,7 @@ func (in *install) explainFailure(err error, st *engine.State, stderr io.Writer)
 
 // inHyperVAdmins reports whether this process's token has BUILTIN\Hyper-V
 // Administrators (S-1-5-32-578) enabled.
-func inHyperVAdmins() (bool, error) {
-	sid, err := windows.StringToSid("S-1-5-32-578")
-	if err != nil {
-		return false, err
-	}
-	return windows.Token(0).IsMember(sid)
-}
+func inHyperVAdmins() (bool, error) { return engine.HyperVAdminsInToken() }
 
 // selectContext creates (or refreshes) and selects the "hyperbutler" docker context. A
 // context of that name that hyperbutler did not create is left alone.

@@ -97,13 +97,22 @@ func runDoctor(in *install) DoctorJSON {
 	for _, c := range virtualizationChecks(virtualization()) {
 		add(c)
 	}
-	if member, err := inHyperVAdmins(); err == nil && !member {
+	if member, err := inHyperVAdmins(); err == nil && !member && engine.HyperVAdminsSignInPending() {
+		add(DoctorCheck{ID: "hyperv-admins", Status: doctorFail,
+			Summary: "your account is in Hyper-V Administrators, but this sign-in started before it was added, so HCS still refuses",
+			Fix:     "Sign out of Windows and sign back in (or restart): group changes apply at sign-in.",
+			Msg:     "doctor.hyperv-admins.pending", FixMsg: "doctor.fix.signIn"})
+	} else if err == nil && !member {
 		add(DoctorCheck{ID: "hyperv-admins", Status: doctorFail,
 			Summary: "your sign-in token is not a member of Hyper-V Administrators, so HCS refuses to create the VM",
 			Fix:     `An administrator runs: net localgroup "Hyper-V Administrators" <you> /add` + "\nthen sign out and back in (README, Prerequisites).",
 			Msg:     "doctor.hyperv-admins.no", FixMsg: "doctor.fix.hypervAdmins"})
 	} else if err == nil {
 		add(DoctorCheck{ID: "hyperv-admins", Status: doctorOK, Summary: "your sign-in token is a member of Hyper-V Administrators", Msg: "doctor.hyperv-admins.ok"})
+	}
+
+	if c, ok := installerSetupCheck(); ok {
+		add(c)
 	}
 
 	st, _ := engine.LoadState(in.l)

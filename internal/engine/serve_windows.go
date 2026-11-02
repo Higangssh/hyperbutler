@@ -361,6 +361,14 @@ after that, and hyperbutler never asks for it.
 
 A later release replaces this with a small HCS access broker service (ADR 0004), so
 that standard users need no group membership.`, os.Getenv("USERNAME")))
+	case CodeHCSSignInPending:
+		return strings.TrimSpace(`
+The Host Compute Service (HCS) refused access, but your account IS in the
+"Hyper-V Administrators" group already (the installer, or an administrator, added it).
+
+Windows applies group changes when you sign in, so this sign-in does not have it yet.
+Sign out of Windows and sign back in (or restart), then run hyperbutler start again.
+No elevation is needed after that.`)
 	case CodePipeInUse:
 		return describePipeInUse(pipe)
 	case CodeDataDisk:

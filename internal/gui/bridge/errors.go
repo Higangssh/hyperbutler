@@ -24,6 +24,7 @@ const (
 	CodeEngineBusy     = "HB-ENG-006" // starting or stopping: try again shortly
 	CodeAccessDenied   = "HB-VM-001"
 	CodeVMExited       = "HB-VM-002"
+	CodeSignInPending  = "HB-VM-003" // in Hyper-V Administrators, but not this sign-in yet
 	CodePipeInUse      = "HB-PIPE-001"
 	CodeDataDisk       = "HB-DISK-001"
 	CodeAPIUnreachable = "HB-API-001"
@@ -43,7 +44,7 @@ const (
 var Codes = []string{
 	CodeBadRequest, CodeBusy, CodeNotEditable, CodeHidden,
 	CodeStartFailed, CodeStopFailed, CodeRestartFailed, CodeEngineStopped, CodeOtherEngine, CodeEngineBusy,
-	CodeAccessDenied, CodeVMExited, CodePipeInUse, CodeDataDisk,
+	CodeAccessDenied, CodeVMExited, CodeSignInPending, CodePipeInUse, CodeDataDisk,
 	CodeAPIUnreachable, CodeAPIError, CodeNoContainer,
 	CodeConfigValue, CodeConfigFailed, CodeDaemonInvalid, CodeDaemonApply, CodeDaemonReadOnly,
 	CodeDiagnose, CodeDoctor, CodeOS, CodeImportUnavailable, CodeImportFailed, CodeDesktopNotRunning, CodeImportSpace, CodeImportBusy, CodeConfirm,

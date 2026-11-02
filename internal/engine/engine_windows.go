@@ -166,6 +166,9 @@ func ErrorCode(err error) string {
 		return ce.Code
 	}
 	if vm.IsAccessDenied(err) {
+		if HyperVAdminsSignInPending() {
+			return CodeHCSSignInPending
+		}
 		return CodeHCSAccessDenied
 	}
 	return ""

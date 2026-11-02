@@ -16,7 +16,7 @@ import (
 func TestDoctorCatalog(t *testing.T) {
 	reKey := regexp.MustCompile(`"(doctor\.[a-zA-Z0-9.-]+)"`)
 	var keys []string
-	for _, f := range []string{"doctor_windows.go", "autostart_windows.go"} {
+	for _, f := range []string{"doctor_windows.go", "autostart_windows.go", "doctor_setup_windows.go"} {
 		b, err := os.ReadFile(f)
 		if err != nil {
 			t.Fatal(err)
