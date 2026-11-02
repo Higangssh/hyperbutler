@@ -36,7 +36,10 @@ shows HB-VM-005 to HB-VM-008); it never quietly runs the VM another way. Only wh
 service is installed does start run the VM in its own process, which needs Hyper-V
 Administrators or an elevated shell; it says so in the engine log, and in the terminal
 when the account has neither. `--backend broker` also fails without a service,
-`--backend hcs` (developer mode) never uses it.
+`--backend hcs` (developer mode) never uses it. A sign-in that is not interactive (ssh,
+a batch task), which the service does not serve, runs the VM itself with a warning when
+the account may use HCS (Hyper-V Administrators, or elevated), and otherwise fails,
+saying to start hyperbutler from the desktop.
 
 The installer never touches your data. Images, containers and volumes stay in
 `%LOCALAPPDATA%\hyperbutler` through upgrades and uninstalls; `hyperbutler uninstall`
@@ -187,11 +190,16 @@ mkdir $log -Force
    $env:TEMP\repair-user.log`: `hbtest` is still in `net localgroup "Hyper-V
    Administrators"`, and the log shows `HbDropHyperVAdmins` skipped (condition false).
    Afterwards, elevated: `... setup hyperv-admins remove --sid <hbtest's SID>`.
-8. **A sign-in that is not interactive cannot start the service** (optional): elevated
-   `sc.exe stop hyperbutler-broker`; a scheduled task for `hbtest` set to "Run whether
-   user is logged on or not" without a stored password (S4U) that runs `cmd /c
-   hyperbutler start > %TEMP%\s4u.txt 2>&1`: the file says only an interactive sign-in
-   may start it, or an administrator runs `sc.exe start hyperbutler-broker`.
+8. **A sign-in that is not interactive** (optional; a batch task or ssh may not even read
+   the service): a scheduled task set to "Run whether user is logged on or not" without
+   a stored password (S4U) that runs `cmd /c hyperbutler start > %TEMP%\s4u.txt 2>&1`
+   (and `hyperbutler doctor >> ...`):
+   - for `hbtest` (not in the group): the start fails, saying to start hyperbutler from
+     an interactive sign-in or have an administrator run `sc.exe start
+     hyperbutler-broker`; doctor's `broker` warns the same;
+   - for the user (in the group): the start prints a warning that the service does not
+     serve this sign-in and boots the VM in its own process; engine.log has the same
+     warning; doctor's `broker` is a note. Then `hyperbutler stop` from the task.
 9. **Reinstall over itself** (`msiexec /i $m /l*v $log\same.log`, the same-version
    upgrade): one product in Apps, the service running, a new PID, no stale service
    (`sc.exe query hyperbutler-broker` once).
@@ -212,13 +220,15 @@ mkdir $log -Force
     Files\hyperbutler` gone (no file left in use, no restart asked); `HKLM\SOFTWARE\hyperbutler`
     gone; the group as in step 0.
 13. **Rollback of a first install:** `msiexec /i $f FAILTESTACK=1 WIXFAILWHENDEFERRED=1
-    /l*v $log\rollback-fresh.log`: fails; no service, no folder, no product.
+    /l*v $log\rollback-fresh.log`: fails; no service, no folder, no product, and no
+    `HKLM\SOFTWARE\hyperbutler` (no `Setup` key with a `LastResult` left behind).
 14. **A first install fails without the service:** as the user, hold the service's pipe
     name with a foreground broker from the stage folder: `& $stage\hyperbutler-broker.exe
     -fake-backend -pipe \\.\pipe\hyperbutler-broker` (leave it running). Elevated:
     `msiexec /i $m /l*v $log\fresh-fail.log`: the install ends with an error;
     `HbBrokerInstallFirst` failed in the log (the service could not take its pipe name);
-    no service, no `C:\Program Files\hyperbutler`, no product. Stop the foreground broker.
+    no service, no `C:\Program Files\hyperbutler`, no product, no
+    `HKLM\SOFTWARE\hyperbutler`. Stop the foreground broker.
 15. **First install, silent:** `msiexec /i $m /qn /norestart /l*v $log\fresh.log`; then
     steps 2 and 4 again. Uninstall at the end if the machine should go back to how it was
     (then reinstall the old snapshot if it is wanted).

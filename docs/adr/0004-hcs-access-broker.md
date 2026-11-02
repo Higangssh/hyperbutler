@@ -886,8 +886,11 @@ the schedule, and the rule below that the only SYSTEM step a repair runs is
 - With the removal of the old product inside the transaction, a failed upgrade rolls back
   the new service and files, then the old removal, whose rollback registers the old
   service again from the restored files.
-- A failed first install unregisters the service before its files go. A failed repair
-  leaves the service it found (no rollback where the product was installed).
+- A failed first install unregisters the service before its files go, and that
+  `setup broker uninstall` deletes `HKLM\SOFTWARE\hyperbutler\Setup` (and the empty
+  parent) when it names no account, so no `LastResult` stays on a machine without the
+  product; the uninstall's does the same. A failed repair leaves the service it found
+  (no rollback where the product was installed).
 - **Repair runs the broker step.** The installer amendment said a repair (which a standard
   user can start) runs no privileged step. This one only restores what the install put
   there, from the fixed folder, and grants no one anything. It leaves a disabled service
@@ -917,9 +920,15 @@ the SCM's default plus `SERVICE_START` for interactive users (`IU`); stop, pause
 reconfiguration and deletion stay with administrators, and starting a running service
 does nothing. `hyperbutler start` starts a stopped service itself
 (`broker.RequestServiceStart`) and waits for it, up to 90 s. Unit-tested on the SDDL;
-on a live service in the procedure. A token without `INTERACTIVE` (ssh, a service, an S4U
-task) cannot start it, and is told to start hyperbutler from a desktop sign-in or to have
-an administrator run `sc.exe start`, not pointed at Hyper-V Administrators.
+on a live service in the procedure. A token that is neither interactive nor a service
+(ssh is a network logon, a batch task) may not even read the service, which only `IU`
+and `SU` may query. `hyperbutler start` takes that access denied as "the service does
+not serve this sign-in": if the account may call HCS itself (Hyper-V Administrators, or
+elevated), the engine runs the VM itself as before the broker, with a warning on the
+terminal and in engine.log; otherwise the start fails, telling to start hyperbutler from
+a desktop sign-in or to have an administrator run `sc.exe start`. Doctor's `broker`
+check says the same (a note with own HCS access, else a warning). A disabled service is
+not started at all, and start says nothing about starting it.
 
 **Default backend.** `hyperbutler start --backend auto|broker|hcs`, `auto` by default, and
 the window, autostart, restart and the MCP server go through the same start:
@@ -949,7 +958,7 @@ window maps (en and ko):
 
 | Engine code | GUI | When |
 |---|---|---|
-| `broker-unavailable` | HB-VM-005 | no pipe, a timeout, a lost connection |
+| `broker-unavailable` | HB-VM-005 | no pipe, a timeout, a lost connection; and, recorded by start before any engine, an installed service it cannot use (disabled, a start refused, stopped again, a sign-in it does not serve). One code with general steps (the English original says why, doctor says what to do) rather than one per cause: the fix differs per cause, and doctor has each |
 | `broker-refused` | HB-VM-006 | an error reply: caller, data directory, data disk, image, lease |
 | `broker-squatted` | HB-VM-007 | a pipe whose owner is not the broker (`broker.ErrUntrustedPipe`), a name not of the user's form, or "endpoint squatted" |
 | `broker-old` | HB-VM-008 | a protocol older than `proto.Version`, or "unsupported version" |
