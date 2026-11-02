@@ -283,6 +283,12 @@ Findings, fixed after the run:
   and 0.0.0.0 of anything else. Every build since the first tag had 0.1.0.0; a machine
   with such an early snapshot uninstalls it first.
 
+Both fixes checked the same day with a build of fd482ea (`-Version v0.1.0-preview.3`,
+`hyperbutler.exe` file version 0.1.0.0), upgraded over the test build: `LastResult` "…
+hyperv-admins remove: ok" with the upgrade's time, `HbStopEngine` "hyperbutler is not
+running." for both products, the service reinstalled and RUNNING, one product, and step 2
+again (1.6 s, `hello-world`, doctor `broker` ok at v0.1.0-preview.3).
+
 ## Test on a real machine (2026-11-02)
 
 Windows 11 Home 26200, snapshot MSI (115.5 MB), `msiexec /i … /qb ADDHYPERVADMIN=1
