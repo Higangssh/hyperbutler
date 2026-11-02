@@ -46,7 +46,18 @@ type InstallConfig struct {
 	// nonzero exit code (a start that failed, or the server stopping on its own), not
 	// only when the process dies.
 	RecoverOnNonCrashFailures bool
+	// SecurityDescriptor is the service object's DACL in SDDL (serviceSDDL).
+	SecurityDescriptor string
 }
+
+// serviceSDDL is the service object's DACL: what the SCM gives a new service (SYSTEM
+// and Administrators control it; interactive users and services may query it), plus
+// SERVICE_START (RP) for interactive users. hyperbutler start, run by the user, starts
+// the broker when it does not run yet: the delayed automatic start comes a few minutes
+// after boot, later than a start at sign-in (ADR 0004, Installer (M4)). Starting is all
+// it adds: stopping, pausing, reconfiguring or deleting the service stays with
+// administrators, and starting a running service does nothing.
+const serviceSDDL = "D:(A;;CCLCSWRPWPDTLOCRRC;;;SY)(A;;CCDCLCSWRPWPDTLOCRSDRCWDWO;;;BA)(A;;CCLCSWRPLOCRRC;;;IU)(A;;CCLCSWLOCRRC;;;SU)"
 
 // servicePrivileges is what the broker's token keeps:
 //
@@ -108,6 +119,7 @@ func BuildInstallConfig(exe string, args []string) (InstallConfig, error) {
 		Recovery:                  append([]mgr.RecoveryAction(nil), serviceRecovery...),
 		ResetPeriod:               serviceResetPeriod,
 		RecoverOnNonCrashFailures: true,
+		SecurityDescriptor:        serviceSDDL,
 	}, nil
 }
 
@@ -362,6 +374,15 @@ func InstallService(cfg InstallConfig) (err error) {
 	if err := s.SetRecoveryActionsOnNonCrashFailures(cfg.RecoverOnNonCrashFailures); err != nil {
 		return fmt.Errorf("set the recovery actions: %w", err)
 	}
+	if cfg.SecurityDescriptor != "" {
+		dacl, err := serviceDACL(cfg.SecurityDescriptor)
+		if err != nil {
+			return err
+		}
+		if err := windows.SetSecurityInfo(h, windows.SE_SERVICE, windows.DACL_SECURITY_INFORMATION, nil, nil, dacl, nil); err != nil {
+			return fmt.Errorf("set the service's security descriptor: %w", err)
+		}
+	}
 	installed = true
 	if err := s.Start(); err != nil {
 		return &startError{fmt.Errorf("installed, but did not start: %w", err)}
@@ -370,6 +391,47 @@ func InstallService(cfg InstallConfig) (err error) {
 		return &startError{fmt.Errorf("installed, but did not start (the Application event log, source %s, says why): %w", EventSource, err)}
 	}
 	return nil
+}
+
+// SecureService gives the installed service name the DACL InstallService gives it
+// (serviceSDDL), for a service an earlier install registered without it. It needs an
+// elevated caller, and changes nothing else: a running service keeps running.
+func SecureService(name string) error {
+	dacl, err := serviceDACL(serviceSDDL)
+	if err != nil {
+		return err
+	}
+	m, err := windows.OpenSCManager(nil, nil, windows.SC_MANAGER_CONNECT)
+	if err != nil {
+		return fmt.Errorf("connect to the service control manager: %w", err)
+	}
+	defer func() { _ = windows.CloseServiceHandle(m) }()
+	n, err := windows.UTF16PtrFromString(name)
+	if err != nil {
+		return err
+	}
+	h, err := windows.OpenService(m, n, windows.WRITE_DAC)
+	if err != nil {
+		return fmt.Errorf("open service %s: %w", name, err)
+	}
+	defer func() { _ = windows.CloseServiceHandle(h) }()
+	if err := windows.SetSecurityInfo(h, windows.SE_SERVICE, windows.DACL_SECURITY_INFORMATION, nil, nil, dacl, nil); err != nil {
+		return fmt.Errorf("set the security descriptor of service %s: %w", name, err)
+	}
+	return nil
+}
+
+// serviceDACL parses an SDDL string with a DACL and nothing else.
+func serviceDACL(sddl string) (*windows.ACL, error) {
+	sd, err := windows.SecurityDescriptorFromString(sddl)
+	if err != nil {
+		return nil, fmt.Errorf("the service's security descriptor: %w", err)
+	}
+	dacl, _, err := sd.DACL()
+	if err != nil || dacl == nil {
+		return nil, fmt.Errorf("the service's security descriptor has no DACL: %w", err)
+	}
+	return dacl, nil
 }
 
 // startError is an InstallService failure after the service was installed; it stays

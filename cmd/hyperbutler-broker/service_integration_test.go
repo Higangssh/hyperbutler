@@ -200,6 +200,15 @@ func checkServiceConfig(t *testing.T, exe string) {
 	if privs := requiredPrivileges(t, s); !slices.Equal(privs, []string{"SeChangeNotifyPrivilege", "SeImpersonatePrivilege"}) {
 		t.Errorf("required privileges %q", privs)
 	}
+	// Interactive users may start the service (hyperbutler start does when it is
+	// stopped), and do nothing else to it.
+	sd, err := windows.GetSecurityInfo(s.Handle, windows.SE_SERVICE, windows.DACL_SECURITY_INFORMATION)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d := sd.String(); !strings.Contains(d, "(A;;CCLCSWRPLOCRRC;;;IU)") {
+		t.Errorf("service DACL %s does not let interactive users start it", d)
+	}
 }
 
 // requiredPrivileges reads SERVICE_CONFIG_REQUIRED_PRIVILEGES_INFO.

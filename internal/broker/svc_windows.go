@@ -424,6 +424,31 @@ func QueryService(name string) (ServiceState, error) {
 	return ServiceState{Installed: true, State: q.State, PID: q.ProcessId}, nil
 }
 
+// RequestServiceStart asks the SCM to start the service with the rights a user may
+// have: SC_MANAGER_CONNECT, and SERVICE_START on the service, which the broker's
+// service grants interactive users (serviceSDDL). A service that runs already is not
+// an error. It does not wait for the service to run.
+func RequestServiceStart(name string) error {
+	m, err := windows.OpenSCManager(nil, nil, windows.SC_MANAGER_CONNECT)
+	if err != nil {
+		return fmt.Errorf("connect to the service control manager: %w", err)
+	}
+	defer func() { _ = windows.CloseServiceHandle(m) }()
+	n, err := windows.UTF16PtrFromString(name)
+	if err != nil {
+		return err
+	}
+	h, err := windows.OpenService(m, n, windows.SERVICE_START)
+	if err != nil {
+		return fmt.Errorf("open service %s to start it: %w", name, err)
+	}
+	defer func() { _ = windows.CloseServiceHandle(h) }()
+	if err := windows.StartService(h, 0, nil); err != nil && !errors.Is(err, windows.ERROR_SERVICE_ALREADY_RUNNING) {
+		return fmt.Errorf("start service %s: %w", name, err)
+	}
+	return nil
+}
+
 // StateName is a service state in words, for messages.
 func StateName(s svc.State) string {
 	switch s {
