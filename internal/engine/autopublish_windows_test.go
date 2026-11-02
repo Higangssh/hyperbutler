@@ -49,7 +49,7 @@ func fakeDockerd(t *testing.T, ports ...uint16) *http.Client {
 
 func testPublisher(t *testing.T, client *http.Client, check func(uint16) error, on func([]UnpublishedPort)) *autoPublisher {
 	t.Helper()
-	g, _, _, err := setupNet(NetConfig{OnUnpublished: on}, "D:P(A;;FA;;;SY)", slog.New(slog.DiscardHandler))
+	g, _, err := setupNet(NetConfig{OnUnpublished: on}, slog.New(slog.DiscardHandler))
 	if err != nil {
 		t.Fatal(err)
 	}

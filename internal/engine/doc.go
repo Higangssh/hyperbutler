@@ -16,7 +16,9 @@
 // plain JSON written atomically; their parsers are strict and fuzzed, because a crash
 // or a user can leave anything there.
 //
-// HCS is reached directly through internal/vm, which needs membership in Hyper-V
-// Administrators (ADR 0004). The calls Run makes go through the Backend interface, so
-// the HCS access broker of ADR 0004 can implement it later without changing Run.
+// The VM's HCS document (kernel command line, disks, hvsock services) is built by
+// internal/vmtemplate from typed inputs, the same template the HCS access broker of
+// ADR 0004 uses. HCS is reached directly through internal/vm, which needs membership in
+// Hyper-V Administrators (ADR 0004). The calls Run makes go through the Backend
+// interface.
 package engine

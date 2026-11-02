@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/Higangssh/hyperbutler/internal/share"
+	"github.com/Higangssh/hyperbutler/internal/vmtemplate"
 )
 
 // flakyListener fails its first Accept with a transient error.
@@ -38,7 +39,7 @@ func (l *flakyListener) Accept() (net.Conn, error) {
 
 // Review finding 4: one failed Accept must not end the share listener.
 func TestShareServiceSurvivesAcceptError(t *testing.T) {
-	s, _, _ := setupShares(ShareConfig{}, "D:P", slog.New(slog.DiscardHandler))
+	s := setupShares(ShareConfig{}, slog.New(slog.DiscardHandler))
 	defer s.close()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -63,14 +64,18 @@ func TestShareServiceSurvivesAcceptError(t *testing.T) {
 }
 
 func TestSetupSharesOff(t *testing.T) {
-	s, svcs, args := setupShares(ShareConfig{Off: true}, "D:P", slog.Default())
-	if s != nil || svcs != nil || args != "" {
-		t.Fatalf("off: got %v %v %q", s, svcs, args)
+	if s := setupShares(ShareConfig{Off: true}, slog.Default()); s != nil {
+		t.Fatalf("off: got %v", s)
 	}
-	s, svcs, args = setupShares(ShareConfig{}, "D:P(A;;GA;;;S-1-5-21-1)", slog.Default())
+	s := setupShares(ShareConfig{}, slog.Default())
 	defer s.close()
-	if len(svcs) != 1 || svcs[0].BindSDDL != "D:P(A;;GA;;;S-1-5-21-1)" || svcs[0].ConnectSDDL != "" || args != " hyperbutler.share=2385" {
-		t.Fatalf("got %+v %q", svcs, args)
+	c, err := vmtemplate.Build(&vmtemplate.Spec{UserSID: "S-1-5-21-1", MemoryMB: 1024, CPUs: 1, Kernel: `C:\k`, Initrd: `C:\i`, Share: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	svcs := c.Services[2:]
+	if len(svcs) != 1 || svcs[0].ID != s.svc || svcs[0].BindSDDL != "D:P(A;;FA;;;S-1-5-21-1)" || svcs[0].ConnectSDDL != "" || !strings.HasSuffix(c.KernelCmdLine, " hyperbutler.share=2385") {
+		t.Fatalf("got %+v %q", svcs, c.KernelCmdLine)
 	}
 }
 
@@ -87,7 +92,7 @@ func helloFrame(queue uint32) []byte {
 // connections (an idle session and a half-sent frame) and leaves no goroutine behind
 // (checked by TestMain).
 func TestShareServiceCloseEndsConnections(t *testing.T) {
-	s, _, _ := setupShares(ShareConfig{}, "D:P", slog.Default())
+	s := setupShares(ShareConfig{}, slog.Default())
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -155,7 +160,7 @@ func TestShareServiceCloseEndsConnections(t *testing.T) {
 // Integration step 5 (ADR 0007): after a container is destroyed, the shares no
 // container lists any more are removed; those still listed stay.
 func TestShareLifetimePrunesAfterDestroy(t *testing.T) {
-	s, _, _ := setupShares(ShareConfig{Options: share.Options{NoWatch: true}}, "D:P", slog.New(slog.DiscardHandler))
+	s := setupShares(ShareConfig{Options: share.Options{NoWatch: true}}, slog.New(slog.DiscardHandler))
 	defer s.close()
 	s.grace, s.debounce = 0, 10*time.Millisecond
 	base := t.TempDir()

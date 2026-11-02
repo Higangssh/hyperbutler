@@ -24,6 +24,7 @@ import (
 	"github.com/Higangssh/hyperbutler/internal/spaceguard"
 	"github.com/Higangssh/hyperbutler/internal/transport"
 	"github.com/Higangssh/hyperbutler/internal/vm"
+	"github.com/Higangssh/hyperbutler/internal/vmtemplate"
 )
 
 // GuardConfig is the free-space guard policy: guest writes get ENOSPC before the host
@@ -37,29 +38,12 @@ var GuardConfig = spaceguard.Config{
 	Quantum:    1 << 20,
 }
 
-// DefaultCmdLine is the base kernel command line.
-//
-// swiotlb=noforce: a guest with RAM above 4 GiB of physical address space (any VM of
-// 4 GiB, because of the MMIO gap below 4 GiB) otherwise reserves and zeroes a 64 MiB
-// bounce-buffer pool at boot, which then stays committed on the host. Nothing here
-// needs it: the Hyper-V synthetic devices (vmbus storage, network, hvsock) are not
-// DMA-limited, and this is not an isolated (confidential) VM, where Linux forces bounce
-// buffers regardless. See docs/research/idle-memory.md.
-//
-// page_reporting.page_reporting_order=0: hv_balloon's free page reporting hands free
-// memory back to the host (the cold discard hint), by default only in free blocks of
-// 2 MiB (order 9) or more. After a workload has touched most of the guest's RAM, the
-// slab and kernel pages it left behind split many 2 MiB blocks, and the free pieces
-// around them stay committed on the host: 50 to 90 MiB after a 4 GiB + 4 GiB workload
-// in a 12 GiB guest, growing with each workload. Reporting single pages returns them.
-// Idle guest CPU did not change measurably. See docs/research/mem-reclaim.md
-// (REQ-MEM-002).
-//
-// The dentry and inode hash table sizes are added per VM size (HashTableArgs).
-const DefaultCmdLine = "console=ttyS0 quiet swiotlb=noforce page_reporting.page_reporting_order=0"
+// DefaultCmdLine is the base kernel command line (vmtemplate.DefaultCmdLine, which
+// explains each argument).
+const DefaultCmdLine = vmtemplate.DefaultCmdLine
 
 // DockerPort is the AF_VSOCK port of the guest agent's Docker API relay.
-const DockerPort = 2375
+const DockerPort = vmtemplate.DockerPort
 
 // agentMaxConns is the guest agent's default -max-conns.
 const agentMaxConns = 256
@@ -237,11 +221,20 @@ func randomHex(n int) string {
 
 // CurrentUserSDDL grants hvsock access to the user running this process only.
 func CurrentUserSDDL() (string, error) {
+	sid, err := currentUserSID()
+	if err != nil {
+		return "", err
+	}
+	return vm.UserOnlySDDL(sid)
+}
+
+// currentUserSID is the user SID of this process's token.
+func currentUserSID() (string, error) {
 	tu, err := windows.GetCurrentProcessToken().GetTokenUser()
 	if err != nil {
 		return "", fmt.Errorf("query token user: %w", err)
 	}
-	return vm.UserOnlySDDL(tu.User.Sid.String())
+	return tu.User.Sid.String(), nil
 }
 
 // restrictToUser gives path a protected DACL (nothing inherited) for the current user
@@ -311,7 +304,7 @@ func Run(ctx context.Context, cfg Config) (err error) {
 		}
 	}
 
-	sddl, err := CurrentUserSDDL()
+	sid, err := currentUserSID()
 	if err != nil {
 		return err
 	}
@@ -323,7 +316,7 @@ func Run(ctx context.Context, cfg Config) (err error) {
 	}
 	defer func() { _ = ln.Close() }()
 
-	gnet, netSvcs, netArgs, err := setupNet(cfg.Net, sddl, log)
+	gnet, netSpec, err := setupNet(cfg.Net, log)
 	if err != nil {
 		return err
 	}
@@ -331,7 +324,7 @@ func Run(ctx context.Context, cfg Config) (err error) {
 		defer gnet.close()
 	}
 
-	shares, shareSvcs, shareArgs := setupShares(cfg.Share, sddl, log)
+	shares := setupShares(cfg.Share, log)
 	if shares != nil {
 		// Deferred before the VM's own teardown, so it runs after it: the guest keeps
 		// its shares through the orderly shutdown.
@@ -340,11 +333,15 @@ func Run(ctx context.Context, cfg Config) (err error) {
 
 	var disk *dataDisk
 	grant := cfg.granter()
-	cmdline := cfg.CmdLine + HashTableArgs(cfg.MemoryMB) + netArgs + shareArgs + cfg.ExtraCmdLine
-	if cfg.DaemonConfig != nil {
-		cmdline += " hyperbutler.daemoncfg=1"
+	dockerSvc := transport.VsockServiceID(DockerPort)
+	consolePipe := `\\.\pipe\` + cfg.VMID + "-com1"
+	spec := &vmtemplate.Spec{
+		Owner: VMOwner, UserSID: sid,
+		MemoryMB: cfg.MemoryMB, CPUs: cfg.CPUs,
+		Net: netSpec, Share: shares != nil, DaemonConfig: cfg.DaemonConfig != nil,
+		ConsolePipe: consolePipe,
+		Dev:         vmtemplate.Dev{CmdLine: cfg.CmdLine, ExtraCmdLine: cfg.ExtraCmdLine, ExtraServices: cfg.ExtraServices},
 	}
-	var disks []vm.Disk
 	if cfg.Disk.Data != "" {
 		if disk, err = prepareDisk(cfg.Disk, cfg.DiskSize); err != nil {
 			return err
@@ -361,15 +358,7 @@ func Run(ctx context.Context, cfg Config) (err error) {
 				log.Warn("revoke VM access to the data disk", "err", err)
 			}
 		}()
-		disks = []vm.Disk{{Path: disk.path, Sparse: true}}
-		if img != nil {
-			cmdline += " hyperbutler.data=lun:0"
-		} else {
-			cmdline += " hyperbutler.data=sda" // what the initramfs-only image understands
-		}
-		if disk.blank {
-			cmdline += " hyperbutler.newdisk=1"
-		}
+		spec.Data, spec.BlankData = disk.path, disk.blank
 	}
 	if img != nil {
 		// The system disk, read-only at the hypervisor: the guest cannot change it. Under
@@ -390,26 +379,15 @@ func Run(ctx context.Context, cfg Config) (err error) {
 				}
 			}()
 		}
-		cmdline += fmt.Sprintf(" hyperbutler.system=lun:%d", len(disks))
-		disks = append(disks, vm.Disk{Path: img.system, ReadOnly: true})
+		spec.System = img.system
 	}
+	spec.Kernel, spec.Initrd = kpath, ipath
 
-	dockerSvc := transport.VsockServiceID(DockerPort)
-	consolePipe := `\\.\pipe\` + cfg.VMID + "-com1"
-	svcs := []vm.Service{{ID: dockerSvc, ConnectSDDL: sddl}, {ID: guestctl.ServiceID, ConnectSDDL: sddl}}
-	svcs = append(append(append(svcs, netSvcs...), shareSvcs...), cfg.ExtraServices...)
-	m, err := cfg.Backend.Create(cfg.VMID, &vm.Config{
-		Owner:          VMOwner,
-		KernelPath:     kpath,
-		InitrdPath:     ipath,
-		KernelCmdLine:  cmdline,
-		MemoryMB:       cfg.MemoryMB,
-		ProcessorCount: cfg.CPUs,
-		MemoryHints:    true,
-		Disks:          disks,
-		ConsolePipe:    consolePipe,
-		Services:       svcs,
-	})
+	vcfg, err := vmtemplate.Build(spec)
+	if err != nil {
+		return err
+	}
+	m, err := cfg.Backend.Create(cfg.VMID, vcfg)
 	if err != nil {
 		return err
 	}

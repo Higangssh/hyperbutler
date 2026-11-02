@@ -1,0 +1,63 @@
+{
+  "SchemaVersion": {
+    "Major": 2,
+    "Minor": 1
+  },
+  "Owner": "hyperbutler",
+  "ShouldTerminateOnLastHandleClosed": true,
+  "VirtualMachine": {
+    "StopOnReset": true,
+    "Chipset": {
+      "LinuxKernelDirect": {
+        "KernelFilePath": "C:\\img\\vmlinuz-virt",
+        "InitRdPath": "C:\\img\\initramfs-hyperbutler.gz",
+        "KernelCmdLine": "console=ttyS0 quiet swiotlb=noforce page_reporting.page_reporting_order=0 hyperbutler.net=1024 hyperbutler.mtu=9000 hyperbutler.ip=192.168.127.2/24 hyperbutler.gw=192.168.127.1 hyperbutler.dns=192.168.127.1 hyperbutler.data=sda"
+      }
+    },
+    "ComputeTopology": {
+      "Memory": {
+        "SizeInMB": 2048,
+        "AllowOvercommit": true,
+        "EnableDeferredCommit": true,
+        "EnableHotHint": true,
+        "EnableColdDiscardHint": true
+      },
+      "Processor": {
+        "Count": 1
+      }
+    },
+    "Devices": {
+      "Scsi": {
+        "0": {
+          "Attachments": {
+            "0": {
+              "Type": "VirtualDisk",
+              "Path": "C:\\d\\data.vhdx",
+              "AlwaysAllowSparseFiles": true
+            }
+          }
+        }
+      },
+      "HvSocket": {
+        "HvSocketConfig": {
+          "DefaultBindSecurityDescriptor": "D:P",
+          "DefaultConnectSecurityDescriptor": "D:P",
+          "ServiceTable": {
+            "00000400-facb-11e6-bd58-64006a7986d3": {
+              "BindSecurityDescriptor": "D:P(A;;FA;;;S-1-5-21-1000-2000-3000-1001)",
+              "ConnectSecurityDescriptor": "D:P"
+            },
+            "00000947-facb-11e6-bd58-64006a7986d3": {
+              "BindSecurityDescriptor": "D:P",
+              "ConnectSecurityDescriptor": "D:P(A;;FA;;;S-1-5-21-1000-2000-3000-1001)"
+            },
+            "0000094c-facb-11e6-bd58-64006a7986d3": {
+              "BindSecurityDescriptor": "D:P",
+              "ConnectSecurityDescriptor": "D:P(A;;FA;;;S-1-5-21-1000-2000-3000-1001)"
+            }
+          }
+        }
+      }
+    }
+  }
+}

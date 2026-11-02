@@ -21,11 +21,11 @@ import (
 
 	"github.com/Higangssh/hyperbutler/internal/share"
 	"github.com/Higangssh/hyperbutler/internal/transport"
-	"github.com/Higangssh/hyperbutler/internal/vm"
+	"github.com/Higangssh/hyperbutler/internal/vmtemplate"
 )
 
 // SharePort is the AF_VSOCK port the guest's share relay connects to (ADR 0007).
-const SharePort = 2385
+const SharePort = vmtemplate.SharePort
 
 // ShareMount is where the guest mounts the share file system.
 const ShareMount = "/mnt/hyperbutler"
@@ -57,10 +57,10 @@ type shareService struct {
 }
 
 // setupShares builds the share server. It returns nil when bind mounts are off. The
-// caller adds svcs to the VM document and args to the kernel command line.
-func setupShares(sc ShareConfig, sddl string, log *slog.Logger) (s *shareService, svcs []vm.Service, args string) {
+// VM's template adds the share's service and kernel argument (vmtemplate.Spec.Share).
+func setupShares(sc ShareConfig, log *slog.Logger) (s *shareService) {
 	if sc.Off {
-		return nil, nil, ""
+		return nil
 	}
 	opt := sc.Options
 	if opt.Logger == nil {
@@ -76,9 +76,7 @@ func setupShares(sc ShareConfig, sddl string, log *slog.Logger) (s *shareService
 
 		grace: pruneGrace, debounce: pruneDebounce,
 	}
-	// The guest connects to the host on this service; only this user may listen on it.
-	svcs = []vm.Service{{ID: s.svc, BindSDDL: sddl}}
-	return s, svcs, fmt.Sprintf(" hyperbutler.share=%d", SharePort)
+	return s
 }
 
 // listen starts accepting the guest relay's connections on the VM's hvsock address.

@@ -7,9 +7,8 @@ import (
 )
 
 // Backend is every privileged call the engine makes. HCSBackend calls HCS directly,
-// which works for members of Hyper-V Administrators. The HCS access broker of ADR 0004
-// is meant to implement it later: it would build the VM document from its own template
-// instead of trusting cfg's paths, and hand back a Machine that forwards over its pipe.
+// which works for members of Hyper-V Administrators. The VM document it is given is
+// built by internal/vmtemplate, which the HCS access broker of ADR 0004 uses too.
 type Backend interface {
 	// Create creates (but does not start) a compute system.
 	Create(id string, cfg *vm.Config) (Machine, error)

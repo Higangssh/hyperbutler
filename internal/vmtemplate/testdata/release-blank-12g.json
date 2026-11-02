@@ -1,0 +1,72 @@
+{
+  "SchemaVersion": {
+    "Major": 2,
+    "Minor": 1
+  },
+  "Owner": "hyperbutler",
+  "ShouldTerminateOnLastHandleClosed": true,
+  "VirtualMachine": {
+    "StopOnReset": true,
+    "Chipset": {
+      "LinuxKernelDirect": {
+        "KernelFilePath": "C:\\img\\vmlinuz-virt",
+        "InitRdPath": "C:\\img\\initramfs-stage1.gz",
+        "KernelCmdLine": "console=ttyS0 quiet swiotlb=noforce page_reporting.page_reporting_order=0 dhash_entries=524288 ihash_entries=262144 hyperbutler.net=1024 hyperbutler.mtu=1500 hyperbutler.ip=10.20.30.2/26 hyperbutler.gw=10.20.30.1 hyperbutler.dns=10.20.30.1 hyperbutler.netvnet=1 hyperbutler.netcrc=strict hyperbutler.share=2385 hyperbutler.data=lun:0 hyperbutler.newdisk=1 hyperbutler.system=lun:1"
+      }
+    },
+    "ComputeTopology": {
+      "Memory": {
+        "SizeInMB": 12288,
+        "AllowOvercommit": true,
+        "EnableDeferredCommit": true,
+        "EnableHotHint": true,
+        "EnableColdDiscardHint": true
+      },
+      "Processor": {
+        "Count": 8
+      }
+    },
+    "Devices": {
+      "Scsi": {
+        "0": {
+          "Attachments": {
+            "0": {
+              "Type": "VirtualDisk",
+              "Path": "D:\\hb\\data.vhdx",
+              "AlwaysAllowSparseFiles": true
+            },
+            "1": {
+              "Type": "VirtualDisk",
+              "Path": "C:\\img\\system.vhd",
+              "ReadOnly": true
+            }
+          }
+        }
+      },
+      "HvSocket": {
+        "HvSocketConfig": {
+          "DefaultBindSecurityDescriptor": "D:P",
+          "DefaultConnectSecurityDescriptor": "D:P",
+          "ServiceTable": {
+            "00000400-facb-11e6-bd58-64006a7986d3": {
+              "BindSecurityDescriptor": "D:P(A;;FA;;;S-1-5-21-1000-2000-3000-1001)",
+              "ConnectSecurityDescriptor": "D:P(A;;FA;;;S-1-5-21-1000-2000-3000-1001)"
+            },
+            "00000947-facb-11e6-bd58-64006a7986d3": {
+              "BindSecurityDescriptor": "D:P",
+              "ConnectSecurityDescriptor": "D:P(A;;FA;;;S-1-5-21-1000-2000-3000-1001)"
+            },
+            "0000094c-facb-11e6-bd58-64006a7986d3": {
+              "BindSecurityDescriptor": "D:P",
+              "ConnectSecurityDescriptor": "D:P(A;;FA;;;S-1-5-21-1000-2000-3000-1001)"
+            },
+            "00000951-facb-11e6-bd58-64006a7986d3": {
+              "BindSecurityDescriptor": "D:P(A;;FA;;;S-1-5-21-1000-2000-3000-1001)",
+              "ConnectSecurityDescriptor": "D:P"
+            }
+          }
+        }
+      }
+    }
+  }
+}

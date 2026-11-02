@@ -10,23 +10,42 @@ import (
 	"testing"
 
 	"github.com/Higangssh/hyperbutler/internal/netstack"
+	"github.com/Higangssh/hyperbutler/internal/vm"
+	"github.com/Higangssh/hyperbutler/internal/vmtemplate"
 )
+
+// netDoc builds the VM configuration of a VM with network nc and nothing else, and
+// returns the network link's service and the kernel command line.
+func netDoc(t *testing.T, nc NetConfig) (*guestNet, vm.Service, string) {
+	t.Helper()
+	g, n, err := setupNet(nc, slog.New(slog.DiscardHandler))
+	if err != nil {
+		t.Fatal(err)
+	}
+	c, err := vmtemplate.Build(&vmtemplate.Spec{UserSID: testSID, MemoryMB: 1024, CPUs: 1, Kernel: `C:\k`, Initrd: `C:\i`, Net: n})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(c.Services) != 3 {
+		t.Fatalf("services %+v", c.Services)
+	}
+	return g, c.Services[2], c.KernelCmdLine
+}
+
+const testSID = "S-1-5-21-1-2-3-1001"
 
 // Offload mode (ADR 0006): the host dials netfwd -vnet, so the link's service must admit
 // the user's connect as well as its listen, and the guest must be told to listen.
 func TestSetupNetOffload(t *testing.T) {
-	const sddl = "D:P(A;;FA;;;SY)"
+	sddl, _ := vm.UserOnlySDDL(testSID)
 	for _, off := range []bool{false, true} {
-		g, svcs, args, err := setupNet(NetConfig{NoOffload: !off}, sddl, slog.New(slog.DiscardHandler))
-		if err != nil {
-			t.Fatal(err)
-		}
+		g, svc, args := netDoc(t, NetConfig{NoOffload: !off})
 		g.st.Close()
-		if len(svcs) != 1 || svcs[0].BindSDDL != sddl {
-			t.Fatalf("services %+v", svcs)
+		if svc.BindSDDL != sddl {
+			t.Fatalf("service %+v", svc)
 		}
-		if got := svcs[0].ConnectSDDL == sddl; got != off {
-			t.Errorf("offload %v: connect SDDL %q", off, svcs[0].ConnectSDDL)
+		if got := svc.ConnectSDDL == sddl; got != off {
+			t.Errorf("offload %v: connect SDDL %q", off, svc.ConnectSDDL)
 		}
 		if got := strings.Contains(args, " hyperbutler.netvnet=1"); got != off {
 			t.Errorf("offload %v: kernel arguments %q", off, args)
@@ -47,10 +66,7 @@ func TestSetupNetCRC(t *testing.T) {
 		{netstack.CRCStrict, false, " hyperbutler.netcrc=strict"},
 		{netstack.CRCOff, true, ""},
 	} {
-		g, _, args, err := setupNet(NetConfig{CRC: tc.mode, NoOffload: tc.noOffload}, "D:P(A;;FA;;;SY)", slog.New(slog.DiscardHandler))
-		if err != nil {
-			t.Fatal(err)
-		}
+		g, _, args := netDoc(t, NetConfig{CRC: tc.mode, NoOffload: tc.noOffload})
 		if g.st.Config().LinkCRC != tc.mode {
 			t.Errorf("%v: the stack's mode is %v", tc.mode, g.st.Config().LinkCRC)
 		}
@@ -65,10 +81,7 @@ func TestSetupNetCRC(t *testing.T) {
 // --host-gateway-ip), so turning it off or on needs no dockerd restart.
 func TestSetupNetHostGateway(t *testing.T) {
 	for _, hg := range []*netstack.HostGateway{nil, {Enabled: true}, {Enabled: false}} {
-		g, _, args, err := setupNet(NetConfig{HostGateway: hg}, "D:P(A;;FA;;;SY)", slog.New(slog.DiscardHandler))
-		if err != nil {
-			t.Fatal(err)
-		}
+		g, _, args := netDoc(t, NetConfig{HostGateway: hg})
 		a, cur := g.st.HostGateway()
 		g.st.Close()
 		has := strings.Contains(args, " hyperbutler.hostgw=192.168.127.254")

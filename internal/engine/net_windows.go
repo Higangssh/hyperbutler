@@ -28,7 +28,7 @@ import (
 	"github.com/Higangssh/hyperbutler/internal/netstack"
 	"github.com/Higangssh/hyperbutler/internal/socktable"
 	"github.com/Higangssh/hyperbutler/internal/transport"
-	"github.com/Higangssh/hyperbutler/internal/vm"
+	"github.com/Higangssh/hyperbutler/internal/vmtemplate"
 )
 
 // NetConfig is the guest network (ADR 0006).
@@ -67,7 +67,7 @@ type NetConfig struct {
 }
 
 // DefaultNetPort is the default AF_VSOCK port of the guest network link.
-const DefaultNetPort = 1024
+const DefaultNetPort = vmtemplate.NetPort
 
 // guestNet is the running user-mode network of one VM.
 type guestNet struct {
@@ -100,17 +100,17 @@ type NetVars struct {
 	Flows netstack.FlowLog `json:"flows"`
 }
 
-// setupNet builds the stack. It returns nil when networking is off. The caller adds
-// svcs to the VM document and args to the kernel command line.
-func setupNet(nc NetConfig, sddl string, log *slog.Logger) (g *guestNet, svcs []vm.Service, args string, err error) {
+// setupNet builds the stack. It returns nil when networking is off. spec is the
+// network as the stack runs it (its defaults applied), for the VM's template.
+func setupNet(nc NetConfig, log *slog.Logger) (g *guestNet, spec *vmtemplate.Net, err error) {
 	if nc.Off {
-		return nil, nil, "", nil
+		return nil, nil, nil
 	}
 	if nc.Port == 0 {
 		nc.Port = DefaultNetPort
 	}
 	if nc.Port == 0xFFFFFFFF {
-		return nil, nil, "", errors.New("engine: network vsock port is out of range")
+		return nil, nil, errors.New("engine: network vsock port is out of range")
 	}
 	subnet := nc.Subnet
 	if !subnet.IsValid() {
@@ -123,28 +123,35 @@ func setupNet(nc NetConfig, sddl string, log *slog.Logger) (g *guestNet, svcs []
 	}
 	st, err := netstack.New(cfg, nlog)
 	if err != nil {
-		return nil, nil, "", err
+		return nil, nil, err
 	}
 	cfg = st.Config()
 	g = &guestNet{nc: nc, cfg: cfg, st: st, svc: transport.VsockServiceID(nc.Port), publish: nc.Publish, log: log}
 	g.unpublish = diag.Publish(NetVarName, func() any { return NetVars{Stats: st.Stats(), Flows: st.Flows()} })
-	// Only this user may listen on the link's service (for a guest forwarder that dials
-	// the host) and, in offload mode, connect to it (netfwd -vnet listens in the guest).
-	svc := vm.Service{ID: g.svc, BindSDDL: sddl}
-	args = fmt.Sprintf(" hyperbutler.net=%d hyperbutler.mtu=%d hyperbutler.ip=%s/%d hyperbutler.gw=%s hyperbutler.dns=%s",
-		nc.Port, cfg.MTU, cfg.GuestIP(), cfg.Subnet.Bits(), cfg.Gateway(), cfg.Gateway())
-	if cfg.HostGateway != nil {
-		// Always passed while the stack has a host gateway, on or off: turning it off
-		// refuses connections in the stack, so dockerd need not restart for it.
-		args += " hyperbutler.hostgw=" + cfg.HostGatewayAddr().String()
+	return g, netSpec(nc, cfg), nil
+}
+
+// netSpec is the template's view of the stack configuration cfg (defaults applied).
+func netSpec(nc NetConfig, cfg netstack.Config) *vmtemplate.Net {
+	return &vmtemplate.Net{
+		Subnet:      cfg.Subnet,
+		MTU:         cfg.MTU,
+		Offload:     !nc.NoOffload,
+		HostGateway: cfg.HostGateway != nil,
+		CRC:         templateCRC(cfg.LinkCRC),
+		Port:        nc.Port,
 	}
-	if !nc.NoOffload {
-		svc.ConnectSDDL = sddl
-		args += " hyperbutler.netvnet=1"
-		args += cfg.LinkCRC.KernelArg()
+}
+
+// templateCRC maps a stack CRC mode to the template's.
+func templateCRC(m netstack.CRCMode) vmtemplate.CRC {
+	switch m {
+	case netstack.CRCOff:
+		return vmtemplate.CRCOff
+	case netstack.CRCStrict:
+		return vmtemplate.CRCStrict
 	}
-	svcs = []vm.Service{svc}
-	return g, svcs, args, nil
+	return vmtemplate.CRCOn
 }
 
 // levelFilter drops records below min.
