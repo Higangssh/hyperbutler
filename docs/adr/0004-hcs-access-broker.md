@@ -93,7 +93,9 @@ SYSTEM otherwise.** It follows these design rules.
 5. **Pipes.**
    - The broker creates its endpoint with `FILE_FLAG_FIRST_PIPE_INSTANCE` at service start.
      The endpoint ACL grants connect only to interactive users.
-   - Each user then gets a per-user endpoint whose ACL allows only that user's SID.
+   - Each user then gets a per-user endpoint whose ACL allows only that user's SID,
+     under a name with a random part that the broker picks when it creates the pipe, so
+     no one can create the name first (amended 2026-11-02, M3 review).
    - The broker never opens or connects to any pipe or file name it did not create itself.
      That includes VM serial console pipes: these are disabled in release builds, or created
      by the broker with an owner-only ACL.
@@ -450,22 +452,41 @@ guest's agent, hyperbutlerd and netfwd.
 - Why a verb and not a longer handshake: the version reply must stay stable across
   protocol versions (rule 7, Wire format), and a verb without fields, answered only on
   the shared endpoint, adds the least: one schema, one reply field, two codes.
-- open-endpoint creates, on first use, `\\.\pipe\hyperbutler-broker-<hex>`, where `<hex>`
-  is the first 16 bytes of SHA-256 over the caller's SID in its canonical string form,
-  with `FILE_FLAG_FIRST_PIPE_INSTANCE` and the protected DACL of "Pipe" below (the broker
-  account full access, that SID `0x12019b`, nobody else). The reply names it.
+- open-endpoint creates, on first use, `\\.\pipe\hyperbutler-broker-<hash>-<random>`,
+  where `<hash>` is the hex of the first 16 bytes of SHA-256 over the caller's SID in its
+  canonical string form and `<random>` 16 hex digits from `crypto/rand`, new for each
+  endpoint the broker creates, with `FILE_FLAG_FIRST_PIPE_INSTANCE` and the protected
+  DACL of "Pipe" below (the broker account full access, that SID `0x12019b`, nobody
+  else). The reply names it. With a name that depended on the SID only, another user
+  could create it before the broker and deny the owner for good; now the name is not
+  known before the broker creates it.
 - On a per-user endpoint the caller's token SID must be the endpoint's SID (checked after
   the first frame, before any verb runs, the version verb included), every VM verb is
   served, open-endpoint gets "wrong endpoint", and status replies of a running VM carry
   its secret.
-- If the per-user name exists already (squatted), the request fails with "endpoint
-  squatted" and is logged; nothing is created under another name, and the next request
-  tries again. `hyperbutler doctor` should report the code (M2).
-- At most 64 per-user endpoints (`EndpointsConfig.MaxUsers`); beyond that "busy". The
-  per-user connection cap (`MaxConnsPerUser`) counts each endpoint separately.
-- The client derives the per-user name itself, connects to the shared endpoint, asks,
-  refuses any name other than the one it derived, and connects there, checking the owner
-  of both pipes as before. The engine's broker provider uses it unchanged.
+- If the new name exists already (a collision, which a squatter can only reach by
+  guessing 64 random bits), the request fails with "endpoint squatted" and is logged;
+  nothing is created under another name for that request, and the next request draws a
+  new one. `hyperbutler doctor` should report the code (M2).
+- At most 64 per-user endpoints (`EndpointsConfig.MaxUsers`). At the cap, endpoints with
+  no identified connection and no running VM are retired (their users get a new one,
+  under a new name, when they ask again); if none is idle, "busy". The per-user
+  connection cap (`MaxConnsPerUser`) counts each endpoint separately.
+- The shared endpoint must stay reachable while another user tries to hold it:
+  - 16 instances;
+  - the first frame must arrive within 3 s (`FirstFrameTimeout`, apart from the 30 s
+    `IdleTimeout` between requests);
+  - before the first frame, connections are capped per user of the client process
+    (`MaxConnsPerUser`, by the process token; a counting key only, never an identity);
+  - a connection refused before its first frame, or silent past its deadline, gives the
+    instance back at once instead of lingering.
+  One user can then hold at most `MaxConnsPerUser` instances, for 3 s at a time; several
+  users acting together can still keep the instances busy, as on any shared pipe.
+- The client connects to the shared endpoint, asks, accepts only a name of its own form
+  (`ValidUserPipeName`: its SID's hash and a 16-digit lowercase hex suffix), connects
+  there, and checks that both pipes have a trusted owner and the same one. It caches no
+  name. A "busy" reply or a dropped connection on the shared endpoint is retried until
+  the caller's context ends. The engine's broker provider uses it unchanged.
 - `cmd/hyperbutler-broker` must serve through `broker.ListenEndpoints(srv,
   broker.EndpointsConfig{Name: pipe})` and `Endpoints.Serve` / `Close` instead of
   `ListenPipe` and `Server.Serve`; a client of M3 refuses an M1 broker's single pipe.
@@ -498,10 +519,20 @@ user from listening there in the owner's place. A test checks every shape of VM.
   guest (`transport.HvsockTarget.Secret`, which every dial of the Docker API, the control
   channel and the offload link carries).
 - The guest agent (Docker API), hyperbutlerd (control channel) and netfwd -vnet (offload
-  link) read exactly 32 bytes within 5 s, compare in constant time, and close a
-  connection that fails without writing a byte. hyperbutlerd admits a connection before
-  it may replace the current one, so a peer without the secret cannot end the host's
-  session. A guest whose command line has no usable secret refuses every connection.
+  link) read exactly 32 bytes within 1 s (the host writes them in the dial call itself),
+  compare in constant time, and close a connection that fails without writing a byte.
+  Connections are checked concurrently through a bounded `vmsecret.Gate` (agent 16,
+  hyperbutlerd 4, netfwd 4 at a time; one over the bound is closed at once), so a peer
+  that connects and stalls delays neither the host nor the accept loop. hyperbutlerd
+  admits a connection before it may replace the current one, so a peer without the
+  secret cannot end the host's session. A guest whose command line has no usable secret
+  refuses every connection.
+- `vmsecret.Secret` hides itself from fmt only where fmt calls its methods: in exported
+  fields. The two holders that keep one in an unexported field (`hcsVM`,
+  `hostSessions`) implement `fmt.Formatter` themselves.
+- The guest init sets `kernel.dmesg_restrict=1`, so only CAP_SYSLOG reads the kernel log
+  (which echoes the command line); docker containers lack it by default. A console log
+  that carries the line is redacted in diagnostics bundles (`internal/redact`, tested).
 
 **Limits.**
 
@@ -533,9 +564,14 @@ fail; record the error for each.
    3. On the shared endpoint, send status, start and stop: each gets "wrong endpoint"
       and no reply carries a VM id or a secret.
    4. Open-endpoint as B: B gets B's own name, never A's.
-   5. Before the broker starts (reboot or service restart), create A's per-user name as B,
-      then let A connect: A gets "endpoint squatted" (loud failure), and A's client
-      does not connect to B's pipe.
+   5. Before the broker starts (reboot or service restart), create as B every name of
+      A's form B can think of (A's hash with suffixes of A's earlier runs, all zeros),
+      then let A connect: A gets a fresh name and connects. Then, as B, answer
+      open-endpoint from a pipe of B's own (B cannot create the shared pipe): A's client
+      must refuse it (owner check).
+   6. As B, open 16 connections to the shared pipe and send nothing, reopening each as
+      soon as it is dropped: A's `hyperbutler start` still connects within a few
+      seconds, and the broker log shows B over its connection limit.
 2. hvsock connects, with A's VM id and each service id: `vsock:2375`, `vsock:2380`,
    `vsock:1024` (offload mode), plus a random service id. Each connect must be refused
    by HCS (access denied). On Home record whether it is refused at connect time (the
@@ -546,11 +582,13 @@ fail; record the error for each.
    B's listener (the share must not mount from B, the network must not come up through B).
 4. Secret, for each connect of step 2 that HCS accepted (or, to exercise the guest even
    where HCS refuses, as A with a raw dialer that sends no secret):
-   1. Send nothing for 6 s: the guest closes the connection, having written nothing.
+   1. Send nothing for 2 s: the guest closes the connection, having written nothing.
    2. Send 32 zero bytes, then an HTTP `GET /_ping`: closed, nothing read.
    3. Send the secret of an earlier run of A's VM (A reads it from a status reply with a
       test client on A's own endpoint, then restarts the VM): closed, nothing read.
-   4. Send 31 bytes of the right secret and wait: closed after 5 s.
+   4. Send 31 bytes of the right secret and wait: closed after 1 s. Hold 20 such
+      connections at once: the ones over the guest's bound are closed at once, and A's
+      session is unaffected.
    5. As A, with the right secret: the connection is served (control); this confirms
       the steps above failed for the right reason.
    6. During steps 4.1 to 4.4, A's `hyperbutler` session must stay up: the control
