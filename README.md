@@ -82,8 +82,9 @@ release gate.
 ## Quick start
 
 Releases will appear on the [Releases](https://github.com/Higangssh/hyperbutler/releases) page.
-There is no installer: hyperbutler is a zip you unpack. The steps below need no admin rights,
-except the one-time prerequisites.
+0.1 has no installer: hyperbutler is a zip you unpack. The steps below need no admin rights,
+except the one-time prerequisites. From 0.2 an MSI does the prerequisites and PATH for you
+in one UAC prompt ([docs/install.md](docs/install.md)); the zip stays.
 
 ### Prerequisites (one time)
 

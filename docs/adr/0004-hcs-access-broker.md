@@ -161,7 +161,37 @@ the service needs admin. Uninstalling the CLI and its data does not.
 - Whether a no-service, no-admin path exists (for example through QEMU-WHPX) depends on
   ADR 0002. This ADR does not assume one.
 - Option A remains a developer mode. It is documented and used for spikes (ADR 0002), but it is
-  not a supported way for end users to run hyperbutler.
+  not a supported way for end users to run hyperbutler. Until the broker ships, the
+  installer uses it with the user's consent; see Installer.
+
+## Installer (amendment, 2026-11-02)
+
+The broker is not built yet, and the clean-account Quick Start run (docs/release.md) showed
+what the zip leaves to a new user: an admin shell to enable Virtual Machine Platform, an
+admin shell to join Hyper-V Administrators, a sign-out, and editing PATH by hand. From 0.2
+the MSI (`dist/msi`, [docs/install.md](../install.md)) does these in the one UAC prompt of
+the install, so **option A is the supported interim path**, with these limits:
+
+- The options page explains what the group grants (every program the user runs can control
+  Hyper-V VMs), names the account, and has a box for it, ticked by default. An install
+  without that page (silent, advertised, install on demand) adds no one unless
+  `ADDHYPERVADMIN=1` is given, so no install a standard user can trigger grants it.
+- Only the installing user is added: Windows Installer's `UserSID`, and only a user
+  account of the machine, an AD domain (`S-1-5-21-…`) or Entra ID (`S-1-12-1-…`), never a
+  group or a built-in or service account (`hyperbutler setup`, run as SYSTEM).
+- The privileged steps run on a first install or an upgrade only. A repair, which a standard
+  user can start on a per-machine product, runs none of them. The install folder is fixed
+  to Program Files, because SYSTEM runs hyperbutler.exe from it.
+- Every account an install or upgrade added is recorded under
+  `HKLM\SOFTWARE\hyperbutler\Setup`; uninstalling takes those out of the group, and a
+  rolled-back install only its own. A membership that existed before stays.
+- A failed step does not stop the install; `hyperbutler setup` records its outcome there
+  (`LastResult`), and `hyperbutler doctor` reports the membership as before.
+- The zip keeps working without any of this, as before.
+
+The decision above stands: the broker (B or C) replaces option A, and when it ships the
+installer installs the broker instead of adding anyone to the group, and an upgrade takes
+out the membership it recorded.
 
 ## Open questions
 

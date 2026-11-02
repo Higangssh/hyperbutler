@@ -111,6 +111,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		err = cmdMCP(args[1:], os.Stdin, stdout, stderr)
 	case "engine":
 		code, err = cmdEngine(args[1:], stderr)
+	case "setup":
+		err = cmdSetup(args[1:], stdout, stderr)
 	case "version", "--version":
 		err = cmdVersion(args[1:], stdout, stderr)
 	case "help", "-h", "--help":

@@ -1,0 +1,176 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  The hyperbutler MSI (docs/install.md): a per-machine install of the release folder that
+  dist/package.ps1 stages, built by dist/msi/build-msi.ps1 with WiX 5.
+
+  Besides the files it does what the zip leaves to the user (ADR 0004, Installer):
+    - puts the install folder and its clients\ folder at the end of the system PATH, so a
+      docker CLI that is already installed keeps winning;
+    - turns on Virtual Machine Platform if it is off, and asks for a restart;
+    - adds the installing user ([UserSID]) to Hyper-V Administrators, if the box is ticked.
+      The box is ticked by default in the window (ADDHYPERVADMIN=0 unticks it); an install
+      without the window (silent, advertised, install on demand) adds no one unless
+      ADDHYPERVADMIN=1 is given, so no install a standard user can trigger grants it;
+    - a Start menu shortcut.
+  The machine-wide steps run `hyperbutler setup` as SYSTEM, and only on a first install or
+  an upgrade, never on a repair: a repair can be started by a standard user. The install
+  folder is always Program Files\hyperbutler, which only administrators can write, because
+  SYSTEM runs hyperbutler.exe from it. Uninstalling removes the files, the PATH entries and
+  the shortcut, takes out of the group only the accounts this installer put in (an upgrade
+  keeps them), and leaves Virtual Machine Platform on and every user's data in
+  %LOCALAPPDATA%\hyperbutler alone (`hyperbutler uninstall` removes that).
+-->
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
+     xmlns:ui="http://wixtoolset.org/schemas/v4/wxs/ui"
+     xmlns:util="http://wixtoolset.org/schemas/v4/wxs/util">
+  <Package Name="hyperbutler" Manufacturer="hyperbutler" Version="$(var.ProductVersion)"
+           UpgradeCode="7280F4EA-D72B-40D2-A391-68035BD73997" Scope="perMachine" Language="1033"
+           InstallerVersion="500">
+    <SummaryInformation Description="hyperbutler $(var.Version): a Docker engine for Windows in a small Hyper-V VM, without WSL" />
+    <!-- Same version too: a release replaces its own release candidate (build-msi.ps1). -->
+    <MajorUpgrade AllowSameVersionUpgrades="yes" DowngradeErrorMessage="A newer version of hyperbutler is already installed." />
+    <MediaTemplate EmbedCab="yes" CompressionLevel="high" />
+
+    <Icon Id="hyperbutler.exe" SourceFile="!(bindpath.stage)hyperbutler.exe" />
+    <Property Id="ARPPRODUCTICON" Value="hyperbutler.exe" />
+    <Property Id="ARPURLINFOABOUT" Value="https://github.com/Higangssh/hyperbutler" />
+    <Property Id="ARPHELPLINK" Value="https://github.com/Higangssh/hyperbutler#quick-start" />
+    <Property Id="ARPNOMODIFY" Value="1" />
+
+    <!-- The choices on the Setup options page; also settable on the command line.
+         ADDHYPERVADMIN has no default: the window's sequence ticks it (HbAdminDefault),
+         and turns a 0 from the command line into an unticked box (HbAdminOff). -->
+    <Property Id="ADDHYPERVADMIN" Secure="yes" />
+    <Property Id="ENABLEVMP" Value="1" Secure="yes" />
+    <SetProperty Id="ADDHYPERVADMIN" Action="HbAdminDefault" Value="1" Sequence="ui" After="AppSearch" Condition="NOT ADDHYPERVADMIN" />
+    <SetProperty Id="ADDHYPERVADMIN" Action="HbAdminOff" Value="[HBNOTHING]" Sequence="ui" After="HbAdminDefault" Condition="ADDHYPERVADMIN=&quot;0&quot;" />
+    <SetDirectory Id="INSTALLFOLDER" Value="[ProgramFiles64Folder]hyperbutler\" Sequence="both" />
+    <!-- The Host Compute Service exists once Virtual Machine Platform (or Hyper-V) is on and
+         Windows has restarted. -->
+    <Property Id="VMCOMPUTEPRESENT" Secure="yes">
+      <RegistrySearch Id="VmcomputeService" Root="HKLM" Key="SYSTEM\CurrentControlSet\Services\vmcompute"
+                      Name="ImagePath" Type="raw" Bitness="always64" />
+    </Property>
+
+    <StandardDirectory Id="ProgramFiles64Folder">
+      <Directory Id="INSTALLFOLDER" Name="hyperbutler" />
+    </StandardDirectory>
+    <StandardDirectory Id="ProgramMenuFolder" />
+
+    <ComponentGroup Id="Product" Directory="INSTALLFOLDER">
+      <Component Id="HyperbutlerExe">
+        <File Id="HyperbutlerExe" Source="!(bindpath.stage)hyperbutler.exe" KeyPath="yes">
+          <Shortcut Id="HyperbutlerShortcut" Directory="ProgramMenuFolder" Name="hyperbutler" Advertise="no"
+                    Description="A Docker engine for Windows, without WSL" WorkingDirectory="INSTALLFOLDER" />
+        </File>
+      </Component>
+      <Files Include="!(bindpath.stage)**">
+        <Exclude Files="!(bindpath.stage)hyperbutler.exe" />
+      </Files>
+      <Component Id="SystemPath" Guid="9E0D3C1B-6E4E-4B39-9C8B-1B7C3E9A4F20">
+        <RegistryValue Root="HKLM" Key="SOFTWARE\hyperbutler" Name="InstallDir" Type="string" Value="[INSTALLFOLDER]" KeyPath="yes" />
+        <Environment Id="PathInstall" Name="PATH" Value="[INSTALLFOLDER]" Part="last" Action="set" System="yes" />
+        <Environment Id="PathClients" Name="PATH" Value="[INSTALLFOLDER]clients" Part="last" Action="set" System="yes" />
+      </Component>
+    </ComponentGroup>
+    <Feature Id="Main" Title="hyperbutler" Level="1">
+      <ComponentGroupRef Id="Product" />
+    </Feature>
+
+    <!-- Stop the user's engine before its files are replaced or removed, as that user
+         (an immediate action impersonates). It may not be running; failures are ignored. -->
+    <SetProperty Id="WixQuietExec64CmdLine" Value="&quot;[INSTALLFOLDER]hyperbutler.exe&quot; stop"
+                 Before="HbStopEngine" Sequence="execute" />
+    <CustomAction Id="HbStopEngine" BinaryRef="Wix4UtilCA_X64" DllEntry="WixQuietExec64" Execute="immediate" Return="ignore" />
+
+    <!-- Hyper-V Administrators: as SYSTEM, for the user the install runs for (UserSID, which
+         Windows Installer sets). A failure does not stop the install; setup records it under
+         HKLM\SOFTWARE\hyperbutler\Setup (LastResult) and doctor shows the membership. -->
+    <SetProperty Id="HbAddHyperVAdmin" Before="HbAddHyperVAdmin" Sequence="execute"
+                 Value="&quot;[#HyperbutlerExe]&quot; setup hyperv-admins add --sid &quot;[UserSID]&quot;" />
+    <CustomAction Id="HbAddHyperVAdmin" BinaryRef="Wix4UtilCA_X64" DllEntry="WixQuietExec64"
+                  Execute="deferred" Impersonate="no" Return="ignore" />
+    <SetProperty Id="HbAddHyperVAdminRollback" Before="HbAddHyperVAdminRollback" Sequence="execute"
+                 Value="&quot;[#HyperbutlerExe]&quot; setup hyperv-admins remove --sid &quot;[UserSID]&quot;" />
+    <CustomAction Id="HbAddHyperVAdminRollback" BinaryRef="Wix4UtilCA_X64" DllEntry="WixQuietExec64"
+                  Execute="rollback" Impersonate="no" Return="ignore" />
+    <SetProperty Id="HbRemoveHyperVAdmin" Before="HbRemoveHyperVAdmin" Sequence="execute"
+                 Value="&quot;[#HyperbutlerExe]&quot; setup hyperv-admins remove --all" />
+    <CustomAction Id="HbRemoveHyperVAdmin" BinaryRef="Wix4UtilCA_X64" DllEntry="WixQuietExec64"
+                  Execute="deferred" Impersonate="no" Return="ignore" />
+
+    <!-- Virtual Machine Platform: as SYSTEM, only when the Host Compute Service is missing. -->
+    <SetProperty Id="HbEnableVMP" Before="HbEnableVMP" Sequence="execute"
+                 Value="&quot;[#HyperbutlerExe]&quot; setup vm-platform" />
+    <CustomAction Id="HbEnableVMP" BinaryRef="Wix4UtilCA_X64" DllEntry="WixQuietExec64"
+                  Execute="deferred" Impersonate="no" Return="ignore" />
+
+    <InstallExecuteSequence>
+      <Custom Action="HbStopEngine" Before="InstallValidate" Condition="REMOVE~=&quot;ALL&quot; OR WIX_UPGRADE_DETECTED" />
+      <Custom Action="HbRemoveHyperVAdmin" Before="RemoveFiles" Condition="REMOVE~=&quot;ALL&quot; AND NOT UPGRADINGPRODUCTCODE" />
+      <!-- Takes out only this install's account, and only if this install recorded it. -->
+      <Custom Action="HbAddHyperVAdminRollback" After="InstallFiles" Condition="NOT Installed AND ADDHYPERVADMIN=&quot;1&quot;" />
+      <Custom Action="HbAddHyperVAdmin" After="HbAddHyperVAdminRollback" Condition="NOT Installed AND ADDHYPERVADMIN=&quot;1&quot;" />
+      <Custom Action="HbEnableVMP" After="HbAddHyperVAdmin" Condition="NOT Installed AND ENABLEVMP=&quot;1&quot; AND NOT VMCOMPUTEPRESENT" />
+      <ScheduleReboot After="InstallFinalize" Condition="NOT Installed AND ENABLEVMP=&quot;1&quot; AND NOT VMCOMPUTEPRESENT" />
+    </InstallExecuteSequence>
+
+    <UI Id="HbUI">
+      <TextStyle Id="WixUI_Font_Normal" FaceName="Tahoma" Size="8" />
+      <TextStyle Id="WixUI_Font_Bigger" FaceName="Tahoma" Size="12" />
+      <TextStyle Id="WixUI_Font_Title" FaceName="Tahoma" Size="9" Bold="yes" />
+      <Property Id="DefaultUIFont" Value="WixUI_Font_Normal" />
+
+      <DialogRef Id="ErrorDlg" />
+      <DialogRef Id="FatalError" />
+      <DialogRef Id="FilesInUse" />
+      <DialogRef Id="MsiRMFilesInUse" />
+      <DialogRef Id="PrepareDlg" />
+      <DialogRef Id="ProgressDlg" />
+      <DialogRef Id="ResumeDlg" />
+      <DialogRef Id="UserExit" />
+      <DialogRef Id="WelcomeDlg" />
+      <DialogRef Id="VerifyReadyDlg" />
+      <DialogRef Id="MaintenanceWelcomeDlg" />
+      <DialogRef Id="MaintenanceTypeDlg" />
+
+      <Dialog Id="HbOptionsDlg" Width="370" Height="270" Title="!(loc.WelcomeDlg_Title)">
+        <Control Id="BannerBitmap" Type="Bitmap" X="0" Y="0" Width="370" Height="44" TabSkip="no" Text="!(loc.InstallDirDlgBannerBitmap)" />
+        <Control Id="BannerLine" Type="Line" X="0" Y="44" Width="370" Height="0" />
+        <Control Id="Title" Type="Text" X="15" Y="6" Width="280" Height="15" Transparent="yes" NoPrefix="yes" Text="{\WixUI_Font_Title}Setup options" />
+        <Control Id="Description" Type="Text" X="25" Y="23" Width="280" Height="15" Transparent="yes" NoPrefix="yes" Text="What hyperbutler needs from Windows, done once now." />
+        <Control Id="VmpBox" Type="CheckBox" X="20" Y="56" Width="330" Height="17" Property="ENABLEVMP" CheckBoxValue="1"
+                 Text="Turn on Virtual Machine Platform if it is off (Windows asks for a restart)" />
+        <Control Id="AdminBox" Type="CheckBox" X="20" Y="82" Width="330" Height="17" Property="ADDHYPERVADMIN" CheckBoxValue="1"
+                 Text="Add my account ([%USERDOMAIN]\[LogonUser]) to Hyper-V Administrators" />
+        <Control Id="AdminText" Type="Text" X="36" Y="100" Width="314" Height="78" NoPrefix="yes"
+                 Text="hyperbutler starts its VM through the Hyper-V Host Compute Service, which Windows opens only to administrators and to this group. Membership lets every program you run control Hyper-V virtual machines on this PC, not just hyperbutler, and it takes effect after you sign out and back in. Uninstalling hyperbutler takes your account out of the group again if this installer put it in. Without it, hyperbutler start needs an elevated shell." />
+        <Control Id="PathText" Type="Text" X="20" Y="184" Width="330" Height="40" NoPrefix="yes"
+                 Text="The hyperbutler folder and its docker CLI (clients) are added to the end of the system PATH, so a docker CLI you already have keeps being used." />
+        <Control Id="BottomLine" Type="Line" X="0" Y="234" Width="370" Height="0" />
+        <Control Id="Back" Type="PushButton" X="180" Y="243" Width="56" Height="17" Text="!(loc.WixUIBack)" />
+        <Control Id="Next" Type="PushButton" X="236" Y="243" Width="56" Height="17" Default="yes" Text="!(loc.WixUINext)" />
+        <Control Id="Cancel" Type="PushButton" X="304" Y="243" Width="56" Height="17" Cancel="yes" Text="!(loc.WixUICancel)">
+          <Publish Event="SpawnDialog" Value="CancelDlg" />
+        </Control>
+      </Dialog>
+
+      <Publish Dialog="ExitDialog" Control="Finish" Event="EndDialog" Value="Return" Order="999" />
+      <Publish Dialog="WelcomeDlg" Control="Next" Event="NewDialog" Value="HbOptionsDlg" Condition="NOT Installed" />
+      <Publish Dialog="WelcomeDlg" Control="Next" Event="NewDialog" Value="VerifyReadyDlg" Condition="Installed AND PATCH" />
+      <Publish Dialog="HbOptionsDlg" Control="Back" Event="NewDialog" Value="WelcomeDlg" />
+      <Publish Dialog="HbOptionsDlg" Control="Next" Event="NewDialog" Value="VerifyReadyDlg" />
+      <Publish Dialog="VerifyReadyDlg" Control="Back" Event="NewDialog" Value="HbOptionsDlg" Order="1" Condition="NOT Installed" />
+      <Publish Dialog="VerifyReadyDlg" Control="Back" Event="NewDialog" Value="MaintenanceTypeDlg" Order="2" Condition="Installed AND NOT PATCH" />
+      <Publish Dialog="VerifyReadyDlg" Control="Back" Event="NewDialog" Value="WelcomeDlg" Order="2" Condition="Installed AND PATCH" />
+      <Publish Dialog="MaintenanceWelcomeDlg" Control="Next" Event="NewDialog" Value="MaintenanceTypeDlg" />
+      <Publish Dialog="MaintenanceTypeDlg" Control="RepairButton" Event="NewDialog" Value="VerifyReadyDlg" />
+      <Publish Dialog="MaintenanceTypeDlg" Control="RemoveButton" Event="NewDialog" Value="VerifyReadyDlg" />
+      <Publish Dialog="MaintenanceTypeDlg" Control="Back" Event="NewDialog" Value="MaintenanceWelcomeDlg" />
+
+      <Property Id="WIXUI_EXITDIALOGOPTIONALTEXT"
+                Value="Before the first start: sign out and back in so the Hyper-V Administrators membership applies, or restart Windows if Setup asks you to. Then open hyperbutler from the Start menu, or run hyperbutler start in a new terminal." />
+    </UI>
+    <UIRef Id="WixUI_Common" />
+  </Package>
+</Wix>
