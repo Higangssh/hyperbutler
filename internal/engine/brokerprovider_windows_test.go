@@ -209,12 +209,12 @@ func TestBrokerProviderPipe(t *testing.T) {
 	if s, err := l.State(); err != nil || s != "Running" {
 		t.Fatalf("state %q, %v", s, err)
 	}
-	if be.Starts[sid] != 1 {
-		t.Fatalf("starts %v", be.Starts)
+	if n := be.StartCount(sid); n != 1 {
+		t.Fatalf("starts %d", n)
 	}
 	l.Close()
 	deadline := time.Now().Add(5 * time.Second)
-	for be.Stops[sid] != 1 {
+	for be.StopCount(sid) != 1 {
 		if time.Now().After(deadline) {
 			t.Fatal("closing the lease did not stop the VM")
 		}

@@ -29,6 +29,20 @@ func NewFakeBackend() *FakeBackend {
 	return &FakeBackend{vms: make(map[string]*VMStatus), Starts: make(map[string]int), Specs: make(map[string]VMSpec), Stops: make(map[string]int)}
 }
 
+// StartCount and StopCount read Starts and Stops for owner under the lock, for tests that
+// read them while the server is still serving.
+func (f *FakeBackend) StartCount(owner string) int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.Starts[owner]
+}
+
+func (f *FakeBackend) StopCount(owner string) int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.Stops[owner]
+}
+
 func (f *FakeBackend) Start(_ context.Context, spec VMSpec) (VMStatus, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
