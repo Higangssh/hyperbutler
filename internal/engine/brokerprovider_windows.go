@@ -24,6 +24,11 @@ import (
 // idle timeout.
 const brokerPoll = 10 * time.Second
 
+// brokerShutdownPoll replaces brokerPoll once a shutdown was asked for, so the engine
+// sees the power-off when it happens, not at the next 10 s poll (it took a stop from
+// 1.3 s in-process to 8.7 s through the broker).
+const brokerShutdownPoll = 100 * time.Millisecond
+
 // brokerProvider boots the VM through the HCS access broker on pipe (ADR 0004). The
 // broker opens its own guest image and the data disk below dataDir by handle; this
 // process sends only sizes, feature bits and the typed network, and dials the VM's
@@ -135,7 +140,7 @@ func (p *brokerProvider) Boot(ctx context.Context, bs BootSpec) (_ Lease, _ Runt
 	if poll <= 0 {
 		poll = brokerPoll
 	}
-	l := &brokerLease{c: c, log: p.log, gone: make(chan struct{}), stop: make(chan struct{}), done: make(chan struct{})}
+	l := &brokerLease{c: c, log: p.log, gone: make(chan struct{}), soon: make(chan struct{}), stop: make(chan struct{}), done: make(chan struct{})}
 	go l.watch(poll)
 	return l, RuntimeInfo{RuntimeID: guid.FromArray(r.VMID), Secret: r.Secret}, nil
 }
@@ -160,7 +165,10 @@ type brokerLease struct {
 	gone     chan struct{}
 	goneOnce sync.Once
 	// lost is set before gone closes when the connection, not the VM, ended.
-	lost     atomic.Bool
+	lost atomic.Bool
+	// soon asks watch to poll every brokerShutdownPoll from now on.
+	soon     chan struct{}
+	soonOnce sync.Once
 	stop     chan struct{}
 	stopOnce sync.Once
 	done     chan struct{}
@@ -170,6 +178,9 @@ func (l *brokerLease) markGone() { l.goneOnce.Do(func() { close(l.gone) }) }
 
 func (l *brokerLease) Gone() <-chan struct{} { return l.gone }
 
+// ExpectGone tells the lease a power-off is under way: it polls often from now on.
+func (l *brokerLease) ExpectGone() { l.soonOnce.Do(func() { close(l.soon) }) }
+
 // LostBroker reports whether the lease ended because the connection to the broker did.
 func (l *brokerLease) LostBroker() bool { return l.lost.Load() }
 
@@ -178,10 +189,17 @@ func (l *brokerLease) watch(every time.Duration) {
 	defer close(l.done)
 	t := time.NewTicker(every)
 	defer t.Stop()
+	soon := l.soon
 	for {
 		select {
 		case <-l.stop:
 			return
+		case <-soon:
+			soon = nil
+			if brokerShutdownPoll < every {
+				t.Reset(brokerShutdownPoll)
+			}
+			continue
 		case <-t.C:
 		}
 		r, err := l.c.Status()

@@ -571,6 +571,10 @@ func (r *runner) shutdownGuest(sup *guestctl.Supervisor) {
 }
 
 func (r *runner) wait(t time.Time) {
+	// A broker lease learns of the power-off by polling; have it poll often now.
+	if l, ok := r.l.(interface{ ExpectGone() }); ok {
+		l.ExpectGone()
+	}
 	select {
 	case <-r.l.Gone():
 		r.step("guest powered off in %v", time.Since(t).Round(time.Millisecond))

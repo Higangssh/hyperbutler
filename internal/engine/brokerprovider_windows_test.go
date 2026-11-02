@@ -117,11 +117,15 @@ func waitGone(t *testing.T, l Lease) {
 }
 
 func bootFake(t *testing.T, c *fakeBrokerClient) Lease {
+	return bootFakeEvery(t, c, 5*time.Millisecond)
+}
+
+func bootFakeEvery(t *testing.T, c *fakeBrokerClient, poll time.Duration) Lease {
 	t.Helper()
 	saved := dialBroker
 	dialBroker = func(context.Context, string) (brokerClient, error) { return c, nil }
 	t.Cleanup(func() { dialBroker = saved })
-	p := &brokerProvider{pipe: `\\.\pipe\x`, dataDir: t.TempDir(), log: slog.New(slog.DiscardHandler), poll: 5 * time.Millisecond}
+	p := &brokerProvider{pipe: `\\.\pipe\x`, dataDir: t.TempDir(), log: slog.New(slog.DiscardHandler), poll: poll}
 	l, info, err := p.Boot(context.Background(), BootSpec{CPUs: 1, MemoryMB: 1024})
 	if err != nil {
 		t.Fatal(err)
@@ -130,6 +134,21 @@ func bootFake(t *testing.T, c *fakeBrokerClient) Lease {
 		t.Fatalf("runtime info %+v", info)
 	}
 	return l
+}
+
+// Once a power-off is expected, the lease notices it within brokerShutdownPoll, not at
+// the next regular poll.
+func TestBrokerLeaseExpectGone(t *testing.T) {
+	c := &fakeBrokerClient{state: proto.StateRunning}
+	l := bootFakeEvery(t, c, time.Hour)
+	defer l.Close()
+	c.set(proto.StateStopped, nil)
+	l.(*brokerLease).ExpectGone()
+	select {
+	case <-l.Gone():
+	case <-time.After(5 * time.Second):
+		t.Fatal("the power-off was not noticed")
+	}
 }
 
 // The broker lease notices a VM that stopped on its own, and a lost connection.
