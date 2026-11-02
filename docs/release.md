@@ -24,7 +24,7 @@ The zip has one top-level folder:
 | File | Notes |
 |---|---|
 | `hyperbutler.exe` | `CGO_ENABLED=0 go build -trimpath -buildvcs=true -ldflags "-s -w -buildid= -X ...imageset.pinnedManifest=<sha256 of image.json>"`. The version is the tag, taken from Git by the Go toolchain; `package.ps1` fails if `go version -m hyperbutler.exe` reports anything else, or if `hyperbutler.exe version --json` does not report the image pin |
-| `hyperbutler-broker.exe` | The HCS access broker (ADR 0004), built like `hyperbutler.exe` with the same image pin and `-X main.version=<tag>`; `package.ps1` fails unless `hyperbutler-broker.exe -version-json` reports both. In the zip only (listed in `BUILDINFO.txt` and `SHA256SUMS`); the MSI leaves it out until it installs it as a service |
+| `hyperbutler-broker.exe` | The HCS access broker (ADR 0004), built like `hyperbutler.exe` with the same image pin and `-X main.version=<tag>`; `package.ps1` fails unless `hyperbutler-broker.exe -version-json` reports both. In the zip (listed in `BUILDINFO.txt` and `SHA256SUMS`), and in the MSI, which installs it as the `hyperbutler-broker` service |
 | `image/vmlinuz-virt`, `image/initramfs-stage1.gz`, `image/system.vhd`, `image/image.json` | The guest image (ADR 0005 A2b), from the guest-image job. In `image\`, not next to `hyperbutler.exe`, where Explorer shows `system.vhd` as a disk image and a double-click offers to mount it. `hyperbutler start` finds them in the `image\` folder next to `hyperbutler.exe` (`--image-dir` names another), says to extract the zip again if they are missing there and names any left directly next to `hyperbutler.exe` by an older layout, checks `image.json` against the SHA-256 linked into `hyperbutler.exe` and the other files against `image.json` (ADR 0005, Decision 4). `package.ps1 -ImageFiles` names them |
 | `clients/docker.exe`, `clients/cli-plugins/docker-compose.exe` | The docker CLI and the compose plugin, built by `package.ps1` from the docker/cli and docker/compose source modules pinned in `dist/clients.lock` (module proxy, sum.golang.org and the lock's `h1:` hash; upstream build tags and version flags, `CGO_ENABLED=0 -trimpath`). Not next to `hyperbutler.exe`, so they never shadow a docker CLI on PATH ([compat.md](compat.md#the-docker-cli-and-docker-desktop)). Their license texts are in `THIRD-PARTY/clients/` |
 | `LICENSE`, `NOTICE` | hyperbutler's own |
@@ -343,6 +343,10 @@ code (libblkid, parts of e2fsprogs, libseccomp, libmnl). hyperbutler distributes
    - [ ] Run the Quick Start on a clean Windows 11 Home account.
 5. Write the release notes: what changed, the measured status, and the known gaps.
 6. Publish the draft.
+7. The winget manifest: copy the previous version's folder under `dist/winget/`, set the
+   version, URL and SHA-256, and submit it. Since the MSI installs the broker service (ADR
+   0004, Installer (M4)) it has no `InstallerSwitches` `Custom: ADDHYPERVADMIN=1`, which
+   v0.1.0-preview.1's had: winget users need no group membership.
 
 If a gate fails after tagging, delete the draft, fix on `main`, and tag a new version.
 Never move a published tag.

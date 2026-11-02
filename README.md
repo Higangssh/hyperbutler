@@ -106,8 +106,9 @@ Downloads are on the [Releases](https://github.com/Higangssh/hyperbutler/release
 installs the hyperbutler broker service, which starts the VM for you: no Hyper-V
 Administrators membership and no elevation afterwards. Restart if it asks, then run
 `hyperbutler start` ([docs/install.md](docs/install.md)). The broker service in the MSI
-is a preview: its install, upgrade and uninstall have not yet run on a real machine
-(docs/install.md has the procedure). The steps below are for the zip,
+is a preview: its install, upgrade from v0.1.0-preview.1, repair, rollback and uninstall
+ran on one machine, where an account outside Hyper-V Administrators started the VM and
+ran containers through it (docs/install.md has the run); a clean machine is next. The steps below are for the zip,
 which needs no installer and no admin rights, except the one-time prerequisites.
 
 ### Prerequisites (one time)
