@@ -26,6 +26,10 @@ const (
 	CodeVMExited       = "HB-VM-002"
 	CodeSignInPending  = "HB-VM-003" // in Hyper-V Administrators, but not this sign-in yet
 	CodeBrokerLost     = "HB-VM-004" // the broker service went away, and the VM with it
+	CodeBrokerDown     = "HB-VM-005" // the broker service does not answer
+	CodeBrokerRefused  = "HB-VM-006" // the broker service answered with an error
+	CodeBrokerSquat    = "HB-VM-007" // another program holds a broker pipe name
+	CodeBrokerOld      = "HB-VM-008" // the broker service speaks an older protocol
 	CodePipeInUse      = "HB-PIPE-001"
 	CodeDataDisk       = "HB-DISK-001"
 	CodeAPIUnreachable = "HB-API-001"
@@ -45,7 +49,7 @@ const (
 var Codes = []string{
 	CodeBadRequest, CodeBusy, CodeNotEditable, CodeHidden,
 	CodeStartFailed, CodeStopFailed, CodeRestartFailed, CodeEngineStopped, CodeOtherEngine, CodeEngineBusy,
-	CodeAccessDenied, CodeVMExited, CodeSignInPending, CodeBrokerLost, CodePipeInUse, CodeDataDisk,
+	CodeAccessDenied, CodeVMExited, CodeSignInPending, CodeBrokerLost, CodeBrokerDown, CodeBrokerRefused, CodeBrokerSquat, CodeBrokerOld, CodePipeInUse, CodeDataDisk,
 	CodeAPIUnreachable, CodeAPIError, CodeNoContainer,
 	CodeConfigValue, CodeConfigFailed, CodeDaemonInvalid, CodeDaemonApply, CodeDaemonReadOnly,
 	CodeDiagnose, CodeDoctor, CodeOS, CodeImportUnavailable, CodeImportFailed, CodeDesktopNotRunning, CodeImportSpace, CodeImportBusy, CodeConfirm,

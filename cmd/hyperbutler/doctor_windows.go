@@ -11,6 +11,8 @@ import (
 	"path/filepath"
 	"strings"
 
+	"golang.org/x/sys/windows"
+
 	"github.com/Higangssh/hyperbutler/internal/engine"
 	"github.com/Higangssh/hyperbutler/internal/engine/dockerctx"
 	"github.com/Higangssh/hyperbutler/internal/transport"
@@ -95,27 +97,28 @@ func runDoctor(in *install) DoctorJSON {
 			r.OK = false
 		}
 	}
-	for _, c := range virtualizationChecks(virtualization()) {
+	// With the broker service running, start goes through it (ADR 0004, Installer
+	// (M4)), and this user's own HCS access is not needed.
+	bc := brokerCheck(machineBroker)
+	viaBroker := bc.Status == doctorOK
+	v := virtualization()
+	for _, c := range virtualizationChecks(v) {
+		if denied, _ := v["computeSystemsDenied"].(bool); c.ID == "hcs" && denied && viaBroker {
+			c = DoctorCheck{ID: "hcs", Status: doctorInfo,
+				Summary: "HCS refuses your account itself, which hyperbutler start does not need: it goes through the broker service",
+				Msg:     "doctor.hcs.viaBroker"}
+		}
 		add(c)
 	}
-	if member, err := inHyperVAdmins(); err == nil && !member && engine.HyperVAdminsSignInPending() {
-		add(DoctorCheck{ID: "hyperv-admins", Status: doctorFail,
-			Summary: "your account is in Hyper-V Administrators, but this sign-in started before it was added, so HCS still refuses",
-			Fix:     "Sign out of Windows and sign back in (or restart): group changes apply at sign-in.",
-			Msg:     "doctor.hyperv-admins.pending", FixMsg: "doctor.fix.signIn"})
-	} else if err == nil && !member {
-		add(DoctorCheck{ID: "hyperv-admins", Status: doctorFail,
-			Summary: "your sign-in token is not a member of Hyper-V Administrators, so HCS refuses to create the VM",
-			Fix:     `An administrator runs: net localgroup "Hyper-V Administrators" <you> /add` + "\nthen sign out and back in (README, Prerequisites).",
-			Msg:     "doctor.hyperv-admins.no", FixMsg: "doctor.fix.hypervAdmins"})
-	} else if err == nil {
-		add(DoctorCheck{ID: "hyperv-admins", Status: doctorOK, Summary: "your sign-in token is a member of Hyper-V Administrators", Msg: "doctor.hyperv-admins.ok"})
+	if member, err := inHyperVAdmins(); err == nil {
+		elevated := windows.GetCurrentProcessToken().IsElevated()
+		add(hypervAdminsCheck(member, !member && engine.HyperVAdminsSignInPending(), viaBroker || elevated))
 	}
 
 	if c, ok := installerSetupCheck(); ok {
 		add(c)
 	}
-	add(brokerCheck(machineBroker))
+	add(bc)
 
 	st, _ := engine.LoadState(in.l)
 	up, _ := in.running()
@@ -140,6 +143,31 @@ func runDoctor(in *install) DoctorJSON {
 	}
 	add(autostartCheck(in))
 	return r
+}
+
+// hypervAdminsCheck reports the Hyper-V Administrators membership of this sign-in's
+// token (member), and pending when the account is a member that this sign-in predates.
+// notNeeded says that start does not need it: the broker service runs, or this process
+// is elevated. Then a missing membership is a note, not a failure.
+func hypervAdminsCheck(member, pending, notNeeded bool) DoctorCheck {
+	switch {
+	case member:
+		return DoctorCheck{ID: "hyperv-admins", Status: doctorOK, Summary: "your sign-in token is a member of Hyper-V Administrators", Msg: "doctor.hyperv-admins.ok"}
+	case notNeeded:
+		return DoctorCheck{ID: "hyperv-admins", Status: doctorInfo,
+			Summary: "your account is not in Hyper-V Administrators, and need not be: hyperbutler start goes through the broker service (or this shell is elevated)",
+			Msg:     "doctor.hyperv-admins.notNeeded"}
+	case pending:
+		return DoctorCheck{ID: "hyperv-admins", Status: doctorFail,
+			Summary: "your account is in Hyper-V Administrators, but this sign-in started before it was added, so HCS still refuses",
+			Fix:     "Sign out of Windows and sign back in (or restart): group changes apply at sign-in.",
+			Msg:     "doctor.hyperv-admins.pending", FixMsg: "doctor.fix.signIn"}
+	}
+	return DoctorCheck{ID: "hyperv-admins", Status: doctorFail,
+		Summary: "the broker service does not run, and your sign-in token is not a member of Hyper-V Administrators, so HCS refuses to create the VM",
+		Fix: "Install hyperbutler with its installer (the .msi), which installs the broker service (docs/install.md). " +
+			"Or, without it, an administrator runs: net localgroup \"Hyper-V Administrators\" <you> /add\nthen you sign out and back in.",
+		Msg: "doctor.hyperv-admins.no", FixMsg: "doctor.fix.hypervAdmins"}
 }
 
 // virtualizationChecks reads diagnose's virtualization facts (the same registry and

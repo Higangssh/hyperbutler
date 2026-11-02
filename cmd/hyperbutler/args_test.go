@@ -33,19 +33,23 @@ func TestCheckBackendFlags(t *testing.T) {
 		ok   bool
 	}{
 		{nil, true},
+		{[]string{"--backend", "auto"}, true},
 		{[]string{"--backend", "hcs"}, true},
-		{[]string{"--backend", "broker"}, false},
+		{[]string{"--backend", "broker"}, true},
+		{[]string{"--backend", "wsl"}, false},
+		{[]string{"--backend", ""}, false},
 		{[]string{"--broker", `\\.\pipe\hyperbutler-broker-dev`}, true},
+		{[]string{"--backend", "broker", "--broker", `\\.\pipe\b`}, true},
 		{[]string{"--broker", `C:\not-a-pipe`}, false},
 		{[]string{"--backend", "hcs", "--broker", `\\.\pipe\b`}, false},
 	} {
 		fs := newFlagSet("start", io.Discard)
-		backend := fs.String("backend", backendHCS, "")
+		backend := fs.String("backend", backendAuto, "")
 		broker := fs.String("broker", "", "")
 		if err := fs.Parse(tc.args); err != nil {
 			t.Fatal(err)
 		}
-		if err := checkBackendFlags(fs, *backend, *broker); (err == nil) != tc.ok {
+		if err := checkBackendFlags(*backend, *broker); (err == nil) != tc.ok {
 			t.Errorf("%v: %v", tc.args, err)
 		}
 	}

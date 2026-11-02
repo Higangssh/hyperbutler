@@ -382,6 +382,7 @@ func virtualization() map[string]any {
 	}
 	if list, err := vm.List(engine.VMOwner); err != nil {
 		v["computeSystems"] = "HcsEnumerateComputeSystems failed: " + err.Error()
+		v["computeSystemsDenied"] = vm.IsAccessDenied(err)
 	} else {
 		ids := []string{}
 		for _, s := range list {

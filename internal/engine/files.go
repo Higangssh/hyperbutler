@@ -63,7 +63,16 @@ const (
 	// CodeBrokerLost: the connection to the HCS access broker ended (the service stopped,
 	// restarted or crashed), and with it the lease: the broker terminated the VM.
 	CodeBrokerLost = "broker-lost"
-	CodeDataDisk   = "data-disk"
+	// The HCS access broker could not boot the VM (ADR 0004, Installer (M4)):
+	// CodeBrokerUnavailable, it does not answer on its pipe; CodeBrokerRefused, it
+	// answered with an error (the data directory, its image, the caller);
+	// CodeBrokerSquatted, another program holds one of its pipe names; CodeBrokerOld,
+	// its protocol is older than this hyperbutler's.
+	CodeBrokerUnavailable = "broker-unavailable"
+	CodeBrokerRefused     = "broker-refused"
+	CodeBrokerSquatted    = "broker-squatted"
+	CodeBrokerOld         = "broker-old"
+	CodeDataDisk          = "data-disk"
 )
 
 // State is what the engine publishes about itself in state.json.

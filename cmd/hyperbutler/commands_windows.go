@@ -187,12 +187,12 @@ func cmdStart(args []string, stdout, stderr io.Writer) error {
 	var dcfg diag.Config
 	fs.StringVar(&dcfg.MemoryLimit, "memlimit", "", "Go soft memory limit of the engine process, GOMEMLIMIT syntax (default "+engine.DefaultEngineMemoryLimit+`, "off" for none); kept for later starts. The GOMEMLIMIT variable wins`)
 	fs.StringVar(&dcfg.DebugPipe, "debug-pipe", "", `serve the engine's pprof and runtime stats on this pipe, current user only, e.g. \\.\pipe\hyperbutler-engine-debug (default: $`+debugPipeEnv+`; off when both are empty)`)
-	backend := fs.String("backend", backendHCS, `developer mode: how the engine boots the VM; "hcs" calls HCS from the engine process, which needs Hyper-V Administrators (ADR 0004 option A)`)
-	brokerPipe := fs.String("broker", "", `developer mode: boot the VM through the HCS access broker on this pipe instead (ADR 0004): \\.\pipe\hyperbutler-broker for the installed service, or a foreground hyperbutler-broker -hcs-backend; with the broker's own guest image`)
+	backend := fs.String("backend", backendAuto, `how the engine boots the VM: "auto" through the hyperbutler broker service when it is installed (which the installer does), else in the engine process; "broker" through the service only; "hcs" in the engine process, which needs Hyper-V Administrators or elevation (developer mode)`)
+	brokerPipe := fs.String("broker", "", `developer mode: boot the VM through the HCS access broker on this pipe instead (ADR 0004), such as a foreground hyperbutler-broker -hcs-backend; with the broker's own guest image`)
 	if err := parseArgs(fs, args); err != nil {
 		return err
 	}
-	if err := checkBackendFlags(fs, *backend, *brokerPipe); err != nil {
+	if err := checkBackendFlags(*backend, *brokerPipe); err != nil {
 		return err
 	}
 	if dcfg.DebugPipe == "" {
@@ -225,19 +225,6 @@ func cmdStart(args []string, stdout, stderr io.Writer) error {
 	}
 	memLimitSet := dcfg.MemoryLimit != ""
 	dcfg.MemoryLimit = in.settings.EngineMemoryLimit()
-	var kernel, initrd, manifest string
-	if *brokerPipe == "" {
-		// The broker boots the image next to it, not this one.
-		if kernel, initrd, manifest, err = guestArtifacts(*imageDir); err != nil {
-			return err
-		}
-	}
-	if d := exeDir(); *imageDir == "" && *brokerPipe == "" && d != "" {
-		if old := looseImageFiles(d); len(old) > 0 {
-			_, _ = fmt.Fprintf(stderr, "hyperbutler: %s next to hyperbutler.exe in %s are left from an older archive and not used (the guest image is in %s\\); "+
-				"delete them, or extract the release zip into an empty folder\n", strings.Join(old, ", "), d, imageDirName)
-		}
-	}
 
 	if up, err := in.running(); err != nil {
 		return err
@@ -262,13 +249,37 @@ func cmdStart(args []string, stdout, stderr io.Writer) error {
 		in.startNotes(st, stdout, stderr)
 		return nil
 	}
+
+	choice, err := chooseBackend(*backend, *brokerPipe, customImageDir(*imageDir), machineService, stderr)
+	if err != nil {
+		return err
+	}
+	if choice.note != "" && !canUseHCS() {
+		// Without the service, the engine needs HCS access of its own, and this
+		// account has none: say why before the start fails.
+		_, _ = fmt.Fprintf(stderr, "hyperbutler: %s; the engine runs the VM itself, which needs Hyper-V Administrators or an elevated shell (hyperbutler doctor)\n", choice.note)
+	}
+	var kernel, initrd, manifest string
+	if choice.pipe == "" {
+		// The broker boots the image next to it, not this one.
+		if kernel, initrd, manifest, err = guestArtifacts(*imageDir); err != nil {
+			return err
+		}
+		if d := exeDir(); *imageDir == "" && d != "" {
+			if old := looseImageFiles(d); len(old) > 0 {
+				_, _ = fmt.Fprintf(stderr, "hyperbutler: %s next to hyperbutler.exe in %s are left from an older archive and not used (the guest image is in %s\\); "+
+					"delete them, or extract the release zip into an empty folder\n", strings.Join(old, ", "), d, imageDirName)
+			}
+		}
+	}
+
 	firstStart := !diskExists(in.l)
 	in.noteCrash(stderr)
 	if err := in.createDataDir(); err != nil {
 		return err
 	}
 
-	cmd, err := spawnEngine(in, engineImage{kernel, initrd, manifest, *brokerPipe}, dcfg)
+	cmd, err := spawnEngine(in, engineImage{kernel, initrd, manifest, choice.pipe}, dcfg, choice.note)
 	if err != nil {
 		return err
 	}
@@ -480,8 +491,9 @@ func (in *install) noteCrash(stderr io.Writer) {
 
 // spawnEngine starts `hyperbutler engine` as a detached background process whose output
 // goes to engine.log. It breaks away from the caller's job object where allowed, so
-// closing the terminal (or a CI step) does not take the engine with it.
-func spawnEngine(in *install, img engineImage, dcfg diag.Config) (*exec.Cmd, error) {
+// closing the terminal (or a CI step) does not take the engine with it. note, if set,
+// says in the log why the broker service is not used.
+func spawnEngine(in *install, img engineImage, dcfg diag.Config, note string) (*exec.Cmd, error) {
 	exe, err := os.Executable()
 	if err != nil {
 		return nil, err
@@ -498,6 +510,9 @@ func spawnEngine(in *install, img engineImage, dcfg diag.Config) (*exec.Cmd, err
 		return nil, err
 	}
 	defer func() { _ = logf.Close() }()
+	if note != "" {
+		slog.New(slog.NewTextHandler(logf, nil)).Warn("not using the broker service; the engine runs the VM itself (needs Hyper-V Administrators or elevation)", "reason", note)
+	}
 	const (
 		detachedProcess        = 0x00000008
 		createNewProcessGroup  = 0x00000200

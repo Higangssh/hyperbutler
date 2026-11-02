@@ -27,6 +27,8 @@ type brokerProbe struct {
 	// owner returns the SID of the pipe's owner, and self this user's SID.
 	owner func(pipe string) (string, error)
 	self  func() (string, error)
+	// hcsAccess reports whether this process may call HCS itself (nil: assume so).
+	hcsAccess func() bool
 }
 
 var machineBroker = brokerProbe{
@@ -41,6 +43,7 @@ var machineBroker = brokerProbe{
 		}
 		return tu.User.Sid.String(), nil
 	},
+	hcsAccess: canUseHCS,
 }
 
 // pipeOwner reads the owner of the pipe's security descriptor. It opens the pipe for
@@ -84,8 +87,11 @@ func brokerVersion(pipe string) (uint8, string, error) {
 
 // brokerCheck reports the HCS access broker service (ADR 0004): whether it is installed
 // and running, its version against this CLI's, and whether another program holds its
-// pipe name. hyperbutler start runs the VM in its own process for now, so nothing here
-// blocks it: a problem is a warning.
+// pipe name. hyperbutler start boots through the service when it is installed (starting
+// it when it is stopped) and in its own process otherwise (ADR 0004, Installer (M4)),
+// so only a service start cannot use is a failure: one with an older protocol. Without
+// the service, a user who cannot use HCS directly (not in Hyper-V Administrators, not
+// elevated) gets a warning: start runs the VM itself and HCS refuses it.
 func brokerCheck(p brokerProbe) DoctorCheck {
 	pipe := broker.ServicePipe
 	c := DoctorCheck{ID: "broker", Args: msgArgs("service", broker.ServiceName, "pipe", pipe)}
@@ -117,14 +123,20 @@ func brokerCheck(p brokerProbe) DoctorCheck {
 	switch {
 	case !st.Installed && p.exists(pipe):
 		return squatted()
+	case !st.Installed && p.hcsAccess != nil && !p.hcsAccess():
+		c.Status = doctorWarn
+		c.Summary = "the broker service is not installed, and your account cannot use HCS itself (not in Hyper-V Administrators, not elevated), so hyperbutler start cannot start the VM"
+		c.Fix = "Install hyperbutler with its installer (the .msi of the release): it installs the broker service, and then no group membership is needed (docs/install.md)."
+		c.Msg, c.FixMsg = "doctor.broker.absentNoAccess", "doctor.fix.brokerInstall"
+		return c
 	case !st.Installed:
-		c.Status, c.Summary = doctorInfo, "the broker service is not installed; hyperbutler start runs the VM in its own process (Hyper-V Administrators)"
+		c.Status, c.Summary = doctorInfo, "the broker service is not installed; hyperbutler start runs the VM in its own process (Hyper-V Administrators or elevation)"
 		c.Msg = "doctor.broker.absent"
 		return c
 	case st.State == svc.Stopped && p.exists(pipe):
 		return squatted()
 	case st.State == svc.Stopped:
-		c.Status, c.Summary = doctorWarn, "the broker service is installed but stopped"
+		c.Status, c.Summary = doctorWarn, "the broker service is installed but stopped; hyperbutler start starts it"
 		c.Fix = "An administrator starts it: sc.exe start " + broker.ServiceName + ". If it stops again, the Application event log (source " + broker.EventSource + ") says why."
 		c.Msg, c.FixMsg = "doctor.broker.stopped", "doctor.fix.brokerStart"
 		return c
@@ -143,7 +155,7 @@ func brokerCheck(p brokerProbe) DoctorCheck {
 	}
 	c.Args["version"], c.Args["proto"], c.Args["min"] = v, fmt.Sprint(pv), fmt.Sprint(minBrokerProto)
 	if pv < minBrokerProto {
-		c.Status = doctorWarn
+		c.Status = doctorFail // start boots through it and refuses its protocol
 		c.Summary = fmt.Sprintf("the broker service is version %s, protocol %d; this hyperbutler needs protocol %d or later", v, pv, minBrokerProto)
 		c.Fix = "Install the hyperbutler release that matches this one: it updates the broker, which needs administrator rights once."
 		c.Msg, c.FixMsg = "doctor.broker.old", "doctor.fix.brokerUpgrade"

@@ -284,6 +284,7 @@ func Run(ctx context.Context, cfg Config) (err error) {
 		provider = &brokerProvider{pipe: cfg.Broker, dataDir: cfg.Disk.Data, log: log}
 	} else {
 		provider = hp
+		step("booting in this process through HCS (no broker)")
 		pin, pinned := ImagePin()
 		if cfg.Image != "" {
 			// Held open (deny-write) until Run returns, after the VM is gone.
