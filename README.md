@@ -363,8 +363,27 @@ See [docs/compat.md](docs/compat.md#hostdockerinternal).
 ```
 docker CLI ──npipe──▶ hyperbutler (Windows) ──hvsock──▶ guest agent ─▶ dockerd/containerd
                          │                              (minimal Linux VM on HCS)
-                         └─ HCS broker service (planned, ADR 0004) for non-admin use
+                         └─ HCS broker service (in progress, ADR 0004) for non-admin use
 ```
+
+- **Data plane, as you.** The engine runs in your own process with no elevation: the Docker
+  API relay, a user-mode network stack (gVisor netstack) and a FUSE file server, each over
+  a Hyper-V socket (hvsock) to the guest.
+- **Guest.** A minimal Alpine userland on a read-only erofs system disk, pinned by hash, and
+  a sparse VHDX data disk whose freed blocks go back to the host.
+- **Control plane, privileged and small.** Windows lets only administrators and Hyper-V
+  Administrators use HCS. Today your account joins that group (the installer asks). The
+  broker service replaces that, the way `wslservice` does for WSL: it is the only part
+  that calls HCS, and it accepts seven short, typed requests (version, start, stop, status,
+  resize, data location, pause) over a per-user pipe. It takes no paths, command lines or
+  HCS documents from the caller and builds the VM from a fixed template; it learns who you
+  are from the pipe's client token, not from the message; it takes the data directory as an
+  open handle and refuses links, other owners and network drives; it boots only the image
+  next to itself whose hash is compiled in; and it lets only your account reach your VM's
+  hvsock services. The connection that started a VM is its lease. These rules exist
+  because they are where privileged container services have had local privilege
+  escalations before (ADR 0004, Options). Status: the HCS backend is merged behind a
+  developer flag; the service install, per-user pipes and the installer switch follow.
 
 Design decisions are recorded in [docs/adr](docs/adr). How releases are built and checked
 is in [docs/release.md](docs/release.md).

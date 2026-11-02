@@ -121,6 +121,27 @@ surprising. Numbers are from the maintainer's Windows 11 Home laptop unless note
 - **Audience:** anyone shipping a Hyper-V or HCS tool (WSL-like, Kata, sandboxes) with an
   installer.
 
+### 11. Designing a privileged Windows service so its bugs can't become your root
+- **Hook:** privileged container helpers on Windows have shipped a run of local privilege
+  escalations (Docker Desktop's com.docker.service CVEs, ADR 0004 lists five). hyperbutler
+  needs one too, because HCS is closed to normal users, so it was designed backwards from
+  those bug classes.
+- **Story:** the broker takes no paths, command lines or HCS JSON, only seven typed TLV
+  requests with canonical decoding (fuzzed); identity comes from the pipe client's token,
+  never the message; the data directory arrives as a handle, reopened relative to itself
+  with OBJ_DONT_REPARSE and checked for owner, links and volume type on the same handle, and
+  held without FILE_SHARE_DELETE while the VM lives; the image is pinned by a hash compiled
+  in; the starting connection is the VM's lease; hvsock services are limited to the
+  owner's SID. The adversarial review still found two cross-user problems (a global lock an
+  oplock could stall for 35 s, and one user's start revoking another's ACE on the shared
+  system disk) and CI found a third (an elevated shell's files are owned by Administrators,
+  not the user). Compare with WSL's wslservice.
+- **Evidence:** [ADR 0004](../adr/0004-hcs-access-broker.md) (rules, decisions, review
+  findings), `internal/broker`, `internal/broker/proto` fuzzers, `internal/vmtemplate`.
+- **Audience:** Windows systems programmers, security reviewers, anyone writing a service
+  that acts for unprivileged users. Best written once the per-user pipes and the
+  multi-account tests (M3, M6) are done.
+
 ## Smaller posts and tips
 
 - **Changing daemon.json without restarting the VM:** delivered over the hvsock control
