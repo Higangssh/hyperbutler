@@ -195,7 +195,9 @@ type Server struct {
 	nextFh   uint64
 	negative map[nodeKey]time.Time // names answered "missing" (for full invalidation)
 	recent   map[nodeKey]time.Time // names the guest itself changed (echo suppression)
-	watchers map[string]Closer
+	// When recent and changed were last pruned (pruneRecentLocked, noteChangeLocked).
+	recentPruned, changedPruned time.Time
+	watchers                    map[string]Closer
 
 	// Host files for guest opens without handles (openfile.go), by node.
 	files  map[uint64]*nodeFile
@@ -1821,18 +1823,31 @@ func (s *Server) markRecent(parent uint64, name string) {
 	s.unlock()
 }
 
+// pruneRecentLocked drops the names older than echoWindow, at most once per echoWindow
+// (or at once past 65536 names). An entry matters only for echoWindow, so a guest that
+// keeps creating new names (a build, the soak) must not grow the set: it was pruned only
+// past 65536 entries before, which the 24 h soak showed as a slow rise. The survivors
+// move to a new map, because a Go map keeps its buckets after deletes.
+func (s *Server) pruneRecentLocked(now time.Time) {
+	if now.Sub(s.recentPruned) < echoWindow && len(s.recent) <= 65536 {
+		return
+	}
+	s.recentPruned = now
+	cut := now.Add(-echoWindow)
+	keep := make(map[nodeKey]time.Time, len(s.recent)/2)
+	for k, t := range s.recent {
+		if t.After(cut) {
+			keep[k] = t
+		}
+	}
+	s.recent = keep
+}
+
 // markRecentLocked records a name the guest changed, so its echo from the host
 // watcher is not replayed (inject.go).
 func (s *Server) markRecentLocked(parent uint64, name string) {
-	if len(s.recent) > 65536 {
-		cut := time.Now().Add(-echoWindow)
-		for k, t := range s.recent {
-			if t.Before(cut) {
-				delete(s.recent, k)
-			}
-		}
-	}
 	now := time.Now()
+	s.pruneRecentLocked(now)
 	s.recent[nodeKey{parent, name}] = now
 	if n := s.nodes[parent]; n != nil {
 		n.inner = now

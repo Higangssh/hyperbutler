@@ -192,21 +192,30 @@ const (
 // Windows could stay at size 0, a name created during a negative LOOKUP missing.
 // Such replies are sent with nothing to cache instead (raced).
 func (s *Server) noteChangeLocked(k nodeKey) {
-	if len(s.changed) >= maxChanged {
-		cut := time.Now().Add(-changedKeep)
+	now := time.Now()
+	// Forget what is older than changedKeep once per changedKeep, not only past
+	// maxChanged entries: host changes to ever new names (a build writing on Windows, the
+	// soak) would otherwise hold maxChanged entries for good. Survivors move to a new map,
+	// since a Go map keeps its buckets after deletes.
+	if now.Sub(s.changedPruned) >= changedKeep || len(s.changed) >= maxChanged {
+		s.changedPruned = now
+		cut := now.Add(-changedKeep)
+		keep := make(map[nodeKey]change, len(s.changed)/2)
 		for k2, c := range s.changed {
 			if c.at.Before(cut) {
 				s.changedFloor = max(s.changedFloor, c.seq)
-				delete(s.changed, k2)
+			} else {
+				keep[k2] = c
 			}
 		}
+		s.changed = keep
 		if len(s.changed) >= maxChanged {
 			clear(s.changed)
 			s.changedFloor = s.hostSeq
 		}
 	}
 	s.hostSeq++
-	s.changed[k] = change{seq: s.hostSeq, at: time.Now()}
+	s.changed[k] = change{seq: s.hostSeq, at: now}
 }
 
 // racedLocked reports whether name k changed on the host after sequence since (taken
