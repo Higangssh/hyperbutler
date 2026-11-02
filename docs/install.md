@@ -10,7 +10,7 @@ install.
 | Step | When | Undone on uninstall |
 |---|---|---|
 | Copies the release folder to `C:\Program Files\hyperbutler` (the guest image in `image\`, next to `hyperbutler.exe` and `hyperbutler-broker.exe`, which both boot it) | always | yes |
-| Installs and starts the **hyperbutler broker service** (`hyperbutler-broker`, [ADR 0004](adr/0004-hcs-access-broker.md#installer-m4)), which starts the VM for every user signed in at the PC: no Hyper-V Administrators membership and no elevation needed | always (first install, upgrade, repair) | yes |
+| Installs and starts the **hyperbutler broker service** (`hyperbutler-broker`, [ADR 0004](adr/0004-hcs-access-broker.md#installer-m4)), which starts the VM for every user signed in at the PC: no Hyper-V Administrators membership and no elevation needed | always: a first install fails (and rolls back) without it; an upgrade or a repair records a failure and goes on; a repair restores a deleted service but leaves one an administrator disabled | yes |
 | Appends that folder and its `clients\` folder to the **end** of the system PATH, so a docker CLI you already have (Docker Desktop's, say) keeps being the one `docker` runs | always | yes |
 | Turns on Virtual Machine Platform with DISM and asks for a restart | the box is ticked (default) and the Host Compute Service is missing | no: other programs (WSL, Hyper-V) may use it |
 | Adds your account to Hyper-V Administrators (developer mode, ADR 0004 option A) | only with `ADDHYPERVADMIN=1` on the command line; applies after you sign out and back in | yes, if the installer added it |
@@ -28,11 +28,15 @@ folder anyone else could write).
 
 `hyperbutler start` (and the window, and the sign-in task of `config set autostart true`)
 boots through the service when it is installed, and starts it first if it is stopped
-(interactive users may start it, nothing more; right after Windows starts, the service's
-delayed automatic start may not have come yet). Without the service it runs the VM in its
-own process, which needs Hyper-V Administrators or an elevated shell, and says so in the
-engine log, and in the terminal when the account has neither; `hyperbutler doctor` shows
-which. `--backend broker` refuses to fall back, `--backend hcs` never uses the service.
+(interactive sign-ins may start it, nothing more; right after Windows starts, the
+service's delayed automatic start may not have come yet). A service that is installed but
+cannot be used (disabled, failing, not answering, another program on its pipe, too old)
+makes the start fail with the reason and a pointer to `hyperbutler doctor` (the window
+shows HB-VM-005 to HB-VM-008); it never quietly runs the VM another way. Only when no
+service is installed does start run the VM in its own process, which needs Hyper-V
+Administrators or an elevated shell; it says so in the engine log, and in the terminal
+when the account has neither. `--backend broker` also fails without a service,
+`--backend hcs` (developer mode) never uses it.
 
 The installer never touches your data. Images, containers and volumes stay in
 `%LOCALAPPDATA%\hyperbutler` through upgrades and uninstalls; `hyperbutler uninstall`
@@ -70,7 +74,8 @@ identifier beyond the request itself). The installer's options page has a box fo
 network (image pulls, registries, proxies) happens because you or your containers asked
 for it.
 
-If a step fails, the install still finishes. `HKLM\SOFTWARE\hyperbutler\Setup` keeps the
+If a step fails, the install still finishes, except the broker service on a first
+install. `HKLM\SOFTWARE\hyperbutler\Setup` keeps the
 outcome of the last step (`LastResult`) and the accounts the installer added
 (`HyperVAdminsAdded`); `hyperbutler doctor` shows what is still missing (its `broker`
 check shows a service that did not install or does not run). The broker step is
@@ -97,7 +102,8 @@ pwsh -File dist\msi\build-msi.ps1 -Stage dist\out\hyperbutler-VERSION-windows-am
 `build-msi.ps1` builds from the folder `package.ps1` staged (the zip's contents, with
 `hyperbutler-broker.exe`), runs the Windows Installer consistency checks, and holds the
 MSI to the same 150 MB limit as the zip (REQ-UX-002). The WiX 5 tool runs on a .NET 6 or
-later runtime. `-FailForTest` builds `...-failtest.msi`, which fails on purpose with
+later runtime. `-FailForTest` builds `...-failtest.msi` ("hyperbutler FAILTEST" in Apps),
+which installs only with `FAILTESTACK=1` and fails on purpose with
 `WIXFAILWHENDEFERRED=1` just before the end of the install, for testing the rollbacks; it
 is never a release.
 
@@ -154,32 +160,60 @@ mkdir $log -Force
    not in Hyper-V Administrators, signed in, or through `runas /user:hbtest`): `hyperbutler
    start`, `docker run --rm hello-world`, `hyperbutler doctor` (`hyperv-admins` and `hcs`
    are info, "not needed"), `hyperbutler stop`. This is the M4 goal.
-5. **Fallback:** elevated `sc.exe stop hyperbutler-broker` and `sc.exe config
-   hyperbutler-broker start= disabled`; as `hbtest`: `hyperbutler start` says the
-   service could not be started and that the engine needs Hyper-V Administrators, and fails
-   with HCS access denied (window: HB-VM-001); `hyperbutler start --backend broker` fails
-   at once; `hyperbutler doctor` warns. Then repair (step 6) brings it back.
-6. **Repair as an administrator** (`msiexec /fa $m /l*v $log\repair.log`): the service
-   is registered again (enabled, running). With the service running, a second repair
-   leaves it running: its PID (`sc.exe queryex hyperbutler-broker`) is the same before
-   and after.
-7. **Reinstall over itself** (`msiexec /i $m /l*v $log\same.log`, the same-version
+5. **A disabled service is an error, and a repair leaves it disabled:** elevated
+   `sc.exe stop hyperbutler-broker` and `sc.exe config hyperbutler-broker start=
+   disabled`. As `hbtest`: `hyperbutler start` fails at once, saying an administrator
+   disabled the service (window: HB-VM-005), and does not try HCS itself; `hyperbutler
+   doctor`: `broker` FAIL (disabled). Repair as an administrator (`msiexec /fa $m /l*v
+   $log\repair-disabled.log`): `sc.exe qc` still says DISABLED, `LastResult` says
+   `broker install: ok, hyperbutler-broker is disabled; left as an administrator set
+   it`, `sc.exe sdshow` unchanged. Then elevated `sc.exe config hyperbutler-broker
+   start= delayed-auto`.
+6. **Repair restores a deleted service, and leaves a running one alone:** elevated
+   `sc.exe stop hyperbutler-broker`, `sc.exe delete hyperbutler-broker`; repair
+   (`msiexec /fa $m /l*v $log\repair.log`): registered again and running. A second repair
+   with it running: its PID (`sc.exe queryex hyperbutler-broker`) is the same before and
+   after.
+7. **A standard user's repair does not touch the group:** elevated, give the record an
+   account to remove: `& "C:\Program Files\hyperbutler\hyperbutler.exe" setup
+   hyperv-admins add --sid <hbtest's SID>` (`wmic useraccount where name='hbtest' get
+   sid`). Then as `hbtest`, not elevated: `msiexec /fa $m WIX_UPGRADE_DETECTED=1 /l*v
+   $env:TEMP\repair-user.log`: `hbtest` is still in `net localgroup "Hyper-V
+   Administrators"`, and the log shows `HbDropHyperVAdmins` skipped (condition false).
+   Afterwards, elevated: `... setup hyperv-admins remove --sid <hbtest's SID>`.
+8. **A sign-in that is not interactive cannot start the service** (optional): elevated
+   `sc.exe stop hyperbutler-broker`; a scheduled task for `hbtest` set to "Run whether
+   user is logged on or not" without a stored password (S4U) that runs `cmd /c
+   hyperbutler start > %TEMP%\s4u.txt 2>&1`: the file says only an interactive sign-in
+   may start it, or an administrator runs `sc.exe start hyperbutler-broker`.
+9. **Reinstall over itself** (`msiexec /i $m /l*v $log\same.log`, the same-version
    upgrade): one product in Apps, the service running, a new PID, no stale service
    (`sc.exe query hyperbutler-broker` once).
-8. **Rollback of an upgrade:** `msiexec /i $f WIXFAILWHENDEFERRED=1 /l*v
-   $log\rollback.log`: the install fails at the end; afterwards the product from step 7 is
-   still installed and `sc.exe query hyperbutler-broker` shows it RUNNING from
-   `C:\Program Files\hyperbutler\hyperbutler-broker.exe`, and `hyperbutler start` as the
-   user works. (Rolled back: the new product's service, files, and the old product's
-   removal, whose rollback installs its service again.)
-9. **Uninstall** (`msiexec /x $m /l*v $log\uninstall.log`): `sc.exe query
-   hyperbutler-broker` 1060; no `hyperbutler-broker` source under
-   `HKLM\SYSTEM\CurrentControlSet\Services\EventLog\Application`; `C:\Program
-   Files\hyperbutler` gone (no file left in use); `HKLM\SOFTWARE\hyperbutler` gone; the
-   group as in step 0.
-10. **Rollback of a first install:** `msiexec /i $f WIXFAILWHENDEFERRED=1 /l*v
-    $log\rollback-fresh.log`: fails; no service, no folder, no product.
-11. **First install, silent:** `msiexec /i $m /qn /norestart /l*v $log\fresh.log`; then
+10. **The test MSI refuses a plain install:** `msiexec /i $f`: the message says it is a
+    test build and wants `FAILTESTACK=1`; nothing changes.
+11. **Rollback of an upgrade:** `msiexec /i $f FAILTESTACK=1 WIXFAILWHENDEFERRED=1 /l*v
+    $log\rollback.log`: the install fails at the end; afterwards the product from step 9
+    is still installed (named "hyperbutler", not "hyperbutler FAILTEST"), `sc.exe query
+    hyperbutler-broker` shows it RUNNING from `C:\Program
+    Files\hyperbutler\hyperbutler-broker.exe`, and `hyperbutler start` as the user works.
+    (Rolled back: the new product's service and files, and the old product's removal,
+    whose rollback installs its service again.)
+12. **Uninstall, with users starting the service meanwhile:** as the user, in another
+    window, `while ($true) { sc.exe start hyperbutler-broker | Out-Null; sleep -m 100 }`;
+    then `msiexec /x $m /l*v $log\uninstall.log`, then stop the loop. `sc.exe query
+    hyperbutler-broker` 1060; no `hyperbutler-broker` source under
+    `HKLM\SYSTEM\CurrentControlSet\Services\EventLog\Application`; `C:\Program
+    Files\hyperbutler` gone (no file left in use, no restart asked); `HKLM\SOFTWARE\hyperbutler`
+    gone; the group as in step 0.
+13. **Rollback of a first install:** `msiexec /i $f FAILTESTACK=1 WIXFAILWHENDEFERRED=1
+    /l*v $log\rollback-fresh.log`: fails; no service, no folder, no product.
+14. **A first install fails without the service:** as the user, hold the service's pipe
+    name with a foreground broker from the stage folder: `<stage>\hyperbutler-broker.exe
+    -fake-backend -pipe \\.\pipe\hyperbutler-broker` (leave it running). Elevated:
+    `msiexec /i $m /l*v $log\fresh-fail.log`: the install ends with an error;
+    `HbBrokerInstallFirst` failed in the log (the service could not take its pipe name);
+    no service, no `C:\Program Files\hyperbutler`, no product. Stop the foreground broker.
+15. **First install, silent:** `msiexec /i $m /qn /norestart /l*v $log\fresh.log`; then
     steps 2 and 4 again. Uninstall at the end if the machine should go back to how it was
     (then reinstall the old snapshot if it is wanted).
 

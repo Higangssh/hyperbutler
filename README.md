@@ -105,7 +105,9 @@ Downloads are on the [Releases](https://github.com/Higangssh/hyperbutler/release
 **The easy way:** the MSI does the prerequisites and PATH for you in one UAC prompt, and
 installs the hyperbutler broker service, which starts the VM for you: no Hyper-V
 Administrators membership and no elevation afterwards. Restart if it asks, then run
-`hyperbutler start` ([docs/install.md](docs/install.md)). The steps below are for the zip,
+`hyperbutler start` ([docs/install.md](docs/install.md)). The broker service in the MSI
+is a preview: its install, upgrade and uninstall have not yet run on a real machine
+(docs/install.md has the procedure). The steps below are for the zip,
 which needs no installer and no admin rights, except the one-time prerequisites.
 
 ### Prerequisites (one time)
