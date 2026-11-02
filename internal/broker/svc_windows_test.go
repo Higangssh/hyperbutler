@@ -18,6 +18,8 @@ import (
 	"golang.org/x/sys/windows"
 	"golang.org/x/sys/windows/svc"
 	"golang.org/x/sys/windows/svc/mgr"
+
+	"github.com/Higangssh/hyperbutler/internal/vm"
 )
 
 func TestBuildInstallConfig(t *testing.T) {
@@ -78,6 +80,8 @@ func TestBuildInstallConfigRejects(t *testing.T) {
 		{`C:\hb\..\hb\hyperbutler-broker.exe`, nil},
 		{`C:\hb\hyperbutler-broker`, nil},
 		{`C:\hb\hyper"butler.exe`, nil},
+		{`C:\%ProgramFiles%\hyperbutler-broker.exe`, nil}, // the SCM would expand it
+		{`C:\hb%\hyperbutler-broker.exe`, nil},
 		{`C:\hb\hyperbutler-broker.exe`, []string{"-pipe x"}},
 		{`C:\hb\hyperbutler-broker.exe`, []string{"-pipe=x"}},
 		{`C:\hb\hyperbutler-broker.exe`, []string{`"`}},
@@ -238,6 +242,8 @@ type fakeInstance struct {
 	done    chan error
 	stopped chan struct{}
 	once    sync.Once
+	// hang, if set, makes Stop block until it is closed.
+	hang chan struct{}
 }
 
 func newFakeInstance() *fakeInstance {
@@ -246,6 +252,9 @@ func newFakeInstance() *fakeInstance {
 func (f *fakeInstance) Done() <-chan error { return f.done }
 func (f *fakeInstance) Stop() {
 	f.once.Do(func() {
+		if f.hang != nil {
+			<-f.hang
+		}
 		time.Sleep(60 * time.Millisecond) // long enough for a few checkpoints
 		close(f.stopped)
 	})
@@ -260,6 +269,7 @@ func (l *textLog) add(s string)     { l.mu.Lock(); l.msgs = append(l.msgs, s); l
 func (l *textLog) Info(s string)    { l.add("info: " + s) }
 func (l *textLog) Warning(s string) { l.add("warning: " + s) }
 func (l *textLog) Error(s string)   { l.add("error: " + s) }
+func (l *textLog) Status(s string)  { l.add("status: " + s) }
 func (l *textLog) text() string {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -270,8 +280,14 @@ func (l *textLog) text() string {
 // its result, its log and the statuses drive did not read.
 func runHandler(t *testing.T, start func() (ServiceInstance, error), drive func(req chan<- svc.ChangeRequest, st <-chan svc.Status)) (bool, uint32, *textLog, []svc.Status) {
 	t.Helper()
+	return runHandlerLimits(t, 5*time.Second, 5*time.Second, start, drive)
+}
+
+// runHandlerLimits is runHandler with the handler's start and stop limits.
+func runHandlerLimits(t *testing.T, startLimit, stopLimit time.Duration, start func() (ServiceInstance, error), drive func(req chan<- svc.ChangeRequest, st <-chan svc.Status)) (bool, uint32, *textLog, []svc.Status) {
+	t.Helper()
 	log := &textLog{}
-	h := &serviceHandler{start: start, log: log, tick: 10 * time.Millisecond}
+	h := &serviceHandler{start: start, log: log, tick: 10 * time.Millisecond, startLimit: startLimit, stopLimit: stopLimit}
 	req := make(chan svc.ChangeRequest)
 	st := make(chan svc.Status, 100)
 	type result struct {
@@ -389,6 +405,113 @@ func TestServiceHandlerServeStops(t *testing.T) {
 
 // TestServingStop serves a real pipe with the fake backend and stops it: the lease of
 // a connection that started a VM ends, so the VM is stopped, and the pipe is gone.
+// TestServiceHandlerStopHangs: a Stop that never returns is given up after the stop
+// limit; the handler ends with exitServeStopped, so the process exits.
+func TestServiceHandlerStopHangs(t *testing.T) {
+	for _, viaDone := range []bool{false, true} {
+		inst := newFakeInstance()
+		inst.hang = make(chan struct{})
+		defer close(inst.hang)
+		if viaDone {
+			inst.done <- errors.New("listener broke")
+		}
+		began := time.Now()
+		ssec, code, log, left := runHandlerLimits(t, 5*time.Second, 200*time.Millisecond, func() (ServiceInstance, error) { return inst, nil },
+			func(req chan<- svc.ChangeRequest, st <-chan svc.Status) {
+				if !viaDone {
+					waitStatus(t, st, svc.Running)
+					req <- svc.ChangeRequest{Cmd: svc.Stop}
+				}
+			})
+		if !ssec || code != exitServeStopped {
+			t.Errorf("done=%v: exit %v %d", viaDone, ssec, code)
+		}
+		if d := time.Since(began); d > 3*time.Second {
+			t.Errorf("done=%v: took %v", viaDone, d)
+		}
+		if !strings.Contains(log.text(), "did not stop within 200ms") {
+			t.Errorf("done=%v: log %s", viaDone, log.text())
+		}
+		if strings.Contains(log.text(), "broker stopped\n") || strings.HasSuffix(log.text(), "broker stopped") {
+			t.Errorf("done=%v: logged a clean stop: %s", viaDone, log.text())
+		}
+		if len(left) == 0 || left[len(left)-1].State != svc.StopPending {
+			t.Errorf("done=%v: statuses %+v", viaDone, left)
+		}
+	}
+}
+
+// TestServiceHandlerStartHangs: a start that never returns is given up too.
+func TestServiceHandlerStartHangs(t *testing.T) {
+	block := make(chan struct{})
+	defer close(block)
+	ssec, code, log, _ := runHandlerLimits(t, 200*time.Millisecond, time.Second, func() (ServiceInstance, error) {
+		<-block
+		return nil, errors.New("too late")
+	}, nil)
+	if !ssec || code != exitStartFailed || !strings.Contains(log.text(), "did not start within 200ms") {
+		t.Errorf("exit %v %d, log %s", ssec, code, log.text())
+	}
+}
+
+// TestEventLogStatusUnlimited: the service's own lifecycle events are logged even when
+// client-caused warnings have used up the minute's budget.
+func TestEventLogStatusUnlimited(t *testing.T) {
+	w := &fakeEventWriter{}
+	now := time.Unix(1000, 0)
+	l := newEventLog(w, func() time.Time { return now })
+	for i := 0; i < maxEventsPerWindow; i++ {
+		l.Warnf("connection %d: EOF", i)
+	}
+	l.Warnf("one too many")
+	l.Status("hyperbutler broker stopped")
+	if n := len(w.events); n != maxEventsPerWindow+1 || w.events[n-1] != "info 1 hyperbutler broker stopped" {
+		t.Errorf("%d events, last %q", n, w.events[n-1])
+	}
+}
+
+// TestStartServiceSweepsAfterPipe: the sweep runs only once the pipe is the broker's.
+// With the name taken, StartService fails with ErrPipeExists, terminates no VM and runs
+// its cleanup; with the name free it sweeps the VM an earlier broker left.
+func TestStartServiceSweepsAfterPipe(t *testing.T) {
+	api := newFakeHCS()
+	api.list = []vm.Summary{{ID: "hyperbutler-broker-left", Owner: OwnerTag("S-1-5-21-1-2-3-1001"), State: "Running"}}
+	be, err := NewHCSBackend(HCSConfig{StateDir: t.TempDir(), Logf: t.Logf, imageDir: t.TempDir(), api: api})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer be.Close()
+	name := testPipeName(t)
+	cfg := func(cleaned *bool) ServiceConfig {
+		return ServiceConfig{Pipe: name, Instances: 2, Version: "dev", Backend: be, Sweep: func() int { return be.Sweep("") },
+			Cleanup: func() { *cleaned = true }, Infof: t.Logf, Warnf: t.Logf}
+	}
+	squat, err := ListenPipe(PipeConfig{Name: name})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cleaned := false
+	if _, err := StartService(cfg(&cleaned)); !errors.Is(err, ErrPipeExists) {
+		t.Fatalf("with the name taken: %v", err)
+	}
+	if len(api.systems) != 0 || !cleaned {
+		t.Fatalf("with the name taken: opened %d systems, cleanup %v", len(api.systems), cleaned)
+	}
+	_ = squat.Close()
+	cleaned = false
+	s, err := StartService(cfg(&cleaned))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sys := api.systems["hyperbutler-broker-left"]; sys == nil || !sys.terminated {
+		t.Errorf("the left VM was not swept: %+v", sys)
+	}
+	s.Stop()
+	if !cleaned {
+		t.Error("Stop did not run the cleanup")
+	}
+}
+
 func TestServingStop(t *testing.T) {
 	be := NewFakeBackend()
 	srv, err := New(Config{Backend: be, Logf: t.Logf})
@@ -446,4 +569,32 @@ func TestStateName(t *testing.T) {
 	if StateName(svc.Running) != "running" || StateName(svc.Stopped) != "stopped" || StateName(svc.State(99)) != "state 99" {
 		t.Error(StateName(svc.Running), StateName(svc.Stopped), StateName(svc.State(99)))
 	}
+}
+
+// FuzzFormatEvent: whatever an error text holds, the event text is valid UTF-8, has no
+// control characters but tab and newline, no "%%", and at most maxEventRunes runes (plus
+// the ellipsis).
+func FuzzFormatEvent(f *testing.F) {
+	for _, s := range []string{"", "plain", "%%1", "%%%", "a\x00b\x1bc", "\xff\xfe", "\u0085\u009f", strings.Repeat("%", 5000)} {
+		f.Add(s)
+	}
+	f.Fuzz(func(t *testing.T, in string) {
+		got := FormatEvent("%s", in)
+		if !utf8.ValidString(got) {
+			t.Fatalf("not UTF-8: %q", got)
+		}
+		if strings.Contains(got, "%%") {
+			t.Fatalf("holds %%%%: %q", got)
+		}
+		n := 0
+		for _, r := range got {
+			n++
+			if r != '\t' && r != '\n' && (r < 0x20 || r == 0x7f || r >= 0x80 && r < 0xa0) {
+				t.Fatalf("control character %U in %q", r, got)
+			}
+		}
+		if n > maxEventRunes+1 || n == maxEventRunes+1 && !strings.HasSuffix(got, "…") {
+			t.Fatalf("%d runes", n)
+		}
+	})
 }

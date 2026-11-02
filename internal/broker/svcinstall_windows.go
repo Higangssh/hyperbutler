@@ -82,7 +82,8 @@ func BuildInstallConfig(exe string, args []string) (InstallConfig, error) {
 	if !filepath.IsAbs(exe) || filepath.Clean(exe) != exe {
 		return InstallConfig{}, fmt.Errorf("broker: service executable %q is not a clean absolute path", exe)
 	}
-	if strings.ContainsAny(exe, "\"\x00") || !strings.EqualFold(filepath.Ext(exe), ".exe") {
+	// The SCM keeps the command line as REG_EXPAND_SZ, so a '%' would expand.
+	if strings.ContainsAny(exe, "\"%\x00") || !strings.EqualFold(filepath.Ext(exe), ".exe") {
 		return InstallConfig{}, fmt.Errorf("broker: service executable %q", exe)
 	}
 	cmd := `"` + exe + `" run`
@@ -246,6 +247,20 @@ func checkWritersSD(sd *windows.SECURITY_DESCRIPTOR, mask uint32) error {
 // ErrServiceExists is returned by InstallService when the service is already installed.
 var ErrServiceExists = errors.New("broker: the service is already installed; uninstall it first")
 
+// ErrServiceMarkedForDelete is returned by InstallService and UninstallService when the
+// service was deleted but its process has not ended: the SCM removes it only then, and
+// until then it can be neither installed again nor deleted again.
+var ErrServiceMarkedForDelete = errors.New("broker: the service is uninstalled but its process has not ended yet; " +
+	"it goes away when hyperbutler-broker.exe exits (end it in Task Manager, or restart Windows), and then it can be installed again")
+
+// markedForDelete reports whether the service s is marked for deletion: a no-op
+// configuration change fails with ERROR_SERVICE_MARKED_FOR_DELETE then.
+func markedForDelete(s *mgr.Service) bool {
+	const noChange = windows.SERVICE_NO_CHANGE
+	err := windows.ChangeServiceConfig(s.Handle, noChange, noChange, noChange, nil, nil, nil, nil, nil, nil, nil)
+	return errors.Is(err, windows.ERROR_SERVICE_MARKED_FOR_DELETE)
+}
+
 // serviceRequiredPrivilegesInfo is SERVICE_REQUIRED_PRIVILEGES_INFO.
 type serviceRequiredPrivilegesInfo struct {
 	RequiredPrivileges *uint16 // MULTI_SZ
@@ -259,18 +274,26 @@ func multiSZ(ss []string) []uint16 {
 	return append(out, 0)
 }
 
-// InstallService registers the event log source and the service as cfg says, and
-// starts it. It needs an elevated caller. If a step fails, it undoes the ones before;
-// a service that is installed but fails to start stays installed, so its event log
-// says why.
+// InstallService checks cfg.Exe with CheckServiceBinaryPath, registers the event log
+// source and the service as cfg says, and starts it. It needs an elevated caller. If a
+// step fails, it undoes the ones before, and a failed undo is part of the error; a
+// service that is installed but fails to start stays installed, so its event log says
+// why.
 func InstallService(cfg InstallConfig) (err error) {
+	if err := CheckServiceBinaryPath(cfg.Exe); err != nil {
+		return fmt.Errorf("broker: refusing to install: the service would run this file as SYSTEM, but %w", err)
+	}
 	m, err := mgr.Connect()
 	if err != nil {
 		return fmt.Errorf("connect to the service control manager (run as administrator): %w", err)
 	}
 	defer func() { _ = m.Disconnect() }()
 	if s, err := m.OpenService(cfg.Name); err == nil {
+		marked := markedForDelete(s)
 		_ = s.Close()
+		if marked {
+			return ErrServiceMarkedForDelete
+		}
 		return ErrServiceExists
 	}
 	// A source left by an earlier install is replaced, so its message file is ours.
@@ -282,7 +305,9 @@ func InstallService(cfg InstallConfig) (err error) {
 	installed := false
 	defer func() {
 		if err != nil && !installed {
-			_ = eventlog.Remove(EventSource)
+			if rerr := eventlog.Remove(EventSource); rerr != nil {
+				err = errors.Join(err, fmt.Errorf("undo: remove the event log source: %w", rerr))
+			}
 		}
 	}()
 	str := func(s string) *uint16 {
@@ -297,13 +322,18 @@ func InstallService(cfg InstallConfig) (err error) {
 	h, err := windows.CreateService(m.Handle, str(cfg.Name), str(cfg.DisplayName), windows.SERVICE_ALL_ACCESS,
 		windows.SERVICE_WIN32_OWN_PROCESS, cfg.StartType, cfg.ErrorControl, str(cfg.CommandLine),
 		nil, nil, nil, str(cfg.Account), nil)
+	if errors.Is(err, windows.ERROR_SERVICE_MARKED_FOR_DELETE) {
+		return ErrServiceMarkedForDelete
+	}
 	if err != nil {
 		return fmt.Errorf("create the service: %w", err)
 	}
 	s := &mgr.Service{Name: cfg.Name, Handle: h}
 	defer func() {
 		if err != nil && !installed {
-			_ = s.Delete()
+			if derr := s.Delete(); derr != nil {
+				err = errors.Join(err, fmt.Errorf("undo: delete the half-installed service: %w", derr))
+			}
 		}
 		_ = s.Close()
 	}()
@@ -371,17 +401,22 @@ func UninstallService(name string) error {
 		if _, err := s.Control(svc.Stop); err != nil && !errors.Is(err, windows.ERROR_SERVICE_NOT_ACTIVE) {
 			stopErr = fmt.Errorf("stop the service: %w", err)
 		} else {
-			stopErr = waitService(s, svc.Stopped, 2*serviceStopHint)
+			// The service gives up on a stop after serviceStopLimit and exits.
+			stopErr = waitService(s, svc.Stopped, serviceStopLimit+15*time.Second)
 		}
 	}
-	if err := s.Delete(); err != nil && !errors.Is(err, windows.ERROR_SERVICE_MARKED_FOR_DELETE) {
+	marked := false
+	if err := s.Delete(); errors.Is(err, windows.ERROR_SERVICE_MARKED_FOR_DELETE) {
+		marked = true // an earlier uninstall deleted it already
+	} else if err != nil {
 		return fmt.Errorf("delete the service: %w", err)
 	}
 	if err := eventlog.Remove(EventSource); err != nil && !errors.Is(err, windows.ERROR_FILE_NOT_FOUND) {
 		return fmt.Errorf("remove the event log source: %w", err)
 	}
-	if stopErr != nil {
-		return fmt.Errorf("deleted, but it has not stopped yet, so it goes away when it does: %w", stopErr)
+	if stopErr != nil || marked {
+		// Deleted, but the SCM removes a service only once its process has ended.
+		return errors.Join(ErrServiceMarkedForDelete, stopErr)
 	}
 	return nil
 }

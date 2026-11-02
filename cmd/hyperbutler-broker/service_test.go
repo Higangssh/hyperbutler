@@ -57,3 +57,25 @@ func TestServiceCommands(t *testing.T) {
 		}
 	}
 }
+
+type discardLog struct{}
+
+func (discardLog) Infof(string, ...any) {}
+func (discardLog) Warnf(string, ...any) {}
+
+// TestServiceStarterFlags: run's flag errors come back from the start function, which
+// the service handler logs to the event log (open by then) and ends the service with.
+func TestServiceStarterFlags(t *testing.T) {
+	for _, args := range [][]string{{"-bogus"}, {"extra"}, {"-fake-backend", "-allow-unpinned-image"}} {
+		inst, err := serviceStarter(args, discardLog{})()
+		if err == nil || inst != nil || !strings.HasPrefix(err.Error(), "run: ") {
+			t.Errorf("%q: %v", args, err)
+		}
+	}
+	old := version
+	version = "0.2.0"
+	defer func() { version = old }()
+	if _, err := serviceStarter([]string{"-fake-backend"}, discardLog{})(); err == nil || !strings.Contains(err.Error(), "development builds only") {
+		t.Errorf("release build, -fake-backend: %v", err)
+	}
+}

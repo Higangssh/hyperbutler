@@ -133,11 +133,6 @@ func cmdUninstall(args []string) error {
 }
 
 func cmdRun(args []string) error {
-	var f serviceFlags
-	fs := newServiceFlagSet("run", &f)
-	if err := parseNoArgs(fs, args); err != nil {
-		return err
-	}
 	if isSvc, err := svc.IsWindowsService(); err != nil || !isSvc {
 		return errors.New("run is for the service control manager; to run the broker in the foreground, use -fake-backend or -hcs-backend")
 	}
@@ -146,18 +141,37 @@ func cmdRun(args []string) error {
 		return err
 	}
 	defer func() { _ = elog.Close() }()
-	// A service has no console: flag errors and the like go to the event log too.
+	return broker.RunService(serviceStarter(args, elog), elog)
+}
+
+// serviceLog is what the service's broker logs to (broker.EventLog).
+type serviceLog interface {
+	Infof(format string, args ...any)
+	Warnf(format string, args ...any)
+}
+
+// serviceStarter parses run's flags and returns the service's start function. The
+// event log is open by then, and a bad flag is the start's error, so the service
+// handler logs it and ends with exitStartFailed: a service has no console.
+func serviceStarter(args []string, log serviceLog) func() (broker.ServiceInstance, error) {
+	var f serviceFlags
+	fs := newServiceFlagSet("run", &f)
 	fs.SetOutput(io.Discard)
-	if err := f.check(); err != nil {
-		elog.Error(broker.FormatEvent("hyperbutler broker did not start: %v", err))
-		return err
+	err := parseNoArgs(fs, args)
+	if err == nil {
+		err = f.check()
 	}
-	return broker.RunService(func() (broker.ServiceInstance, error) { return startService(f, elog) }, elog)
+	return func() (broker.ServiceInstance, error) {
+		if err != nil {
+			return nil, fmt.Errorf("run: %w", err)
+		}
+		return startService(f, log)
+	}
 }
 
 // startService builds the service's broker: the backend, the server for every
 // interactive user, and the shared pipe.
-func startService(f serviceFlags, elog *broker.EventLog) (_ broker.ServiceInstance, err error) {
+func startService(f serviceFlags, log serviceLog) (_ broker.ServiceInstance, err error) {
 	var cleanup []func()
 	defer func() {
 		if err != nil {
@@ -171,6 +185,7 @@ func startService(f serviceFlags, elog *broker.EventLog) (_ broker.ServiceInstan
 	cleanup = append(cleanup, func() { _ = dbg.Close() })
 
 	var backend broker.Backend = broker.NewFakeBackend()
+	var sweep func() int
 	what := "fake backend"
 	if !f.fake {
 		self, err := windows.GetCurrentProcessToken().GetTokenUser()
@@ -183,7 +198,7 @@ func startService(f serviceFlags, elog *broker.EventLog) (_ broker.ServiceInstan
 			return nil, err
 		}
 		cleanup = append(cleanup, func() { _ = os.RemoveAll(state) })
-		hb, err := broker.NewHCSBackend(broker.HCSConfig{StateDir: state, AllowUnpinned: f.allowUnpinned, Logf: elog.Infof})
+		hb, err := broker.NewHCSBackend(broker.HCSConfig{StateDir: state, AllowUnpinned: f.allowUnpinned, Logf: log.Infof})
 		if err != nil {
 			return nil, err
 		}
@@ -191,22 +206,21 @@ func startService(f serviceFlags, elog *broker.EventLog) (_ broker.ServiceInstan
 		cleanup = append(cleanup, func() { _ = hb.Close() })
 		// The service is every user's broker, so it sweeps every user's broker VMs: a
 		// crashed service left them, and no one else may run them as SYSTEM.
-		if n := hb.Sweep(""); n > 0 {
-			elog.Infof("terminated %d VM(s) an earlier broker left", n)
-		}
+		sweep = func() int { return hb.Sweep("") }
 		backend, what = hb, "HCS backend"
 	}
-	srv, err := broker.New(broker.Config{Backend: backend, Version: version, Logf: elog.Warnf})
+	log.Infof("hyperbutler broker %s (%s) starting", version, what)
+	parts := cleanup
+	cleanup = nil // StartService runs them, now or when the broker stops
+	s, err := broker.StartService(broker.ServiceConfig{
+		Pipe: broker.ServicePipe, Instances: broker.ServicePipeInstances, Version: version,
+		Backend: backend, Sweep: sweep, Infof: log.Infof, Warnf: log.Warnf,
+		Cleanup: func() { runAll(parts) },
+	})
 	if err != nil {
 		return nil, err
 	}
-	l, err := broker.ListenPipe(broker.PipeConfig{Name: broker.ServicePipe, Instances: broker.ServicePipeInstances})
-	if err != nil {
-		_ = srv.Close()
-		return nil, err
-	}
-	elog.Infof("hyperbutler broker %s (%s) starting", version, what)
-	return broker.StartServing(srv, l, func() { runAll(cleanup) }), nil
+	return s, nil
 }
 
 // serviceTempDir is %SystemRoot%\SystemTemp, which only SYSTEM and Administrators may
