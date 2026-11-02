@@ -405,12 +405,19 @@ Still to check in the integration run (not run yet, see `hcs_integration_test.go
 `svcinstall_windows.go` (install, uninstall), driven by `hyperbutler-broker install`,
 `uninstall` and `run`.
 
+**Status: verified with the fake backend only.** The service itself (install, the
+configuration, the pipe, a restart after a crash, uninstall) is covered by
+`TestServiceLifecycle`. The HCS backend under the service's token is covered by
+`TestServiceHCS`, which has not run yet. Until it passes, the service is not known to
+boot a VM.
+
 - **Registration.** `install` (elevated) creates the service `hyperbutler-broker`
   ("hyperbutler broker"): own process, automatic start, delayed (the broker is needed only
   once a user starts hyperbutler), LocalSystem (Implementation decision 1), service SID type
   unrestricted (so the token carries `NT SERVICE\hyperbutler-broker`, which option C builds
   on). The command line is `"<exe>" run`, the executable always quoted, and the only other
-  tokens are bare flags. It then starts the service and waits for it to run.
+  tokens are bare flags. The executable path may not hold `%`, since the SCM keeps the
+  command line as `REG_EXPAND_SZ`. It then starts the service and waits for it to run.
 - **Where the binary lies.** The service runs the file as SYSTEM, so `install` refuses an
   executable that anyone but SYSTEM, Administrators or TrustedInstaller could replace
   (`CheckServiceBinaryPath`):
@@ -425,7 +432,8 @@ Still to check in the integration run (not run yet, see `hcs_integration_test.go
   - deny ACEs are not credited, and ACE types other than allow and deny are refused.
 
   Program Files passes, a user's folder does not. The MSI installs into Program Files
-  (docs/install.md, M4).
+  (docs/install.md, M4). `InstallService` runs the check itself, so no caller can skip it;
+  if a step fails, it undoes the earlier ones and reports any undo that failed too.
 - **Privileges.** The token keeps only `SeImpersonatePrivilege` (to identify callers and
   act as them: rule 4 and the data-location reopen) and `SeChangeNotifyPrivilege`
   (traverse checking, which the SCM keeps anyway). The SCM removes the rest of
@@ -438,20 +446,28 @@ Still to check in the integration run (not run yet, see `hcs_integration_test.go
 - **Running.** `run` refuses unless the SCM started the process (`svc.IsWindowsService`).
   It reports StartPending, with a 60 s wait hint and a new checkpoint every 2 s, while it
   builds:
-  - the HCS backend, whose startup sweep covers every user's broker owner tag, since the
-    service is the only broker on the machine; its state directory is created in
-    `%SystemRoot%\SystemTemp` with a DACL for SYSTEM only;
+  - the HCS backend; its state directory is created in `%SystemRoot%\SystemTemp` with a
+    DACL for SYSTEM only;
   - the server, for every caller the pipe admits;
   - `\\.\pipe\hyperbutler-broker` with 16 instances, `FILE_FLAG_FIRST_PIPE_INSTANCE` and
-    the IU ACL above.
+    the IU ACL above;
+  - then, only once the pipe is its own, the startup sweep, which covers every user's
+    broker owner tag, since the service is the only broker on the machine. A broker that
+    cannot take the name touches no VM: the holder may be a broker still running its own.
 
-  Running, it accepts Stop and Shutdown only.
+  Running, it accepts Stop and Shutdown only. The event log opens before anything else,
+  so a bad flag on the command line is logged as a failed start (code 1).
 - **Stopping.** Stop and Shutdown report StopPending (30 s hint, a checkpoint every 2 s)
   while the listener closes. That ends every connection and with it every lease, so the
   leased VMs are terminated; then the server closes, and the backend terminates the VMs
   left and closes the image. A Stop exits with code 0. A start that fails or a broker
   that stops serving on its own exits with a service-specific code (1 start failed, 2
   pipe name taken, 3 stopped serving), so the recovery actions apply.
+- **Hard limits.** A backend that hangs (an HCS call that never returns, a start in
+  flight) cannot keep the service pending: a start is given up after 3 minutes (code 1),
+  and a stop after 2 minutes (code 3). The service logs it and the process exits; the VMs
+  whose handles it held end with it (`ShouldTerminateOnLastHandleClosed`, rule 9). Since
+  code 3 is a failure, the recovery actions may then start the service again.
 - **Pipe taken.** If the name exists at start, the service logs an error that names the
   pipe and says it does not fall back, and exits with code 2. `hyperbutler doctor`
   reports it: its `broker` check says another program holds the name when the pipe exists
@@ -467,15 +483,22 @@ Still to check in the integration run (not run yet, see `hcs_integration_test.go
   - at most 4096 characters.
 
   Info and warning events are capped at 30 a minute, with one note of how many were
-  dropped, so a client that makes the server log errors cannot flood the log. Errors
-  (start and stop) are not capped.
-- **Uninstall.** `uninstall` (elevated) stops the service, waits up to a minute for it to
-  stop, deletes it and removes the event log source. A service that is not installed is
-  not an error.
+  dropped, so a client that makes the server log errors cannot flood the log. The
+  service's own lifecycle events (serving, stopped) and errors are not capped.
+- **Uninstall.** `uninstall` (elevated) stops the service, waits for it to stop (the stop
+  limit and 15 s), deletes it and removes the event log source. A service that is not
+  installed is not an error. The SCM removes a deleted service only once its process has
+  ended. If it has not ended, `uninstall` says the service is marked for deletion and how
+  to finish it (end the process, or restart Windows). `install` says the same instead of
+  "already installed" when it finds the service in that state.
 - **Doctor.** `hyperbutler doctor` and the window's check list have a `broker` check. It
   says one of: not installed (a note: start runs the VM in its own process), installed but
   stopped, starting or stopping, running but not answering, running with a protocol older
-  than the CLI's minimum (`proto.Version`), or running with its version. It reads the
+  than the CLI's minimum (`proto.Version`), or running with its version. When the pipe
+  exists but the service does not run, it reads the pipe's owner (opened for
+  `READ_CONTROL` only, at anonymous level). If the owner is the user, the pipe belongs to
+  a foreground `hyperbutler-broker` the user runs (a note). Otherwise another program
+  holds the name (a warning). It reads the
   service with `SC_MANAGER_CONNECT` and `SERVICE_QUERY_STATUS`, which every user has, and
   checks the pipe by listing it. It connects only while the SCM reports the service
   running, through `broker.Dial`, which checks the pipe's owner first. None of these is a
@@ -507,10 +530,24 @@ $env:HYPERBUTLER_TEST_BROKER_SERVICE = "1"
 go test -tags integration -run TestServiceLifecycle -count=1 -v ./cmd/hyperbutler-broker/
 ```
 
+`TestServiceHCS` (`service_hcs_integration_test.go`, same tag) does the same with the
+real HCS backend. It boots the image set of `HYPERBUTLER_TEST_IMAGE_DIR`, copied into the
+image folder next to the broker and booted with `-allow-unpinned-image` (a development
+build). It starts one VM through the pipe and stops it: no network, no console, and a
+new 64 GiB sparse, blank data disk in a private directory passed by handle. Then it
+uninstalls. The service's startup sweep terminates every broker-tagged VM on the
+machine, so run it when no other broker runs VMs:
+
+```
+$env:HYPERBUTLER_TEST_BROKER_SERVICE_HCS = "1"
+$env:HYPERBUTLER_TEST_IMAGE_DIR = "<folder with image.json>"
+go test -tags integration -run TestServiceHCS -count=1 -v ./cmd/hyperbutler-broker/
+```
+
 Still to check with the service:
 
-- the HCS backend as a service: that HCS and HcsGrantVmAccess accept the restricted
-  LocalSystem token (the two privileges above), with a VM running;
+- the HCS backend as a service (`TestServiceHCS`): that HCS and HcsGrantVmAccess accept
+  the restricted LocalSystem token (the two privileges above);
 - a second, non-admin interactive user on the shared pipe (the cross-user tests below);
 - the service at shutdown and at a user's sign-out with a VM running.
 
