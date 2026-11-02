@@ -57,6 +57,39 @@ New-Item -ItemType Directory $work | Out-Null
 $msi = Join-Path $Out "$name.msi"
 if (Test-Path $msi) { Remove-Item -Force $msi }
 
+# The installer's pictures, drawn from assets/brand instead of WiX's stock ones: the side
+# panel of the welcome and finish pages (493x312, the text starts at about x=180) and the
+# banner of the other pages (493x58, the title is on the left).
+Add-Type -AssemblyName System.Drawing
+$brand = Join-Path $here '..\..\assets\brand'
+function SaveBmp([int]$w, [int]$h, [string]$path, [scriptblock]$draw) {
+    $bmp = New-Object Drawing.Bitmap $w, $h, ([Drawing.Imaging.PixelFormat]::Format24bppRgb)
+    $g = [Drawing.Graphics]::FromImage($bmp)
+    try {
+        $g.InterpolationMode = [Drawing.Drawing2D.InterpolationMode]::HighQualityBicubic
+        $g.SmoothingMode = [Drawing.Drawing2D.SmoothingMode]::AntiAlias
+        $g.Clear([Drawing.Color]::White)
+        & $draw $g
+        $bmp.Save($path, [Drawing.Imaging.ImageFormat]::Bmp)
+    } finally { $g.Dispose(); $bmp.Dispose() }
+}
+$mascot = [Drawing.Image]::FromFile((Resolve-Path (Join-Path $brand 'mascot-480.png')).Path)
+$icon = [Drawing.Image]::FromFile((Resolve-Path (Join-Path $brand 'icon-256.png')).Path)
+try {
+    SaveBmp 493 312 (Join-Path $work 'dialog.bmp') {
+        param($g)
+        $panel = New-Object Drawing.Rectangle 0, 0, 164, 312
+        $grad = New-Object Drawing.Drawing2D.LinearGradientBrush $panel, ([Drawing.Color]::FromArgb(11, 16, 32)), ([Drawing.Color]::FromArgb(18, 42, 92)), 90.0
+        $g.FillRectangle($grad, $panel); $grad.Dispose()
+        $mw = 148; $mh = [int]($mascot.Height * $mw / $mascot.Width)
+        $g.DrawImage($mascot, (164 - $mw) / 2, 312 - $mh - 40, $mw, $mh)
+    }
+    SaveBmp 493 58 (Join-Path $work 'banner.bmp') {
+        param($g)
+        $g.DrawImage($icon, 493 - 48 - 8, 5, 48, 48)
+    }
+} finally { $mascot.Dispose(); $icon.Dispose() }
+
 Push-Location $work
 try {
     # `wix extension add` without -g keeps the extensions in .wix\ under the current folder.
@@ -67,7 +100,7 @@ try {
     & $Wix build -arch x64 -nologo `
         -ext "WixToolset.Util.wixext/$wixVersion" -ext "WixToolset.UI.wixext/$wixVersion" `
         -d "ProductVersion=$productVersion" -d "Version=$version" `
-        -bindpath "stage=$Stage\" `
+        -bindpath "stage=$Stage\" -bindpath "ui=$work\" `
         -o $msi (Join-Path $here 'hyperbutler.wxs')
     if ($LASTEXITCODE -ne 0) { Fail "wix build failed (exit $LASTEXITCODE)" }
     # The internal consistency evaluators. ICE43 and ICE57 take the Start menu for a

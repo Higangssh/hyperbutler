@@ -185,5 +185,8 @@
                 Value="Before the first start: sign out and back in so the Hyper-V Administrators membership applies, or restart Windows if Setup asks you to. Then open hyperbutler from the Start menu, or run hyperbutler start in a new terminal." />
     </UI>
     <UIRef Id="WixUI_Common" />
+    <!-- Drawn by build-msi.ps1 from assets/brand. -->
+    <WixVariable Id="WixUIDialogBmp" Value="!(bindpath.ui)dialog.bmp" />
+    <WixVariable Id="WixUIBannerBmp" Value="!(bindpath.ui)banner.bmp" />
   </Package>
 </Wix>
