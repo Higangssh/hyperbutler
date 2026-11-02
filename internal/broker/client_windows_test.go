@@ -17,10 +17,10 @@ import (
 // as the engine's broker provider does, and checks that closing the client ends the
 // VM's lease.
 func TestClientEndToEnd(t *testing.T) {
-	l, be := servePipe(t)
+	e, _, be := serveEndpoints(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	c, err := Dial(ctx, l.Name())
+	c, err := Dial(ctx, e.Name())
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -22,7 +22,7 @@ func netDoc(t *testing.T, nc NetConfig) (*guestNet, vm.Service, string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	c, err := vmtemplate.Build(&vmtemplate.Spec{UserSID: testSID, MemoryMB: 1024, CPUs: 1, Kernel: `C:\k`, Initrd: `C:\i`, Net: n})
+	c, err := vmtemplate.Build(&vmtemplate.Spec{UserSID: testSID, Secret: testVMSecret, MemoryMB: 1024, CPUs: 1, Kernel: `C:\k`, Initrd: `C:\i`, Net: n})
 	if err != nil {
 		t.Fatal(err)
 	}

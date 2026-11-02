@@ -5,7 +5,9 @@
 // The host side dials the hvsock service GUID that maps to the port (see
 // internal/transport.VsockServiceID) and serves it on a named pipe. Connections from any
 // peer other than the host (CID 2) are refused, so a vsock loopback transport cannot
-// turn this into a path from containers to dockerd.
+// turn this into a path from containers to dockerd. A host connection must begin with
+// the VM's secret (hyperbutler.secret on the kernel command line, ADR 0004 rule 6), or
+// it is closed without a reply.
 //
 // Cross-compiled with GOOS=linux CGO_ENABLED=0 and started by the guest init:
 //
@@ -23,6 +25,8 @@ import (
 	"time"
 
 	"golang.org/x/sys/unix"
+
+	"github.com/Higangssh/hyperbutler/internal/vmsecret"
 )
 
 const (
@@ -36,6 +40,7 @@ func main() {
 	port := flag.Uint("port", defaultPort, "AF_VSOCK port to listen on")
 	sock := flag.String("unix", "/run/docker.sock", "Unix socket to relay to")
 	maxConns := flag.Int("max-conns", defaultMaxConns, "maximum concurrent connections")
+	cmdline := flag.String("cmdline", vmsecret.DefaultCmdlinePath, "kernel command line holding "+vmsecret.CmdlineKey)
 	flag.Parse()
 	if flag.NArg() != 0 || *port > 0xFFFFFFFE || *sock == "" || *maxConns < 1 {
 		flag.Usage()
@@ -44,12 +49,17 @@ func main() {
 	log.SetPrefix("hyperbutler-agent: ")
 	log.SetFlags(0)
 
+	// Without a usable secret the zero secret stays, which admits no one.
+	secret, err := vmsecret.Load(*cmdline)
+	if err != nil {
+		log.Printf("%v: refusing every connection", err)
+	}
 	ln, err := listenVsock(uint32(*port))
 	if err != nil {
 		log.Fatal(err)
 	}
 	log.Printf("listening on vsock port %d, relaying to %s", *port, *sock)
-	log.Fatal(serve(ln, *sock, *maxConns))
+	log.Fatal(serve(ln, *sock, *maxConns, secret))
 }
 
 // vsockListener is a non-blocking AF_VSOCK listening socket driven by the runtime poller.
@@ -121,7 +131,7 @@ func (c *vsockConn) CloseWrite() error {
 	return serr
 }
 
-func serve(ln *vsockListener, sock string, maxConns int) error {
+func serve(ln *vsockListener, sock string, maxConns int, secret vmsecret.Secret) error {
 	sem := make(chan struct{}, maxConns)
 	var backoff time.Duration
 	for {
@@ -148,7 +158,7 @@ func serve(ln *vsockListener, sock string, maxConns int) error {
 		}
 		go func() {
 			defer func() { <-sem }()
-			handle(c, sock)
+			handle(c, sock, secret)
 		}()
 	}
 }
@@ -162,25 +172,35 @@ type rateLimited struct {
 
 var dialFailures = &rateLimited{interval: 5 * time.Second}
 
-func (r *rateLimited) log(err error) {
+func (r *rateLimited) log(what string, err error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if now := time.Now(); now.Sub(r.last) >= r.interval {
 		r.last = now
-		log.Printf("dial dockerd: %v", err)
+		log.Printf("%s: %v", what, err)
 	}
 }
 
-func handle(c *vsockConn, sock string) {
-	u, err := net.DialTimeout("unix", sock, dialTimeout)
-	if err != nil {
+var refusals = &rateLimited{interval: 5 * time.Second}
+
+func handle(c *vsockConn, sock string, secret vmsecret.Secret) {
+	err := serveHost(c, secret, vmsecret.DefaultTimeout, func() (stream, error) {
+		u, err := net.DialTimeout("unix", sock, dialTimeout)
+		if err != nil {
+			return nil, err
+		}
+		return u.(*net.UnixConn), nil
+	})
+	var de dialError
+	switch {
+	case err == nil, errors.Is(err, os.ErrClosed), errors.Is(err, net.ErrClosed):
+	case errors.Is(err, vmsecret.ErrMismatch):
+		refusals.log("refused a connection without the VM secret", err)
+	case errors.As(err, &de):
 		// Expected while dockerd is still starting (the host retries), so log at most
 		// once every few seconds.
-		dialFailures.log(err)
-		_ = c.Close()
-		return
-	}
-	if err := relay(c, u.(*net.UnixConn)); err != nil && !errors.Is(err, os.ErrClosed) && !errors.Is(err, net.ErrClosed) {
+		dialFailures.log("dial dockerd", de.err)
+	default:
 		log.Printf("relay: %v", err)
 	}
 }

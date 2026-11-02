@@ -20,6 +20,7 @@ import (
 
 	"github.com/Higangssh/hyperbutler/guest/image"
 	"github.com/Higangssh/hyperbutler/internal/vm"
+	"github.com/Higangssh/hyperbutler/internal/vmsecret"
 	"github.com/Higangssh/hyperbutler/internal/vmtemplate"
 )
 
@@ -212,9 +213,16 @@ func TestHCSBackendStart(t *testing.T) {
 	if !strings.HasPrefix(name, vmNamePrefix) || cfg.Owner != OwnerTag(f.sid) {
 		t.Fatalf("name %q owner %q", name, cfg.Owner)
 	}
+	// The VM's secret is fresh, on its command line, and in the status the owner gets.
+	if st.Secret.IsZero() {
+		t.Fatal("no VM secret")
+	}
+	if got, err := vmsecret.FromCmdline(cfg.KernelCmdLine); err != nil || got != st.Secret {
+		t.Fatalf("the guest's secret is not the one returned (%v)", err)
+	}
 	// The document is the template's, with the broker's own files and the caller's SID.
 	want, err := vmtemplate.Build(&vmtemplate.Spec{
-		Owner: OwnerTag(f.sid), UserSID: f.sid, MemoryMB: 2048, CPUs: 2,
+		Owner: OwnerTag(f.sid), UserSID: f.sid, Secret: st.Secret, MemoryMB: 2048, CPUs: 2,
 		Kernel: cfg.KernelPath, Initrd: cfg.InitrdPath, System: cfg.Disks[1].Path, Data: cfg.Disks[0].Path,
 		Net: f.spec().Net, Share: true, DaemonConfig: true,
 	})

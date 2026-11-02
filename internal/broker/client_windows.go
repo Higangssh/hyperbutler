@@ -54,15 +54,46 @@ const (
 	clientStartTimeout = 3 * time.Minute
 )
 
-// Dial connects to the broker's pipe. It connects at impersonation level, which the
-// broker requires to identify the caller and take handles from it, and so it first
-// checks who created the pipe: a squatter could otherwise impersonate this user. The
-// pipe's owner must be SYSTEM, a service account (S-1-5-80-...), or this user (a
-// broker run in the foreground by the same user, which can impersonate no one else).
-func Dial(ctx context.Context, pipe string) (*Client, error) {
-	if err := transport.ValidatePipeName(pipe); err != nil {
+// Dial connects to this user's own endpoint of the broker whose shared endpoint is
+// shared (ADR 0004 rule 5): it asks the shared endpoint to open it, checks that the
+// name it got back is UserPipeName(shared, this user's SID), and connects there. Every
+// VM verb is served on the user's own endpoint only.
+//
+// Both connections are made at impersonation level, which the broker requires to
+// identify the caller and take handles from it, and so each first checks who created
+// the pipe: a squatter could otherwise impersonate this user. The pipe's owner must be
+// SYSTEM, a service account (S-1-5-80-...), or this user (a broker run in the foreground
+// by the same user, which can impersonate no one else).
+func Dial(ctx context.Context, shared string) (*Client, error) {
+	if err := transport.ValidatePipeName(shared); err != nil {
 		return nil, err
 	}
+	self, err := processSID()
+	if err != nil {
+		return nil, err
+	}
+	want := UserPipeName(shared, self)
+	if err := transport.ValidatePipeName(want); err != nil {
+		return nil, err
+	}
+	sc, err := dialPipe(ctx, shared)
+	if err != nil {
+		return nil, err
+	}
+	r, err := sc.Do(proto.Request{Op: proto.OpOpenEndpoint})
+	_ = sc.Close()
+	if err != nil {
+		return nil, fmt.Errorf("broker: open this user's endpoint: %w", err)
+	}
+	if r.PipeName != want {
+		// The client connects only to the name it derived itself.
+		return nil, fmt.Errorf("broker: %s named endpoint %q, want %q", shared, r.PipeName, want)
+	}
+	return dialPipe(ctx, want)
+}
+
+// dialPipe connects to one broker pipe after checking its owner.
+func dialPipe(ctx context.Context, pipe string) (*Client, error) {
 	c, err := winio.DialPipeAccessImpLevel(ctx, pipe, windows.GENERIC_READ|windows.GENERIC_WRITE, winio.PipeImpLevelImpersonation)
 	if err != nil {
 		return nil, fmt.Errorf("broker: connect to %s: %w", pipe, err)

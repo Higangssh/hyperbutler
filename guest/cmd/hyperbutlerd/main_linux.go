@@ -2,7 +2,8 @@
 
 // Command hyperbutlerd is the hyperbutler guest services daemon. It serves the guestctl control
 // channel (internal/guestctl) on AF_VSOCK port guestctl.ControlPort, accepting the host
-// (CID 2) only, and runs three policies:
+// (CID 2) only and only connections that begin with the VM's secret (hyperbutler.secret
+// on the kernel command line, ADR 0004 rule 6), and runs three policies:
 //
 //   - the free-space guard (REQ-DISK-004): an fallocate'd reservation sized from the
 //     host's budget (guest/internal/fsguard), failing closed without a budget;
@@ -35,6 +36,7 @@ import (
 	"flag"
 	"log"
 	"math"
+	"net"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -49,6 +51,7 @@ import (
 	"github.com/Higangssh/hyperbutler/guest/internal/policy"
 	"github.com/Higangssh/hyperbutler/internal/guestctl"
 	"github.com/Higangssh/hyperbutler/internal/spaceguard"
+	"github.com/Higangssh/hyperbutler/internal/vmsecret"
 )
 
 type options struct {
@@ -76,6 +79,7 @@ type options struct {
 	dockerdBin             string
 	dockerdEnv             string
 	caBundle, caStock      string
+	cmdline                string
 }
 
 func main() {
@@ -117,6 +121,7 @@ func main() {
 	flag.StringVar(&o.dockerdEnv, "dockerd-env", "", "with -daemon-config: install the host's dockerd environment (proxies, CA certificates) as KEY=VALUE lines at this path (the init must support it; empty = off)")
 	flag.StringVar(&o.caBundle, "ca-bundle", "/run/hyperbutler/ca-certificates.crt", "with -dockerd-env: where the combined CA bundle goes")
 	flag.StringVar(&o.caStock, "ca-stock", "/etc/ssl/certs/ca-certificates.crt", "with -dockerd-env: the image's stock CA bundle")
+	flag.StringVar(&o.cmdline, "cmdline", vmsecret.DefaultCmdlinePath, "kernel command line holding "+vmsecret.CmdlineKey+", the VM secret every control connection must begin with")
 	flag.IntVar(&o.shutdownPID, "shutdown-pid", 1, "on a host shutdown request, send SIGTERM to this process (the init, which stops dockerd and powers off); 0 disables the feature")
 	flag.Parse()
 	if flag.NArg() != 0 || o.port > math.MaxUint32-1 || (o.file != "") != (o.dev != "") ||
@@ -269,7 +274,24 @@ func (d *daemon) run() error {
 		Features: d.features, Instance: binary.BigEndian.Uint64(inst[:]),
 		StatusEvery: d.o.statusEvery, Logf: log.Printf,
 	}
-	var cancelPrev context.CancelFunc
+	// One host connection at a time: a new one with the VM secret means the host
+	// reconnected, so the old one is dead or stale. Without the secret (or with none on
+	// the command line) nothing is served.
+	secret, err := vmsecret.Load(d.o.cmdline)
+	if err != nil {
+		log.Printf("%v: refusing every control connection", err)
+	}
+	sessions := &hostSessions{secret: secret, start: func(ctx context.Context, c net.Conn) {
+		gen := d.box.connect()
+		s := *srv
+		s.Handler = &connHandler{d: d, gen: gen}
+		go func() {
+			err := s.ServeConn(ctx, c)
+			if err != nil && ctx.Err() == nil {
+				log.Printf("control connection: %v", err)
+			}
+		}()
+	}}
 	var backoff time.Duration
 	for {
 		c, cid, err := ln.accept()
@@ -288,20 +310,9 @@ func (d *daemon) run() error {
 			_ = c.Close()
 			continue
 		}
-		// One host connection at a time: a new one means the host reconnected, so the
-		// old one is dead or stale.
-		if cancelPrev != nil {
-			cancelPrev()
-		}
-		ctx, cancel := context.WithCancel(context.Background())
-		cancelPrev = cancel
-		gen := d.box.connect()
-		s := *srv
-		s.Handler = &connHandler{d: d, gen: gen}
 		go func() {
-			err := s.ServeConn(ctx, c)
-			if err != nil && ctx.Err() == nil {
-				log.Printf("control connection: %v", err)
+			if err := sessions.admit(c); err != nil {
+				log.Printf("refused a control connection without the VM secret: %v", err)
 			}
 		}()
 	}

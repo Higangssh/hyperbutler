@@ -113,7 +113,7 @@ func decodeReplies(t *testing.T, b []byte) []proto.Reply {
 func call(t *testing.T, s *Server, p Peer, reqs ...proto.Request) []proto.Reply {
 	t.Helper()
 	c := &conn{in: bytes.NewReader(encode(t, reqs...))}
-	if err := s.ServeConn(context.Background(), c, p); err != nil {
+	if err := s.ServeConn(context.Background(), c, p, peerSID(p)); err != nil {
 		t.Fatalf("ServeConn: %v", err)
 	}
 	return decodeReplies(t, c.out.Bytes())
@@ -231,7 +231,7 @@ func TestIdentityRejected(t *testing.T) {
 		{sid: sidA, identifyErr: errors.New("anonymous")},
 	} {
 		c := &conn{in: bytes.NewReader(encode(t, proto.Request{Op: proto.OpStatus}, proto.Request{Op: proto.OpStatus}))}
-		if err := s.ServeConn(context.Background(), c, p); err == nil {
+		if err := s.ServeConn(context.Background(), c, p, sidA); err == nil {
 			t.Errorf("peer %+v: ServeConn returned nil", p)
 		}
 		r := decodeReplies(t, c.out.Bytes())
@@ -260,7 +260,7 @@ func TestMalformedClosesConnection(t *testing.T) {
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			c := &conn{in: bytes.NewReader(append(tt.in, status...))}
-			if err := s.ServeConn(context.Background(), c, &localPeer{sid: sidA}); err == nil {
+			if err := s.ServeConn(context.Background(), c, &localPeer{sid: sidA}, sidA); err == nil {
 				t.Fatal("ServeConn returned nil")
 			}
 			r := decodeReplies(t, c.out.Bytes())
@@ -456,7 +456,7 @@ func TestMaxConnsPerUser(t *testing.T) {
 	status := encode(t, proto.Request{Op: proto.OpStatus})
 	held := &conn{in: io.MultiReader(bytes.NewReader(status), blockingReader{hold})}
 	done := make(chan error, 1)
-	go func() { done <- s.ServeConn(context.Background(), held, &localPeer{sid: sidA}) }()
+	go func() { done <- s.ServeConn(context.Background(), held, &localPeer{sid: sidA}, sidA) }()
 	// Wait until the first connection has been identified.
 	deadline := time.Now().Add(5 * time.Second)
 	for {
@@ -473,7 +473,7 @@ func TestMaxConnsPerUser(t *testing.T) {
 	}
 
 	c := &conn{in: bytes.NewReader(status)}
-	if err := s.ServeConn(context.Background(), c, &localPeer{sid: sidA}); err == nil {
+	if err := s.ServeConn(context.Background(), c, &localPeer{sid: sidA}, sidA); err == nil {
 		t.Fatal("second connection of the same user was served")
 	}
 	r := decodeReplies(t, c.out.Bytes())
@@ -508,7 +508,7 @@ func openSession(t *testing.T, s *Server, p Peer) *session {
 	t.Helper()
 	client, server := net.Pipe()
 	ss := &session{t: t, c: client, done: make(chan error, 1)}
-	go func() { ss.done <- s.ServeConn(context.Background(), server, p) }()
+	go func() { ss.done <- s.ServeConn(context.Background(), server, p, peerSID(p)) }()
 	t.Cleanup(func() { ss.close() })
 	return ss
 }

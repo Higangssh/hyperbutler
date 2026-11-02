@@ -126,13 +126,17 @@ func (p *brokerProvider) Boot(ctx context.Context, bs BootSpec) (_ Lease, _ Runt
 	if r.State == proto.StateStopped || r.VMID == ([16]byte{}) {
 		return nil, RuntimeInfo{}, errors.New("engine: the broker started no VM")
 	}
+	if r.Secret.IsZero() {
+		// The guest serves nothing without it (ADR 0004 rule 6).
+		return nil, RuntimeInfo{}, errors.New("engine: the broker gave no VM secret")
+	}
 	poll := p.poll
 	if poll <= 0 {
 		poll = brokerPoll
 	}
 	l := &brokerLease{c: c, log: p.log, gone: make(chan struct{}), stop: make(chan struct{}), done: make(chan struct{})}
 	go l.watch(poll)
-	return l, RuntimeInfo{RuntimeID: guid.FromArray(r.VMID)}, nil
+	return l, RuntimeInfo{RuntimeID: guid.FromArray(r.VMID), Secret: r.Secret}, nil
 }
 
 // openDirHandle opens dir as a directory handle to pass to the broker.

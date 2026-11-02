@@ -43,6 +43,7 @@ import (
 	"golang.org/x/sys/unix"
 
 	"github.com/Higangssh/hyperbutler/internal/netstack/frame"
+	"github.com/Higangssh/hyperbutler/internal/vmsecret"
 )
 
 func main() {
@@ -53,6 +54,7 @@ func main() {
 	crc := flag.String("crc", "1", `with -vnet, the per-frame CRC-32C: "1", "0" (link version 1) or "strict" (a mismatch ends the link); must match the host`)
 	benchTCP := flag.Int("bench-tcp", 0, "serve zeros on this TCP port (development)")
 	benchVsock := flag.Uint("bench-vsock", 0, "serve zeros on this AF_VSOCK port to the host (development)")
+	cmdline := flag.String("cmdline", vmsecret.DefaultCmdlinePath, "with -vnet, the kernel command line holding "+vmsecret.CmdlineKey+", the VM secret the host's link must begin with")
 	flag.Parse()
 	if flag.NArg() != 0 || *port == 0 || *port > 0xFFFFFFFE || !frame.ValidMTU(*mtu) ||
 		len(*dev) == 0 || len(*dev) >= unix.IFNAMSIZ || (*crc != "1" && *crc != "0" && *crc != "strict") {
@@ -91,7 +93,13 @@ func main() {
 			time.Sleep(wait)
 			wait = min(2*wait, 2*time.Second)
 		}
-		next = acceptLoop(ln, lk.version())
+		// The host's link begins with the VM secret (ADR 0004 rule 6); without one on the
+		// command line the zero secret stays, which admits no one.
+		secret, err := vmsecret.Load(*cmdline)
+		if err != nil {
+			log.Printf("%v: refusing every link", err)
+		}
+		next = acceptLoop(ln, lk.version(), secret)
 	}
 	for {
 		conn := next()
@@ -118,15 +126,22 @@ func dialLoop(port uint32) func() *os.File {
 }
 
 // acceptLoop returns a function that waits for the host to connect (offload mode) and
-// to send the Hello of link version. Only the host (CID 2) is accepted. The host dials
-// because Windows sends slowly on hvsock connections it accepted (ADR 0006).
-func acceptLoop(ln int, version byte) func() *os.File {
+// to send the VM secret and then the Hello of link version. Only the host (CID 2) is
+// accepted, and only with the secret; a peer without it is closed before anything is
+// written to it. The host dials because Windows sends slowly on hvsock connections it
+// accepted (ADR 0006).
+func acceptLoop(ln int, version byte, secret vmsecret.Secret) func() *os.File {
 	return func() *os.File {
 		for {
 			conn, err := acceptHost(ln)
 			if err != nil {
 				log.Printf("accept: %v", err)
 				time.Sleep(100 * time.Millisecond)
+				continue
+			}
+			if err := vmsecret.Admit(conn, secret, 0); err != nil {
+				log.Printf("host link: refused: %v", err)
+				_ = conn.Close()
 				continue
 			}
 			if err := readHello(conn, version); err != nil {

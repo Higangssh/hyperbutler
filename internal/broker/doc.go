@@ -10,9 +10,14 @@
 //   - Data location by handle: the caller passes a directory handle value; the broker
 //     duplicates it from the client process, reopens it as the caller, and checks it with
 //     ValidateDataDir (rule 2). No request carries a path (rule 1).
-//   - Pipes: the broker creates its pipe with FILE_FLAG_FIRST_PIPE_INSTANCE and an ACL
-//     that admits only the client user (or interactive users for a shared endpoint), and
-//     it never opens a pipe or file name it did not create (rule 5).
+//   - Pipes: the broker creates its pipes with FILE_FLAG_FIRST_PIPE_INSTANCE. The shared
+//     endpoint admits interactive users and serves only the version and open-endpoint
+//     verbs; open-endpoint creates the caller's own pipe (UserPipeName), whose ACL admits
+//     only that user, and every VM verb is served there alone (Endpoints). The broker
+//     never opens a pipe or file name it did not create (rule 5).
+//   - Cross-user isolation on hvsock: every service of the VM allows the owner's SID only,
+//     and each start makes a fresh VM secret that the guest requires at the start of every
+//     connection and that only the owner's own endpoint returns (rule 6).
 //   - VM lifetime: the connection that started the VM is its lease; when it ends, the
 //     VM is terminated (Implementation decision 6). HCSBackend tags VMs with the owner's
 //     SID and sweeps untracked ones (rule 9).

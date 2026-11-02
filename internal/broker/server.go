@@ -14,6 +14,7 @@ import (
 	"golang.org/x/sys/windows"
 
 	"github.com/Higangssh/hyperbutler/internal/broker/proto"
+	"github.com/Higangssh/hyperbutler/internal/vmsecret"
 	"github.com/Higangssh/hyperbutler/internal/vmtemplate"
 )
 
@@ -63,6 +64,10 @@ type VMStatus struct {
 	ID       [16]byte
 	CPUs     uint32
 	MemoryMB uint32
+	// Secret is the running VM's secret (ADR 0004 rule 6): made by the backend for each
+	// start, given to the guest on its kernel command line, and sent to the owner only,
+	// on the owner's own endpoint.
+	Secret vmsecret.Secret
 }
 
 // ErrNotRunning is returned by Backend.Stop, Backend.Resize and Backend.Pause when the
@@ -106,8 +111,8 @@ type Config struct {
 	// is defense in depth.
 	AllowedSIDs []string
 
-	// MaxConnsPerUser caps one user's concurrent identified connections (default 2), so
-	// that one user cannot hold every instance of a shared endpoint.
+	// MaxConnsPerUser caps one user's concurrent identified connections on each endpoint
+	// (default 2), so that one user cannot hold every instance of the shared endpoint.
 	MaxConnsPerUser int
 
 	// RequestTimeout bounds each backend call and each data-location check.
@@ -129,6 +134,9 @@ type Server struct {
 	closed bool
 	users  map[string]*userState
 	conns  map[string]int // identified connections by SID
+	// opener creates (or finds) the caller's own endpoint and returns its name, for the
+	// open-endpoint verb on the shared endpoint; ListenEndpoints sets it.
+	opener func(sid string) (string, error)
 }
 
 type userState struct {
@@ -259,17 +267,30 @@ var internalErrorFrame = func() []byte {
 // malformed, the caller is rejected, or ctx is done. Every frame it writes is a valid
 // reply. After a malformed frame it sends one error reply and returns, because the
 // stream can no longer be trusted to be in sync.
-func (s *Server) ServeConn(ctx context.Context, rw io.ReadWriter, p Peer) error {
+//
+// owner says which endpoint the connection came in on (ADR 0004 rule 5). With owner
+// empty it is the shared endpoint, which any allowed caller may use for the version
+// and open-endpoint verbs only; every VM verb is refused there, so no VM state and no
+// secret is ever sent on it. Otherwise it is owner's own endpoint: the caller's token
+// SID must be owner, every verb but open-endpoint is served, and status replies carry
+// the running VM's secret.
+func (s *Server) ServeConn(ctx context.Context, rw io.ReadWriter, p Peer, owner string) error {
 	var (
-		buf [proto.MaxFrameSize]byte
-		id  *Identity
-		own = new(lease)
+		buf    [proto.MaxFrameSize]byte
+		id     *Identity
+		own    = new(lease)
+		shared = owner == ""
 	)
 	dl, _ := rw.(deadliner)
 	write := func(r proto.Reply) error {
 		b, err := proto.EncodeReply(r)
 		if err != nil {
 			s.cfg.Logf("broker: encode reply %+v: %v", r, err)
+			b = internalErrorFrame
+		}
+		if shared && !r.Secret.IsZero() {
+			// handle never builds one; this is the last line of defense.
+			s.cfg.Logf("broker: refused to send a VM secret on the shared endpoint (type %#x)", r.Type)
 			b = internalErrorFrame
 		}
 		if dl != nil {
@@ -306,16 +327,24 @@ func (s *Server) ServeConn(ctx context.Context, rw io.ReadWriter, p Peer) error 
 				s.cfg.Logf("broker: identify caller: %v", err)
 				return fail(proto.CodeAccessDenied, "caller identity rejected", err)
 			}
-			if !s.allowed(got.SID) {
+			if !s.allowed(got.SID) || !shared && got.SID != owner {
 				return fail(proto.CodeAccessDenied, "caller not allowed on this endpoint",
 					fmt.Errorf("broker: caller %s not allowed", got.SID))
 			}
-			if !s.addConn(got.SID) {
+			// The cap is per endpoint: on the shared one it stops one user holding every
+			// instance; a user's own endpoint is theirs alone.
+			key := got.SID
+			if shared {
+				key = "shared/" + got.SID
+			}
+			if !s.addConn(key) {
 				return fail(proto.CodeBusy, "too many connections for this user",
 					fmt.Errorf("broker: caller %s over its connection limit", got.SID))
 			}
-			defer s.dropConn(got.SID)
-			defer s.release(got.SID, own)
+			defer s.dropConn(key)
+			if !shared {
+				defer s.release(got.SID, own)
+			}
 			id = &got
 		}
 		req, err := proto.DecodeRequest(b)
@@ -325,11 +354,57 @@ func (s *Server) ServeConn(ctx context.Context, rw io.ReadWriter, p Peer) error 
 			}
 			return fail(proto.CodeBadRequest, "malformed request", err)
 		}
-		if err := write(s.handle(ctx, *id, p, own, req)); err != nil {
+		var r proto.Reply
+		if shared {
+			r = s.handleShared(id.SID, req)
+		} else {
+			r = s.handle(ctx, *id, p, own, req)
+		}
+		if err := write(r); err != nil {
 			return err
 		}
 	}
 }
+
+// handleShared executes one request on the shared endpoint: only the version and
+// open-endpoint verbs are served there.
+func (s *Server) handleShared(sid string, req proto.Request) proto.Reply {
+	switch req.Op {
+	case proto.OpVersion:
+		return proto.Reply{Type: okType(req.Op), ProtoVersion: proto.Version, BrokerVersion: s.cfg.Version}
+	case proto.OpOpenEndpoint:
+		s.mu.Lock()
+		open, closed := s.opener, s.closed
+		s.mu.Unlock()
+		if closed {
+			return errorReply(proto.CodeBusy, "broker is shutting down")
+		}
+		if open == nil {
+			return s.internal("open endpoint", errors.New("no per-user endpoints on this server"))
+		}
+		name, err := open(sid)
+		switch {
+		case errors.Is(err, ErrPipeExists):
+			// Someone created the caller's pipe name before the broker did (ADR 0004 rule
+			// 5): fail loudly, never fall back to another name.
+			s.cfg.Logf("broker: the endpoint of %s is squatted: %v", sid, err)
+			return errorReply(proto.CodeEndpointSquatted, "your endpoint's pipe name is taken by another process")
+		case errors.Is(err, ErrListenerClosed):
+			return errorReply(proto.CodeBusy, "broker is shutting down")
+		case errors.Is(err, errTooManyEndpoints):
+			s.cfg.Logf("broker: open endpoint for %s: %v", sid, err)
+			return errorReply(proto.CodeBusy, "the broker serves too many users")
+		case err != nil:
+			return s.internal("open endpoint", err)
+		}
+		return proto.Reply{Type: okType(req.Op), PipeName: name}
+	}
+	return errorReply(proto.CodeWrongEndpoint, "open your own endpoint first; the shared endpoint serves only version and open-endpoint")
+}
+
+// errTooManyEndpoints is returned by an opener that has reached its per-user endpoint
+// limit.
+var errTooManyEndpoints = errors.New("broker: too many per-user endpoints")
 
 func (s *Server) allowed(sid string) bool {
 	if sid == "" {
@@ -377,8 +452,11 @@ func (s *Server) release(sid string, own *lease) {
 // handle executes one decoded request for id on the connection own. It always returns a
 // reply.
 func (s *Server) handle(ctx context.Context, id Identity, p Peer, own *lease, req proto.Request) proto.Reply {
-	if req.Op == proto.OpVersion {
+	switch req.Op {
+	case proto.OpVersion:
 		return proto.Reply{Type: okType(req.Op), ProtoVersion: proto.Version, BrokerVersion: s.cfg.Version}
+	case proto.OpOpenEndpoint:
+		return errorReply(proto.CodeWrongEndpoint, "this is already your own endpoint")
 	}
 	u, ok := s.user(id.SID)
 	if !ok {
@@ -612,7 +690,9 @@ func (s *Server) statusReply(op proto.Op, u *userState, st VMStatus) proto.Reply
 		DataLocationSet: u.dataDir != nil,
 	}
 	if st.Running {
-		r.State, r.VMID = proto.StateRunning, st.ID
+		// statusReply serves the owner's own endpoint only (handle); the secret goes to
+		// the owner and nobody else.
+		r.State, r.VMID, r.Secret = proto.StateRunning, st.ID, st.Secret
 		if st.Paused {
 			r.State = proto.StatePaused
 		}

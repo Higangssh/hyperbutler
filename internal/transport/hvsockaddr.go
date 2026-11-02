@@ -7,6 +7,8 @@ import (
 	"strings"
 
 	"github.com/Microsoft/go-winio/pkg/guid"
+
+	"github.com/Higangssh/hyperbutler/internal/vmsecret"
 )
 
 // vsockTemplate is the hvsock service GUID that maps to AF_VSOCK ports in a Linux guest:
@@ -31,6 +33,10 @@ func VsockServiceID(port uint32) guid.GUID {
 type HvsockTarget struct {
 	VMID      guid.GUID
 	ServiceID guid.GUID
+	// Secret, if set, is the VM's secret (ADR 0004 rule 6): HvsockDialer sends it as the
+	// first bytes of every connection, which the guest's services require. It never
+	// prints, and String leaves it out.
+	Secret vmsecret.Secret
 }
 
 // String formats t as "<vm-guid>:<service-guid>", which ParseHvsockTarget accepts.

@@ -20,6 +20,7 @@ import (
 
 	"github.com/Higangssh/hyperbutler/internal/guestctl"
 	"github.com/Higangssh/hyperbutler/internal/vm"
+	"github.com/Higangssh/hyperbutler/internal/vmsecret"
 )
 
 // The ctl options test the guest services daemon (guest/cmd/hyperbutlerd) over the guestctl
@@ -66,11 +67,22 @@ func ctlFlags(fs *flag.FlagSet) *ctlOpts {
 	return o
 }
 
+// ctlSecret is this run's VM secret.
+var ctlSecret = func() vmsecret.Secret {
+	s, err := vmsecret.New()
+	if err != nil {
+		panic(err)
+	}
+	return s
+}()
+
 func (o *ctlOpts) cmdline() string {
 	if !o.on {
 		return ""
 	}
-	s := " WB_CTL=1"
+	// hyperbutlerd reads the VM secret from the kernel command line and requires it on
+	// every control connection (ADR 0004 rule 6).
+	s := " WB_CTL=1 " + vmsecret.CmdlineKey + "=" + ctlSecret.Hex()
 	if o.dargs != "" {
 		s += " WB_DARGS=" + o.dargs
 	}
@@ -127,7 +139,7 @@ func startCtl(system uintptr, start time.Time) (*guestctl.Supervisor, wguid.GUID
 	var lastLog time.Time
 	var lastSteps uint64
 	sup := &guestctl.Supervisor{
-		Dial: guestctl.HvsockDialer(id),
+		Dial: guestctl.HvsockDialer(id, ctlSecret),
 		Logf: logf,
 		Config: guestctl.ClientConfig{OnStatus: func(s guestctl.Status) {
 			// Liveness counts only a guard that is applying the budget and whose step

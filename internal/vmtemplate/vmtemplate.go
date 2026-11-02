@@ -5,10 +5,11 @@
 // boot the same VM.
 //
 // Every kernel argument is rendered here from a typed field: an IPv4 subnet, an MTU, a
-// port number, a flag. Spec has no free-form text that reaches the command line or the
-// service table, except Dev, which only the in-process developer harness sets and the
-// broker never does (ADR 0004 rule 1, Implementation decision 4). The paths in Spec are
-// those of files the caller has opened and verified itself.
+// port number, a flag, the VM secret's hex (a typed [32]byte). Spec has no free-form text
+// that reaches the command line or the service table, except Dev, which only the
+// in-process developer harness sets and the broker never does (ADR 0004 rule 1,
+// Implementation decision 4). The paths in Spec are those of files the caller has opened
+// and verified itself.
 //
 // The package builds on every platform and depends only on the standard library, vm,
 // transport and guestctl, so the broker can use it within its surface budget (rule 10).
@@ -19,10 +20,12 @@ import (
 	"errors"
 	"fmt"
 	"net/netip"
+	"strings"
 
 	"github.com/Higangssh/hyperbutler/internal/guestctl"
 	"github.com/Higangssh/hyperbutler/internal/transport"
 	"github.com/Higangssh/hyperbutler/internal/vm"
+	"github.com/Higangssh/hyperbutler/internal/vmsecret"
 )
 
 // DefaultCmdLine is the base kernel command line.
@@ -156,6 +159,11 @@ type Spec struct {
 	// UserSID is the only principal that may connect to or listen on any of the VM's
 	// hvsock services (vm.UserOnlySDDL, ADR 0004 rule 6).
 	UserSID string
+	// Secret is the VM's secret (ADR 0004 rule 6), made fresh for each start
+	// (vmsecret.New). It reaches the guest as vmsecret.CmdlineKey on the kernel command
+	// line, the only text there that is not rendered from a fixed set; its hex form is
+	// the only thing a Secret can render to. Build refuses a zero secret.
+	Secret vmsecret.Secret
 	// MemoryMB and CPUs size the VM.
 	MemoryMB, CPUs int
 	// Kernel and Initrd are the absolute paths of the guest kernel and initramfs.
@@ -211,7 +219,7 @@ const hashCapMB = 4096
 
 // Build renders s into the VM's configuration. The result passes vm.Config.Validate.
 //
-// The kernel command line is the base, the hash table sizes, the network, the share,
+// The kernel command line is the base, the hash table sizes, the secret, the network, the share,
 // the developer additions, daemon.json, then the disks. The data disk is LUN 0 and the
 // system disk follows it. The services are the Docker API, the guest control channel,
 // the network link and the share, in that order.
@@ -223,11 +231,19 @@ func Build(s *Spec) (*vm.Config, error) {
 	if s.BlankData && s.Data == "" {
 		return nil, errors.New("vmtemplate: a blank data disk without a data disk")
 	}
+	if s.Secret.IsZero() {
+		return nil, errors.New("vmtemplate: the VM has no secret")
+	}
+	// The guest refuses a command line with two secrets; refuse it here already.
+	if strings.Contains(s.Dev.CmdLine, vmsecret.CmdlineKey) || strings.Contains(s.Dev.ExtraCmdLine, vmsecret.CmdlineKey) {
+		return nil, fmt.Errorf("vmtemplate: the developer command line must not set %s", vmsecret.CmdlineKey)
+	}
 	cmdline := s.Dev.CmdLine
 	if cmdline == "" {
 		cmdline = DefaultCmdLine
 	}
 	cmdline += HashTableArgs(s.MemoryMB)
+	cmdline += " " + vmsecret.CmdlineKey + "=" + s.Secret.Hex()
 	svcs := []vm.Service{
 		{ID: transport.VsockServiceID(DockerPort), ConnectSDDL: sddl},
 		{ID: transport.VsockServiceID(guestctl.ControlPort), ConnectSDDL: sddl},
