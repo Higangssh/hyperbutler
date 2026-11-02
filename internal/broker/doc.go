@@ -21,7 +21,8 @@
 //     below the data location, and builds the VM document with internal/vmtemplate from
 //     the request's typed fields (rule 1).
 //
-// This package does not install or register a Windows service. Server runs in any
-// process, against any Backend: FakeBackend runs without HCS, HCSBackend through it.
+// Server runs in any process, against any Backend: FakeBackend runs without HCS,
+// HCSBackend through it. RunService runs it as the Windows service ServiceName, which
+// InstallService registers and UninstallService removes (ADR 0004, "Service (M2)").
 // Client is the caller's side.
 package broker

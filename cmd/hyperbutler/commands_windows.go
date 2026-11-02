@@ -188,7 +188,7 @@ func cmdStart(args []string, stdout, stderr io.Writer) error {
 	fs.StringVar(&dcfg.MemoryLimit, "memlimit", "", "Go soft memory limit of the engine process, GOMEMLIMIT syntax (default "+engine.DefaultEngineMemoryLimit+`, "off" for none); kept for later starts. The GOMEMLIMIT variable wins`)
 	fs.StringVar(&dcfg.DebugPipe, "debug-pipe", "", `serve the engine's pprof and runtime stats on this pipe, current user only, e.g. \\.\pipe\hyperbutler-engine-debug (default: $`+debugPipeEnv+`; off when both are empty)`)
 	backend := fs.String("backend", backendHCS, `developer mode: how the engine boots the VM; "hcs" calls HCS from the engine process, which needs Hyper-V Administrators (ADR 0004 option A)`)
-	brokerPipe := fs.String("broker", "", `developer mode: boot the VM through the HCS access broker on this pipe instead (ADR 0004; hyperbutler-broker -hcs-backend), with the broker's own guest image`)
+	brokerPipe := fs.String("broker", "", `developer mode: boot the VM through the HCS access broker on this pipe instead (ADR 0004): \\.\pipe\hyperbutler-broker for the installed service, or a foreground hyperbutler-broker -hcs-backend; with the broker's own guest image`)
 	if err := parseArgs(fs, args); err != nil {
 		return err
 	}

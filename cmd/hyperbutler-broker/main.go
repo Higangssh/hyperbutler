@@ -1,11 +1,23 @@
 //go:build windows
 
-// Command hyperbutler-broker runs the HCS access broker (ADR 0004) in the foreground.
+// Command hyperbutler-broker runs the HCS access broker (ADR 0004), as a Windows service
+// or in the foreground.
 //
-// It does not install, register or start a Windows service. Installing it as a service
-// is a separate, explicit step that is not part of this command.
+// As a service:
 //
-// One backend must be chosen:
+//   - install (elevated) registers the service hyperbutler-broker, which runs
+//     "hyperbutler-broker.exe" run as LocalSystem at boot (delayed), with its Event Log
+//     source, and starts it. It refuses an executable that anyone but SYSTEM,
+//     Administrators or TrustedInstaller could replace, such as one in a user's folder:
+//     the service runs it as SYSTEM. The MSI installs it in Program Files.
+//   - uninstall (elevated) stops and deletes the service and removes its source.
+//   - run is what the service control manager starts. It serves \\.\pipe\hyperbutler-broker
+//     to interactive users with the HCS backend, and logs to the Event Log only.
+//
+// A development build (version dev, no image pin) also takes -fake-backend for install
+// and run, which the integration test uses; it is not in the usage text.
+//
+// In the foreground (no subcommand), one backend must be chosen:
 //
 //   - -fake-backend keeps VM state in memory and starts nothing.
 //   - -hcs-backend runs VMs through HCS, so it needs what HCS needs: elevation, or
@@ -15,7 +27,7 @@
 //     build refuses. At start it terminates the VMs that carry its user's owner tag and
 //     that it does not run (left by an earlier broker), and on exit it terminates its own.
 //
-// Run as a normal user, it serves that user only.
+// Run in the foreground as a normal user, it serves that user only.
 package main
 
 import (
@@ -55,6 +67,15 @@ type options struct {
 }
 
 func main() {
+	if len(os.Args) > 1 {
+		if cmd, ok := subcommands[os.Args[1]]; ok {
+			if err := cmd(os.Args[2:]); err != nil {
+				fmt.Fprintln(os.Stderr, "hyperbutler-broker:", err)
+				os.Exit(1)
+			}
+			return
+		}
+	}
 	var o options
 	flag.StringVar(&o.pipe, "pipe", defaultPipe, "named pipe to serve on")
 	flag.BoolVar(&o.fake, "fake-backend", false, "use the in-memory fake backend, which starts no VM")
@@ -63,6 +84,12 @@ func main() {
 	flag.StringVar(&o.dcfg.MemoryLimit, "memlimit", defaultMemLimit, "Go soft memory limit, GOMEMLIMIT syntax (the GOMEMLIMIT variable wins)")
 	versionJSON := flag.Bool("version-json", false, "print the broker version and its guest image pin as JSON, and exit (dist/package.ps1 checks them)")
 	flag.StringVar(&o.dcfg.DebugPipe, "debug-pipe", "", `serve pprof and runtime stats on this pipe, current user only (off when empty), e.g. \\.\pipe\hyperbutler-broker-debug`)
+	flag.Usage = func() {
+		w := flag.CommandLine.Output()
+		_, _ = fmt.Fprintln(w, "usage: hyperbutler-broker install | uninstall | run    (the Windows service; install and uninstall as administrator)")
+		_, _ = fmt.Fprintln(w, "       hyperbutler-broker -fake-backend | -hcs-backend [flags]    (in the foreground)")
+		flag.PrintDefaults()
+	}
 	flag.Parse()
 	if *versionJSON {
 		pin, pinned := imageset.Pin()
@@ -114,7 +141,7 @@ func run(o options) error {
 	var backend broker.Backend = broker.NewFakeBackend()
 	what := "fake backend"
 	if o.hcs {
-		state, err := privateDir(user)
+		state, err := privateDir(os.TempDir(), user)
 		if err != nil {
 			return err
 		}
@@ -156,9 +183,9 @@ func run(o options) error {
 	return srv.Serve(l)
 }
 
-// privateDir creates a directory in the temporary directory with a protected DACL for
+// privateDir creates a directory with a random name in base, with a protected DACL for
 // sid only, for the backend's own files.
-func privateDir(sid string) (string, error) {
+func privateDir(base, sid string) (string, error) {
 	sd, err := windows.SecurityDescriptorFromString("D:P(A;OICI;FA;;;" + sid + ")")
 	if err != nil {
 		return "", err
@@ -169,7 +196,7 @@ func privateDir(sid string) (string, error) {
 		if _, err := rand.Read(b[:]); err != nil {
 			return "", err
 		}
-		dir := filepath.Join(os.TempDir(), fmt.Sprintf("hyperbutler-broker-%x", b))
+		dir := filepath.Join(base, fmt.Sprintf("hyperbutler-broker-%x", b))
 		p, err := windows.UTF16PtrFromString(dir)
 		if err != nil {
 			return "", err

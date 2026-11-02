@@ -19,7 +19,8 @@ import (
 
 // `hyperbutler doctor` (REQ-UX-019): a quick, read-only list of what hyperbutler needs
 // from the machine and the docker CLI's setup, each with the fix when it is wrong. It
-// starts nothing, connects to no pipe and changes no file.
+// starts nothing and changes no file. The only pipe it connects to is the broker
+// service's, while the SCM reports that service running, for its version (brokerCheck).
 
 // Results of a doctor check.
 const (
@@ -114,6 +115,7 @@ func runDoctor(in *install) DoctorJSON {
 	if c, ok := installerSetupCheck(); ok {
 		add(c)
 	}
+	add(brokerCheck(machineBroker))
 
 	st, _ := engine.LoadState(in.l)
 	up, _ := in.running()
