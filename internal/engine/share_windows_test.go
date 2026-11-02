@@ -137,6 +137,25 @@ func TestShareServiceSendsSecretFirst(t *testing.T) {
 	}
 }
 
+// A guest that refuses the server's secret closes the connection without a HELLO and
+// redials every few seconds: the first such connection is a warning with a hint at the
+// cause, the later ones are debug.
+func TestShareServiceHintsAtRefusedSecret(t *testing.T) {
+	h := &recordHandler{}
+	s := setupShares(ShareConfig{}, slog.New(h))
+	defer s.close()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.serve(ln, testVMSecret)
+	for range 3 {
+		c := dialShare(t, ln.Addr().String())
+		_ = c.Close()
+	}
+	h.waitSilent(t, "before the guest's HELLO", 3)
+}
+
 // helloFrame is the relay's first frame on a connection (relay.helloFrame).
 func helloFrame(queue uint32) []byte {
 	b := make([]byte, 48)

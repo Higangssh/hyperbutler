@@ -95,7 +95,7 @@ func main() {
 	}
 	// Frames the TAP produces while the host is away are dropped by the kernel once its
 	// queue fills; TCP recovers them.
-	next := dialLoop(uint32(*port), secret)
+	next := dialLoop(func() (*os.File, error) { return dialHost(uint32(*port)) }, secret)
 	if lk.vnet {
 		// Retry rather than exit: exiting would only restart netfwd, which would
 		// reopen the TAP. While another process holds the port the link is down.
@@ -115,17 +115,19 @@ func main() {
 	}
 }
 
-// dialLoop returns a function that connects to the host (plain mode), retrying with
-// backoff until it succeeds. The listener must send secret first (vmsecret.Verify): one
-// that does not is not this VM's host (another host user may listen on a wildcard VM id
-// while the engine is away) and is closed before a byte is written to it; the backoff
-// keeps such a listener from making netfwd spin.
-func dialLoop(port uint32, secret vmsecret.Secret) func() *os.File {
+// dialLoop returns a function that connects to the host (plain mode) with dial
+// (dialHost of the link's port), retrying with backoff until it succeeds. The listener
+// must send secret first (vmsecret.Verify): one that does not is not this VM's host
+// (another host user may listen on a wildcard VM id while the engine is away) and is
+// closed before a byte is written to it; the backoff keeps such a listener from making
+// netfwd spin. dial must return a non-blocking (poller-driven) file, whose read
+// deadline bounds the check.
+func dialLoop(dial func() (*os.File, error), secret vmsecret.Secret) func() *os.File {
 	return func() *os.File {
 		wait := 50 * time.Millisecond
 		logged := false
 		for {
-			conn, err := dialHost(port)
+			conn, err := dial()
 			if err == nil {
 				if err = vmsecret.Verify(conn, secret); err == nil {
 					return conn

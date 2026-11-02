@@ -49,6 +49,8 @@ type shareService struct {
 
 	// grace and debounce are pruneGrace and pruneDebounce (tests shorten them).
 	grace, debounce time.Duration
+	// silent logs connections the guest closed without a byte (a refused secret).
+	silent silentGuests
 
 	mu     sync.Mutex
 	ln     net.Listener
@@ -119,7 +121,7 @@ func (s *shareService) serve(ln net.Listener, secret vmsecret.Secret) {
 				}
 				// A failed accept (a guest connection reset while pending) must not end
 				// bind mounts for the rest of the run: the relay redials.
-				backoff = min(max(2*backoff, 5*time.Millisecond), time.Second)
+				backoff = nextAcceptBackoff(backoff)
 				s.log.Warn("guest share accept failed; retrying", "err", err, "backoff", backoff)
 				time.Sleep(backoff)
 				continue
@@ -136,16 +138,25 @@ func (s *shareService) serve(ln net.Listener, secret vmsecret.Secret) {
 			s.mu.Unlock()
 			go func() {
 				defer s.wg.Done()
+				gc := &guestConn{Conn: c}
 				err := transport.SendSecret(c, secret)
-				if err == nil {
-					err = s.srv.Serve(c)
+				sent := err == nil
+				if sent {
+					err = s.srv.Serve(gc)
 				}
 				s.mu.Lock()
 				delete(s.conns, c)
 				closed := s.closed
 				s.mu.Unlock()
 				_ = c.Close()
-				if err != nil && !closed && !errors.Is(err, net.ErrClosed) {
+				switch {
+				case closed || errors.Is(err, net.ErrClosed):
+				case !sent:
+					s.log.Warn("guest share connection refused", "err", err)
+				case !gc.spoke.Load():
+					// Before the HELLO: Serve reports a clean EOF as nil.
+					s.silent.log(s.log, "guest share connection ended before the guest's HELLO", err)
+				case err != nil:
 					s.log.Warn("guest share connection ended", "err", err)
 				}
 			}()

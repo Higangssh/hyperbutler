@@ -79,6 +79,8 @@ type guestNet struct {
 	ln      net.Listener
 	publish []netstack.Publish
 	log     *slog.Logger
+	// silent logs plain links the guest closed without a byte (a refused secret).
+	silent silentGuests
 
 	ap       *autoPublisher // set by startAutoPublish
 	apCancel context.CancelFunc
@@ -213,11 +215,21 @@ func (g *guestNet) start(ctx context.Context, vmid guid.GUID, secret vmsecret.Se
 // sends a frame: a listener of another user on a wildcard VM id cannot send it, so the
 // guest's network never comes up through one.
 func (g *guestNet) servePlain(ctx context.Context, ln net.Listener, secret vmsecret.Secret, linkUp func()) {
+	var backoff time.Duration
 	for {
 		c, err := ln.Accept()
 		if err != nil {
-			return
+			if ctx.Err() != nil || errors.Is(err, net.ErrClosed) {
+				return
+			}
+			// As for the share: a failed accept must not end the link for the run, and
+			// the wait stays short enough for a guest waiting for the secret.
+			backoff = nextAcceptBackoff(backoff)
+			g.log.Warn("guest network accept failed; retrying", "err", err, "backoff", backoff)
+			time.Sleep(backoff)
+			continue
 		}
+		backoff = 0
 		if offload, known := g.st.Offloading(); known && offload {
 			// The link is in offload mode for good; a guest program that dials
 			// the host is refused quietly, however often it tries.
@@ -234,7 +246,13 @@ func (g *guestNet) servePlain(ctx context.Context, ln net.Listener, secret vmsec
 				return
 			}
 			linkUp()
-			if err := g.st.ServeConn(c); err != nil && ctx.Err() == nil {
+			gc := &guestConn{Conn: c}
+			err := g.st.ServeConn(gc)
+			switch {
+			case ctx.Err() != nil:
+			case !gc.spoke.Load():
+				g.silent.log(g.log, "guest network link ended before the guest's first frame", err)
+			case err != nil:
 				g.log.Warn("guest network link ended", "err", err)
 			}
 		}()

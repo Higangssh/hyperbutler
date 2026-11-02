@@ -692,7 +692,11 @@ user from listening there in the owner's place. A test checks every shape of VM.
   host cannot make the guest spin. The share mounts only when every queue's connection
   passed. A guest without a usable secret mounts nothing and brings up no plain link;
   a host without one (it never has none: both providers refuse a zero secret) closes
-  each connection having written nothing.
+  each connection having written nothing. The host's accept loops back off at most
+  250 ms after a failed accept (`maxAcceptBackoff`, tested to stay well below the
+  guest's 1 s), so a sleeping listener still sends the secret in time. A connection the
+  guest closes without a byte (it refused the secret: a mismatched image, or no
+  `hyperbutler.secret`) is logged once as a warning with that hint, then at debug.
 - `vmsecret.Secret` hides itself from fmt only where fmt calls its methods: in exported
   fields. The two holders that keep one in an unexported field (`hcsVM`,
   `hostSessions`) implement `fmt.Formatter` themselves.

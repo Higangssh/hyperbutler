@@ -178,3 +178,39 @@ func TestServePlainSendsSecretFirst(t *testing.T) {
 		g.st.Close()
 	}
 }
+
+// A guest that refuses the host's secret closes the plain link without a frame and
+// redials: the first such link is a warning with a hint at the cause, the later ones
+// are debug.
+func TestServePlainHintsAtRefusedSecret(t *testing.T) {
+	h := &recordHandler{}
+	g, _, err := setupNet(NetConfig{NoOffload: true}, slog.New(h))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer g.st.Close()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		g.servePlain(t.Context(), ln, testVMSecret, func() {})
+	}()
+	defer func() {
+		_ = ln.Close()
+		<-done
+	}()
+	for range 3 {
+		c, err := net.Dial("tcp", ln.Addr().String())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := vmsecret.Verify(c, testVMSecret); err != nil {
+			t.Fatal(err)
+		}
+		_ = c.Close()
+	}
+	h.waitSilent(t, "before the guest's first frame", 3)
+}
