@@ -405,11 +405,11 @@ Still to check in the integration run (not run yet, see `hcs_integration_test.go
 `svcinstall_windows.go` (install, uninstall), driven by `hyperbutler-broker install`,
 `uninstall` and `run`.
 
-**Status: verified with the fake backend only.** The service itself (install, the
-configuration, the pipe, a restart after a crash, uninstall) is covered by
-`TestServiceLifecycle`. The HCS backend under the service's token is covered by
-`TestServiceHCS`, which has not run yet. Until it passes, the service is not known to
-boot a VM.
+**Status: verified on 2026-11-02** (Windows 11 Home 10.0.26200, elevated). The service
+itself (install, the configuration, the pipe, a restart after a crash, uninstall) passed
+`TestServiceLifecycle`. The HCS backend under the service's restricted token (the two
+privileges above) passed `TestServiceHCS`: HCS, HcsGrantVmAccess and the data directory
+by handle work for it, and it started and stopped a VM. Both left no service behind.
 
 - **Registration.** `install` (elevated) creates the service `hyperbutler-broker`
   ("hyperbutler broker"): own process, automatic start, delayed (the broker is needed only
@@ -546,8 +546,6 @@ go test -tags integration -run TestServiceHCS -count=1 -v ./cmd/hyperbutler-brok
 
 Still to check with the service:
 
-- the HCS backend as a service (`TestServiceHCS`): that HCS and HcsGrantVmAccess accept
-  the restricted LocalSystem token (the two privileges above);
 - a second, non-admin interactive user on the shared pipe (the cross-user tests below);
 - the service at shutdown and at a user's sign-out with a VM running.
 
