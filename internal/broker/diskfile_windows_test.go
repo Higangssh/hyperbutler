@@ -25,11 +25,20 @@ func dataDirHandle(t *testing.T, dir string) windows.Handle {
 	return h
 }
 
+// writeDisk creates a data disk owned by the current user (set explicitly, as newDir
+// does: an elevated token, as on CI runners, makes Administrators the default owner).
 func writeDisk(t *testing.T, dir string) string {
 	t.Helper()
 	p := filepath.Join(dir, DataDiskName)
 	if err := os.WriteFile(p, []byte("vhdx"), 0o600); err != nil {
 		t.Fatal(err)
+	}
+	me, err := windows.StringToSid(currentSID(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := windows.SetNamedSecurityInfo(p, windows.SE_FILE_OBJECT, windows.OWNER_SECURITY_INFORMATION, me, nil, nil, nil); err != nil {
+		t.Fatalf("set owner of %s: %v", p, err)
 	}
 	return p
 }

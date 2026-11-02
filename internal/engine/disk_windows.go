@@ -44,8 +44,11 @@ func MkdirPrivate(dir string) error {
 	if err != nil {
 		return err
 	}
-	// OICI: files created inside inherit the same three entries.
-	sd, err := windows.SecurityDescriptorFromString("D:P(A;OICI;FA;;;" + tu.User.Sid.String() + ")(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)")
+	// OICI: files created inside inherit the same three entries. O: makes the user the
+	// owner even from an elevated shell, whose token defaults new objects to
+	// Administrators: the broker accepts only a data directory the caller owns (ADR 0004).
+	me := tu.User.Sid.String()
+	sd, err := windows.SecurityDescriptorFromString("O:" + me + "D:P(A;OICI;FA;;;" + me + ")(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)")
 	if err != nil {
 		return err
 	}
@@ -58,6 +61,17 @@ func MkdirPrivate(dir string) error {
 		return &os.PathError{Op: "mkdir", Path: dir, Err: err}
 	}
 	return nil
+}
+
+// ownByUser makes the current user the owner of path, which an elevated shell would
+// otherwise leave to Administrators; the broker takes only a data disk the caller owns.
+// Setting oneself as owner needs no privilege.
+func ownByUser(path string) error {
+	tu, err := windows.GetCurrentProcessToken().GetTokenUser()
+	if err != nil {
+		return err
+	}
+	return windows.SetNamedSecurityInfo(path, windows.SE_FILE_OBJECT, windows.OWNER_SECURITY_INFORMATION, tu.User.Sid, nil, nil, nil)
 }
 
 func isReparse(path string) bool {
@@ -120,6 +134,10 @@ func prepareDisk(l Layout, size uint64) (*dataDisk, error) {
 		return nil, err
 	}
 	if err := vm.CreateSparseVHDX(tmp, size); err != nil {
+		return nil, codeErr(CodeDataDisk, err)
+	}
+	if err := ownByUser(tmp); err != nil {
+		_ = os.Remove(tmp)
 		return nil, codeErr(CodeDataDisk, err)
 	}
 	u, err := vm.Usage(tmp)
