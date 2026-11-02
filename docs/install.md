@@ -130,8 +130,14 @@ hyperbutler (since M3 the host sends the VM secret, which an older guest refuses
 both executables pinned to its `image.json` (`package.ps1 -ImageDir` does both). Every
 step: record the outcome here.
 
+The MSIs for the first run (2026-11-03) were built from 2d376f1 with the guest image of
+main's guest code (`package.ps1 -ImageDir $env:TEMP\hb-dev\wc\image -Snapshot`, image.json
+SHA-256 `757f5217…c68d`, which both executables report with `version --json` and
+`-version-json`):
+
 ```
-$m = "<dir>\hyperbutler-...-snapshot.msi"; $f = "<dir>\hyperbutler-...-snapshot-failtest.msi"; $log = "$env:TEMP\hb-dev\m4msi\logs"
+$d = "$env:TEMP\hb-dev\m4msi\pkg"; $n = "hyperbutler-v0.1.0-preview.1-48-g2d376f1-windows-amd64-snapshot"
+$stage = "$d\$n"; $m = "$d\$n.msi"; $f = "$d\$n-failtest.msi"; $log = "$env:TEMP\hb-dev\m4msi\logs"
 mkdir $log -Force
 ```
 
@@ -208,7 +214,7 @@ mkdir $log -Force
 13. **Rollback of a first install:** `msiexec /i $f FAILTESTACK=1 WIXFAILWHENDEFERRED=1
     /l*v $log\rollback-fresh.log`: fails; no service, no folder, no product.
 14. **A first install fails without the service:** as the user, hold the service's pipe
-    name with a foreground broker from the stage folder: `<stage>\hyperbutler-broker.exe
+    name with a foreground broker from the stage folder: `& $stage\hyperbutler-broker.exe
     -fake-backend -pipe \\.\pipe\hyperbutler-broker` (leave it running). Elevated:
     `msiexec /i $m /l*v $log\fresh-fail.log`: the install ends with an error;
     `HbBrokerInstallFirst` failed in the log (the service could not take its pipe name);
