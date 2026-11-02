@@ -230,9 +230,11 @@ Taken by the owner before the HCS backend was written:
   (option C)? This needs an elevated spike.
 - Answered 2026-11-02 (two-account run, below): Home enforces the connect descriptors. A
   standard user's connects to another user's VM on 2375, 2380, 1024 and 2385 are refused
-  by the OS (WSAEACCES) before the guest sees them. Still open: a wildcard-VM listener
-  (`HV_GUID_WILDCARD`) on 1024 and 2385 is allowed for any user, and whether HCS would
-  route a guest-initiated connection to it before the owner's engine binds is untested.
+  by the OS (WSAEACCES) before the guest sees them. A wildcard-VM listener
+  (`HV_GUID_WILDCARD`) on 1024 and 2385 is allowed for any user; whether HCS routes a
+  guest-initiated connection to it before the owner's engine binds is untested. Since
+  2026-11-03 the guest checks the listener's secret, so such a listener gets no data
+  either way (pending a re-run; see the run below).
 
 ## Adversarial review
 
@@ -682,6 +684,23 @@ user from listening there in the owner's place. A test checks every shape of VM.
   admits a connection before it may replace the current one, so a peer without the
   secret cannot end the host's session. A guest whose command line has no usable secret
   refuses every connection.
+- The guest-initiated services run the other way round (2026-11-03): the host's
+  listener writes the secret right after it accepts (`transport.SendSecret`, from
+  `shareService.serve` for the share and `guestNet.servePlain` for the plain network
+  link), before anything else; the share's HELLO and netfwd's frames come from the guest
+  after it, so neither framing changes past those 32 bytes. hyperbutlerd's share relay
+  and netfwd's plain mode read exactly 32 bytes within 1 s (`vmsecret.Verify`, the
+  client-side `Admit`), compare in constant time, and close a listener that fails
+  without writing a byte to it. Then they dial again after their backoff (share relay
+  100 ms doubling to 5 s, netfwd 50 ms doubling to 2 s), so a listener that is not the
+  host cannot make the guest spin. The share mounts only when every queue's connection
+  passed. A guest without a usable secret mounts nothing and brings up no plain link;
+  a host without one (it never has none: both providers refuse a zero secret) closes
+  each connection having written nothing. The host's accept loops back off at most
+  250 ms after a failed accept (`maxAcceptBackoff`, tested to stay well below the
+  guest's 1 s), so a sleeping listener still sends the secret in time. A connection the
+  guest closes without a byte (it refused the secret: a mismatched image, or no
+  `hyperbutler.secret`) is logged once as a warning with that hint, then at debug.
 - `vmsecret.Secret` hides itself from fmt only where fmt calls its methods: in exported
   fields. The two holders that keep one in an unexported field (`hcsVM`,
   `hostSessions`) implement `fmt.Formatter` themselves.
@@ -694,14 +713,22 @@ user from listening there in the owner's place. A test checks every shape of VM.
 - `/proc/cmdline` is readable inside the guest, containers included. The secret guards
   against other host users, not against the owner's own containers, which could leak it;
   a leaked secret matters only where the descriptors are not enforced.
-- The guest-initiated connections (share, plain network link) are protected by their
-  bind descriptors only; the guest does not check that the listener knows the secret. A
-  later change could have the host listener send it first, for the guest to check.
+- The guest-initiated connections (share, plain network link) were protected by their
+  bind descriptors only, which do not cover a wildcard VM id. Fixed 2026-11-03: the host
+  listener sends the secret first and the guest checks it (Secret above). Another user's
+  wildcard listener can still accept the guest's connection in the window before the
+  owner's engine listens (the guest then waits up to 1 s per attempt and backs off),
+  which delays the share and the plain link but serves nothing through it.
 - Host and guest image must match: an M3 host sends 32 bytes an older guest would pass
-  to dockerd, and an M3 guest refuses an older host. They ship together in the MSI.
+  to dockerd, and an M3 guest refuses an older host. The same holds for the listener's
+  secret: a host from 2026-11-03 on sends 32 bytes that an older guest reads as a share
+  reply or a network frame (the share fails to mount, the plain link drops and redials),
+  and a newer guest waits 1 s for an older host's secret and refuses it. Each way fails
+  closed. They ship together in the MSI; the guest image must be rebuilt with the change
+  (CI builds it), and a dev host needs the image of the same commit.
 - Home enforces the HvSocket connect descriptors (two-account run below). It does not
   stop another user from listening on a wildcard VM id for the guest-initiated services;
-  see the run's result.
+  the secret check above is what keeps such a listener from being served.
 
 ### Two-account run (2026-11-02)
 
@@ -718,12 +745,25 @@ a standard user, removed from Hyper-V Administrators for the run) running
   connect, so the guest's secret check was never reached); listening on A's VM id for
   1024 and 2385 (address in use: A's engine holds them; whether the bind descriptor would
   refuse B with them free is not shown); listing A's data directory and opening its disk.
-- **Not refused:** B can listen on the wildcard VM id for 1024 and 2385. While A's engine
-  holds its own VM-specific listeners, those win; in the window before they exist (A's
-  engine starting or restarting while the VM runs), A's guest might connect to B's
-  listener, which could then serve A's share or sit in A's network path. Fix: the
-  guest-initiated services check their listener too (the host sends the secret first,
-  as the limits above already suggest); then re-run this step.
+- **Not refused (fixed 2026-11-03, pending a re-run):** B can listen on the wildcard VM
+  id for 1024 and 2385. While A's engine holds its own VM-specific listeners, those win;
+  in the window before they exist (A's engine starting or restarting while the VM runs),
+  A's guest might connect to B's listener, which could then serve A's share or sit in
+  A's network path. Fixed: the host's listener sends the VM secret first and the guest
+  checks it before it writes (Secret, above), so B's listener may get a connection but
+  never a byte, and the share never mounts from it. The listen itself stays allowed.
+  Re-run, with a guest image built from the fix:
+  1. As B, `xuser -catch 3m -vmid <A's runtime id>`: it listens on the wildcard id for
+     1024 and 2385, answers each connection alternately with nothing and with 32 random
+     bytes, and prints one line per connection with what the guest wrote.
+  2. As A, during those 3 minutes, start `hyperbutler start --broker ...` several times
+     (the window is from the VM's start to the engine's listeners, about a second of
+     guest boot), with the default offload network and once with a plain-mode network
+     (`hyperbutler-dev -net-offload=false`, which makes netfwd dial the host on 1024).
+  3. Pass: every connection line is PASS (the guest wrote 0 bytes), and after each start
+     A's bind mount (`docker run -v C:\...`) and network (`docker run alpine wget`) work.
+     If no connection arrives, HCS did not route to the wildcard listener in the window;
+     record that, as it answers the open question above.
 - Not run: steps 1.5 and 1.6 (squatting before the broker starts, holding the shared
   endpoint) and step 3's VM restart.
 
@@ -759,7 +799,8 @@ fail; record the error for each.
 3. hvsock binds, with A's VM id: listen on `vsock:1024` (plain mode) and `vsock:2385`,
    and on a wildcard VM id (`HV_GUID_WILDCARD`) for the same services. Each bind must be
    refused; if one succeeds, restart A's VM and check that A's guest never sends data to
-   B's listener (the share must not mount from B, the network must not come up through B).
+   B's listener (the share must not mount from B, the network must not come up through B):
+   `xuser -catch` does this for the wildcard id (see the run above).
 4. Secret, for each connect of step 2 that HCS accepted (or, to exercise the guest even
    where HCS refuses, as A with a raw dialer that sends no secret):
    1. Send nothing for 2 s: the guest closes the connection, having written nothing.

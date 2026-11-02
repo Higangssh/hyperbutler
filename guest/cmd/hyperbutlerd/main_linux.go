@@ -21,7 +21,10 @@
 //
 // With -share-port it also keeps the host's bind-mount file system (ADR 0007) mounted
 // at -share-mount: a FUSE relay over AF_VSOCK to the host's share server, redialled with
-// a bounded backoff while the host is not listening. SIGTERM unmounts it and exits.
+// a bounded backoff while the host is not listening. Each connection must begin with the
+// VM's secret, which the host's share server sends first; a listener that does not send
+// it is closed before the relay writes a byte, and redialled later. SIGTERM unmounts it
+// and exits.
 //
 // See docs/research/guest-services.md. Cross-compile with GOOS=linux CGO_ENABLED=0.
 //
@@ -121,7 +124,7 @@ func main() {
 	flag.StringVar(&o.dockerdEnv, "dockerd-env", "", "with -daemon-config: install the host's dockerd environment (proxies, CA certificates) as KEY=VALUE lines at this path (the init must support it; empty = off)")
 	flag.StringVar(&o.caBundle, "ca-bundle", "/run/hyperbutler/ca-certificates.crt", "with -dockerd-env: where the combined CA bundle goes")
 	flag.StringVar(&o.caStock, "ca-stock", "/etc/ssl/certs/ca-certificates.crt", "with -dockerd-env: the image's stock CA bundle")
-	flag.StringVar(&o.cmdline, "cmdline", vmsecret.DefaultCmdlinePath, "kernel command line holding "+vmsecret.CmdlineKey+", the VM secret every control connection must begin with")
+	flag.StringVar(&o.cmdline, "cmdline", vmsecret.DefaultCmdlinePath, "kernel command line holding "+vmsecret.CmdlineKey+", the VM secret every control connection, and the share server, must begin with")
 	flag.IntVar(&o.shutdownPID, "shutdown-pid", 1, "on a host shutdown request, send SIGTERM to this process (the init, which stops dockerd and powers off); 0 disables the feature")
 	flag.Parse()
 	if flag.NArg() != 0 || o.port > math.MaxUint32-1 || (o.file != "") != (o.dev != "") ||
@@ -141,8 +144,14 @@ func main() {
 	}
 	var shares *shareRelay
 	if o.sharePort != 0 {
-		// hv_sock and fuse are loaded by the init before hyperbutlerd starts.
-		shares = newShareRelay(uint32(o.sharePort), o.shareMount, o.shareQueues)
+		// hv_sock and fuse are loaded by the init before hyperbutlerd starts. The host's
+		// share server must send the VM secret first; without one on the command line
+		// the zero secret stays, which matches no listener, so nothing is mounted.
+		secret, err := vmsecret.Load(o.cmdline)
+		if err != nil {
+			log.Printf("%v: refusing every share server", err)
+		}
+		shares = newShareRelay(uint32(o.sharePort), o.shareMount, o.shareQueues, secret)
 		go shares.run()
 	}
 	// SIGTERM (the init's shutdown, after dockerd has stopped the containers): unmount
