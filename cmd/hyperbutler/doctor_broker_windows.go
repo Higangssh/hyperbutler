@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"time"
 
+	"golang.org/x/sys/windows"
 	"golang.org/x/sys/windows/svc"
 
 	"github.com/Higangssh/hyperbutler/internal/broker"
@@ -23,12 +24,48 @@ type brokerProbe struct {
 	query   func() (broker.ServiceState, error)
 	exists  func(pipe string) bool
 	version func(pipe string) (uint8, string, error)
+	// owner returns the SID of the pipe's owner, and self this user's SID.
+	owner func(pipe string) (string, error)
+	self  func() (string, error)
 }
 
 var machineBroker = brokerProbe{
 	query:   func() (broker.ServiceState, error) { return broker.QueryService(broker.ServiceName) },
 	exists:  func(pipe string) bool { return pipeExists(pipe) },
 	version: brokerVersion,
+	owner:   pipeOwner,
+	self: func() (string, error) {
+		tu, err := windows.GetCurrentProcessToken().GetTokenUser()
+		if err != nil {
+			return "", err
+		}
+		return tu.User.Sid.String(), nil
+	},
+}
+
+// pipeOwner reads the owner of the pipe's security descriptor. It opens the pipe for
+// READ_CONTROL only, at anonymous impersonation level, so whoever serves it learns
+// nothing about this user; the open takes one of its instances for a moment.
+func pipeOwner(pipe string) (string, error) {
+	p, err := windows.UTF16PtrFromString(pipe)
+	if err != nil {
+		return "", err
+	}
+	h, err := windows.CreateFile(p, windows.READ_CONTROL, 0, nil, windows.OPEN_EXISTING,
+		windows.SECURITY_SQOS_PRESENT|windows.SECURITY_ANONYMOUS, 0)
+	if err != nil {
+		return "", err
+	}
+	defer func() { _ = windows.CloseHandle(h) }()
+	sd, err := windows.GetSecurityInfo(h, windows.SE_KERNEL_OBJECT, windows.OWNER_SECURITY_INFORMATION)
+	if err != nil {
+		return "", err
+	}
+	o, _, err := sd.Owner()
+	if err != nil || o == nil {
+		return "", fmt.Errorf("no owner: %w", err)
+	}
+	return o.String(), nil
 }
 
 // brokerVersion asks the broker on pipe for its version. Dial checks first that the
@@ -59,6 +96,18 @@ func brokerCheck(p brokerProbe) DoctorCheck {
 		return c
 	}
 	squatted := func() DoctorCheck {
+		// A broker this user runs in the foreground with -pipe set to the service's name
+		// owns its pipe as this user: that is not a squatter.
+		if p.owner != nil && p.self != nil {
+			o, oerr := p.owner(pipe)
+			me, serr := p.self()
+			if oerr == nil && serr == nil && o == me {
+				c.Status = doctorInfo
+				c.Summary = pipe + " is served by a hyperbutler-broker that you run yourself, in the foreground, not by the service"
+				c.Msg = "doctor.broker.foreground"
+				return c
+			}
+		}
 		c.Status = doctorWarn
 		c.Summary = fmt.Sprintf("%s exists although the broker service is not running: another program holds the broker's pipe name, so the broker cannot start", pipe)
 		c.Fix = "Find and stop that program (it is not hyperbutler's), then start the service: sc.exe start " + broker.ServiceName + " (as administrator)."

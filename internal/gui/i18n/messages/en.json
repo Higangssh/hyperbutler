@@ -323,6 +323,7 @@
   "doctor.broker.unknown": "Cannot read the state of the broker service: {detail}",
   "doctor.broker.absent": "The broker service is not installed. hyperbutler runs the VM itself, as a member of Hyper-V Administrators.",
   "doctor.broker.squatted": "Another program holds the broker's pipe name {pipe}, so the broker service cannot start.",
+  "doctor.broker.foreground": "{pipe} is served by a hyperbutler-broker you run yourself in the foreground, not by the service.",
   "doctor.broker.stopped": "The broker service is installed but stopped.",
   "doctor.broker.pending": "The broker service is {state}.",
   "doctor.broker.noAnswer": "The broker service is running but does not answer: {detail}",

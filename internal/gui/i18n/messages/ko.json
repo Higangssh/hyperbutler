@@ -307,6 +307,7 @@
   "doctor.broker.unknown": "브로커 서비스 상태를 읽을 수 없어요: {detail}",
   "doctor.broker.absent": "브로커 서비스가 설치돼 있지 않아요. hyperbutler가 Hyper-V Administrators 구성원으로 VM을 직접 실행해요.",
   "doctor.broker.squatted": "다른 프로그램이 브로커의 파이프 이름 {pipe}를 쓰고 있어서 브로커 서비스를 시작할 수 없어요.",
+  "doctor.broker.foreground": "{pipe}는 서비스가 아니라 직접 포그라운드로 실행한 hyperbutler-broker가 쓰고 있어요.",
   "doctor.broker.stopped": "브로커 서비스가 설치돼 있지만 멈춰 있어요.",
   "doctor.broker.pending": "브로커 서비스 상태: {state}.",
   "doctor.broker.noAnswer": "브로커 서비스가 실행 중이지만 응답하지 않아요: {detail}",

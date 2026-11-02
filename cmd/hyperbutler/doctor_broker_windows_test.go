@@ -23,7 +23,11 @@ type fakeBroker struct {
 	version    string
 	versionErr error
 	dialed     bool
+	// pipeOwner is the pipe's owner SID ("" when it cannot be read).
+	pipeOwner string
 }
+
+const testSelf = "S-1-5-21-1-2-3-1001"
 
 func (f *fakeBroker) probe() brokerProbe {
 	return brokerProbe{
@@ -36,6 +40,13 @@ func (f *fakeBroker) probe() brokerProbe {
 			}
 			return f.proto, f.version, f.versionErr
 		},
+		owner: func(string) (string, error) {
+			if f.pipeOwner == "" {
+				return "", errors.New("all pipe instances are busy")
+			}
+			return f.pipeOwner, nil
+		},
+		self: func() (string, error) { return testSelf, nil },
 	}
 }
 
@@ -51,6 +62,10 @@ var brokerCases = []struct {
 	{"not installed, pipe taken", fakeBroker{pipe: true}, doctorWarn, "doctor.broker.squatted", "doctor.fix.brokerSquatted", false},
 	{"stopped", fakeBroker{st: broker.ServiceState{Installed: true, State: svc.Stopped}}, doctorWarn, "doctor.broker.stopped", "doctor.fix.brokerStart", false},
 	{"stopped, pipe taken", fakeBroker{st: broker.ServiceState{Installed: true, State: svc.Stopped}, pipe: true}, doctorWarn, "doctor.broker.squatted", "doctor.fix.brokerSquatted", false},
+	{"stopped, pipe of another user", fakeBroker{st: broker.ServiceState{Installed: true, State: svc.Stopped}, pipe: true, pipeOwner: "S-1-5-21-9-9-9-1002"}, doctorWarn, "doctor.broker.squatted", "doctor.fix.brokerSquatted", false},
+	{"stopped, pipe of SYSTEM", fakeBroker{st: broker.ServiceState{Installed: true, State: svc.Stopped}, pipe: true, pipeOwner: "S-1-5-18"}, doctorWarn, "doctor.broker.squatted", "doctor.fix.brokerSquatted", false},
+	{"stopped, own foreground broker", fakeBroker{st: broker.ServiceState{Installed: true, State: svc.Stopped}, pipe: true, pipeOwner: testSelf}, doctorInfo, "doctor.broker.foreground", "", false},
+	{"not installed, own foreground broker", fakeBroker{pipe: true, pipeOwner: testSelf}, doctorInfo, "doctor.broker.foreground", "", false},
 	{"starting", fakeBroker{st: broker.ServiceState{Installed: true, State: svc.StartPending}}, doctorInfo, "doctor.broker.pending", "", false},
 	{"query refused", fakeBroker{queryErr: errors.New("open service: access denied")}, doctorWarn, "doctor.broker.unknown", "", false},
 	{"running", fakeBroker{st: broker.ServiceState{Installed: true, State: svc.Running, PID: 42}, pipe: true, proto: proto.Version, version: "0.2.0"}, doctorOK, "doctor.broker.ok", "", true},
@@ -108,4 +123,24 @@ func TestBrokerCheckMachine(t *testing.T) {
 		t.Errorf("%+v", c)
 	}
 	t.Logf("%s: %s", c.Status, c.Summary)
+}
+
+// TestPipeOwner reads the owner of a real pipe: one this process creates is its user's.
+func TestPipeOwner(t *testing.T) {
+	name := `\\.\pipe\hyperbutler_doctor_owner_test`
+	l, err := broker.ListenPipe(broker.PipeConfig{Name: name, Instances: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.Close()
+	me, err := machineBroker.self()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if o, err := pipeOwner(name); err != nil || o != me {
+		t.Errorf("owner %q, %v; want %s", o, err, me)
+	}
+	if _, err := pipeOwner(`\\.\pipe\hyperbutler_doctor_owner_test_none`); err == nil {
+		t.Error("a missing pipe has an owner")
+	}
 }
