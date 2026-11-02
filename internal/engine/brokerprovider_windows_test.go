@@ -64,10 +64,23 @@ type fakeBrokerClient struct {
 	statusN int
 	// noSecret makes Start reply without a VM secret.
 	noSecret bool
+	// oldProto makes it report a protocol older than proto.Version; dataErr and
+	// startErr are what SetDataLocation and Start return.
+	oldProto          bool
+	dataErr, startErr error
 }
 
-func (f *fakeBrokerClient) SetDataLocation(windows.Handle) error { return nil }
+func (f *fakeBrokerClient) Version() (uint8, string, error) {
+	if f.oldProto {
+		return proto.Version - 1, "old", nil
+	}
+	return proto.Version, "test", nil
+}
+func (f *fakeBrokerClient) SetDataLocation(windows.Handle) error { return f.dataErr }
 func (f *fakeBrokerClient) Start(proto.Request) (proto.Reply, error) {
+	if f.startErr != nil {
+		return proto.Reply{}, f.startErr
+	}
 	if f.noSecret {
 		return proto.Reply{State: proto.StateRunning, VMID: [16]byte{1}}, nil
 	}
@@ -214,6 +227,48 @@ func TestBrokerProviderNeedsSecret(t *testing.T) {
 	}
 	if !c.closed {
 		t.Fatal("the lease was not closed")
+	}
+}
+
+// TestBrokerProviderCodes: each way a broker boot fails has the code the CLI and the
+// window explain, and a failed boot closes its connection.
+func TestBrokerProviderCodes(t *testing.T) {
+	refused := &broker.ReplyError{Code: proto.CodeDataLocationRejected, Message: "data location rejected"}
+	for _, tc := range []struct {
+		name    string
+		dialErr error
+		c       *fakeBrokerClient
+		want    string
+	}{
+		{"no pipe", fmt.Errorf("broker: connect: %w", windows.ERROR_FILE_NOT_FOUND), nil, CodeBrokerUnavailable},
+		{"squatted shared pipe", fmt.Errorf("broker: x: the pipe belongs to S-1-5-21-1-2-3-1001, not to the broker (%w)", broker.ErrUntrustedPipe), nil, CodeBrokerSquatted},
+		{"squatted endpoint", fmt.Errorf("broker: open this user's endpoint: %w", &broker.ReplyError{Code: proto.CodeEndpointSquatted}), nil, CodeBrokerSquatted},
+		{"other protocol", &broker.ReplyError{Code: proto.CodeUnsupportedVersion}, nil, CodeBrokerOld},
+		{"caller refused", fmt.Errorf("broker: open this user's endpoint: %w", &broker.ReplyError{Code: proto.CodeAccessDenied}), nil, CodeBrokerRefused},
+		{"old protocol", nil, &fakeBrokerClient{oldProto: true}, CodeBrokerOld},
+		{"data directory refused", nil, &fakeBrokerClient{dataErr: refused}, CodeBrokerRefused},
+		{"image refused", nil, &fakeBrokerClient{startErr: &broker.ReplyError{Code: proto.CodeImageRejected}}, CodeBrokerRefused},
+		{"connection lost at start", nil, &fakeBrokerClient{startErr: errors.New("broker: connection lost: EOF")}, CodeBrokerUnavailable},
+	} {
+		saved := dialBroker
+		dialBroker = func(context.Context, string) (brokerClient, error) {
+			if tc.dialErr != nil {
+				return nil, tc.dialErr
+			}
+			return tc.c, nil
+		}
+		p := &brokerProvider{pipe: `\\.\pipe\x`, dataDir: t.TempDir(), log: slog.New(slog.DiscardHandler)}
+		_, _, err := p.Boot(context.Background(), BootSpec{CPUs: 1, MemoryMB: 1024})
+		dialBroker = saved
+		if got := ErrorCode(err); got != tc.want {
+			t.Errorf("%s: code %q (%v), want %q", tc.name, got, err, tc.want)
+		}
+		if Describe(tc.want, "") == "" {
+			t.Errorf("%s: %s has no explanation", tc.name, tc.want)
+		}
+		if tc.c != nil && !tc.c.closed {
+			t.Errorf("%s: the connection was not closed", tc.name)
+		}
 	}
 }
 

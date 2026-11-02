@@ -165,8 +165,9 @@ the service needs admin. Uninstalling the CLI and its data does not.
 - Whether a no-service, no-admin path exists (for example through QEMU-WHPX) depends on
   ADR 0002. This ADR does not assume one.
 - Option A remains a developer mode. It is documented and used for spikes (ADR 0002), but it is
-  not a supported way for end users to run hyperbutler. Until the broker ships, the
-  installer uses it with the user's consent; see Installer.
+  not a supported way for end users to run hyperbutler. Until the broker shipped, the
+  installer used it with the user's consent; see Installer, and Installer (M4) for the
+  switch.
 
 ## Installer (amendment, 2026-11-02)
 
@@ -195,7 +196,9 @@ the install, so **option A is the supported interim path**, with these limits:
 
 The decision above stands: the broker (B or C) replaces option A, and when it ships the
 installer installs the broker instead of adding anyone to the group, and an upgrade takes
-out the membership it recorded.
+out the membership it recorded. Done in M4 (2026-11-03): see "Installer (M4)" under
+Implementation notes. The group box is gone from the options page; `ADDHYPERVADMIN=1`
+on the command line stays, for developer mode only.
 
 ## Implementation decisions (2026-11-02)
 
@@ -392,8 +395,8 @@ network as the stack runs it, polls the status every 10 s (which also keeps the 
 inside the idle timeout), pauses and resumes through the broker for the free-space guard,
 and dials the VM's hvsock services by the returned runtime id. It opens no console pipe:
 the VM's exit is learned from the status, a lost connection or the guest control
-channel. `--backend=hcs`, the default, is the in-process developer mode of
-Implementation decision 5.
+channel. `--backend=hcs`, the default until M4 (since then `auto`, see "Installer
+(M4)"), is the in-process developer mode of Implementation decision 5.
 
 Still to check in the integration run (not run yet, see `hcs_integration_test.go`):
 
@@ -517,10 +520,11 @@ by handle work for it, and it started and stopped a VM. Both left no service beh
   holds the name (a warning). It reads the
   service with `SC_MANAGER_CONNECT` and `SERVICE_QUERY_STATUS`, which every user has, and
   checks the pipe by listing it. It connects only while the SCM reports the service
-  running, through `broker.Dial`, which checks the pipe's owner first. None of these is a
-  failure, because `hyperbutler start` does not use the broker by default yet (M4).
+  running, through `broker.Dial`, which checks the pipe's owner first. Since M4 an older
+  protocol is a failure and a missing service a warning for users who cannot use HCS
+  themselves (see "Installer (M4)").
 - **Engine.** `hyperbutler start --broker \\.\pipe\hyperbutler-broker` boots through the
-  service. The default stays the in-process path until M4.
+  service. Since M4 that is the default whenever the service is installed.
 - **Development builds.** A development build (version `dev`, no image pin) also accepts
   `-fake-backend` and `-allow-unpinned-image` for `install`, which passes them to `run`,
   and for `run`. They are not in the usage text, and a release build refuses both.
@@ -814,6 +818,171 @@ fail; record the error for each.
    directory: access denied for each.
 6. Logs: the broker's log, the engine's log and the Event Log contain no secret (search
    for the hex of the secret A's test client read from its status reply).
+
+### Installer (M4)
+
+Implemented 2026-11-03: the MSI installs the service, and `hyperbutler start` uses it by
+default. **Status: built and inspected, not run.** The MSI builds with WiX 5 and passes
+its consistency checks; its custom action tables were read back and are as below. The
+elevated install, upgrade, repair, rollback and uninstall procedure is in
+[docs/install.md](../install.md#test-procedure-the-broker-service-from-the-msi-m4-not-run-yet).
+
+**Packaging.** `dist/package.ps1` builds `hyperbutler-broker.exe` next to
+`hyperbutler.exe` with the same image pin (`-X ...imageset.pinnedManifest`) and the
+release version (`-X main.version`), and checks both with `-version-json`; so a release
+broker is not a development build and boots only the pinned image. Both executables
+open the one `image\` folder next to them (`ImageDirName`), which the MSI installs once,
+with the `ImageFolderAcl` DACL: SYSTEM and Administrators full, Users and every VM
+(`S-1-5-83-0`) read; no other writer, so the system disk needs no per-VM ACE. The
+install folder inherits Program Files' DACL, which `CheckServiceBinaryPath` accepts
+(checked on this machine against MSI-made folders under Program Files, the earlier
+hyperbutler snapshot's included).
+
+**Registration: `hyperbutler setup broker install|uninstall`,** a setup verb like the
+others (SYSTEM, deferred, `WixQuietExec64`, `Return="ignore"`, outcome in `LastResult`),
+rather than running `hyperbutler-broker install` from the MSI or the MSI's own
+`ServiceInstall` table:
+
+- it calls the same `broker.InstallService` as `hyperbutler-broker install`, so the
+  configuration (delayed automatic start, SID type, the two privileges, the recovery
+  actions including non-crash failures, the event source) has one definition, which
+  `TestServiceLifecycle` checks; `ServiceInstall` and `MsiServiceConfig` cannot express
+  the non-crash recovery flag;
+- it takes no path: it registers `hyperbutler-broker.exe` next to the `hyperbutler.exe`
+  that runs, and still runs `CheckServiceBinaryPath` on it, also for a service that is
+  registered already;
+- it is idempotent, which an MSI's install, upgrade and repair all need. A service
+  registered as it would register it is left alone if it runs (a repair must not restart
+  the broker: that ends every user's VM) or started once if it does not (a service that
+  stops again after that has failed; it is not started over and over), and gets its DACL
+  again; one registered otherwise (another executable, another account) is removed and
+  registered again; one deleted but not yet gone (an open handle, or the upgrade's
+  removal of the old product a moment before) is waited for, up to 90 s; one an
+  administrator **disabled** is left as it is, DACL included, and `LastResult` says so
+  (`ok, ... is disabled; left as an administrator set it`, which doctor does not count as
+  a failed step): a repair a standard user starts must not turn it on again. A deleted
+  service is registered again: that is what a repair is for;
+- `uninstall` deletes the service first and then stops it (`UninstallService`): users may
+  start it, and a start between a stop and a delete would leave it running under a
+  deleted service; once it is marked for deletion, starts fail. It then waits until the
+  SCM has removed it, so its file is free before `RemoveFiles`.
+
+**Sequence** (InstallExecuteSequence, as built):
+
+| Action | Where | Condition |
+|---|---|---|
+| `RemoveExistingProducts` | after `InstallInitialize` (`MajorUpgrade Schedule="afterInstallInitialize"`, was after `InstallValidate`) | an upgrade |
+| `HbBrokerUninstallRollback` (rollback: `setup broker install`), `HbBrokerUninstall` | before `HbRemoveHyperVAdmin`, before `RemoveFiles` | `REMOVE~="ALL"` (uninstall, and the old product's removal in an upgrade) |
+| `HbBrokerInstallRollback` (rollback: `setup broker uninstall`) | after `InstallFiles` | `NOT Installed AND NOT REMOVE~="ALL"` |
+| `HbBrokerInstallFirst` (`setup broker install`, `Return="check"`) | after it | `NOT Installed AND NOT WIX_UPGRADE_DETECTED`: a first install fails and rolls back without the service |
+| `HbBrokerInstall` (the same, `Return="ignore"`) | after it | `NOT REMOVE~="ALL" AND (Installed OR WIX_UPGRADE_DETECTED)`: upgrade and repair go on, the failure in `LastResult` |
+| `HbAddHyperVAdmin` and its rollback | after `HbBrokerInstall` | `NOT Installed AND ADDHYPERVADMIN="1"` |
+| `HbDropHyperVAdmins` (`setup hyperv-admins remove --all --if-broker`) | before `InstallFinalize` | `NOT Installed AND WIX_UPGRADE_DETECTED AND NOT REMOVE~="ALL" AND NOT ADDHYPERVADMIN="1"` |
+
+`TestMSISequence` (cmd/hyperbutler) reads `hyperbutler.wxs` and holds these conditions,
+the schedule, and the rule below that the only SYSTEM step a repair runs is
+`HbBrokerInstall`.
+
+- With the removal of the old product inside the transaction, a failed upgrade rolls back
+  the new service and files, then the old removal, whose rollback registers the old
+  service again from the restored files.
+- A failed first install unregisters the service before its files go, and that
+  `setup broker uninstall` deletes `HKLM\SOFTWARE\hyperbutler\Setup` (and the empty
+  parent) when it names no account, so no `LastResult` stays on a machine without the
+  product; the uninstall's does the same. A failed repair leaves the service it found
+  (no rollback where the product was installed).
+- **Repair runs the broker step.** The installer amendment said a repair (which a standard
+  user can start) runs no privileged step. This one only restores what the install put
+  there, from the fixed folder, and grants no one anything. It leaves a disabled service
+  disabled; the worst a standard user can do with it is have a service an administrator
+  deleted or reconfigured (other than disabling it) registered again, which restarts it
+  (the one case that ends running VMs). Accepted. Every other SYSTEM step needs `NOT
+  Installed` (a first install or an upgrade, which need an administrator) or a removal.
+- **Hyper-V Administrators.** The options page lost its box; the page now says what the
+  service is. `ADDHYPERVADMIN=1` stays for the command line (developer mode). An upgrade
+  takes out the accounts an earlier installer recorded (0.2 ticked the box by default),
+  but `--if-broker` makes that a no-op unless the service runs, so a failed broker step
+  never also takes away the membership. It runs last because it has no rollback. Its
+  condition has `NOT Installed`: `WIX_UPGRADE_DETECTED` is a public property, so without
+  it a standard user's repair with `WIX_UPGRADE_DETECTED=1` would have SYSTEM take other
+  users out of the group (review, 2026-11-03).
+- The uninstall still takes out the recorded accounts (`HbRemoveHyperVAdmin`), after the
+  broker step, so the `LastResult` that step writes goes with the key.
+- `build-msi.ps1 -FailForTest` adds `util:FailWhenDeferred` (fails with
+  `WIXFAILWHENDEFERRED=1`) to a `...-failtest.msi` for the rollback steps of the test
+  procedure, named "hyperbutler FAILTEST" and installing only with `FAILTESTACK=1` (a
+  launch condition); release builds never have it, and the release workflow refuses it.
+
+**Starting the service as a user.** The delayed automatic start comes a few minutes after
+boot, later than a start at sign-in (autostart). So the service's DACL (`serviceSDDL`,
+set by `InstallService` and again by `setup broker install` through `SecureService`) is
+the SCM's default plus `SERVICE_START` for interactive users (`IU`); stop, pause,
+reconfiguration and deletion stay with administrators, and starting a running service
+does nothing. `hyperbutler start` starts a stopped service itself
+(`broker.RequestServiceStart`) and waits for it, up to 90 s. Unit-tested on the SDDL;
+on a live service in the procedure. A token that is neither interactive nor a service
+(ssh is a network logon, a batch task) may not even read the service, which only `IU`
+and `SU` may query. `hyperbutler start` takes that access denied as "the service does
+not serve this sign-in": if the account may call HCS itself (Hyper-V Administrators, or
+elevated), the engine runs the VM itself as before the broker, with a warning on the
+terminal and in engine.log; otherwise the start fails, telling to start hyperbutler from
+a desktop sign-in or to have an administrator run `sc.exe start`. Doctor's `broker`
+check says the same (a note with own HCS access, else a warning). A disabled service is
+not started at all, and start says nothing about starting it.
+
+**Default backend.** `hyperbutler start --backend auto|broker|hcs`, `auto` by default, and
+the window, autostart, restart and the MCP server go through the same start:
+
+- `auto`: the service if it is installed, after starting it when it is stopped or waiting
+  while it starts or stops. A service that is installed but cannot be used (disabled, a
+  start this user may not make, stopped again, not running within 90 s, an unreadable
+  state) fails the start, nothing spawned, with the reason and a pointer to doctor; the
+  start records it in state.json as `broker-unavailable`, so the window shows HB-VM-005.
+  Only without a service (not installed) does the engine run the VM itself (option A);
+  the reason goes to the engine log ("not using the broker service", with why), and to
+  the terminal when the user cannot use HCS (not elevated and not in Hyper-V
+  Administrators). An `--image-dir` other than the image folder next to
+  `hyperbutler.exe` also means the engine process: the broker boots only its own image.
+- `broker`: the service only; without it too, an error.
+- `hcs`: the engine process (developer mode, Implementation decision 5); excludes
+  `--broker`.
+- `--broker PIPE` (developer mode) is unchanged.
+
+An installed service that fails is never left for the in-process path (owner's decision,
+2026-11-03): an administrator installed it to be used, rule 5 says the client does not
+silently fall back, and a user without the group could not use the other path anyway.
+
+**Errors.** The broker provider asks for the version first (on the user's own endpoint)
+and codes its failures, which `hyperbutler start` explains (`engine.Describe`) and the
+window maps (en and ko):
+
+| Engine code | GUI | When |
+|---|---|---|
+| `broker-unavailable` | HB-VM-005 | no pipe, a timeout, a lost connection; and, recorded by start before any engine, an installed service it cannot use (disabled, a start refused, stopped again, a sign-in it does not serve). One code with general steps (the English original says why, doctor says what to do) rather than one per cause: the fix differs per cause, and doctor has each |
+| `broker-refused` | HB-VM-006 | an error reply: caller, data directory, data disk, image, lease |
+| `broker-squatted` | HB-VM-007 | a pipe whose owner is not the broker (`broker.ErrUntrustedPipe`), a name not of the user's form, or "endpoint squatted" |
+| `broker-old` | HB-VM-008 | a protocol older than `proto.Version`, or "unsupported version" |
+
+HB-VM-001 (HCS access denied, the in-process path) now says to install with the MSI
+first. `CleanupOrphans` no longer warns when HCS refuses the caller: a user without the
+group has no VMs of their own to clean, the broker sweeps them.
+
+**Doctor.** The `broker` check: not installed is a warning when the user cannot use HCS
+(not elevated, not in Hyper-V Administrators: start would fail), a note otherwise; an
+older protocol is a failure (start refuses it), and so is a disabled service; a stopped
+service says start starts it (`QueryService` reads the start type with
+`SERVICE_QUERY_CONFIG`, which users have).
+When the service runs and answers, a missing Hyper-V Administrators membership (or one
+pending sign-in) and HCS refusing the user's own enumeration are notes ("not needed"),
+not failures.
+
+Still open:
+
+- The procedure in docs/install.md (elevated, with the user present).
+- Option C (the virtual account) would change the service account; `setup broker
+  install` then re-registers a service whose account differs.
+- An upgrade replaces the service by delete and create; an in-place update (stop,
+  change the configuration, replace the file, start) would keep the gap shorter.
 
 ### Review findings (2026-10-30)
 

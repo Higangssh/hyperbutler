@@ -147,22 +147,34 @@ type engineImage struct {
 	broker                   string
 }
 
-// backendHCS is start's --backend: the engine calls HCS itself (developer mode, ADR 0004
-// option A). It is the only value; --broker selects the broker instead.
-const backendHCS = "hcs"
+// Start's --backend, how the engine boots the VM (ADR 0004, Installer (M4)):
+//
+//   - auto, the default: through the HCS access broker service when it is installed
+//     (started first if it is stopped), else in the engine process;
+//   - broker: through the broker service only, and an error without it;
+//   - hcs: in the engine process, which needs Hyper-V Administrators or elevation
+//     (developer mode, option A).
+//
+// --broker PIPE (developer mode) boots through a broker on another pipe, such as a
+// foreground hyperbutler-broker.
+const (
+	backendAuto   = "auto"
+	backendBroker = "broker"
+	backendHCS    = "hcs"
+)
 
 // checkBackendFlags checks start's --backend and --broker.
-func checkBackendFlags(fs *flag.FlagSet, backend, broker string) error {
-	if backend != backendHCS {
-		return fmt.Errorf("--backend %q: the only backend is %q (use --broker PIPE for the HCS access broker)", backend, backendHCS)
+func checkBackendFlags(backend, broker string) error {
+	switch backend {
+	case backendAuto, backendBroker, backendHCS:
+	default:
+		return fmt.Errorf("--backend %q: want %s (the default), %s or %s", backend, backendAuto, backendBroker, backendHCS)
 	}
 	if broker == "" {
 		return nil
 	}
-	explicit := false
-	fs.Visit(func(f *flag.Flag) { explicit = explicit || f.Name == "backend" })
-	if explicit {
-		return errors.New("--backend and --broker exclude each other")
+	if backend == backendHCS {
+		return errors.New("--backend hcs and --broker exclude each other")
 	}
 	if err := transport.ValidatePipeName(broker); err != nil {
 		return fmt.Errorf("--broker: %w", err)

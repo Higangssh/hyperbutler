@@ -84,7 +84,10 @@ func TestSetupNeedsElevation(t *testing.T) {
 	for _, args := range [][]string{
 		{"hyperv-admins", "add", "--sid", "S-1-5-21-1-2-3-1001"},
 		{"hyperv-admins", "remove", "--all"},
+		{"hyperv-admins", "remove", "--all", "--if-broker"},
 		{"vm-platform"},
+		{"broker", "install"},
+		{"broker", "uninstall"},
 	} {
 		var out, errb bytes.Buffer
 		err := cmdSetup(args, &out, &errb)
@@ -121,6 +124,45 @@ func (g fakeGroup) install(t *testing.T) {
 		}
 		sid, err := windows.StringToSid(s)
 		return sid, `PC\u` + s[len(s)-4:], err
+	}
+}
+
+// TestFinishSetupBrokerUninstall: a broker uninstall that succeeded (the uninstall's, or
+// a failed first install's rollback) leaves no record behind when it names no account;
+// with an account, or after a failure, it records the outcome.
+func TestFinishSetupBrokerUninstall(t *testing.T) {
+	exists := func(r setupRecord) bool {
+		k, err := registry.OpenKey(r.root, r.path, registry.QUERY_VALUE)
+		if err == nil {
+			_ = k.Close()
+		}
+		return err == nil
+	}
+	rec := testRecord(t)
+	finishSetup(rec, "broker install", errors.New("installed, but did not start"), false)
+	if !exists(rec) {
+		t.Fatal("a failed install recorded nothing")
+	}
+	finishSetup(rec, "broker uninstall", nil, false)
+	if exists(rec) {
+		t.Error("the rollback's uninstall left the record of a product that is gone")
+	}
+	rec = testRecord(t)
+	if err := rec.setAdded([]string{"S-1-5-21-1-2-3-1001"}); err != nil {
+		t.Fatal(err)
+	}
+	finishSetup(rec, "broker uninstall", nil, false)
+	if v, _ := rec.added(); len(v) != 1 || !exists(rec) {
+		t.Errorf("a record with an account went: %v", v)
+	}
+	finishSetup(rec, "broker uninstall", errors.New("stop the service: access denied"), false)
+	k, err := registry.OpenKey(rec.root, rec.path, registry.QUERY_VALUE)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer k.Close()
+	if s, _, _ := k.GetStringValue(setupResultValue); !strings.Contains(s, "broker uninstall: stop the service") {
+		t.Errorf("LastResult %q", s)
 	}
 }
 

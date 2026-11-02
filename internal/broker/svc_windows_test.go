@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 	"unicode/utf8"
+	"unsafe"
 
 	"golang.org/x/sys/windows"
 	"golang.org/x/sys/windows/svc"
@@ -64,10 +65,65 @@ func TestBuildInstallConfig(t *testing.T) {
 	if want := `"C:\hb\hyperbutler-broker.exe" run -fake-backend`; c.CommandLine != want {
 		t.Errorf("command line %q, want %q", c.CommandLine, want)
 	}
+	checkServiceDACL(t, c.SecurityDescriptor)
 	// The config is a copy: changing it does not change the next one.
 	c.Recovery[0].Delay = time.Hour
 	if c2, _ := BuildInstallConfig(exe, nil); c2.Recovery[0].Delay != 5*time.Second {
 		t.Error("BuildInstallConfig shares its recovery slice")
+	}
+}
+
+// checkServiceDACL: SYSTEM and Administrators control the service, interactive users
+// may query and start it and nothing else (no stop, pause, reconfiguration, deletion or
+// DACL change), service accounts may query it, and no one else is named.
+func checkServiceDACL(t *testing.T, sddl string) {
+	t.Helper()
+	dacl, err := serviceDACL(sddl)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Windows writes it back the same way, which the service test compares with.
+	if sd, err := windows.SecurityDescriptorFromString(sddl); err != nil || sd.String() != sddl {
+		t.Errorf("SDDL %q round-trips as %v, %v", sddl, sd, err)
+	}
+	const (
+		queryConfig, changeConfig, queryStatus, enumDeps = 0x1, 0x2, 0x4, 0x8
+		start, stop, pauseContinue, interrogate, userCtl = 0x10, 0x20, 0x40, 0x80, 0x100
+		readControl                                      = windows.READ_CONTROL
+	)
+	userMask := uint32(queryConfig | queryStatus | enumDeps | start | interrogate | userCtl | readControl)
+	want := map[string]uint32{
+		"S-1-5-18": queryConfig | queryStatus | enumDeps | start | stop | pauseContinue | interrogate | userCtl | readControl,
+		"S-1-5-32-544": queryConfig | changeConfig | queryStatus | enumDeps | start | stop | pauseContinue | interrogate | userCtl |
+			windows.DELETE | readControl | windows.WRITE_DAC | windows.WRITE_OWNER,
+		"S-1-5-4": userMask,                  // INTERACTIVE
+		"S-1-5-6": userMask &^ uint32(start), // SERVICE
+	}
+	got := map[string]uint32{}
+	for i := uint32(0); i < uint32(dacl.AceCount); i++ {
+		var ace *windows.ACCESS_ALLOWED_ACE
+		if err := windows.GetAce(dacl, i, &ace); err != nil {
+			t.Fatal(err)
+		}
+		if ace.Header.AceType != accessAllowedACEType {
+			t.Errorf("ACE %d has type %d", i, ace.Header.AceType)
+		}
+		sid := (*windows.SID)(unsafe.Pointer(&ace.SidStart)).String()
+		got[sid] |= uint32(ace.Mask)
+	}
+	if len(got) != len(want) {
+		t.Errorf("DACL names %v", got)
+	}
+	for sid, m := range want {
+		if got[sid] != m {
+			t.Errorf("%s has 0x%x, want 0x%x", sid, got[sid], m)
+		}
+	}
+}
+
+func TestRequestServiceStartMissing(t *testing.T) {
+	if err := RequestServiceStart("hyperbutler-no-such-service"); !errors.Is(err, windows.ERROR_SERVICE_DOES_NOT_EXIST) {
+		t.Errorf("missing service: %v", err)
 	}
 }
 

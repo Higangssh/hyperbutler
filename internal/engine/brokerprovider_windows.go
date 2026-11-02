@@ -44,6 +44,7 @@ type brokerProvider struct {
 
 // brokerClient is what the provider needs of broker.Client (a fake in tests).
 type brokerClient interface {
+	Version() (uint8, string, error)
 	SetDataLocation(h windows.Handle) error
 	Start(req proto.Request) (proto.Reply, error)
 	Status() (proto.Reply, error)
@@ -97,6 +98,23 @@ func startRequest(bs BootSpec) (proto.Request, error) {
 	return req, req.Validate()
 }
 
+// brokerError gives an error of the broker's client its code: another program's pipe
+// (rule 5) is CodeBrokerSquatted, an older protocol CodeBrokerOld, any other error
+// reply CodeBrokerRefused, and the rest (no pipe, a timeout, a lost connection)
+// CodeBrokerUnavailable.
+func brokerError(err error) error {
+	var re *broker.ReplyError
+	switch {
+	case errors.Is(err, broker.ErrUntrustedPipe), broker.IsCode(err, proto.CodeEndpointSquatted):
+		return codeErr(CodeBrokerSquatted, err)
+	case broker.IsCode(err, proto.CodeUnsupportedVersion):
+		return codeErr(CodeBrokerOld, err)
+	case errors.As(err, &re):
+		return codeErr(CodeBrokerRefused, err)
+	}
+	return codeErr(CodeBrokerUnavailable, err)
+}
+
 func (p *brokerProvider) Boot(ctx context.Context, bs BootSpec) (_ Lease, _ RuntimeInfo, err error) {
 	if p.dataDir == "" {
 		return nil, RuntimeInfo{}, errBrokerNeedsDisk
@@ -109,13 +127,21 @@ func (p *brokerProvider) Boot(ctx context.Context, bs BootSpec) (_ Lease, _ Runt
 	c, err := dialBroker(dctx, p.pipe)
 	cancel()
 	if err != nil {
-		return nil, RuntimeInfo{}, err
+		return nil, RuntimeInfo{}, brokerError(fmt.Errorf("engine: cannot reach the HCS access broker on %s: %w", p.pipe, err))
 	}
 	defer func() {
 		if err != nil {
 			_ = c.Close() // ends the lease: the broker terminates a VM it started
 		}
 	}()
+	pv, bv, err := c.Version()
+	if err != nil {
+		return nil, RuntimeInfo{}, brokerError(fmt.Errorf("engine: the HCS access broker on %s does not tell its version: %w", p.pipe, err))
+	}
+	if pv < proto.Version {
+		return nil, RuntimeInfo{}, codeErr(CodeBrokerOld, fmt.Errorf("engine: the HCS access broker is version %s, protocol %d; this hyperbutler needs protocol %d or later", bv, pv, proto.Version))
+	}
+	p.log.Info("booting through the HCS access broker", "pipe", p.pipe, "brokerVersion", bv, "protocol", pv)
 	h, err := openDirHandle(p.dataDir)
 	if err != nil {
 		return nil, RuntimeInfo{}, fmt.Errorf("engine: open the data directory %s: %w", p.dataDir, err)
@@ -123,11 +149,11 @@ func (p *brokerProvider) Boot(ctx context.Context, bs BootSpec) (_ Lease, _ Runt
 	err = c.SetDataLocation(h)
 	_ = windows.CloseHandle(h)
 	if err != nil {
-		return nil, RuntimeInfo{}, fmt.Errorf("engine: the broker refused the data directory %s: %w", p.dataDir, err)
+		return nil, RuntimeInfo{}, brokerError(fmt.Errorf("engine: the broker refused the data directory %s: %w", p.dataDir, err))
 	}
 	r, err := c.Start(req)
 	if err != nil {
-		return nil, RuntimeInfo{}, fmt.Errorf("engine: the broker did not start the VM: %w", err)
+		return nil, RuntimeInfo{}, brokerError(fmt.Errorf("engine: the broker did not start the VM: %w", err))
 	}
 	if r.State == proto.StateStopped || r.VMID == ([16]byte{}) {
 		return nil, RuntimeInfo{}, errors.New("engine: the broker started no VM")

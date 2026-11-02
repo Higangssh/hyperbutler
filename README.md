@@ -92,8 +92,9 @@ documents.
 | Download size | the zip is 109 MB, the MSI 116 MB (snapshot of the release candidate, 2026-11-02) | ≤ 150 MB (REQ-UX-002) | Yes (measured on a local build) |
 | Soak (ADR 0003), `hyperbutler start`, incl. bind mounts and `-p` | 1 h, 12,827 docker commands, none failed: engine working set +0.56 MiB/h (median 80 MiB), Go heap +0.09 MiB/h, handles, threads and goroutines flat; no leak above about 5 MiB/h | 24 h, no positive trend | 1 h main gate: passed by hand. **24 h: not run.** It blocks the first release |
 
-What is missing for 0.1: the 24-hour soak, the ADR 0004 broker (until it
-ships you need Hyper-V Administrators membership, see below), and Compose testing
+What is missing for 0.1: the 24-hour soak, the installed broker service's first run on a
+clean machine (from the MSI, it replaces Hyper-V Administrators membership; the zip still
+needs the membership, see below), and Compose testing
 (`hyperbutler doctor` is in the tree for 0.2). Bind mounts from Windows paths work but are not yet fast for write-heavy
 trees: use a named volume for `node_modules`. [docs/release.md](docs/release.md) lists every
 release gate.
@@ -101,10 +102,13 @@ release gate.
 ## Quick start
 
 Downloads are on the [Releases](https://github.com/Higangssh/hyperbutler/releases) page.
-**The easy way:** the MSI does the prerequisites and PATH for you in one UAC prompt; then
-sign out and back in (or restart, if it asks) and run `hyperbutler start`
-([docs/install.md](docs/install.md)). The steps below are for the zip, which needs no
-installer and no admin rights, except the one-time prerequisites.
+**The easy way:** the MSI does the prerequisites and PATH for you in one UAC prompt, and
+installs the hyperbutler broker service, which starts the VM for you: no Hyper-V
+Administrators membership and no elevation afterwards. Restart if it asks, then run
+`hyperbutler start` ([docs/install.md](docs/install.md)). The broker service in the MSI
+is a preview: its install, upgrade and uninstall have not yet run on a real machine
+(docs/install.md has the procedure). The steps below are for the zip,
+which needs no installer and no admin rights, except the one-time prerequisites.
 
 ### Prerequisites (one time)
 
@@ -119,8 +123,9 @@ installer and no admin rights, except the one-time prerequisites.
    dism.exe /online /enable-feature /featurename:VirtualMachinePlatform /all /norestart
    ```
 
-3. **Hyper-V Administrators membership** for your account, until the HCS access broker
-   ([ADR 0004](docs/adr/0004-hcs-access-broker.md)) ships. Find your account name with
+3. **Hyper-V Administrators membership** for your account: the zip runs the VM in its
+   own process (developer mode), since it installs no broker service (the MSI does,
+   [ADR 0004](docs/adr/0004-hcs-access-broker.md)). Find your account name with
    `whoami` in your own (non-elevated) PowerShell. An administrator then runs this once in
    an elevated PowerShell, with that name in place of `<user>` (if the administrator is a
    different account, `$env:USERNAME` there would be the wrong one), and you sign out and
@@ -133,8 +138,8 @@ installer and no admin rights, except the one-time prerequisites.
    **Security note:** this group has complete, unrestricted access to Hyper-V on the
    machine. Every program you run, not only hyperbutler, can then create VMs and give them
    access to host files, so treat membership as close to admin rights. It is a
-   developer-preview arrangement, not the supported end state. When you no longer need it,
-   remove it the same way with `/delete` instead of `/add`.
+   developer arrangement, not the supported one: the MSI's broker service needs none.
+   When you no longer need it, remove it the same way with `/delete` instead of `/add`.
 
 4. Nothing else: the zip comes with the `docker` CLI and the compose plugin (in its
    `clients\` folder, built from Docker's source). A docker CLI you already have, 19.03 or
@@ -363,7 +368,7 @@ See [docs/compat.md](docs/compat.md#hostdockerinternal).
 ```
 docker CLI ──npipe──▶ hyperbutler (Windows) ──hvsock──▶ guest agent ─▶ dockerd/containerd
                          │                              (minimal Linux VM on HCS)
-                         └─ HCS broker service (in progress, ADR 0004) for non-admin use
+                         └─ HCS broker service (ADR 0004, installed by the MSI) for non-admin use
 ```
 
 - **Data plane, as you.** The engine runs in your own process with no elevation: the Docker
@@ -372,18 +377,22 @@ docker CLI ──npipe──▶ hyperbutler (Windows) ──hvsock──▶ gues
 - **Guest.** A minimal Alpine userland on a read-only erofs system disk, pinned by hash, and
   a sparse VHDX data disk whose freed blocks go back to the host.
 - **Control plane, privileged and small.** Windows lets only administrators and Hyper-V
-  Administrators use HCS. Today your account joins that group (the installer asks). The
-  broker service replaces that, the way `wslservice` does for WSL: it is the only part
-  that calls HCS, and it accepts seven short, typed requests (version, start, stop, status,
-  resize, data location, pause) over a per-user pipe. It takes no paths, command lines or
+  Administrators use HCS. The broker service, which the MSI installs, stands in for that
+  group, the way `wslservice` does for WSL: it is the only part that calls HCS, and it
+  accepts seven short, typed requests (version, start, stop, status, resize, data
+  location, pause) over a per-user pipe. It takes no paths, command lines or
   HCS documents from the caller and builds the VM from a fixed template; it learns who you
   are from the pipe's client token, not from the message; it takes the data directory as an
   open handle and refuses links, other owners and network drives; it boots only the image
   next to itself whose hash is compiled in; and it lets only your account reach your VM's
   hvsock services. The connection that started a VM is its lease. These rules exist
   because they are where privileged container services have had local privilege
-  escalations before (ADR 0004, Options). Status: the HCS backend is merged behind a
-  developer flag; the service install, per-user pipes and the installer switch follow.
+  escalations before (ADR 0004, Options). `hyperbutler start` goes through the service
+  whenever it is installed (starting it if it is stopped), and otherwise runs the VM in
+  its own process, which needs the group or elevation (`--backend hcs`, developer mode;
+  `hyperbutler doctor` says which applies). Status: the service, its per-user pipes and
+  the MSI that installs it are in the tree; the installer's run on a clean machine is
+  still to do (docs/install.md).
 
 Design decisions are recorded in [docs/adr](docs/adr). How releases are built and checked
 is in [docs/release.md](docs/release.md).

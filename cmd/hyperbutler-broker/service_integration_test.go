@@ -100,7 +100,26 @@ func TestServiceLifecycle(t *testing.T) {
 	t.Logf("restarted as pid %d", st2.PID)
 	checkClient(t)
 
-	if out, err := exec.Command(exe, "uninstall").CombinedOutput(); err != nil {
+	// Users may start the service; starts racing the uninstall must not leave it running
+	// under a deleted service (UninstallService deletes before it stops).
+	stopStarts := make(chan struct{})
+	startsDone := make(chan struct{})
+	go func() {
+		defer close(startsDone)
+		for {
+			select {
+			case <-stopStarts:
+				return
+			default:
+			}
+			_ = broker.RequestServiceStart(broker.ServiceName)
+			time.Sleep(20 * time.Millisecond)
+		}
+	}()
+	out, err := exec.Command(exe, "uninstall").CombinedOutput()
+	close(stopStarts)
+	<-startsDone
+	if err != nil {
 		t.Fatalf("uninstall: %v\n%s", err, out)
 	}
 	if st, err := broker.QueryService(broker.ServiceName); err != nil || st.Installed {
@@ -199,6 +218,15 @@ func checkServiceConfig(t *testing.T, exe string) {
 	}
 	if privs := requiredPrivileges(t, s); !slices.Equal(privs, []string{"SeChangeNotifyPrivilege", "SeImpersonatePrivilege"}) {
 		t.Errorf("required privileges %q", privs)
+	}
+	// Interactive users may start the service (hyperbutler start does when it is
+	// stopped), and do nothing else to it.
+	sd, err := windows.GetSecurityInfo(s.Handle, windows.SE_SERVICE, windows.DACL_SECURITY_INFORMATION)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d := sd.String(); !strings.Contains(d, "(A;;CCLCSWRPLOCRRC;;;IU)") {
+		t.Errorf("service DACL %s does not let interactive users start it", d)
 	}
 }
 

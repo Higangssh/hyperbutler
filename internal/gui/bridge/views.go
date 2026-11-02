@@ -54,13 +54,17 @@ type StatusView struct {
 
 // engineCodes maps the engine's state.json error codes to the GUI's.
 var engineCodes = map[string]string{
-	engine.CodeHCSAccessDenied:  CodeAccessDenied,
-	engine.CodeHCSSignInPending: CodeSignInPending,
-	engine.CodePipeInUse:        CodePipeInUse,
-	engine.CodeAlreadyRunning:   CodeOtherEngine,
-	engine.CodeVMExited:         CodeVMExited,
-	engine.CodeBrokerLost:       CodeBrokerLost,
-	engine.CodeDataDisk:         CodeDataDisk,
+	engine.CodeHCSAccessDenied:   CodeAccessDenied,
+	engine.CodeHCSSignInPending:  CodeSignInPending,
+	engine.CodePipeInUse:         CodePipeInUse,
+	engine.CodeAlreadyRunning:    CodeOtherEngine,
+	engine.CodeVMExited:          CodeVMExited,
+	engine.CodeBrokerLost:        CodeBrokerLost,
+	engine.CodeBrokerUnavailable: CodeBrokerDown,
+	engine.CodeBrokerRefused:     CodeBrokerRefused,
+	engine.CodeBrokerSquatted:    CodeBrokerSquat,
+	engine.CodeBrokerOld:         CodeBrokerOld,
+	engine.CodeDataDisk:          CodeDataDisk,
 }
 
 // EngineCode is the GUI code of a state.json error code (CodeStartFailed for others).

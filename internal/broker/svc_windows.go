@@ -394,6 +394,9 @@ type ServiceState struct {
 	Installed bool
 	State     svc.State
 	PID       uint32
+	// Disabled: its start type is disabled (false also when the configuration cannot be
+	// read, which needs SERVICE_QUERY_CONFIG).
+	Disabled bool
 }
 
 // QueryService reads a service's state with the rights any user has: it connects to
@@ -421,7 +424,42 @@ func QueryService(name string) (ServiceState, error) {
 	if err != nil {
 		return ServiceState{}, fmt.Errorf("query service %s: %w", name, err)
 	}
-	return ServiceState{Installed: true, State: q.State, PID: q.ProcessId}, nil
+	st := ServiceState{Installed: true, State: q.State, PID: q.ProcessId}
+	// The start type, with SERVICE_QUERY_CONFIG, which the SCM's default DACL (and the
+	// broker's) gives interactive users; without it, Disabled stays false.
+	if h2, err := windows.OpenService(m, n, windows.SERVICE_QUERY_CONFIG); err == nil {
+		s2 := &mgr.Service{Name: name, Handle: h2}
+		if c, err := s2.Config(); err == nil {
+			st.Disabled = c.StartType == windows.SERVICE_DISABLED
+		}
+		_ = s2.Close()
+	}
+	return st, nil
+}
+
+// RequestServiceStart asks the SCM to start the service with the rights a user may
+// have: SC_MANAGER_CONNECT, and SERVICE_START on the service, which the broker's
+// service grants interactive users (serviceSDDL). A service that runs already is not
+// an error. It does not wait for the service to run.
+func RequestServiceStart(name string) error {
+	m, err := windows.OpenSCManager(nil, nil, windows.SC_MANAGER_CONNECT)
+	if err != nil {
+		return fmt.Errorf("connect to the service control manager: %w", err)
+	}
+	defer func() { _ = windows.CloseServiceHandle(m) }()
+	n, err := windows.UTF16PtrFromString(name)
+	if err != nil {
+		return err
+	}
+	h, err := windows.OpenService(m, n, windows.SERVICE_START)
+	if err != nil {
+		return fmt.Errorf("open service %s to start it: %w", name, err)
+	}
+	defer func() { _ = windows.CloseServiceHandle(h) }()
+	if err := windows.StartService(h, 0, nil); err != nil && !errors.Is(err, windows.ERROR_SERVICE_ALREADY_RUNNING) {
+		return fmt.Errorf("start service %s: %w", name, err)
+	}
+	return nil
 }
 
 // StateName is a service state in words, for messages.

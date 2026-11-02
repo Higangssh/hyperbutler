@@ -3,32 +3,50 @@
   The hyperbutler MSI (docs/install.md): a per-machine install of the release folder that
   dist/package.ps1 stages, built by dist/msi/build-msi.ps1 with WiX 5.
 
-  Besides the files it does what the zip leaves to the user (ADR 0004, Installer):
+  Besides the files it does what the zip leaves to the user (ADR 0004, Installer and
+  Installer (M4)):
+    - installs and starts the HCS access broker service (hyperbutler-broker, LocalSystem,
+      `hyperbutler setup broker install`), which starts the VM for every user signed in
+      at the PC, so no one needs Hyper-V Administrators or elevation day to day;
     - puts the install folder and its clients\ folder at the end of the system PATH, so a
       docker CLI that is already installed keeps winning;
     - turns on Virtual Machine Platform if it is off, and asks for a restart;
-    - adds the installing user ([UserSID]) to Hyper-V Administrators, if the box is ticked.
-      The box is ticked by default in the window (ADDHYPERVADMIN=0 unticks it); an install
-      without the window (silent, advertised, install on demand) adds no one unless
-      ADDHYPERVADMIN=1 is given, so no install a standard user can trigger grants it;
+    - only with ADDHYPERVADMIN=1 on the command line (developer mode, ADR 0004 option A),
+      adds the installing user ([UserSID]) to Hyper-V Administrators; the window has no
+      box for it any more;
     - a Start menu shortcut.
-  The machine-wide steps run `hyperbutler setup` as SYSTEM, and only on a first install or
-  an upgrade, never on a repair: a repair can be started by a standard user. The install
-  folder is always Program Files\hyperbutler, which only administrators can write, because
-  SYSTEM runs hyperbutler.exe from it. Uninstalling removes the files, the PATH entries and
-  the shortcut, takes out of the group only the accounts this installer put in (an upgrade
-  keeps them), and leaves Virtual Machine Platform on and every user's data in
+  The machine-wide steps run `hyperbutler setup` as SYSTEM. Group and DISM steps run on a
+  first install or an upgrade only, never on a repair, which a standard user can start;
+  the broker step runs on a repair too, and then only starts a stopped service or
+  restores a missing one (it grants no one anything). An upgrade takes out of the group
+  the accounts an earlier version of this installer put in, once the broker runs. The
+  install folder is always Program Files\hyperbutler, which only administrators can
+  write, because SYSTEM runs hyperbutler.exe and hyperbutler-broker.exe from it.
+  Uninstalling removes the service, the files, the PATH entries and the shortcut, takes
+  out of the group only the accounts this installer put in (an upgrade keeps them until
+  the broker runs), and leaves Virtual Machine Platform on and every user's data in
   %LOCALAPPDATA%\hyperbutler alone (`hyperbutler uninstall` removes that).
 -->
 <Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
      xmlns:ui="http://wixtoolset.org/schemas/v4/wxs/ui"
      xmlns:util="http://wixtoolset.org/schemas/v4/wxs/util">
-  <Package Name="hyperbutler" Manufacturer="hyperbutler" Version="$(var.ProductVersion)"
+  <!-- The -FailForTest MSI names itself so, in Apps too, and installs only with
+       FAILTESTACK=1, so it is never mistaken for a release. -->
+  <?if $(var.FailForTest) = 1 ?>
+  <?define HbProductName = "hyperbutler FAILTEST" ?>
+  <?else?>
+  <?define HbProductName = "hyperbutler" ?>
+  <?endif?>
+  <Package Name="$(var.HbProductName)" Manufacturer="hyperbutler" Version="$(var.ProductVersion)"
            UpgradeCode="7280F4EA-D72B-40D2-A391-68035BD73997" Scope="perMachine" Language="1033"
            InstallerVersion="500">
     <SummaryInformation Description="hyperbutler $(var.Version): a Docker engine for Windows in a small Hyper-V VM, without WSL" />
-    <!-- Same version too: a release replaces its own release candidate (build-msi.ps1). -->
-    <MajorUpgrade AllowSameVersionUpgrades="yes" DowngradeErrorMessage="A newer version of hyperbutler is already installed." />
+    <!-- Same version too: a release replaces its own release candidate (build-msi.ps1).
+         afterInstallInitialize: the old product is removed inside this install's
+         transaction, so a failed upgrade rolls its removal back too, broker service
+         included (its uninstall step has a rollback that installs it again). -->
+    <MajorUpgrade AllowSameVersionUpgrades="yes" Schedule="afterInstallInitialize"
+                  DowngradeErrorMessage="A newer version of hyperbutler is already installed." />
     <MediaTemplate EmbedCab="yes" CompressionLevel="high" />
 
     <Icon Id="hyperbutler.exe" SourceFile="!(bindpath.stage)hyperbutler.exe" />
@@ -38,12 +56,11 @@
     <Property Id="ARPNOMODIFY" Value="1" />
 
     <!-- The choices on the Setup options page; also settable on the command line.
-         ADDHYPERVADMIN has no default: the window's sequence ticks it (HbAdminDefault),
-         and turns a 0 from the command line into an unticked box (HbAdminOff). -->
+         ADDHYPERVADMIN=1 (command line only, developer mode) adds the installing user to
+         Hyper-V Administrators; the broker service makes it unnecessary, so it is off by
+         default and the window has no box for it (ADR 0004, Installer (M4)). -->
     <Property Id="ADDHYPERVADMIN" Secure="yes" />
     <Property Id="ENABLEVMP" Value="1" Secure="yes" />
-    <SetProperty Id="ADDHYPERVADMIN" Action="HbAdminDefault" Value="1" Sequence="ui" After="AppSearch" Condition="NOT ADDHYPERVADMIN" />
-    <SetProperty Id="ADDHYPERVADMIN" Action="HbAdminOff" Value="[HBNOTHING]" Sequence="ui" After="HbAdminDefault" Condition="ADDHYPERVADMIN=&quot;0&quot;" />
     <!-- UPDATECHECK: whether the app looks for a new release once a day (on by default;
          UPDATECHECK="" on the command line, or an unticked box, turns it off). Off is
          written as UpdateCheck=0 under HKLM\SOFTWARE\hyperbutler, which the app reads as its
@@ -76,9 +93,15 @@
                     Description="A Docker engine for Windows, without WSL" WorkingDirectory="INSTALLFOLDER" />
         </File>
       </Component>
+      <!-- The HCS access broker, which `hyperbutler setup broker install` registers as the
+           service. It opens the guest image in the image\ folder next to it, the same one
+           hyperbutler.exe boots in developer mode, and checks it against the pin both
+           executables carry (dist/package.ps1). -->
+      <Component Id="BrokerExe">
+        <File Id="BrokerExe" Name="hyperbutler-broker.exe" Source="!(bindpath.stage)hyperbutler-broker.exe" KeyPath="yes" />
+      </Component>
       <Files Include="!(bindpath.stage)**">
         <Exclude Files="!(bindpath.stage)hyperbutler.exe" />
-        <!-- The HCS access broker ships in the zip only until the MSI installs it as a service. -->
         <Exclude Files="!(bindpath.stage)hyperbutler-broker.exe" />
       </Files>
       <!-- The guest image: a VM's worker opens system.vhd as its own per-VM account, and a
@@ -110,9 +133,50 @@
                  Before="HbStopEngine" Sequence="execute" />
     <CustomAction Id="HbStopEngine" BinaryRef="Wix4UtilCA_X64" DllEntry="WixQuietExec64" Execute="immediate" Return="ignore" />
 
+    <!-- The HCS access broker service (ADR 0004, Installer (M4)), as SYSTEM. install is
+         idempotent: it leaves a running service of this executable alone (a repair must
+         not end every user's VM), starts a stopped one, and registers again one of another
+         executable or one an upgrade's removal deleted. It runs after InstallFiles, its
+         rollback (uninstall) before them on the way back; the uninstall runs before
+         RemoveFiles, so the service is stopped and gone before its files are, and its
+         rollback (install) runs after RemoveFiles' rollback restored them. On a first
+         install a failure fails the install, which rolls back: without the service the
+         product does not work as the installer says (HbBrokerInstallFirst, Return
+         check). On an upgrade or a repair it does not stop the install (HbBrokerInstall):
+         setup records it (LastResult), and doctor and start explain it. -->
+    <SetProperty Id="HbBrokerInstallFirst" Before="HbBrokerInstallFirst" Sequence="execute"
+                 Value="&quot;[#HyperbutlerExe]&quot; setup broker install" />
+    <CustomAction Id="HbBrokerInstallFirst" BinaryRef="Wix4UtilCA_X64" DllEntry="WixQuietExec64"
+                  Execute="deferred" Impersonate="no" Return="check" />
+    <SetProperty Id="HbBrokerInstall" Before="HbBrokerInstall" Sequence="execute"
+                 Value="&quot;[#HyperbutlerExe]&quot; setup broker install" />
+    <CustomAction Id="HbBrokerInstall" BinaryRef="Wix4UtilCA_X64" DllEntry="WixQuietExec64"
+                  Execute="deferred" Impersonate="no" Return="ignore" />
+    <SetProperty Id="HbBrokerInstallRollback" Before="HbBrokerInstallRollback" Sequence="execute"
+                 Value="&quot;[#HyperbutlerExe]&quot; setup broker uninstall" />
+    <CustomAction Id="HbBrokerInstallRollback" BinaryRef="Wix4UtilCA_X64" DllEntry="WixQuietExec64"
+                  Execute="rollback" Impersonate="no" Return="ignore" />
+    <SetProperty Id="HbBrokerUninstall" Before="HbBrokerUninstall" Sequence="execute"
+                 Value="&quot;[#HyperbutlerExe]&quot; setup broker uninstall" />
+    <CustomAction Id="HbBrokerUninstall" BinaryRef="Wix4UtilCA_X64" DllEntry="WixQuietExec64"
+                  Execute="deferred" Impersonate="no" Return="ignore" />
+    <SetProperty Id="HbBrokerUninstallRollback" Before="HbBrokerUninstallRollback" Sequence="execute"
+                 Value="&quot;[#HyperbutlerExe]&quot; setup broker install" />
+    <CustomAction Id="HbBrokerUninstallRollback" BinaryRef="Wix4UtilCA_X64" DllEntry="WixQuietExec64"
+                  Execute="rollback" Impersonate="no" Return="ignore" />
+    <!-- An upgrade takes out of Hyper-V Administrators the accounts an earlier version of
+         this installer put in (ADR 0004, Installer), but only once the broker runs
+         (setup if-broker), and not when this install adds the user again (ADDHYPERVADMIN=1).
+         It has no rollback, so it runs last. -->
+    <SetProperty Id="HbDropHyperVAdmins" Before="HbDropHyperVAdmins" Sequence="execute"
+                 Value="&quot;[#HyperbutlerExe]&quot; setup hyperv-admins remove --all --if-broker" />
+    <CustomAction Id="HbDropHyperVAdmins" BinaryRef="Wix4UtilCA_X64" DllEntry="WixQuietExec64"
+                  Execute="deferred" Impersonate="no" Return="ignore" />
+
     <!-- Hyper-V Administrators: as SYSTEM, for the user the install runs for (UserSID, which
-         Windows Installer sets). A failure does not stop the install; setup records it under
-         HKLM\SOFTWARE\hyperbutler\Setup (LastResult) and doctor shows the membership. -->
+         Windows Installer sets), with ADDHYPERVADMIN=1 only. A failure does not stop the
+         install; setup records it under HKLM\SOFTWARE\hyperbutler\Setup (LastResult) and
+         doctor shows the membership. -->
     <SetProperty Id="HbAddHyperVAdmin" Before="HbAddHyperVAdmin" Sequence="execute"
                  Value="&quot;[#HyperbutlerExe]&quot; setup hyperv-admins add --sid &quot;[UserSID]&quot;" />
     <CustomAction Id="HbAddHyperVAdmin" BinaryRef="Wix4UtilCA_X64" DllEntry="WixQuietExec64"
@@ -134,13 +198,33 @@
 
     <InstallExecuteSequence>
       <Custom Action="HbStopEngine" Before="InstallValidate" Condition="REMOVE~=&quot;ALL&quot; OR WIX_UPGRADE_DETECTED" />
+      <!-- Uninstall, and the removal of the old product in an upgrade. -->
+      <Custom Action="HbBrokerUninstallRollback" Before="HbBrokerUninstall" Condition="REMOVE~=&quot;ALL&quot;" />
+      <Custom Action="HbBrokerUninstall" Before="HbRemoveHyperVAdmin" Condition="REMOVE~=&quot;ALL&quot;" />
       <Custom Action="HbRemoveHyperVAdmin" Before="RemoveFiles" Condition="REMOVE~=&quot;ALL&quot; AND NOT UPGRADINGPRODUCTCODE" />
+      <!-- First install, upgrade and repair. The rollback only where this install made
+           the service: a failed repair keeps the one it found. -->
+      <Custom Action="HbBrokerInstallRollback" After="InstallFiles" Condition="NOT Installed AND NOT REMOVE~=&quot;ALL&quot;" />
+      <Custom Action="HbBrokerInstallFirst" After="HbBrokerInstallRollback" Condition="NOT Installed AND NOT WIX_UPGRADE_DETECTED" />
+      <Custom Action="HbBrokerInstall" After="HbBrokerInstallFirst" Condition="NOT REMOVE~=&quot;ALL&quot; AND (Installed OR WIX_UPGRADE_DETECTED)" />
       <!-- Takes out only this install's account, and only if this install recorded it. -->
-      <Custom Action="HbAddHyperVAdminRollback" After="InstallFiles" Condition="NOT Installed AND ADDHYPERVADMIN=&quot;1&quot;" />
+      <Custom Action="HbAddHyperVAdminRollback" After="HbBrokerInstall" Condition="NOT Installed AND ADDHYPERVADMIN=&quot;1&quot;" />
       <Custom Action="HbAddHyperVAdmin" After="HbAddHyperVAdminRollback" Condition="NOT Installed AND ADDHYPERVADMIN=&quot;1&quot;" />
       <Custom Action="HbEnableVMP" After="HbAddHyperVAdmin" Condition="NOT Installed AND ENABLEVMP=&quot;1&quot; AND NOT VMCOMPUTEPRESENT" />
+      <!-- NOT Installed: WIX_UPGRADE_DETECTED is a public property a standard user could
+           pass to a repair (which runs as SYSTEM); only a real upgrade, an install of
+           this product while it is not installed yet, which needs an administrator, may
+           take accounts out of the group. -->
+      <Custom Action="HbDropHyperVAdmins" Before="InstallFinalize" Condition="NOT Installed AND WIX_UPGRADE_DETECTED AND NOT REMOVE~=&quot;ALL&quot; AND NOT ADDHYPERVADMIN=&quot;1&quot;" />
       <ScheduleReboot After="InstallFinalize" Condition="NOT Installed AND ENABLEVMP=&quot;1&quot; AND NOT VMCOMPUTEPRESENT" />
     </InstallExecuteSequence>
+    <?if $(var.FailForTest) = 1 ?>
+    <!-- build-msi.ps1 -FailForTest only (never a release): WIXFAILWHENDEFERRED=1 fails the
+         install just before InstallFinalize, to test the rollbacks (docs/install.md). -->
+    <util:FailWhenDeferred />
+    <Launch Condition="FAILTESTACK=&quot;1&quot; OR Installed"
+            Message="This is a test build of hyperbutler that fails on purpose (build-msi.ps1 -FailForTest), not a release. Install it only for the rollback test, with FAILTESTACK=1." />
+    <?endif?>
 
     <UI Id="HbUI">
       <TextStyle Id="WixUI_Font_Normal" FaceName="Tahoma" Size="8" />
@@ -168,10 +252,10 @@
         <Control Id="Description" Type="Text" X="25" Y="23" Width="280" Height="15" Transparent="yes" NoPrefix="yes" Text="What hyperbutler needs from Windows, done once now." />
         <Control Id="VmpBox" Type="CheckBox" X="20" Y="50" Width="330" Height="15" Property="ENABLEVMP" CheckBoxValue="1"
                  Text="Turn on Virtual Machine Platform if it is off (Windows asks for a restart)" />
-        <Control Id="AdminBox" Type="CheckBox" X="20" Y="68" Width="330" Height="15" Property="ADDHYPERVADMIN" CheckBoxValue="1"
-                 Text="Add my account ([%USERDOMAIN]\[LogonUser]) to Hyper-V Administrators" />
-        <Control Id="AdminText" Type="Text" X="36" Y="84" Width="314" Height="56" NoPrefix="yes"
-                 Text="hyperbutler starts its VM through the Hyper-V Host Compute Service, which Windows opens only to administrators and to this group. Membership lets every program you run control Hyper-V VMs on this PC, and applies after you sign out and back in. Uninstalling takes your account out again if this installer put it in. Without it, hyperbutler start needs an elevated shell." />
+        <Control Id="BrokerTitle" Type="Text" X="20" Y="70" Width="330" Height="12" NoPrefix="yes"
+                 Text="The hyperbutler broker service is installed and started" />
+        <Control Id="BrokerText" Type="Text" X="36" Y="84" Width="314" Height="56" NoPrefix="yes"
+                 Text="A small Windows service that starts and stops the hyperbutler VM for the people signed in at this PC, so hyperbutler needs no administrator rights and no Hyper-V Administrators membership day to day. It takes only hyperbutler's own requests, over a local pipe, and each person reaches only their own VM. Uninstalling hyperbutler removes it." />
         <Control Id="UpdateBox" Type="CheckBox" X="20" Y="144" Width="330" Height="15" Property="UPDATECHECK" CheckBoxValue="1"
                  Text="Check GitHub for a new hyperbutler version once a day" />
         <Control Id="UpdateText" Type="Text" X="36" Y="160" Width="314" Height="40" NoPrefix="yes"
@@ -200,7 +284,7 @@
       <Publish Dialog="MaintenanceTypeDlg" Control="Back" Event="NewDialog" Value="MaintenanceWelcomeDlg" />
 
       <Property Id="WIXUI_EXITDIALOGOPTIONALTEXT"
-                Value="Before the first start: sign out and back in so the Hyper-V Administrators membership applies, or restart Windows if Setup asks you to. Then open hyperbutler from the Start menu, or run hyperbutler start in a new terminal." />
+                Value="If Setup asks you to, restart Windows first. Then open hyperbutler from the Start menu, or run hyperbutler start in a new terminal: no administrator rights needed." />
     </UI>
     <UIRef Id="WixUI_Common" />
     <!-- Drawn by build-msi.ps1 from assets/brand. -->

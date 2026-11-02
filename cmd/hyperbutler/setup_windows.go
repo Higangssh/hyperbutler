@@ -8,8 +8,9 @@ package main
 //
 //	hyperbutler setup hyperv-admins add --sid SID
 //	hyperbutler setup hyperv-admins remove --sid SID
-//	hyperbutler setup hyperv-admins remove --all
+//	hyperbutler setup hyperv-admins remove --all [--if-broker]
 //	hyperbutler setup vm-platform
+//	hyperbutler setup broker install|uninstall
 //
 // add puts one user account into Hyper-V Administrators (ADR 0004, Installer) and records
 // it under HKLM, but only when this call added it: a user who was a member before stays
@@ -17,8 +18,11 @@ package main
 // so an upgrade run by another user does not lose the first one. remove --sid (the
 // installer's rollback) takes out that account only if the record has it; remove --all
 // (uninstall) takes out the recorded accounts. Neither removes an account the record does
-// not name. Each verb also leaves its outcome in LastResult, for `hyperbutler doctor` and
-// for support, because the installer goes on when a step fails.
+// not name. --if-broker (an upgrade, since the broker replaces the membership) removes
+// nothing unless the broker service runs. broker installs and removes the HCS access
+// broker service (setup_broker_windows.go). Each verb also leaves its outcome in
+// LastResult, for `hyperbutler doctor` and for support, because the installer goes on
+// when a step fails.
 
 import (
 	"bytes"
@@ -35,6 +39,9 @@ import (
 
 	"golang.org/x/sys/windows"
 	"golang.org/x/sys/windows/registry"
+	"golang.org/x/sys/windows/svc"
+
+	"github.com/Higangssh/hyperbutler/internal/broker"
 )
 
 const (
@@ -68,6 +75,7 @@ func cmdSetup(args []string, stdout, stderr io.Writer) error {
 	}
 	var step string
 	var err error
+	removedAll := false
 	switch args[0] {
 	case "hyperv-admins":
 		if len(args) < 2 {
@@ -76,9 +84,10 @@ func cmdSetup(args []string, stdout, stderr io.Writer) error {
 		step = "hyperv-admins " + args[1]
 		fs := newFlagSet("setup "+step, stderr)
 		sid := fs.String("sid", "", "the user account's SID")
-		var all *bool
+		var all, ifBroker *bool
 		if args[1] == "remove" {
 			all = fs.Bool("all", false, "every account the installer added")
+			ifBroker = fs.Bool("if-broker", false, "only if the broker service runs, which replaces the membership (an upgrade)")
 		}
 		if err := parseArgs(fs, args[2:]); err != nil {
 			return err
@@ -88,7 +97,13 @@ func cmdSetup(args []string, stdout, stderr io.Writer) error {
 			err = setupAddHyperVAdmin(setupRecord{registry.LOCAL_MACHINE, setupKey}, *sid, stdout)
 		case args[1] == "remove" && *all == (*sid != ""):
 			return usagef("setup hyperv-admins remove: give --sid SID or --all")
+		case args[1] == "remove" && *ifBroker && !brokerServiceRuns():
+			// An upgrade takes out the accounts it recorded only once the broker,
+			// which replaces the membership, runs (ADR 0004, Installer (M4)).
+			_, _ = fmt.Fprintln(stdout, "the broker service does not run; the accounts the installer added stay in Hyper-V Administrators")
+			return nil
 		case args[1] == "remove":
+			removedAll = *all
 			err = setupRemoveHyperVAdmins(setupRecord{registry.LOCAL_MACHINE, setupKey}, *sid, stdout)
 		default:
 			return usagef("setup hyperv-admins: unknown verb %q", args[1])
@@ -99,15 +114,55 @@ func cmdSetup(args []string, stdout, stderr io.Writer) error {
 		}
 		step = "vm-platform"
 		err = setupVMPlatform(stdout)
+	case "broker":
+		if len(args) < 2 || (args[1] != "install" && args[1] != "uninstall") {
+			return usagef("setup broker: install or uninstall")
+		}
+		if err := parseArgs(newFlagSet("setup broker "+args[1], stderr), args[2:]); err != nil {
+			return err
+		}
+		step = "broker " + args[1]
+		err = cmdSetupBroker(args[1], stdout)
 	default:
 		return usagef("setup: unknown command %q", args[0])
 	}
-	// The uninstall's remove --all deleted the record; recording its success would bring
-	// the key back.
-	if err != nil || step != "hyperv-admins remove" || len(args) < 3 || args[2] != "--all" {
-		setupRecord{registry.LOCAL_MACHINE, setupKey}.result(step, err)
+	finishSetup(setupRecord{registry.LOCAL_MACHINE, setupKey}, step, err, removedAll)
+	var note *setupNote
+	if errors.As(err, &note) {
+		_, _ = fmt.Fprintln(stdout, note.msg)
+		return nil
 	}
 	return err
+}
+
+// finishSetup records a verb's outcome in rec (LastResult), except where that would leave
+// the record behind on a machine without the product:
+//
+//   - the uninstall's remove --all deleted the record; recording its success would bring
+//     the key back;
+//   - a broker uninstall that succeeded is the uninstall's, or the rollback of a first
+//     install that failed: when the record names no account, the key goes (and its
+//     parent, if that is empty then), instead of keeping a LastResult for no product.
+func finishSetup(rec setupRecord, step string, err error, removedAll bool) {
+	switch {
+	case err == nil && removedAll:
+		return
+	case err == nil && step == "broker uninstall" && rec.deleteIfEmpty():
+		return
+	}
+	rec.result(step, err)
+}
+
+// setupNote is a verb's outcome that is not a failure but is worth recording, such as a
+// step left undone on purpose: LastResult says "ok, <note>", and the verb succeeds.
+type setupNote struct{ msg string }
+
+func (n *setupNote) Error() string { return n.msg }
+
+// brokerServiceRuns reports whether the broker service is installed and running.
+func brokerServiceRuns() bool {
+	st, err := broker.QueryService(broker.ServiceName)
+	return err == nil && st.Installed && st.State == svc.Running
 }
 
 // checkSetupUserSID accepts only one person's account: a user of a machine or an Active
@@ -192,7 +247,10 @@ func (r setupRecord) result(step string, err error) {
 	}
 	defer func() { _ = k.Close() }()
 	s := "ok"
-	if err != nil {
+	var note *setupNote
+	if errors.As(err, &note) {
+		s = "ok, " + note.msg
+	} else if err != nil {
 		s = err.Error()
 		if len(s) > 1024 {
 			s = s[:1024]
@@ -203,27 +261,29 @@ func (r setupRecord) result(step string, err error) {
 
 // deleteIfEmpty removes the record's key once it names no account (the uninstall's last
 // step), and its parent (SOFTWARE\hyperbutler) if that is then empty: the installer's own
-// values there are gone by then, but it kept the key for this subkey.
-func (r setupRecord) deleteIfEmpty() {
+// values there are gone by then, but it kept the key for this subkey. It reports whether
+// it deleted the record's key.
+func (r setupRecord) deleteIfEmpty() bool {
 	if v, err := r.added(); err != nil || len(v) != 0 {
-		return
+		return false
 	}
 	if registry.DeleteKey(r.root, r.path) != nil {
-		return
+		return false
 	}
 	parent := r.path[:max(strings.LastIndex(r.path, `\`), 0)]
 	if parent == "" {
-		return
+		return true
 	}
 	k, err := registry.OpenKey(r.root, parent, registry.QUERY_VALUE|registry.ENUMERATE_SUB_KEYS)
 	if err != nil {
-		return
+		return true
 	}
 	info, err := k.Stat()
 	_ = k.Close()
 	if err == nil && info.SubKeyCount == 0 && info.ValueCount == 0 {
 		_ = registry.DeleteKey(r.root, parent)
 	}
+	return true
 }
 
 // localGroupMembersInfo0 is LOCALGROUP_MEMBERS_INFO_0.

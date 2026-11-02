@@ -1,7 +1,7 @@
 # Builds the hyperbutler MSI from the folder dist/package.ps1 stages (dist/out/<name>, the
 # zip's contents), with WiX 5 (docs/install.md).
 #
-#   pwsh -File dist\msi\build-msi.ps1 -Stage DIR [-Wix PATH] [-Out DIR] [-MaxBytes N]
+#   pwsh -File dist\msi\build-msi.ps1 -Stage DIR [-Wix PATH] [-Out DIR] [-MaxBytes N] [-FailForTest]
 #
 # -Wix is wix.exe from the WiX 5 .NET tool (`dotnet tool install wix --version 5.0.2`),
 # default `wix` on PATH. The WiX extensions are fetched from nuget.org at the same version
@@ -10,13 +10,18 @@
 # The MSI version is the X.Y.Z of the stage's BUILDINFO.txt version when that is a release
 # tag or its -alpha/-beta/-rc/-preview; anything else (a snapshot) builds as 0.0.0, which any release
 # upgrades. The MSI allows same-version upgrades, so v0.2.0 replaces v0.2.0-rc.1.
+#
+# -FailForTest builds a test MSI (named ...-failtest.msi, never a release) that fails on
+# purpose just before InstallFinalize when WIXFAILWHENDEFERRED=1 is given, so the
+# rollbacks of an install and an upgrade can be tested (docs/install.md).
 
 [CmdletBinding()]
 param(
     [Parameter(Mandatory)] [string]$Stage,
     [string]$Wix = 'wix',
     [string]$Out = '',
-    [long]$MaxBytes = 150MB   # REQ-UX-002: the installer is at most 150 MB
+    [long]$MaxBytes = 150MB,   # REQ-UX-002: the installer is at most 150 MB
+    [switch]$FailForTest
 )
 
 $ErrorActionPreference = 'Stop'
@@ -27,7 +32,7 @@ $wixVersion = '5.0.2'
 function Fail([string]$msg) { throw "build-msi: $msg" }
 
 $Stage = (Resolve-Path -LiteralPath $Stage).Path
-foreach ($f in 'hyperbutler.exe', 'WebView2Loader.dll', 'BUILDINFO.txt', 'image\image.json', 'clients\docker.exe') {
+foreach ($f in 'hyperbutler.exe', 'hyperbutler-broker.exe', 'WebView2Loader.dll', 'BUILDINFO.txt', 'image\image.json', 'clients\docker.exe') {
     if (-not (Test-Path -LiteralPath (Join-Path $Stage $f) -PathType Leaf)) { Fail "$Stage has no $f; give the folder dist/package.ps1 staged" }
 }
 $name = Split-Path -Leaf $Stage
@@ -54,6 +59,10 @@ if ($LASTEXITCODE -ne 0 -or "$wixOut" -notmatch "^$([regex]::Escape($wixVersion)
 $work = Join-Path $Out 'msi-work'
 if (Test-Path $work) { Remove-Item -Recurse -Force $work }
 New-Item -ItemType Directory $work | Out-Null
+if ($FailForTest) {
+    if ($env:GITHUB_OUTPUT) { Fail '-FailForTest is for a local test MSI, not a release' }
+    $name += '-failtest'
+}
 $msi = Join-Path $Out "$name.msi"
 if (Test-Path $msi) { Remove-Item -Force $msi }
 
@@ -99,7 +108,7 @@ try {
     }
     & $Wix build -arch x64 -nologo `
         -ext "WixToolset.Util.wixext/$wixVersion" -ext "WixToolset.UI.wixext/$wixVersion" `
-        -d "ProductVersion=$productVersion" -d "Version=$version" `
+        -d "ProductVersion=$productVersion" -d "Version=$version" -d "FailForTest=$([int][bool]$FailForTest)" `
         -bindpath "stage=$Stage\" -bindpath "ui=$work\" `
         -o $msi (Join-Path $here 'hyperbutler.wxs')
     if ($LASTEXITCODE -ne 0) { Fail "wix build failed (exit $LASTEXITCODE)" }

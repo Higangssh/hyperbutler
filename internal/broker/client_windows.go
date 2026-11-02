@@ -47,6 +47,12 @@ func IsCode(err error, code proto.Code) bool {
 	return errors.As(err, &re) && re.Code == code
 }
 
+// ErrUntrustedPipe is what Dial's errors wrap when a pipe it reached is not the
+// broker's: its owner is not SYSTEM, a service or this user, the shared endpoint named
+// a pipe not of this user's form, or the two pipes have different owners. Another
+// program then holds the name (rule 5); the client sends it nothing.
+var ErrUntrustedPipe = errors.New("not the broker's pipe")
+
 // clientIOTimeout bounds one request; a start waits longer (the broker's own
 // RequestTimeout is 2 minutes).
 const (
@@ -80,7 +86,7 @@ func Dial(ctx context.Context, shared string) (*Client, error) {
 	}
 	if !ValidUserPipeName(shared, self, r.PipeName) || transport.ValidatePipeName(r.PipeName) != nil {
 		// The client connects only to a name of this user's own form.
-		return nil, fmt.Errorf("broker: %s named endpoint %q, which is not this user's", shared, r.PipeName)
+		return nil, fmt.Errorf("broker: %s named endpoint %q, which is not this user's (%w)", shared, r.PipeName, ErrUntrustedPipe)
 	}
 	c, owner, err := dialPipe(ctx, r.PipeName)
 	if err != nil {
@@ -88,7 +94,7 @@ func Dial(ctx context.Context, shared string) (*Client, error) {
 	}
 	if owner != brokerSID {
 		_ = c.Close()
-		return nil, fmt.Errorf("broker: %s belongs to %s, the shared endpoint to %s", r.PipeName, owner, brokerSID)
+		return nil, fmt.Errorf("broker: %s belongs to %s, the shared endpoint to %s (%w)", r.PipeName, owner, brokerSID, ErrUntrustedPipe)
 	}
 	return c, nil
 }
@@ -154,7 +160,7 @@ func checkPipeOwner(c net.Conn) (string, error) {
 		return "", err
 	}
 	if !trustedPipeOwner(owner.String(), self) {
-		return "", fmt.Errorf("the pipe belongs to %s, not to the broker", owner)
+		return "", fmt.Errorf("the pipe belongs to %s, not to the broker (%w)", owner, ErrUntrustedPipe)
 	}
 	return owner.String(), nil
 }

@@ -5,7 +5,8 @@ name: Release
 # docs/release.md (soak, host-full, etc.), which hosted runners cannot run.
 #
 #   guest-image  canonical guest image + GPL source bundle (strict: signed inputs only)
-#   package      hyperbutler.exe (pinned to the guest image's image.json), the docker CLI
+#   package      hyperbutler.exe and hyperbutler-broker.exe (both pinned to the guest
+#                image's image.json), the docker CLI
 #                and compose built from dist/clients.lock, and the portable zip
 #                (dist/package.ps1), on Windows
 #   sbom         SPDX SBOM of the zip contents (syft), with no write permissions
@@ -252,7 +253,7 @@ jobs:
           cat >notes.md <<EOF
           Built by the Release workflow from $TAG ($GITHUB_SHA).
 
-          - \`$NAME.msi\`: the installer; it also adds PATH, Hyper-V Administrators (with consent) and Virtual Machine Platform (docs/install.md). Not code-signed yet: SmartScreen asks once (More info, Run anyway).
+          - \`$NAME.msi\`: the installer; it also installs the broker service (no Hyper-V Administrators or admin rights needed day to day; a preview until its install test in docs/install.md has run), PATH and Virtual Machine Platform (docs/install.md). Not code-signed yet: SmartScreen asks once (More info, Run anyway).
           - \`$NAME.zip\`: unzip, add the folder to PATH, run \`hyperbutler start\`.
           - \`hyperbutler-$TAG-guest-sources.tar\`: corresponding source of the guest image's GPL components.
           - \`hyperbutler-$TAG-guest-inputs.tar\`: the signed Alpine packages the guest image was built from.

@@ -317,11 +317,16 @@ func (p *publisher) update(fn func(*State)) {
 // CleanupOrphans terminates the compute systems whose name starts with prefix. Call it
 // only while holding the engine lock: then no live engine owns them. Normally there are
 // none, because every VM is created with ShouldTerminateOnLastHandleClosed and dies
-// with its engine.
+// with its engine. A caller HCS refuses (a user without Hyper-V Administrators, whose VMs
+// the broker service runs and sweeps) cannot have made any: that is not worth a warning.
 func CleanupOrphans(b Backend, prefix string, log *slog.Logger) int {
 	list, err := b.List(VMOwner)
 	if err != nil {
-		log.Warn("list compute systems", "err", err)
+		level := slog.LevelWarn
+		if ErrorCode(err) == CodeHCSAccessDenied || ErrorCode(err) == CodeHCSSignInPending {
+			level = slog.LevelDebug
+		}
+		log.Log(context.Background(), level, "list compute systems", "err", err)
 		return 0
 	}
 	n := 0
@@ -356,16 +361,20 @@ func Describe(code, pipe string) string {
 		return strings.TrimSpace(fmt.Sprintf(`
 The Host Compute Service (HCS) refused access.
 
-hyperbutler starts its VM through HCS directly, which today needs your account in the
-local "Hyper-V Administrators" group. An administrator adds you once with:
+This start ran the VM in hyperbutler's own process: the hyperbutler broker service is
+not installed, or the start asked for that (--backend hcs, or --image-dir with a guest
+image of your own, which the service does not boot). Then HCS needs your account in the
+local "Hyper-V Administrators" group, or an elevated shell.
+
+Without the service: install hyperbutler with its installer (the .msi of the release),
+which installs it; the service starts the VM for you without any group membership.
+Then run hyperbutler start again (without --backend hcs or --image-dir).
+
+Or, without the service (developer mode), an administrator adds you once with:
 
     net localgroup "Hyper-V Administrators" %s /add
 
-Then sign out and back in (group changes apply at sign-in). No elevation is needed
-after that, and hyperbutler never asks for it.
-
-A later release replaces this with a small HCS access broker service (ADR 0004), so
-that standard users need no group membership.`, os.Getenv("USERNAME")))
+and you sign out and back in (group changes apply at sign-in).`, os.Getenv("USERNAME")))
 	case CodeHCSSignInPending:
 		return strings.TrimSpace(`
 The Host Compute Service (HCS) refused access, but your account IS in the
@@ -382,6 +391,22 @@ No elevation is needed after that.`)
 		return "The VM stopped on its own. `hyperbutler logs --console` shows why."
 	case CodeBrokerLost:
 		return "The HCS access broker service stopped or restarted, which ends its VMs. `hyperbutler start` starts again; if it keeps happening, `hyperbutler doctor` checks the service, and the Application event log (source " + broker.EventSource + ") says why it stopped."
+	case CodeBrokerUnavailable:
+		return "The hyperbutler broker service does not answer on its pipe (" + broker.ServicePipe + "). `hyperbutler doctor` checks it; " +
+			"an administrator restarts it with sc.exe stop " + broker.ServiceName + " and sc.exe start " + broker.ServiceName +
+			", and the Application event log (source " + broker.EventSource + ") says why it fails. `hyperbutler start --backend hcs` " +
+			"runs the VM without it, which needs Hyper-V Administrators."
+	case CodeBrokerRefused:
+		return "The hyperbutler broker service refused to start the VM; the error above says why. If it names the data directory, " +
+			"it must be a local NTFS folder that only you (and SYSTEM and Administrators) can open, as hyperbutler creates it. " +
+			"`hyperbutler doctor` checks the service, and the Application event log (source " + broker.EventSource + ") has its side."
+	case CodeBrokerSquatted:
+		return "Another program holds a pipe name of the hyperbutler broker service, so hyperbutler sent it nothing (it could pose as the service). " +
+			"`hyperbutler doctor` names the pipe. Find and stop that program, then an administrator restarts the service: " +
+			"sc.exe stop " + broker.ServiceName + ", then sc.exe start " + broker.ServiceName + "."
+	case CodeBrokerOld:
+		return "The hyperbutler broker service is older than this hyperbutler. Install the hyperbutler release that matches this one " +
+			"(its installer updates the service, which needs administrator rights once)."
 	}
 	return ""
 }
