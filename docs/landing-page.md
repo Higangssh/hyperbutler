@@ -41,6 +41,8 @@ Every file in `site/` except `_headers` is served, which is why these notes live
 
 ## Custom domain
 
+The site is served at https://hyperbutler.dev (registered on Cloudflare, 2026-11-02).
+
 1. In the Pages project: **Custom domains** > **Set up a custom domain**, and enter the domain
    bought on Cloudflare (or a subdomain of it). Because the zone is on Cloudflare, the DNS
    record and the certificate are created for you.

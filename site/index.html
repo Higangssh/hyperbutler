@@ -9,13 +9,12 @@
   <meta name="theme-color" content="#060a12">
 
   <!--
-    SITE URL: every URL on this page is relative on purpose, because the domain is not
-    chosen yet. Once it is, make these two absolute (https://<domain>/ and
-    https://<domain>/img/preview-light.png): some link-preview crawlers ignore a relative
-    og:image. Nothing else on the site names the domain.
+    SITE URL: the only two places that name the domain (link-preview crawlers ignore a
+    relative og:image); every other URL on the site is relative.
   -->
-  <link rel="canonical" href="/">
-  <meta property="og:image" content="/img/preview-light.png">
+  <link rel="canonical" href="https://hyperbutler.dev/">
+  <meta property="og:url" content="https://hyperbutler.dev/">
+  <meta property="og:image" content="https://hyperbutler.dev/img/preview-light.png">
 
   <meta property="og:type" content="website">
   <meta property="og:site_name" content="hyperbutler">
