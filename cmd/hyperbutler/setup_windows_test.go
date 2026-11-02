@@ -84,7 +84,10 @@ func TestSetupNeedsElevation(t *testing.T) {
 	for _, args := range [][]string{
 		{"hyperv-admins", "add", "--sid", "S-1-5-21-1-2-3-1001"},
 		{"hyperv-admins", "remove", "--all"},
+		{"hyperv-admins", "remove", "--all", "--if-broker"},
 		{"vm-platform"},
+		{"broker", "install"},
+		{"broker", "uninstall"},
 	} {
 		var out, errb bytes.Buffer
 		err := cmdSetup(args, &out, &errb)

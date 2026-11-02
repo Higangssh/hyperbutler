@@ -184,8 +184,9 @@ try {
         } else { Warn "cannot run the amd64 hyperbutler.exe here to check its image pin" }
 
         # The HCS access broker (ADR 0004), pinned to the same image.json and stamped with
-        # this version. It ships in the zip only; the MSI leaves it out until it installs it
-        # as a service.
+        # this version, so it boots the image\ folder next to it, which is hyperbutler.exe's
+        # too. The MSI installs it as the service (dist/msi, `hyperbutler setup broker
+        # install`); in the zip it is there for `hyperbutler-broker install` by hand.
         $brokerExe = Join-Path $stage 'hyperbutler-broker.exe'
         $brokerLdflags = "$ldflags -X main.version=$Version"
         Exec go build -trimpath -buildvcs=true -ldflags $brokerLdflags -o $brokerExe ./cmd/hyperbutler-broker | Out-Null
