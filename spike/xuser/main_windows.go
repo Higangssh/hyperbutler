@@ -4,18 +4,29 @@
 // attempt was refused and "FAIL" when it was not.
 //
 //	xuser -vmid <A's runtime id> -data <A's data directory> [-shared \\.\pipe\hyperbutler-broker]
+//
+// With -catch it instead listens on the wildcard VM id for the guest-initiated services
+// (the plain network link 1024, the share 2385) for that long, as B squatting the window
+// in which A's engine (re)starts while A's VM runs, and reports every connection that
+// arrives: it answers alternately with nothing and with 32 random bytes (a wrong
+// secret), and the guest must close each one without having written a byte.
+//
+//	xuser -catch 3m [-vmid <A's runtime id>]
 package main
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"flag"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/Microsoft/go-winio"
@@ -41,7 +52,16 @@ func main() {
 	vmidFlag := flag.String("vmid", "", "A's VM runtime id")
 	data := flag.String("data", "", "A's data directory")
 	shared := flag.String("shared", broker.ServicePipe, "the broker's shared endpoint")
+	catchFor := flag.Duration("catch", 0, "listen on the wildcard VM id for the guest-initiated services this long instead of probing")
 	flag.Parse()
+	if *catchFor > 0 {
+		catch(*catchFor, *vmidFlag)
+		fmt.Printf("%d attempt(s) not refused\n", failed)
+		if failed > 0 {
+			os.Exit(1)
+		}
+		return
+	}
 	vmid, err := guid.FromString(*vmidFlag)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "xuser: -vmid:", err)
@@ -120,6 +140,64 @@ func main() {
 	if failed > 0 {
 		os.Exit(1)
 	}
+}
+
+// catch listens on the wildcard VM id for ports 1024 and 2385 for d and reports each
+// connection a guest makes to it. A refused listen passes; a connection passes when the
+// guest wrote nothing to it (it checks the listener's secret before it writes, ADR 0004
+// rule 6). vmid, if set, names A's VM in the report.
+func catch(d time.Duration, vmid string) {
+	fmt.Printf("xuser -catch: listening on the wildcard VM id for %v; restart A's engine now (A's VM %s keeps running)\n", d, vmid)
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	conns := 0
+	for _, port := range []uint32{1024, 2385} {
+		l, err := winio.ListenHvsock(&winio.HvsockAddr{VMID: guid.GUID{}, ServiceID: transport.VsockServiceID(port)})
+		if err != nil {
+			report(true, fmt.Sprintf("hvsock: listen for every VM on port %d", port), err)
+			continue
+		}
+		time.AfterFunc(d, func() { _ = l.Close() })
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for {
+				c, err := l.Accept()
+				if err != nil {
+					return
+				}
+				mu.Lock()
+				conns++
+				n := conns
+				mu.Unlock()
+				wg.Add(1)
+				go func() {
+					defer wg.Done()
+					catchOne(c, port, n%2 == 0)
+				}()
+			}
+		}()
+	}
+	wg.Wait()
+	if conns == 0 {
+		fmt.Println("no connection arrived: meaningful only if A's engine restarted during the window")
+	}
+}
+
+// catchOne reads what the guest sends on c, after sending a wrong secret if wrong.
+func catchOne(c net.Conn, port uint32, wrong bool) {
+	defer func() { _ = c.Close() }()
+	how := "nothing sent"
+	if wrong {
+		how = "a wrong secret sent"
+		b := make([]byte, 32)
+		_, _ = rand.Read(b)
+		_, _ = c.Write(b)
+	}
+	_ = c.SetReadDeadline(time.Now().Add(5 * time.Second))
+	n, err := io.Copy(io.Discard, c)
+	report(n == 0, fmt.Sprintf("hvsock: guest %v on port %d (%s)", c.RemoteAddr(), port, how),
+		fmt.Sprintf("the guest wrote %d byte(s), then %s", n, errText(err)))
 }
 
 func dialBroker(ctx context.Context, shared string) (*broker.Client, error) {
