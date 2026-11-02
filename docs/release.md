@@ -51,8 +51,9 @@ x64 programs would run under emulation; the VM would not).
 
 There is no installer and nothing needs admin rights to install: unzip, add the folder to
 the user PATH, run `hyperbutler start` (REQ-PLAT-003). The one-time prerequisites (the Virtual
-Machine Platform feature, and Hyper-V Administrators membership until the ADR 0004 broker
-ships) do need an administrator; the README says so.
+Machine Platform feature, and Hyper-V Administrators membership, since the zip installs
+no ADR 0004 broker service; the MSI does, and needs no membership) do need an
+administrator; the README says so.
 
 ## How the pipeline works
 
