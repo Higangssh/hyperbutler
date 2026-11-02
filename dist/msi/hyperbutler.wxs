@@ -44,6 +44,15 @@
     <Property Id="ENABLEVMP" Value="1" Secure="yes" />
     <SetProperty Id="ADDHYPERVADMIN" Action="HbAdminDefault" Value="1" Sequence="ui" After="AppSearch" Condition="NOT ADDHYPERVADMIN" />
     <SetProperty Id="ADDHYPERVADMIN" Action="HbAdminOff" Value="[HBNOTHING]" Sequence="ui" After="HbAdminDefault" Condition="ADDHYPERVADMIN=&quot;0&quot;" />
+    <!-- UPDATECHECK: whether the app looks for a new release once a day (on by default;
+         UPDATECHECK="" on the command line, or an unticked box, turns it off). Off is
+         written as UpdateCheck=0 under HKLM\SOFTWARE\hyperbutler, which the app reads as its
+         default (internal/engine/updatecheck_windows.go); an upgrade keeps a previous off. -->
+    <Property Id="UPDATECHECK" Value="1" Secure="yes" />
+    <Property Id="UPDATECHECKWAS" Secure="yes">
+      <RegistrySearch Id="UpdateCheckWas" Root="HKLM" Key="SOFTWARE\hyperbutler" Name="UpdateCheck" Type="raw" Bitness="always64" />
+    </Property>
+    <SetProperty Id="UPDATECHECK" Action="HbUpdateCheckKeepOff" Value="[HBNOTHING]" Sequence="both" After="AppSearch" Condition="UPDATECHECKWAS=&quot;#0&quot;" />
     <SetDirectory Id="INSTALLFOLDER" Value="[ProgramFiles64Folder]hyperbutler\" Sequence="both" />
     <!-- The Host Compute Service exists once Virtual Machine Platform (or Hyper-V) is on and
          Windows has restarted. -->
@@ -84,6 +93,9 @@
         <RegistryValue Root="HKLM" Key="SOFTWARE\hyperbutler" Name="InstallDir" Type="string" Value="[INSTALLFOLDER]" KeyPath="yes" />
         <Environment Id="PathInstall" Name="PATH" Value="[INSTALLFOLDER]" Part="last" Action="set" System="yes" />
         <Environment Id="PathClients" Name="PATH" Value="[INSTALLFOLDER]clients" Part="last" Action="set" System="yes" />
+      </Component>
+      <Component Id="UpdateCheckOff" Guid="B7E2C9A4-1F3D-4E58-9A6B-2C8D0F4E7A19" Condition="NOT UPDATECHECK">
+        <RegistryValue Root="HKLM" Key="SOFTWARE\hyperbutler" Name="UpdateCheck" Type="integer" Value="0" KeyPath="yes" />
       </Component>
     </ComponentGroup>
     <Feature Id="Main" Title="hyperbutler" Level="1">
@@ -152,13 +164,17 @@
         <Control Id="BannerLine" Type="Line" X="0" Y="44" Width="370" Height="0" />
         <Control Id="Title" Type="Text" X="15" Y="6" Width="280" Height="15" Transparent="yes" NoPrefix="yes" Text="{\WixUI_Font_Title}Setup options" />
         <Control Id="Description" Type="Text" X="25" Y="23" Width="280" Height="15" Transparent="yes" NoPrefix="yes" Text="What hyperbutler needs from Windows, done once now." />
-        <Control Id="VmpBox" Type="CheckBox" X="20" Y="56" Width="330" Height="17" Property="ENABLEVMP" CheckBoxValue="1"
+        <Control Id="VmpBox" Type="CheckBox" X="20" Y="50" Width="330" Height="15" Property="ENABLEVMP" CheckBoxValue="1"
                  Text="Turn on Virtual Machine Platform if it is off (Windows asks for a restart)" />
-        <Control Id="AdminBox" Type="CheckBox" X="20" Y="82" Width="330" Height="17" Property="ADDHYPERVADMIN" CheckBoxValue="1"
+        <Control Id="AdminBox" Type="CheckBox" X="20" Y="68" Width="330" Height="15" Property="ADDHYPERVADMIN" CheckBoxValue="1"
                  Text="Add my account ([%USERDOMAIN]\[LogonUser]) to Hyper-V Administrators" />
-        <Control Id="AdminText" Type="Text" X="36" Y="100" Width="314" Height="78" NoPrefix="yes"
-                 Text="hyperbutler starts its VM through the Hyper-V Host Compute Service, which Windows opens only to administrators and to this group. Membership lets every program you run control Hyper-V virtual machines on this PC, not just hyperbutler, and it takes effect after you sign out and back in. Uninstalling hyperbutler takes your account out of the group again if this installer put it in. Without it, hyperbutler start needs an elevated shell." />
-        <Control Id="PathText" Type="Text" X="20" Y="184" Width="330" Height="40" NoPrefix="yes"
+        <Control Id="AdminText" Type="Text" X="36" Y="84" Width="314" Height="56" NoPrefix="yes"
+                 Text="hyperbutler starts its VM through the Hyper-V Host Compute Service, which Windows opens only to administrators and to this group. Membership lets every program you run control Hyper-V VMs on this PC, and applies after you sign out and back in. Uninstalling takes your account out again if this installer put it in. Without it, hyperbutler start needs an elevated shell." />
+        <Control Id="UpdateBox" Type="CheckBox" X="20" Y="144" Width="330" Height="15" Property="UPDATECHECK" CheckBoxValue="1"
+                 Text="Check GitHub for a new hyperbutler version once a day" />
+        <Control Id="UpdateText" Type="Text" X="36" Y="160" Width="314" Height="40" NoPrefix="yes"
+                 Text="Privacy: an anonymous request for the latest release to api.github.com, nothing else; hyperbutler sends no usage data. Change it later with: hyperbutler config set updateCheck false" />
+        <Control Id="PathText" Type="Text" X="20" Y="202" Width="330" Height="28" NoPrefix="yes"
                  Text="The hyperbutler folder and its docker CLI (clients) are added to the end of the system PATH, so a docker CLI you already have keeps being used." />
         <Control Id="BottomLine" Type="Line" X="0" Y="234" Width="370" Height="0" />
         <Control Id="Back" Type="PushButton" X="180" Y="243" Width="56" Height="17" Text="!(loc.WixUIBack)" />

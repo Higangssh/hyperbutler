@@ -13,6 +13,7 @@ install.
 | Appends that folder and its `clients\` folder to the **end** of the system PATH, so a docker CLI you already have (Docker Desktop's, say) keeps being the one `docker` runs | always | yes |
 | Turns on Virtual Machine Platform with DISM and asks for a restart | the box is ticked (default) and the Host Compute Service is missing | no: other programs (WSL, Hyper-V) may use it |
 | Adds your account to Hyper-V Administrators ([ADR 0004](adr/0004-hcs-access-broker.md#installer-amendment-2026-11-02)) | the box is ticked (default in the window); applies after you sign out and back in | yes, if the installer added it |
+| Leaves the daily update check on, or records that it is off (`HKLM\SOFTWARE\hyperbutler`, `UpdateCheck` = 0), the default for every user who has not set `updateCheck` | the "Check GitHub for a new version" box (ticked by default); an upgrade keeps an earlier off | yes |
 | A Start menu shortcut | always | yes |
 
 The options page names the account and says what the group means: every program you run

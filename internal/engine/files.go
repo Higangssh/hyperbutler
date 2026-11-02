@@ -402,7 +402,8 @@ type Settings struct {
 	HTTPSProxy string `json:"httpsProxy,omitempty"`
 	NoProxy    string `json:"noProxy,omitempty"`
 	// UpdateCheck says whether `start` and `status` ask GitHub at most once a day
-	// whether a newer release exists (REQ-UX-022); nil means yes.
+	// whether a newer release exists (REQ-UX-022); nil means the machine's default
+	// (UpdateCheckDefault: yes, unless the installer's box was unticked).
 	UpdateCheck *bool `json:"updateCheck,omitempty"`
 	// Autostart records that `config set autostart true` asked for the sign-in task
 	// (REQ-UX-015). The task in Task Scheduler is what starts the engine.
@@ -427,8 +428,20 @@ const GUILanguageAuto = "auto"
 // then opens in it without asking.
 func (s *Settings) GUILanguageChosen() bool { return s != nil && s.GUILanguage != "" }
 
-// UpdateChecked reports whether the update check is on.
-func (s *Settings) UpdateChecked() bool { return s.UpdateCheck == nil || *s.UpdateCheck }
+// UpdateChecked reports whether the update check is on: the user's setting, or the
+// machine's default when there is none.
+func (s *Settings) UpdateChecked() bool {
+	if s.UpdateCheck == nil {
+		return UpdateCheckDefault()
+	}
+	return *s.UpdateCheck
+}
+
+// UpdateCheckDefault is the update check's default for users who never set it: on,
+// unless the MSI's "Check GitHub for new versions" box was unticked, which leaves
+// UpdateCheck = 0 under HKLM\SOFTWARE\hyperbutler (updatecheck_windows.go). A variable,
+// so tests can replace it.
+var UpdateCheckDefault = func() bool { return true }
 
 // CAImported reports whether the Windows root stores are imported.
 func (s *Settings) CAImported() bool { return s.CAImport == nil || *s.CAImport }
