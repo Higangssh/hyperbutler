@@ -193,6 +193,30 @@ The decision above stands: the broker (B or C) replaces option A, and when it sh
 installer installs the broker instead of adding anyone to the group, and an upgrade takes
 out the membership it recorded.
 
+## Implementation decisions (2026-11-02)
+
+Taken by the owner before the HCS backend was written:
+
+1. **Account.** The broker runs as SYSTEM first. If the option C spike shows HCS accepts
+   `NT SERVICE\hyperbutler-broker` through Hyper-V Administrators, it moves to that account.
+2. **Pause and resume become a 7th verb**, owner-scoped: the free-space guard
+   (REQ-DISK-004, REQ-DISK-010) pauses the caller's own VM and resumes it. Rule 7's list is
+   amended accordingly.
+3. **Image trust.** The broker opens the guest image only from the `image\` folder next to
+   its own executable (Program Files) and checks `image.json` against the SHA-256 compiled
+   into the broker binary, as `hyperbutler.exe` does today. Images and broker ship in the
+   same MSI, so a pin is enough for now; rule 3's ed25519 signature replaces it when images
+   start to ship apart from the broker. No per-user images in broker mode.
+4. **Network configuration** reaches the broker as typed request fields (IPv4 addresses,
+   an MTU in a fixed range, flags), which the broker renders into the kernel command line
+   itself; no caller text reaches the command line.
+5. **The in-process HCS path stays as a developer mode** (`--backend=hcs`), documented as
+   option A, for the zip and for spikes.
+6. **Lifetime.** The connection that started the VM is its lease: when it closes, the broker
+   terminates the VM, as the engine's exit does today.
+7. **Release builds open no serial console pipe.** VM exit is detected through the lease,
+   status and the guest control channel; the console stays in developer mode.
+
 ## Open questions
 
 - Does HCS accept a virtual service account that is a member of Hyper-V Administrators
