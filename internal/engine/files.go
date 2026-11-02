@@ -60,7 +60,10 @@ const (
 	CodePipeInUse        = "pipe-in-use" // another program serves the Docker pipe
 	CodeAlreadyRunning   = "already-running"
 	CodeVMExited         = "vm-exited" // the guest powered off or crashed on its own
-	CodeDataDisk         = "data-disk"
+	// CodeBrokerLost: the connection to the HCS access broker ended (the service stopped,
+	// restarted or crashed), and with it the lease: the broker terminated the VM.
+	CodeBrokerLost = "broker-lost"
+	CodeDataDisk   = "data-disk"
 )
 
 // State is what the engine publishes about itself in state.json.

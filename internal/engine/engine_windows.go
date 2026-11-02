@@ -538,6 +538,9 @@ func (r *runner) exited() bool {
 }
 
 func (r *runner) exitErr() error {
+	if l, ok := r.l.(interface{ LostBroker() bool }); ok && l.LostBroker() {
+		return codeErr(CodeBrokerLost, errors.New("the connection to the HCS access broker ended (the service stopped or restarted), and the broker terminated the VM"))
+	}
 	return codeErr(CodeVMExited, errors.New("the VM stopped on its own; see the console log"))
 }
 

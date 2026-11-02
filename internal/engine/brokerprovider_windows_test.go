@@ -147,6 +147,9 @@ func TestBrokerLeaseGone(t *testing.T) {
 	}
 	c.set(proto.StateStopped, nil)
 	waitGone(t, l)
+	if l.(*brokerLease).LostBroker() {
+		t.Error("a stopped VM was taken for a lost broker")
+	}
 	if err := l.Terminate(); err != nil {
 		t.Fatalf("terminate a stopped VM: %v", err)
 	}
@@ -161,6 +164,9 @@ func TestBrokerLeaseGone(t *testing.T) {
 	l = bootFake(t, c)
 	c.set(proto.StateRunning, errors.New("pipe broken"))
 	waitGone(t, l)
+	if !l.(*brokerLease).LostBroker() {
+		t.Error("a lost connection was not reported as a lost broker")
+	}
 	l.Close()
 
 	// A broker error reply is not a lost lease.

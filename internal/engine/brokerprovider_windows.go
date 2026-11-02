@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/Microsoft/go-winio/pkg/guid"
@@ -158,6 +159,8 @@ type brokerLease struct {
 
 	gone     chan struct{}
 	goneOnce sync.Once
+	// lost is set before gone closes when the connection, not the VM, ended.
+	lost     atomic.Bool
 	stop     chan struct{}
 	stopOnce sync.Once
 	done     chan struct{}
@@ -166,6 +169,9 @@ type brokerLease struct {
 func (l *brokerLease) markGone() { l.goneOnce.Do(func() { close(l.gone) }) }
 
 func (l *brokerLease) Gone() <-chan struct{} { return l.gone }
+
+// LostBroker reports whether the lease ended because the connection to the broker did.
+func (l *brokerLease) LostBroker() bool { return l.lost.Load() }
 
 // watch polls the status until the VM is stopped or the connection is lost.
 func (l *brokerLease) watch(every time.Duration) {
@@ -183,6 +189,7 @@ func (l *brokerLease) watch(every time.Duration) {
 		case err != nil && !isReplyError(err):
 			// The connection is gone, and with it the lease: the broker terminates the VM.
 			l.log.Warn("lost the connection to the broker", "err", err)
+			l.lost.Store(true)
 			l.markGone()
 			return
 		case err != nil:

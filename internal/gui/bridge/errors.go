@@ -25,6 +25,7 @@ const (
 	CodeAccessDenied   = "HB-VM-001"
 	CodeVMExited       = "HB-VM-002"
 	CodeSignInPending  = "HB-VM-003" // in Hyper-V Administrators, but not this sign-in yet
+	CodeBrokerLost     = "HB-VM-004" // the broker service went away, and the VM with it
 	CodePipeInUse      = "HB-PIPE-001"
 	CodeDataDisk       = "HB-DISK-001"
 	CodeAPIUnreachable = "HB-API-001"
@@ -44,7 +45,7 @@ const (
 var Codes = []string{
 	CodeBadRequest, CodeBusy, CodeNotEditable, CodeHidden,
 	CodeStartFailed, CodeStopFailed, CodeRestartFailed, CodeEngineStopped, CodeOtherEngine, CodeEngineBusy,
-	CodeAccessDenied, CodeVMExited, CodeSignInPending, CodePipeInUse, CodeDataDisk,
+	CodeAccessDenied, CodeVMExited, CodeSignInPending, CodeBrokerLost, CodePipeInUse, CodeDataDisk,
 	CodeAPIUnreachable, CodeAPIError, CodeNoContainer,
 	CodeConfigValue, CodeConfigFailed, CodeDaemonInvalid, CodeDaemonApply, CodeDaemonReadOnly,
 	CodeDiagnose, CodeDoctor, CodeOS, CodeImportUnavailable, CodeImportFailed, CodeDesktopNotRunning, CodeImportSpace, CodeImportBusy, CodeConfirm,

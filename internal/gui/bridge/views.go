@@ -59,6 +59,7 @@ var engineCodes = map[string]string{
 	engine.CodePipeInUse:        CodePipeInUse,
 	engine.CodeAlreadyRunning:   CodeOtherEngine,
 	engine.CodeVMExited:         CodeVMExited,
+	engine.CodeBrokerLost:       CodeBrokerLost,
 	engine.CodeDataDisk:         CodeDataDisk,
 }
 

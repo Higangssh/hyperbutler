@@ -18,6 +18,7 @@ import (
 
 	"github.com/Microsoft/go-winio/pkg/guid"
 
+	"github.com/Higangssh/hyperbutler/internal/broker"
 	"github.com/Higangssh/hyperbutler/internal/dockerenv"
 	"github.com/Higangssh/hyperbutler/internal/netstack"
 	"github.com/Higangssh/hyperbutler/internal/transport"
@@ -379,6 +380,8 @@ No elevation is needed after that.`)
 		return "The data disk could not be used. `hyperbutler delete` removes it and starts over (all images, containers and volumes are lost)."
 	case CodeVMExited:
 		return "The VM stopped on its own. `hyperbutler logs --console` shows why."
+	case CodeBrokerLost:
+		return "The HCS access broker service stopped or restarted, which ends its VMs. `hyperbutler start` starts again; if it keeps happening, `hyperbutler doctor` checks the service, and the Application event log (source " + broker.EventSource + ") says why it stopped."
 	}
 	return ""
 }
