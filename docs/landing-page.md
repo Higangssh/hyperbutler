@@ -37,7 +37,7 @@ python -m http.server 8000 --directory site
    `main` redeploys it. Pushes to other branches get preview URLs; turn that off under
    **Settings** > **Builds & deployments** if you do not want them.
 
-Note that every file in `site/` except `_headers` is served, this README included.
+Every file in `site/` except `_headers` is served, which is why these notes live in `docs/`.
 
 ## Custom domain
 
