@@ -112,6 +112,8 @@ SYSTEM otherwise.** It follows these design rules.
    - resize resources within fixed limits
    - set the data location by handle
    - report the broker version
+   - open the caller's own endpoint (rule 5; amended 2026-11-02, M3): served on the
+     shared endpoint only, and with version the only verb served there
 
    Each request is a small, versioned, length-limited message.
 8. **Unprivileged data plane.** File sharing, port forwarding and the Docker API proxy run in
@@ -222,7 +224,9 @@ Taken by the owner before the HCS backend was written:
 - Does HCS accept a virtual service account that is a member of Hyper-V Administrators
   (option C)? This needs an elevated spike.
 - Which HvSocket security descriptor fields are honoured on Home, and does guest-initiated
-  connect need its own descriptor?
+  connect need its own descriptor? Every service now carries the owner-only descriptor in
+  the field its direction uses (see "Per-user endpoints and the VM secret (M3)"); whether
+  Home enforces them is untested, and the per-VM secret is the barrier if it does not.
 
 ## Adversarial review
 
@@ -265,8 +269,9 @@ never installs, registers or starts a service.
   - a length that disagrees with the input, which covers trailing bytes.
 - Decoding is therefore canonical: re-encoding an accepted frame gives the same bytes. The
   fuzzers check this.
-- The only verbs are version, start, stop, status, resize, set-data-location and (since
-  M1, Implementation decision 2) pause, whose optional `Resume` flag resumes. The version
+- The only verbs are version, start, stop, status, resize, set-data-location, (since
+  M1, Implementation decision 2) pause, whose optional `Resume` flag resumes, and (since
+  M3, rule 5) open-endpoint. The version
   verb and the frame header must stay stable across protocol versions. The additions of M1
   keep version 1, because no broker was released before them.
 - A start carries, all optional: CPUs and memory (zero keeps the caller's values; the
@@ -279,8 +284,12 @@ never installs, registers or starts a service.
   template the in-process engine uses too, so no caller text reaches the kernel command
   line (Implementation decision 4).
 - Status replies can say paused. Errors added in M1: image rejected, disk rejected, lease
-  held. The per-VM secret of rule 6 and per-user pipes (rule 5) come in M3; the tag space
-  (1..255) and the frame size leave room for them.
+  held.
+- M3 adds, still in version 1: the open-endpoint verb (no fields; its reply carries the
+  pipe name, 1..128 printable ASCII bytes, required), an optional 32-byte secret in
+  status replies (never all zero, and only with a running or paused VM and its id), and
+  the errors wrong endpoint and endpoint squatted. The fuzzers cover both, with corpus
+  entries in `testdata/fuzz/`.
 
 ### Identity and state
 
@@ -369,8 +378,10 @@ it terminates its own.
 
 The client (`internal/broker/client_windows.go`) dials at impersonation level only after
 checking that the pipe's owner is SYSTEM, a service SID (`S-1-5-80-...`) or the user
-itself, since a squatter's pipe could otherwise impersonate the user. In
-`hyperbutler start --broker PIPE` (developer mode, not in the usage text) the engine
+itself, since a squatter's pipe could otherwise impersonate the user; since M3 it does so
+on the shared endpoint and then on the user's own (see below). In
+`hyperbutler start --broker PIPE` (developer mode, not in the usage text; PIPE is the
+shared endpoint) the engine
 creates the data disk as before, passes the data directory by handle, starts with the
 network as the stack runs it, polls the status every 10 s (which also keeps the lease
 inside the idle timeout), pauses and resumes through the broker for the free-space guard,
@@ -423,6 +434,131 @@ Still to check in the integration run (not run yet, see `hcs_integration_test.go
   - that user's tokens and handles are refused.
 - Network shares (SMB) and ProjFS or cloud-filter directories, against the real timeout.
 - Option C (the virtual account).
+
+### Per-user endpoints and the VM secret (M3)
+
+Rules 5 and 6, implemented 2026-11-02 in `internal/broker` (`endpoints_windows.go`,
+`server.go`, `client_windows.go`), `internal/vmsecret`, `internal/vmtemplate` and the
+guest's agent, hyperbutlerd and netfwd.
+
+**Endpoints.**
+
+- The shared endpoint (`\\.\pipe\hyperbutler-broker`, IU may connect) serves two verbs:
+  version and open-endpoint. Every other verb gets "wrong endpoint" there, so no VM state
+  and no secret ever travels on it; the server also refuses to write a reply with a
+  secret on it, as a last check.
+- Why a verb and not a longer handshake: the version reply must stay stable across
+  protocol versions (rule 7, Wire format), and a verb without fields, answered only on
+  the shared endpoint, adds the least: one schema, one reply field, two codes.
+- open-endpoint creates, on first use, `\\.\pipe\hyperbutler-broker-<hex>`, where `<hex>`
+  is the first 16 bytes of SHA-256 over the caller's SID in its canonical string form,
+  with `FILE_FLAG_FIRST_PIPE_INSTANCE` and the protected DACL of "Pipe" below (the broker
+  account full access, that SID `0x12019b`, nobody else). The reply names it.
+- On a per-user endpoint the caller's token SID must be the endpoint's SID (checked after
+  the first frame, before any verb runs, the version verb included), every VM verb is
+  served, open-endpoint gets "wrong endpoint", and status replies of a running VM carry
+  its secret.
+- If the per-user name exists already (squatted), the request fails with "endpoint
+  squatted" and is logged; nothing is created under another name, and the next request
+  tries again. `hyperbutler doctor` should report the code (M2).
+- At most 64 per-user endpoints (`EndpointsConfig.MaxUsers`); beyond that "busy". The
+  per-user connection cap (`MaxConnsPerUser`) counts each endpoint separately.
+- The client derives the per-user name itself, connects to the shared endpoint, asks,
+  refuses any name other than the one it derived, and connects there, checking the owner
+  of both pipes as before. The engine's broker provider uses it unchanged.
+- `cmd/hyperbutler-broker` must serve through `broker.ListenEndpoints(srv,
+  broker.EndpointsConfig{Name: pipe})` and `Endpoints.Serve` / `Close` instead of
+  `ListenPipe` and `Server.Serve`; a client of M3 refuses an M1 broker's single pipe.
+
+**hvsock descriptors.** Every service in the VM's table allows the owner's SID only
+(`vm.UserOnlySDDL`), in the field its direction uses, and the defaults deny everyone:
+
+| Service | Who connects | Connect | Bind |
+|---|---|---|---|
+| Docker API (2375) | host to guest | owner | deny |
+| guest control (2380) | host to guest | owner | deny |
+| network link (1024), offload | host to guest | owner | owner |
+| network link (1024), plain | guest to host | deny | owner |
+| share (2385) | guest to host | deny | owner |
+
+Where the guest connects to a host listener, the bind descriptor is what keeps another
+user from listening there in the owner's place. A test checks every shape of VM.
+
+**Secret.**
+
+- 32 bytes from `crypto/rand` per start: the broker's HCS backend makes one in each
+  `Start`, the in-process developer mode in each boot, so both paths are the same.
+- vmtemplate renders it from a typed `[32]byte` as `hyperbutler.secret=<64 hex digits>`,
+  right after the hash table sizes; a zero secret, or a developer command line that names
+  the key, is refused. The guest refuses a command line with the key twice.
+- The secret returns only in the owner's own endpoint's start, status, resize and pause
+  replies (tag 19). `vmsecret.Secret` prints as `[redacted]` under every fmt verb, so it
+  cannot reach a log through a struct.
+- The host sends it as the first 32 bytes of every hvsock connection it makes to the
+  guest (`transport.HvsockTarget.Secret`, which every dial of the Docker API, the control
+  channel and the offload link carries).
+- The guest agent (Docker API), hyperbutlerd (control channel) and netfwd -vnet (offload
+  link) read exactly 32 bytes within 5 s, compare in constant time, and close a
+  connection that fails without writing a byte. hyperbutlerd admits a connection before
+  it may replace the current one, so a peer without the secret cannot end the host's
+  session. A guest whose command line has no usable secret refuses every connection.
+
+**Limits.**
+
+- `/proc/cmdline` is readable inside the guest, containers included. The secret guards
+  against other host users, not against the owner's own containers, which could leak it;
+  a leaked secret matters only where the descriptors are not enforced.
+- The guest-initiated connections (share, plain network link) are protected by their
+  bind descriptors only; the guest does not check that the listener knows the secret. A
+  later change could have the host listener send it first, for the guest to check.
+- Host and guest image must match: an M3 host sends 32 bytes an older guest would pass
+  to dockerd, and an M3 guest refuses an older host. They ship together in the MSI.
+- Whether Home enforces the HvSocket descriptors is the open question above; the
+  two-account plan below tests it.
+
+### Two-account test plan (M3, not run)
+
+Machine with the broker installed (SYSTEM service, or `hyperbutler-broker -hcs-backend`
+run elevated), two local accounts: A (the owner, may be admin) and B (standard user, not
+in Hyper-V Administrators, not an administrator). A runs `hyperbutler start --broker
+\\.\pipe\hyperbutler-broker`; record A's VM runtime id (`hyperbutler status` or the
+broker log) and A's per-user pipe name. Every step below runs as B, unelevated, and must
+fail; record the error for each.
+
+1. Pipes:
+   1. Open A's per-user pipe for read/write (`CreateFile`, impersonation QoS): access
+      denied.
+   2. Create a server instance of A's per-user pipe (`CreateNamedPipe` on the name):
+      access denied; and of the shared pipe: access denied.
+   3. On the shared endpoint, send status, start and stop: each gets "wrong endpoint"
+      and no reply carries a VM id or a secret.
+   4. Open-endpoint as B: B gets B's own name, never A's.
+   5. Before the broker starts (reboot or service restart), create A's per-user name as B,
+      then let A connect: A gets "endpoint squatted" (loud failure), and A's client
+      does not connect to B's pipe.
+2. hvsock connects, with A's VM id and each service id: `vsock:2375`, `vsock:2380`,
+   `vsock:1024` (offload mode), plus a random service id. Each connect must be refused
+   by HCS (access denied). On Home record whether it is refused at connect time (the
+   descriptor is honoured) or accepted.
+3. hvsock binds, with A's VM id: listen on `vsock:1024` (plain mode) and `vsock:2385`,
+   and on a wildcard VM id (`HV_GUID_WILDCARD`) for the same services. Each bind must be
+   refused; if one succeeds, restart A's VM and check that A's guest never sends data to
+   B's listener (the share must not mount from B, the network must not come up through B).
+4. Secret, for each connect of step 2 that HCS accepted (or, to exercise the guest even
+   where HCS refuses, as A with a raw dialer that sends no secret):
+   1. Send nothing for 6 s: the guest closes the connection, having written nothing.
+   2. Send 32 zero bytes, then an HTTP `GET /_ping`: closed, nothing read.
+   3. Send the secret of an earlier run of A's VM (A reads it from a status reply with a
+      test client on A's own endpoint, then restarts the VM): closed, nothing read.
+   4. Send 31 bytes of the right secret and wait: closed after 5 s.
+   5. As A, with the right secret: the connection is served (control); this confirms
+      the steps above failed for the right reason.
+   6. During steps 4.1 to 4.4, A's `hyperbutler` session must stay up: the control
+      channel is not replaced and the Docker API keeps answering.
+5. State and data: as B, open A's data directory, `data.vhdx` and the broker's state
+   directory: access denied for each.
+6. Logs: the broker's log, the engine's log and the Event Log contain no secret (search
+   for the hex of the secret A's test client read from its status reply).
 
 ### Review findings (2026-10-30)
 
