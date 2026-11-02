@@ -23,7 +23,7 @@ func TestSendSecret(t *testing.T) {
 	defer b.Close()
 	errc := make(chan error, 1)
 	go func() {
-		errc <- sendSecret(a, s)
+		errc <- SendSecret(a, s)
 		_, _ = a.Write([]byte("GET"))
 	}()
 	if err := vmsecret.Check(b, s); err != nil {

@@ -7,6 +7,12 @@
 //
 //	netfwd -port 1024 -dev eth0 -mtu 1500 [-vnet]
 //
+// Either way the link begins with the VM secret (ADR 0004 rule 6, read from -cmdline):
+// without -vnet netfwd dials the host and checks that the listener sends it first,
+// before netfwd sends a frame, so a listener of another host user (on a wildcard VM id)
+// never carries the guest's network; a listener that does not send it is closed and
+// redialled with a backoff. With -vnet the host dials and sends it (see acceptLoop).
+//
 // With -vnet (the host asks for it with hyperbutler.netvnet=1) the TAP has a
 // virtio_net_hdr and TCP segmentation offload: the kernel hands netfwd TCP segments of
 // up to 64 KiB with a partial checksum and takes the same from the host, so a bulk
@@ -54,7 +60,7 @@ func main() {
 	crc := flag.String("crc", "1", `with -vnet, the per-frame CRC-32C: "1", "0" (link version 1) or "strict" (a mismatch ends the link); must match the host`)
 	benchTCP := flag.Int("bench-tcp", 0, "serve zeros on this TCP port (development)")
 	benchVsock := flag.Uint("bench-vsock", 0, "serve zeros on this AF_VSOCK port to the host (development)")
-	cmdline := flag.String("cmdline", vmsecret.DefaultCmdlinePath, "with -vnet, the kernel command line holding "+vmsecret.CmdlineKey+", the VM secret the host's link must begin with")
+	cmdline := flag.String("cmdline", vmsecret.DefaultCmdlinePath, "the kernel command line holding "+vmsecret.CmdlineKey+", the VM secret the host's link must begin with")
 	flag.Parse()
 	if flag.NArg() != 0 || *port == 0 || *port > 0xFFFFFFFE || !frame.ValidMTU(*mtu) ||
 		len(*dev) == 0 || len(*dev) >= unix.IFNAMSIZ || (*crc != "1" && *crc != "0" && *crc != "strict") {
@@ -81,9 +87,15 @@ func main() {
 		go benchServeVsock(uint32(*benchVsock))
 	}
 
+	// The host's link begins with the VM secret (ADR 0004 rule 6); without one on the
+	// command line the zero secret stays, which matches no host.
+	secret, err := vmsecret.Load(*cmdline)
+	if err != nil {
+		log.Printf("%v: refusing every link", err)
+	}
 	// Frames the TAP produces while the host is away are dropped by the kernel once its
 	// queue fills; TCP recovers them.
-	next := dialLoop(uint32(*port))
+	next := dialLoop(func() (*os.File, error) { return dialHost(uint32(*port)) }, secret)
 	if lk.vnet {
 		// Retry rather than exit: exiting would only restart netfwd, which would
 		// reopen the TAP. While another process holds the port the link is down.
@@ -92,12 +104,6 @@ func main() {
 			log.Printf("%v; retrying", err)
 			time.Sleep(wait)
 			wait = min(2*wait, 2*time.Second)
-		}
-		// The host's link begins with the VM secret (ADR 0004 rule 6); without one on the
-		// command line the zero secret stays, which admits no one.
-		secret, err := vmsecret.Load(*cmdline)
-		if err != nil {
-			log.Printf("%v: refusing every link", err)
 		}
 		next = acceptLoop(ln, lk.version(), secret)
 	}
@@ -109,15 +115,28 @@ func main() {
 	}
 }
 
-// dialLoop returns a function that connects to the host (plain mode), retrying with
-// backoff until it succeeds.
-func dialLoop(port uint32) func() *os.File {
+// dialLoop returns a function that connects to the host (plain mode) with dial
+// (dialHost of the link's port), retrying with backoff until it succeeds. The listener
+// must send secret first (vmsecret.Verify): one that does not is not this VM's host
+// (another host user may listen on a wildcard VM id while the engine is away) and is
+// closed before a byte is written to it; the backoff keeps such a listener from making
+// netfwd spin. dial must return a non-blocking (poller-driven) file, whose read
+// deadline bounds the check.
+func dialLoop(dial func() (*os.File, error), secret vmsecret.Secret) func() *os.File {
 	return func() *os.File {
 		wait := 50 * time.Millisecond
+		logged := false
 		for {
-			conn, err := dialHost(port)
+			conn, err := dial()
 			if err == nil {
-				return conn
+				if err = vmsecret.Verify(conn, secret); err == nil {
+					return conn
+				}
+				_ = conn.Close()
+				if !logged {
+					log.Printf("refused a host link that did not begin with the VM secret: %v", err)
+					logged = true
+				}
 			}
 			time.Sleep(wait)
 			wait = min(2*wait, 2*time.Second)

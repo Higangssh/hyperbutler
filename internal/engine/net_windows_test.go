@@ -3,14 +3,17 @@
 package engine
 
 import (
+	"io"
 	"log/slog"
 	"net"
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Higangssh/hyperbutler/internal/netstack"
 	"github.com/Higangssh/hyperbutler/internal/vm"
+	"github.com/Higangssh/hyperbutler/internal/vmsecret"
 	"github.com/Higangssh/hyperbutler/internal/vmtemplate"
 )
 
@@ -126,4 +129,88 @@ func TestPortInUseRefusesHostListener(t *testing.T) {
 			t.Errorf("%s: free port %d reported in use: %v", network, p, err)
 		}
 	}
+}
+
+// ADR 0004 (Two-account run): a plain-mode link the host accepts begins with the VM
+// secret, which netfwd checks before it sends a frame, so a listener without it (another
+// user's, on a wildcard VM id) never carries the guest's network. Without a secret the
+// host closes the link having written nothing.
+func TestServePlainSendsSecretFirst(t *testing.T) {
+	for _, secret := range []vmsecret.Secret{testVMSecret, {}} {
+		g, _, _ := netDoc(t, NetConfig{NoOffload: true})
+		ln, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		up := make(chan struct{}, 1)
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			g.servePlain(t.Context(), ln, secret, func() { up <- struct{}{} })
+		}()
+		c, err := net.Dial("tcp", ln.Addr().String())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if secret.IsZero() {
+			_ = c.SetReadDeadline(time.Now().Add(5 * time.Second))
+			if b, err := io.ReadAll(c); len(b) != 0 {
+				t.Fatalf("a host without a secret wrote %d byte(s) (%v)", len(b), err)
+			}
+			select {
+			case <-up:
+				t.Fatal("the link came up without a secret")
+			default:
+			}
+		} else {
+			if err := vmsecret.Verify(c, secret); err != nil {
+				t.Fatalf("the host did not send the VM secret first: %v", err)
+			}
+			select {
+			case <-up:
+			case <-time.After(5 * time.Second):
+				t.Fatal("the link never came up")
+			}
+		}
+		_ = c.Close()
+		_ = ln.Close()
+		<-done
+		g.st.Close()
+	}
+}
+
+// A guest that refuses the host's secret closes the plain link without a frame and
+// redials: the first such link is a warning with a hint at the cause, the later ones
+// are debug.
+func TestServePlainHintsAtRefusedSecret(t *testing.T) {
+	h := &recordHandler{}
+	g, _, err := setupNet(NetConfig{NoOffload: true}, slog.New(h))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer g.st.Close()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		g.servePlain(t.Context(), ln, testVMSecret, func() {})
+	}()
+	defer func() {
+		_ = ln.Close()
+		<-done
+	}()
+	for range 3 {
+		c, err := net.Dial("tcp", ln.Addr().String())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := vmsecret.Verify(c, testVMSecret); err != nil {
+			t.Fatal(err)
+		}
+		_ = c.Close()
+	}
+	h.waitSilent(t, "before the guest's first frame", 3)
 }
