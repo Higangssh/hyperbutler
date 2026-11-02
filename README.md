@@ -110,7 +110,9 @@ installer and no admin rights, except the one-time prerequisites.
 
 1. **Windows 11** (Home, Pro or Enterprise), x64, with virtualization enabled in the
    firmware. The release is x64 only: on ARM64 the x64 programs would run under
-   emulation, but the x86_64 guest image cannot boot there.
+   emulation, but the x86_64 guest image cannot boot there. Windows 10 is not supported:
+   its mainstream support has ended and hyperbutler is not tested there. The APIs it uses
+   exist on Windows 10 22H2, so it may work; reports are welcome, fixes are not promised.
 2. **Virtual Machine Platform.** In an elevated PowerShell, then reboot:
 
    ```powershell
