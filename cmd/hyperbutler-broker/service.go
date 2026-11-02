@@ -125,10 +125,17 @@ func cmdUninstall(args []string) error {
 	if !windows.GetCurrentProcessToken().IsElevated() {
 		return errors.New("uninstall needs an elevated (administrator) prompt")
 	}
+	// Only to word the result: "is not installed" after a removal read as if there had
+	// been nothing to remove.
+	before, _ := broker.QueryService(broker.ServiceName)
 	if err := broker.UninstallService(broker.ServiceName); err != nil {
 		return err
 	}
-	fmt.Printf("%s is not installed\n", broker.ServiceName)
+	if before.Installed {
+		fmt.Printf("uninstalled %s\n", broker.ServiceName)
+	} else {
+		fmt.Printf("%s was not installed\n", broker.ServiceName)
+	}
 	return nil
 }
 
