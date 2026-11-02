@@ -169,7 +169,9 @@ func run(o options) error {
 		return err
 	}
 	defer func() { _ = srv.Close() }()
-	l, err := broker.ListenPipe(broker.PipeConfig{Name: o.pipe, ClientSID: user})
+	// The shared endpoint and this user's own, as the service serves them (ADR 0004
+	// rule 5); AllowedSIDs keeps every other user out.
+	eps, err := broker.ListenEndpoints(srv, broker.EndpointsConfig{Name: o.pipe})
 	if err != nil {
 		return err
 	}
@@ -177,10 +179,10 @@ func run(o options) error {
 	signal.Notify(sig, os.Interrupt)
 	go func() {
 		<-sig
-		_ = l.Close()
+		_ = eps.Close()
 	}()
 	log.Printf("serving %s for %s (%s)", o.pipe, user, what)
-	return srv.Serve(l)
+	return eps.Serve()
 }
 
 // privateDir creates a directory with a random name in base, with a protected DACL for

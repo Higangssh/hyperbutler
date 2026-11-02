@@ -5,6 +5,7 @@ package broker
 import (
 	"errors"
 	"fmt"
+	"io"
 	"strings"
 	"sync"
 	"time"
@@ -75,21 +76,21 @@ type ServiceInstance interface {
 	Stop()
 }
 
-// Serving is a Server serving a PipeListener, as ServiceInstance.
+// Serving is a Server serving a PipeListener or Endpoints, as ServiceInstance.
 type Serving struct {
 	srv     *Server
-	l       *PipeListener
+	l       io.Closer
 	cleanup func()
 	done    chan error
 	once    sync.Once
 }
 
-// StartServing serves l with srv in a new goroutine. cleanup, if not nil, runs last in
-// Stop, after the server is closed: it closes the backend, which terminates the VMs
-// that no lease held.
-func StartServing(srv *Server, l *PipeListener, cleanup func()) *Serving {
+// startServing runs serve (srv's, on l) in a new goroutine; Stop closes l, which ends
+// it. cleanup, if not nil, runs last in Stop, after the server is closed: it closes the
+// backend, which terminates the VMs that no lease held.
+func startServing(srv *Server, l io.Closer, serve func() error, cleanup func()) *Serving {
 	s := &Serving{srv: srv, l: l, cleanup: cleanup, done: make(chan error, 1)}
-	go func() { s.done <- srv.Serve(l) }()
+	go func() { s.done <- serve() }()
 	return s
 }
 
@@ -139,7 +140,8 @@ func StartService(cfg ServiceConfig) (_ *Serving, err error) {
 	if err != nil {
 		return nil, err
 	}
-	l, err := ListenPipe(PipeConfig{Name: cfg.Pipe, Instances: cfg.Instances})
+	// The shared endpoint, and each user's own on request (ADR 0004 rule 5).
+	eps, err := ListenEndpoints(srv, EndpointsConfig{Name: cfg.Pipe, Instances: cfg.Instances})
 	if err != nil {
 		_ = srv.Close()
 		return nil, err
@@ -149,7 +151,7 @@ func StartService(cfg ServiceConfig) (_ *Serving, err error) {
 			cfg.Infof("terminated %d VM(s) an earlier broker left", n)
 		}
 	}
-	return StartServing(srv, l, cfg.Cleanup), nil
+	return startServing(srv, eps, eps.Serve, cfg.Cleanup), nil
 }
 
 // EventLogger is where the service writes its log. Info and Warning may be rate

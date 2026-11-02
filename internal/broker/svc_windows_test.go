@@ -512,6 +512,27 @@ func TestStartServiceSweepsAfterPipe(t *testing.T) {
 	}
 }
 
+// The service serves the shared endpoint and the per-user ones (ADR 0004 rule 5): a
+// client's VM verbs, which only its own endpoint answers, reach the backend.
+func TestStartServiceServesEndpoints(t *testing.T) {
+	be := NewFakeBackend()
+	s, err := StartService(ServiceConfig{Pipe: testPipeName(t), Version: "dev", Backend: be, Infof: t.Logf, Warnf: t.Logf})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Stop()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	c, err := Dial(ctx, s.l.(*Endpoints).Name())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	if _, err := c.Status(); err != nil {
+		t.Fatalf("status on the own endpoint: %v", err)
+	}
+}
+
 func TestServingStop(t *testing.T) {
 	be := NewFakeBackend()
 	srv, err := New(Config{Backend: be, Logf: t.Logf})
@@ -519,12 +540,12 @@ func TestServingStop(t *testing.T) {
 		t.Fatal(err)
 	}
 	name := testPipeName(t)
-	l, err := ListenPipe(PipeConfig{Name: name})
+	eps, err := ListenEndpoints(srv, EndpointsConfig{Name: name})
 	if err != nil {
 		t.Fatal(err)
 	}
 	cleaned := false
-	s := StartServing(srv, l, func() { cleaned = true })
+	s := startServing(srv, eps, eps.Serve, func() { cleaned = true })
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	c, err := Dial(ctx, name)
