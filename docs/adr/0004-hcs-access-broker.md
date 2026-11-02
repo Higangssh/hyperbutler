@@ -234,7 +234,8 @@ Taken by the owner before the HCS backend was written:
   (`HV_GUID_WILDCARD`) on 1024 and 2385 is allowed for any user; whether HCS routes a
   guest-initiated connection to it before the owner's engine binds is untested. Since
   2026-11-03 the guest checks the listener's secret, so such a listener gets no data
-  either way (pending a re-run; see the run below).
+  either way. Re-run 2026-11-03 (below): with B listening on the wildcard id, five
+  starts of A's VM routed no connection to B.
 
 ## Adversarial review
 
@@ -745,7 +746,7 @@ a standard user, removed from Hyper-V Administrators for the run) running
   connect, so the guest's secret check was never reached); listening on A's VM id for
   1024 and 2385 (address in use: A's engine holds them; whether the bind descriptor would
   refuse B with them free is not shown); listing A's data directory and opening its disk.
-- **Not refused (fixed 2026-11-03, pending a re-run):** B can listen on the wildcard VM
+- **Not refused (fixed 2026-11-03, re-run the same day):** B can listen on the wildcard VM
   id for 1024 and 2385. While A's engine holds its own VM-specific listeners, those win;
   in the window before they exist (A's engine starting or restarting while the VM runs),
   A's guest might connect to B's listener, which could then serve A's share or sit in
@@ -764,6 +765,14 @@ a standard user, removed from Hyper-V Administrators for the run) running
      A's bind mount (`docker run -v C:\...`) and network (`docker run alpine wget`) work.
      If no connection arrives, HCS did not route to the wildcard listener in the window;
      record that, as it answers the open question above.
+  Re-run 2026-11-03, the MSI's broker service (v0.1.0-preview.3), B = `hbtest` through
+  `runas`, `xuser -catch 4m`; A started the installed `hyperbutler` five times in the
+  window (offload network, the default): each start answered in 1.3 s, the bind mount
+  read back a new token and `wget` from a container worked; B's listener got no
+  connection ("no connection arrived", 0 not refused). So HCS routed every
+  guest-initiated connection to A's VM-specific listeners, which A's engine binds before
+  the VM starts; the secret is the second line. Not run: the plain-mode network (no
+  `hyperbutler` flag selects it; `hyperbutler-dev` has no broker mode).
 - Not run: steps 1.5 and 1.6 (squatting before the broker starts, holding the shared
   endpoint) and step 3's VM restart.
 
