@@ -111,12 +111,15 @@ func cmdSetupBroker(verb string, stdout io.Writer) error {
 }
 
 // sameBrokerConfig reports whether the installed service's configuration have is what
-// InstallService registers for want, in what decides what runs and as whom.
+// InstallService registers for want, in what decides what runs and as whom. The start
+// type is an administrator's choice, not part of that: a service set to start on
+// demand (or automatically without the delay) is the same service, which a repair
+// keeps rather than registering again, which would end every running VM.
 func sameBrokerConfig(have mgr.Config, want broker.InstallConfig) bool {
 	return strings.EqualFold(have.BinaryPathName, want.CommandLine) &&
 		strings.EqualFold(have.ServiceStartName, want.Account) &&
 		have.ServiceType == windows.SERVICE_WIN32_OWN_PROCESS &&
-		have.StartType == want.StartType && have.DelayedAutoStart == want.DelayedAutoStart &&
+		(have.StartType == windows.SERVICE_AUTO_START || have.StartType == windows.SERVICE_DEMAND_START) &&
 		have.SidType == want.SidType
 }
 

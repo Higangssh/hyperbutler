@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"golang.org/x/sys/windows"
@@ -199,7 +200,9 @@ func startService(f serviceFlags, log serviceLog) (_ broker.ServiceInstance, err
 		if err != nil {
 			return nil, err
 		}
-		// The state directory's DACL admits the service account only.
+		// The state directory's DACL admits the service account only. Those of runs that
+		// ended without a stop (a crash, the stop limit) go first.
+		removeStaleStateDirs(serviceTempDir(), self.User.Sid, log.Infof)
 		state, err := privateDir(serviceTempDir(), self.User.Sid.String())
 		if err != nil {
 			return nil, err
@@ -240,6 +243,40 @@ func serviceTempDir() string {
 		}
 	}
 	return os.TempDir()
+}
+
+// stateDirName matches the names privateDir makes.
+var stateDirName = regexp.MustCompile(`^hyperbutler-broker-[0-9a-f]{16}$`)
+
+// removeStaleStateDirs removes the state directories under base that an earlier run of
+// the service left behind: plain directories (no reparse point) with privateDir's name,
+// owned by owner. The service control manager runs one instance of the service, so none
+// of them is in use.
+func removeStaleStateDirs(base string, owner *windows.SID, logf func(string, ...any)) {
+	ents, err := os.ReadDir(base)
+	if err != nil {
+		return
+	}
+	for _, e := range ents {
+		if !stateDirName.MatchString(e.Name()) {
+			continue
+		}
+		dir := filepath.Join(base, e.Name())
+		fi, err := os.Lstat(dir)
+		if err != nil || !fi.IsDir() || fi.Mode()&os.ModeIrregular != 0 || fi.Mode()&os.ModeSymlink != 0 {
+			continue
+		}
+		sd, err := windows.GetNamedSecurityInfo(dir, windows.SE_FILE_OBJECT, windows.OWNER_SECURITY_INFORMATION)
+		if err != nil {
+			continue
+		}
+		if o, _, err := sd.Owner(); err != nil || !o.Equals(owner) {
+			continue
+		}
+		if err := os.RemoveAll(dir); err != nil {
+			logf("remove the stale state directory %s: %v", dir, err)
+		}
+	}
 }
 
 // runAll runs fns last to first.

@@ -175,6 +175,13 @@ func TestCheckDiskInfo(t *testing.T) {
 	if err := checkDiskInfo(good(), me); err != nil {
 		t.Fatal(err)
 	}
+	// What the disk has while a VM runs: the caller, SYSTEM, Administrators, and the VM
+	// accounts HcsGrantVmAccess adds.
+	withVM := good()
+	withVM.sd = sdFor(t, "O:"+sidA+"D:P(A;;FA;;;"+sidA+")(A;;FA;;;SY)(A;;FA;;;BA)(A;;FR;;;S-1-5-83-0)(A;;0x12019f;;;S-1-5-83-1-1-2-3-4)")
+	if err := checkDiskInfo(withVM, me); err != nil {
+		t.Fatalf("a disk with the VM accounts' access: %v", err)
+	}
 	for reason, mut := range map[string]func(*diskInfo){
 		"reparse point":     func(i *diskInfo) { i.attrs |= windows.FILE_ATTRIBUTE_REPARSE_POINT },
 		"is a directory":    func(i *diskInfo) { i.directory = true },
@@ -186,6 +193,9 @@ func TestCheckDiskInfo(t *testing.T) {
 		"no links":          func(i *diskInfo) { i.links = 0 },
 		"owned":             func(i *diskInfo) { i.owner = other },
 		"no owner":          func(i *diskInfo) { i.owner = nil },
+		"DACL for Everyone": func(i *diskInfo) { i.sd = sdFor(t, "O:"+sidA+"D:P(A;;FA;;;"+sidA+")(A;;FR;;;WD)") },
+		"DACL for another":  func(i *diskInfo) { i.sd = sdFor(t, "O:"+sidA+"D:P(A;;FA;;;"+sidA+")(A;;FA;;;"+sidB+")") },
+		"NULL DACL":         func(i *diskInfo) { i.sd = sdFor(t, "O:"+sidA+"D:NO_ACCESS_CONTROL") },
 	} {
 		i := good()
 		mut(i)
@@ -236,4 +246,13 @@ func TestDataDiskGrantByHandle(t *testing.T) {
 		t.Fatalf("owner lost access: %v", err)
 	}
 	f.Close()
+}
+
+func sdFor(t *testing.T, sddl string) *windows.SECURITY_DESCRIPTOR {
+	t.Helper()
+	sd, err := windows.SecurityDescriptorFromString(sddl)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return sd
 }

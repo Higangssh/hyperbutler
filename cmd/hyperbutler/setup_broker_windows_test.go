@@ -124,6 +124,15 @@ func TestSetupBrokerInstall(t *testing.T) {
 		// A start that leaves it stopped is tried once, not until the wait runs out.
 		{name: "stopped, start leaves it stopped", f: fakeSCM{installed: true, cfg: ours, state: svc.Stopped, startTo: svc.Stopped}, starts: 1, wantSecures: 1},
 		{name: "install fails", f: fakeSCM{installErr: errors.New("create the service: access denied")}, installs: 1},
+		// An administrator's start type is kept: no new registration, which would end
+		// every running VM.
+		{name: "repair, demand start", f: fakeSCM{installed: true, cfg: func() mgr.Config {
+			c := ours
+			c.StartType = windows.SERVICE_DEMAND_START
+			c.DelayedAutoStart = false
+			return c
+		}(), state: svc.Running}, ok: true, wantSecures: 1},
+		{name: "repair, auto without delay", f: fakeSCM{installed: true, cfg: func() mgr.Config { c := ours; c.DelayedAutoStart = false; return c }(), state: svc.Running}, ok: true, wantSecures: 1},
 	} {
 		f := tc.f
 		m := f.service()

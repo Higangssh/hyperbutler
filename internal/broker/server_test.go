@@ -587,6 +587,36 @@ func TestLease(t *testing.T) {
 	}
 }
 
+// TestLeaseOutlivesIdleTimeout: the lease's connection is not ended by IdleTimeout (the
+// host's sleep expires every wait at once on wake), while a connection without the
+// lease still is.
+func TestLeaseOutlivesIdleTimeout(t *testing.T) {
+	s, be := newTestServer(t, Config{validateDataDir: acceptAll, IdleTimeout: 200 * time.Millisecond})
+	p := &localPeer{sid: sidA}
+	holder := openSession(t, s, p)
+	wantOK(t, holder.do(proto.Request{Op: proto.OpSetDataLocation, Handle: tempDirHandle(t)}), proto.OpSetDataLocation)
+	wantOK(t, holder.do(proto.Request{Op: proto.OpStart}), proto.OpStart)
+	other := openSession(t, s, p)
+	wantOK(t, other.do(proto.Request{Op: proto.OpStatus}), proto.OpStatus)
+	select {
+	case err := <-other.done:
+		other.done <- err // for its cleanup's close
+	case <-time.After(5 * time.Second):
+		t.Fatal("an idle connection without the lease was not ended")
+	}
+	time.Sleep(600 * time.Millisecond)
+	if be.Stops[sidA] != 0 {
+		t.Fatalf("the idle lease was ended: %d stops", be.Stops[sidA])
+	}
+	if st := holder.do(proto.Request{Op: proto.OpStatus}); st.State != proto.StateRunning {
+		t.Fatalf("status after the idle wait: %+v", st)
+	}
+	holder.close()
+	if be.Stops[sidA] != 1 {
+		t.Fatalf("lease closed: %d stops, want 1", be.Stops[sidA])
+	}
+}
+
 func TestStartFields(t *testing.T) {
 	s, be := newTestServer(t, Config{validateDataDir: acceptAll, MaxCPUs: 4, MaxMemoryMB: 8192})
 	ss := openSession(t, s, &localPeer{sid: sidA})

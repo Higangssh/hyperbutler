@@ -234,6 +234,11 @@ var (
 )
 
 func checkDACL(sd *windows.SECURITY_DESCRIPTOR, caller *windows.SID) error {
+	return checkDACLWith(sd, caller, nil)
+}
+
+// checkDACLWith is checkDACL that also admits the allow ACEs of the SIDs extra accepts.
+func checkDACLWith(sd *windows.SECURITY_DESCRIPTOR, caller *windows.SID, extra func(*windows.SID) bool) error {
 	dacl, _, err := sd.DACL()
 	if err != nil {
 		return reject("has no DACL", err)
@@ -260,6 +265,7 @@ func checkDACL(sd *windows.SECURITY_DESCRIPTOR, caller *windows.SID) error {
 		switch {
 		case sid.Equals(caller), sid.Equals(sidSystem), sid.Equals(sidAdmins):
 		case ace.Header.AceFlags&inheritOnlyACE != 0 && sid.Equals(sidCreatorOwner):
+		case extra != nil && extra(sid):
 		default:
 			return reject("DACL grants access to another account", nil)
 		}

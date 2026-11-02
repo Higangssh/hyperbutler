@@ -119,6 +119,11 @@ func runDoctor(in *install) DoctorJSON {
 		add(c)
 	}
 	add(bc)
+	if viaBroker || bc.Msg == "doctor.broker.stopped" {
+		if c, ok := dataDirCheck(in.l.Data); ok {
+			add(c)
+		}
+	}
 
 	st, _ := engine.LoadState(in.l)
 	up, _ := in.running()
@@ -379,6 +384,27 @@ func warnCredHelpers(stderr io.Writer) {
 	for _, p := range probs {
 		_, _ = fmt.Fprintf(stderr, "hyperbutler: warning: %s\n        %s\n", p.Message, p.Fix)
 	}
+}
+
+// dataDirCheck runs the broker service's data directory check (ADR 0004 rule 2) on dir,
+// so a folder it would refuse is named with its fix before start fails on it. A folder
+// that does not exist yet is skipped: hyperbutler makes it as the service wants it.
+func dataDirCheck(dir string) (DoctorCheck, bool) {
+	if _, err := os.Lstat(dir); err != nil {
+		return DoctorCheck{}, false
+	}
+	err := engine.CheckBrokerDataDir(dir)
+	if err == nil {
+		return DoctorCheck{ID: "data-dir", Status: doctorOK, Summary: "the broker service accepts the data directory " + dir,
+			Msg: "doctor.data-dir.ok", Args: msgArgs("dir", dir)}, true
+	}
+	if de, ok := engine.IsDataDirError(err); ok {
+		return DoctorCheck{ID: "data-dir", Status: doctorFail, Summary: "the broker service refuses the data directory " + dir + ": " + de.Reason,
+			Fix: de.Fix, Msg: "doctor.data-dir.refused", FixMsg: "doctor.fix.dataDir",
+			Args: msgArgs("dir", dir, "reason", de.Reason, "fix", de.Fix)}, true
+	}
+	return DoctorCheck{ID: "data-dir", Status: doctorWarn, Summary: "cannot check the data directory: " + err.Error(),
+		Msg: "doctor.data-dir.unknown", Args: msgArgs("detail", err.Error())}, true
 }
 
 func otherEnginesCheck(pipe string) DoctorCheck {

@@ -344,7 +344,15 @@ func (s *Server) ServeConn(ctx context.Context, rw io.ReadWriter, p Peer, owner 
 				// A client of the shared endpoint sends its request at once.
 				wait = s.cfg.FirstFrameTimeout
 			}
-			_ = dl.SetReadDeadline(time.Now().Add(wait))
+			deadline := time.Now().Add(wait)
+			if id != nil && s.holds(id.SID, own) {
+				// The lease's connection waits without a deadline: the client's exit
+				// closes the pipe and ends it. An idle limit would end the lease, and
+				// so the VM, when the host wakes from sleep, where the wait has
+				// expired before the engine's next status request can run.
+				deadline = time.Time{}
+			}
+			_ = dl.SetReadDeadline(deadline)
 		}
 		b, err := proto.ReadFrame(rw, &buf)
 		switch {
@@ -463,6 +471,19 @@ func okType(op proto.Op) uint8 { return proto.ReplyFlag | uint8(op) }
 
 func errorReply(code proto.Code, msg string) proto.Reply {
 	return proto.Reply{Type: proto.TypeError, Code: code, Message: msg}
+}
+
+// holds reports whether connection own holds the lease on sid's VM.
+func (s *Server) holds(sid string, own *lease) bool {
+	s.mu.Lock()
+	u := s.users[sid]
+	s.mu.Unlock()
+	if u == nil {
+		return false
+	}
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	return u.lease == own
 }
 
 // release ends the lease that connection own holds on sid's VM, if it holds one: the VM

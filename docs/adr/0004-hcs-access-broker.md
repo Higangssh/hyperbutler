@@ -1013,3 +1013,56 @@ Still open:
 
    The "not NTFS" branch still has no test, because it needs a FAT or ReFS volume.
 7. **Nit. The `MaxHandle` comment was misleading.** Fixed.
+
+### Review of the whole broker (M6, 2026-11-03)
+
+The adversarial reviewer read every part together (the service, the endpoints and the
+handle passing, the secret, the client side, `setup`, the MSI and the guest's checks)
+against the requirement that a standard user starts, uses and stops only their own VM.
+It found no way to SYSTEM or Hyper-V Administrators rights, to another user's VM or
+data, or to group or service changes through the MSI. It checked as sound: the handle
+duplication and the reopen as the caller; the data directory against a rename while the
+disk is held (reproduced: NTFS refuses renaming the parent and the grandparent);
+instance squatting; owner identity per connection; where the secret could leak (none
+outside the HCS document and the guest's `/proc/cmdline`, which rule 4 accepts); the
+lease; the sweep; the MSI's conditions. Its findings:
+
+1. **Medium-high. A host's sleep ended the VM.** Every request read waited at most
+   `IdleTimeout` (30 s), and a relative wait expires at once when Windows wakes, before
+   the engine's next status request: the lease's connection ended, and the VM with it.
+   **Fixed:** the connection that holds the lease reads without a deadline (the client's
+   exit closes the pipe and ends it); other connections keep the limit.
+   `TestLeaseOutlivesIdleTimeout`. Not yet tried with a real sleep.
+2. **Medium. A data folder made before the broker was refused with no fix.** A folder
+   from developer mode, or `--data` on a drive whose root lets every user change it,
+   inherits other accounts' access (on this machine even `%TEMP%` inherits a security
+   product's group), or is owned by Administrators when an elevated shell made it; the
+   service refuses it (rule 2) and start said only that. **Fixed:** on that refusal the
+   engine runs the same check itself and says why and how to fix it (an `icacls`
+   command), and `hyperbutler doctor` has a `data-dir` check that does the same before
+   start. `TestCheckBrokerDataDir` runs the fix it prints.
+3. **Low. A repair registered a service set to start on demand again**, which ends every
+   running VM. **Fixed:** the start type is an administrator's choice; only a disabled
+   service is left alone and only another executable, account or SID type registers it
+   again. A repair is an administrator's anyway: Windows Installer refuses a standard
+   user's before any custom action (error 1730, docs/install.md). Its rewriting of the
+   service's DACL stays.
+4. **Low. A service that ended without a stop left its state folder** under
+   `%SystemRoot%\SystemTemp`. **Fixed:** the service removes those it owns at start
+   (plain folders of that name, not links). `TestRemoveStaleStateDirs`.
+5. **Low. The data disk's own DACL was not checked**, only its folder's; traverse
+   checking is off for every user, so a disk whose ACL its owner widened could be opened
+   by name. **Fixed:** the disk's allow ACEs must be for the caller, SYSTEM,
+   Administrators or the VM accounts (`S-1-5-83-...`). `TestCheckDiskInfo`.
+6. **Info. Rule 10's dependencies:** the broker uses go-winio's `guid` (also through
+   `internal/vm`) and, in the client the engine uses, its pipe dial; rule 10 allows only
+   the standard library and `x/sys`. Open: the owner decides whether rule 10 admits
+   go-winio or the broker replaces both uses.
+7. **Info. The sweep runs once, at start.** Accepted: a VM ends with the broker's handle
+   (`ShouldTerminateOnLastHandleClosed`).
+8. **Info. The hvsock dialer sends no secret when it is zero.** Kept: the bench paths of
+   `hyperbutler-dev` dial ports without one, and the engine refuses a VM whose secret is
+   zero before it dials.
+
+Measurements still to record: `bench/noadmin` through the installed service, and
+REQ-MEM-001 with the broker process counted.

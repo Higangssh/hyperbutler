@@ -42,6 +42,7 @@ type diskInfo struct {
 	directory  bool
 	fileType   uint32
 	owner      *windows.SID
+	sd         *windows.SECURITY_DESCRIPTOR // owner and DACL; nil skips the DACL check (tests)
 	remote     bool
 	deviceType uint32
 }
@@ -148,10 +149,11 @@ func readDiskInfo(h windows.Handle) (*diskInfo, error) {
 		return nil, fmt.Errorf("query the volume device: %w", ntStatus(r))
 	}
 	info.deviceType, info.remote = dev.DeviceType, dev.Characteristics&fileRemoteDevice != 0
-	sd, err := windows.GetSecurityInfo(h, windows.SE_FILE_OBJECT, windows.OWNER_SECURITY_INFORMATION)
+	sd, err := windows.GetSecurityInfo(h, windows.SE_FILE_OBJECT, windows.OWNER_SECURITY_INFORMATION|windows.DACL_SECURITY_INFORMATION)
 	if err != nil {
 		return nil, fmt.Errorf("read security: %w", err)
 	}
+	info.sd = sd
 	if info.owner, _, err = sd.Owner(); err != nil {
 		return nil, fmt.Errorf("read owner: %w", err)
 	}
@@ -160,7 +162,11 @@ func readDiskInfo(h windows.Handle) (*diskInfo, error) {
 
 // checkDiskInfo is the data disk rule: a regular file on a local disk, not a reparse
 // point, with exactly one link (a second link could be a name in a directory the caller
-// does not own, made for another file), owned by the caller.
+// does not own, made for another file), owned by the caller, and with a DACL that lets
+// no one else in: the folder's check (ADR 0004 rule 2) keeps other users from opening
+// it by name, but traverse checking is off for every user, so the file's own DACL must
+// hold too. Its allow ACEs are for the caller, SYSTEM, Administrators and the virtual
+// machine accounts HCS grants (S-1-5-83-...).
 func checkDiskInfo(info *diskInfo, caller *windows.SID) error {
 	switch {
 	case info.attrs&windows.FILE_ATTRIBUTE_REPARSE_POINT != 0:
@@ -176,8 +182,21 @@ func checkDiskInfo(info *diskInfo, caller *windows.SID) error {
 	case info.owner == nil || !info.owner.Equals(caller):
 		return errors.New("is not owned by the caller")
 	}
+	if info.sd != nil {
+		if err := checkDACLWith(info.sd, caller, isVMAccount); err != nil {
+			var re *rejectError
+			if errors.As(err, &re) {
+				return errors.New(re.reason)
+			}
+			return err
+		}
+	}
 	return nil
 }
+
+// isVMAccount reports whether sid is NT VIRTUAL MACHINE\Virtual Machines or a VM's own
+// account (S-1-5-83-...), which HcsGrantVmAccess adds to the disk.
+func isVMAccount(sid *windows.SID) bool { return strings.HasPrefix(sid.String(), "S-1-5-83-") }
 
 // Path is the final path of the open disk, for HCS.
 func (d *diskFile) Path() string { return d.path }

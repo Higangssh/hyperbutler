@@ -149,6 +149,12 @@ func (p *brokerProvider) Boot(ctx context.Context, bs BootSpec) (_ Lease, _ Runt
 	err = c.SetDataLocation(h)
 	_ = windows.CloseHandle(h)
 	if err != nil {
+		if broker.IsCode(err, proto.CodeDataLocationRejected) {
+			// The service gives a reason but no fix; the same check run here gives both.
+			if de, ok := IsDataDirError(CheckBrokerDataDir(p.dataDir)); ok {
+				return nil, RuntimeInfo{}, codeErr(CodeBrokerRefused, fmt.Errorf("engine: %w", de))
+			}
+		}
 		return nil, RuntimeInfo{}, brokerError(fmt.Errorf("engine: the broker refused the data directory %s: %w", p.dataDir, err))
 	}
 	r, err := c.Start(req)
