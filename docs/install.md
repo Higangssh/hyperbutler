@@ -133,13 +133,13 @@ hyperbutler (since M3 the host sends the VM secret, which an older guest refuses
 both executables pinned to its `image.json` (`package.ps1 -ImageDir` does both). Every
 step: record the outcome here.
 
-The MSIs for the first run (2026-11-03) were built from 2d376f1 with the guest image of
+The MSIs for the first run (2026-11-03) were built from bcb1918 with the guest image of
 main's guest code (`package.ps1 -ImageDir $env:TEMP\hb-dev\wc\image -Snapshot`, image.json
 SHA-256 `757f5217…c68d`, which both executables report with `version --json` and
 `-version-json`):
 
 ```
-$d = "$env:TEMP\hb-dev\m4msi\pkg"; $n = "hyperbutler-v0.1.0-preview.1-48-g2d376f1-windows-amd64-snapshot"
+$d = "$env:TEMP\hb-dev\m4msi\pkg"; $n = "hyperbutler-v0.1.0-preview.1-51-gbcb1918-windows-amd64-snapshot"
 $stage = "$d\$n"; $m = "$d\$n.msi"; $f = "$d\$n-failtest.msi"; $log = "$env:TEMP\hb-dev\m4msi\logs"
 mkdir $log -Force
 ```
