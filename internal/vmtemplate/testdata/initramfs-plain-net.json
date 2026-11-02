@@ -11,7 +11,7 @@
       "LinuxKernelDirect": {
         "KernelFilePath": "C:\\img\\vmlinuz-virt",
         "InitRdPath": "C:\\img\\initramfs-hyperbutler.gz",
-        "KernelCmdLine": "console=ttyS0 quiet swiotlb=noforce page_reporting.page_reporting_order=0 hyperbutler.net=1024 hyperbutler.mtu=9000 hyperbutler.ip=192.168.127.2/24 hyperbutler.gw=192.168.127.1 hyperbutler.dns=192.168.127.1 hyperbutler.data=sda"
+        "KernelCmdLine": "quiet swiotlb=noforce page_reporting.page_reporting_order=0 hyperbutler.net=1024 hyperbutler.mtu=9000 hyperbutler.ip=192.168.127.2/24 hyperbutler.gw=192.168.127.1 hyperbutler.dns=192.168.127.1 hyperbutler.data=sda"
       }
     },
     "ComputeTopology": {

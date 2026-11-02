@@ -44,7 +44,10 @@ import (
 // (REQ-MEM-002).
 //
 // The dentry and inode hash table sizes are added per VM size (HashTableArgs).
-const DefaultCmdLine = "console=ttyS0 quiet swiotlb=noforce page_reporting.page_reporting_order=0"
+const DefaultCmdLine = consoleArg + "quiet swiotlb=noforce page_reporting.page_reporting_order=0"
+
+// consoleArg starts DefaultCmdLine; Build drops it from a VM without a COM port.
+const consoleArg = "console=ttyS0 "
 
 // The guest's AF_VSOCK ports: the services of the VM's hvsock table.
 const (
@@ -226,6 +229,12 @@ func Build(s *Spec) (*vm.Config, error) {
 	cmdline := s.Dev.CmdLine
 	if cmdline == "" {
 		cmdline = DefaultCmdLine
+		// Without a COM port (the broker's VMs) console=ttyS0 names a console that is not
+		// there, and the guest powers off within a second (seen 2026-11-02); without it the
+		// kernel has no console and the guest's init logs to /dev/kmsg.
+		if s.ConsolePipe == "" {
+			cmdline = cmdline[len(consoleArg):]
+		}
 	}
 	cmdline += HashTableArgs(s.MemoryMB)
 	svcs := []vm.Service{

@@ -83,6 +83,10 @@ func TestParseSummariesAndState(t *testing.T) {
 	if _, err := parseSummaries(`{"Id":1}`); err == nil {
 		t.Fatal("accepted an object")
 	}
+	// What HCS returns for a VM that has exited (seen 2026-11-02): no State, Stopped true.
+	if s, err := parseState(`{"Id":"hyperbutler-broker-1","SystemType":"Container","Stopped":true,"ExitType":"GracefulExit"}`); err != nil || s != "Stopped" {
+		t.Errorf("exited system: %q, %v", s, err)
+	}
 	if s, err := parseState(`{"State":"Paused"}`); err != nil || s != "Paused" {
 		t.Fatalf("parseState = %q, %v", s, err)
 	}

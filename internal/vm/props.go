@@ -68,12 +68,21 @@ func parseState(doc string) (string, error) {
 	if len(doc) > maxPropertiesLen {
 		return "", errors.New("vm: properties document is too large")
 	}
-	var p struct{ State string }
+	var p struct {
+		State   string
+		Stopped bool // a system that has exited reports this instead of State
+	}
 	if err := json.Unmarshal([]byte(doc), &p); err != nil {
 		return "", fmt.Errorf("vm: decode properties: %w", err)
 	}
+	if p.State == "" && p.Stopped {
+		return "Stopped", nil
+	}
 	if p.State == "" {
-		return "", errors.New("vm: properties have no State")
+		if len(doc) > 300 {
+			doc = doc[:300] + "…"
+		}
+		return "", fmt.Errorf("vm: properties have no State: %s", doc)
 	}
 	return p.State, nil
 }

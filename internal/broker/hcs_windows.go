@@ -50,8 +50,10 @@ type HCSConfig struct {
 	Logf func(format string, args ...any)
 
 	// imageDir replaces the image folder next to the executable, api the HCS calls,
-	// openDisk openDataDisk, and diskTimeout dataDirTimeout, in tests.
+	// openDisk openDataDisk, and diskTimeout dataDirTimeout, in tests; consolePipe gives
+	// the integration test the guest's COM1, which the broker otherwise never opens.
 	imageDir    string
+	consolePipe string
 	api         hcsAPI
 	openDisk    func(dir windows.Handle, name, sid string) (*diskFile, error)
 	diskTimeout time.Duration
@@ -460,6 +462,7 @@ func (b *HCSBackend) Start(ctx context.Context, spec VMSpec) (VMStatus, error) {
 		Kernel: img.set.Kernel, Initrd: img.set.Initrd, System: img.set.System,
 		Data: v.disk.Path(), BlankData: spec.BlankDisk,
 		Net: spec.Net, Share: spec.Share, DaemonConfig: spec.DaemonConfig,
+		ConsolePipe: b.cfg.consolePipe,
 	})
 	if err != nil {
 		return VMStatus{}, err
