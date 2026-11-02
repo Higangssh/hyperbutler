@@ -369,15 +369,24 @@ func Run(ctx context.Context, cfg Config) (err error) {
 		}
 	}
 	if img != nil {
-		// The system disk, read-only at the hypervisor: the guest cannot change it.
+		// The system disk, read-only at the hypervisor: the guest cannot change it. Under
+		// Program Files (the MSI) the user cannot change its DACL, so the grant fails; the
+		// installer gives every VM read access there instead (vm.VMGroupCanRead).
+		granted := true
 		if err := grant(img.system); err != nil {
-			return err
-		}
-		defer func() {
-			if err := cfg.Backend.RevokeAccess(cfg.VMID, img.system); err != nil {
-				log.Warn("revoke VM access to the system disk", "err", err)
+			if !vm.IsAccessDenied(err) || !vm.VMGroupCanRead(img.system) {
+				return err
 			}
-		}()
+			granted = false
+			log.Debug("system disk readable by all VMs; no per-VM grant", "path", img.system)
+		}
+		if granted {
+			defer func() {
+				if err := cfg.Backend.RevokeAccess(cfg.VMID, img.system); err != nil {
+					log.Warn("revoke VM access to the system disk", "err", err)
+				}
+			}()
+		}
 		cmdline += fmt.Sprintf(" hyperbutler.system=lun:%d", len(disks))
 		disks = append(disks, vm.Disk{Path: img.system, ReadOnly: true})
 	}

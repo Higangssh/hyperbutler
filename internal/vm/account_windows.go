@@ -39,6 +39,48 @@ func AccountsOnFile(path string) ([]string, error) {
 	return out, nil
 }
 
+// VMGroupSID is NT VIRTUAL MACHINE\Virtual Machines: every VM worker's account is in it.
+const VMGroupSID = "S-1-5-83-0"
+
+// VMGroupCanRead reports whether path's DACL lets every VM read it: an allow entry for
+// VMGroupSID with read access, as the MSI puts on the guest image in Program Files, where
+// the user cannot add a per-VM entry. A deny entry for the group makes it false.
+func VMGroupCanRead(path string) bool {
+	sd, err := windows.GetNamedSecurityInfo(path, windows.SE_FILE_OBJECT, windows.DACL_SECURITY_INFORMATION)
+	if err != nil {
+		return false
+	}
+	dacl, _, err := sd.DACL()
+	if err != nil || dacl == nil {
+		return false // a NULL DACL would grant everyone, but the installer never sets one
+	}
+	const read = windows.FILE_READ_DATA | windows.GENERIC_READ | windows.GENERIC_ALL
+	allowed := false
+	for i := uint32(0); i < uint32(dacl.AceCount); i++ {
+		var ace *windows.ACCESS_ALLOWED_ACE
+		if err := windows.GetAce(dacl, i, &ace); err != nil {
+			return false
+		}
+		if ace.Header.AceFlags&windows.INHERIT_ONLY_ACE != 0 {
+			continue
+		}
+		if (*windows.SID)(unsafe.Pointer(&ace.SidStart)).String() != VMGroupSID {
+			continue
+		}
+		switch ace.Header.AceType {
+		case windows.ACCESS_DENIED_ACE_TYPE:
+			if uint32(ace.Mask)&read != 0 {
+				return false
+			}
+		case windows.ACCESS_ALLOWED_ACE_TYPE:
+			if uint32(ace.Mask)&read != 0 {
+				allowed = true
+			}
+		}
+	}
+	return allowed
+}
+
 // ProbeRuntimeID returns the runtime id that compute system id has, or will have once
 // created: HcsGrantVmAccess names the VM's account before the VM exists, because the
 // runtime id is a name-based GUID. It grants id access to a new, empty file of its own

@@ -53,13 +53,16 @@
     </Property>
 
     <StandardDirectory Id="ProgramFiles64Folder">
-      <Directory Id="INSTALLFOLDER" Name="hyperbutler" />
+      <Directory Id="INSTALLFOLDER" Name="hyperbutler">
+        <Directory Id="ImageFolder" Name="image" />
+      </Directory>
     </StandardDirectory>
     <StandardDirectory Id="ProgramMenuFolder" />
 
     <ComponentGroup Id="Product" Directory="INSTALLFOLDER">
       <Component Id="HyperbutlerExe">
-        <File Id="HyperbutlerExe" Source="!(bindpath.stage)hyperbutler.exe" KeyPath="yes">
+        <!-- Name: without it WiX names the file after the whole Source text, bind path included. -->
+        <File Id="HyperbutlerExe" Name="hyperbutler.exe" Source="!(bindpath.stage)hyperbutler.exe" KeyPath="yes">
           <Shortcut Id="HyperbutlerShortcut" Directory="ProgramMenuFolder" Name="hyperbutler" Advertise="no"
                     Description="A Docker engine for Windows, without WSL" WorkingDirectory="INSTALLFOLDER" />
         </File>
@@ -67,6 +70,16 @@
       <Files Include="!(bindpath.stage)**">
         <Exclude Files="!(bindpath.stage)hyperbutler.exe" />
       </Files>
+      <!-- The guest image: a VM's worker opens system.vhd as its own per-VM account, and a
+           user cannot add that account to a file under Program Files (HcsGrantVmAccess needs
+           WRITE_DAC). So the folder lets every VM (NT VIRTUAL MACHINE\Virtual Machines,
+           S-1-5-83-0) read and nobody but administrators and SYSTEM write; the files the
+           installer puts in it inherit that. -->
+      <Component Id="ImageFolderAcl" Directory="ImageFolder" Guid="5C1E8A2D-3F47-4B90-A6D2-7E9B0C4F1A36">
+        <CreateFolder>
+          <PermissionEx Sddl="D:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;0x1200a9;;;BU)(A;OICI;0x1200a9;;;S-1-5-83-0)" />
+        </CreateFolder>
+      </Component>
       <Component Id="SystemPath" Guid="9E0D3C1B-6E4E-4B39-9C8B-1B7C3E9A4F20">
         <RegistryValue Root="HKLM" Key="SOFTWARE\hyperbutler" Name="InstallDir" Type="string" Value="[INSTALLFOLDER]" KeyPath="yes" />
         <Environment Id="PathInstall" Name="PATH" Value="[INSTALLFOLDER]" Part="last" Action="set" System="yes" />

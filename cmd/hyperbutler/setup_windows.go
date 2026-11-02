@@ -102,7 +102,11 @@ func cmdSetup(args []string, stdout, stderr io.Writer) error {
 	default:
 		return usagef("setup: unknown command %q", args[0])
 	}
-	setupRecord{registry.LOCAL_MACHINE, setupKey}.result(step, err)
+	// The uninstall's remove --all deleted the record; recording its success would bring
+	// the key back.
+	if err != nil || step != "hyperv-admins remove" || len(args) < 3 || args[2] != "--all" {
+		setupRecord{registry.LOCAL_MACHINE, setupKey}.result(step, err)
+	}
 	return err
 }
 
@@ -197,10 +201,28 @@ func (r setupRecord) result(step string, err error) {
 	_ = k.SetStringValue(setupResultValue, fmt.Sprintf("%s %s: %s", time.Now().UTC().Format(time.RFC3339), step, s))
 }
 
-// delete removes the record's key if nothing is left in it (the uninstall's last step).
+// deleteIfEmpty removes the record's key once it names no account (the uninstall's last
+// step), and its parent (SOFTWARE\hyperbutler) if that is then empty: the installer's own
+// values there are gone by then, but it kept the key for this subkey.
 func (r setupRecord) deleteIfEmpty() {
-	if v, err := r.added(); err == nil && len(v) == 0 {
-		_ = registry.DeleteKey(r.root, r.path)
+	if v, err := r.added(); err != nil || len(v) != 0 {
+		return
+	}
+	if registry.DeleteKey(r.root, r.path) != nil {
+		return
+	}
+	parent := r.path[:max(strings.LastIndex(r.path, `\`), 0)]
+	if parent == "" {
+		return
+	}
+	k, err := registry.OpenKey(r.root, parent, registry.QUERY_VALUE|registry.ENUMERATE_SUB_KEYS)
+	if err != nil {
+		return
+	}
+	info, err := k.Stat()
+	k.Close()
+	if err == nil && info.SubKeyCount == 0 && info.ValueCount == 0 {
+		_ = registry.DeleteKey(r.root, parent)
 	}
 }
 

@@ -169,6 +169,10 @@ func TestSetupRecord(t *testing.T) {
 		k.Close()
 		t.Error("the record's key survived the uninstall")
 	}
+	if k, err := registry.OpenKey(rec.root, `Software\hyperbutler-test`, registry.QUERY_VALUE); err == nil {
+		k.Close()
+		t.Error("the empty parent key survived the uninstall")
+	}
 }
 
 // TestSetupRecordBadEntry: a recorded value that is not a user SID is dropped, never acted on.
