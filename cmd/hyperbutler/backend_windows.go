@@ -28,24 +28,34 @@ type serviceProbe struct {
 	wait, tick time.Duration
 	sleep      func(time.Duration)
 	now        func() time.Time
+	// hcsAccess reports whether this process may call HCS itself (canUseHCS).
+	hcsAccess func() bool
 }
 
 var machineService = serviceProbe{
-	query: func() (broker.ServiceState, error) { return broker.QueryService(broker.ServiceName) },
-	start: func() error { return broker.RequestServiceStart(broker.ServiceName) },
-	wait:  90 * time.Second, // the service's own start hint is 60 s
-	tick:  250 * time.Millisecond,
-	sleep: time.Sleep,
-	now:   time.Now,
+	query:     func() (broker.ServiceState, error) { return broker.QueryService(broker.ServiceName) },
+	start:     func() error { return broker.RequestServiceStart(broker.ServiceName) },
+	wait:      90 * time.Second, // the service's own start hint is 60 s
+	tick:      250 * time.Millisecond,
+	sleep:     time.Sleep,
+	now:       time.Now,
+	hcsAccess: canUseHCS,
 }
 
 // backendChoice is how this start boots the VM: through the broker on pipe, or, with
 // pipe empty, in the engine process. note says why the broker service is not used,
-// when backend auto fell back from it.
+// when backend auto fell back from it; warn says to show it on the terminal whatever
+// this account's HCS access.
 type backendChoice struct {
 	pipe string
 	note string
+	warn bool
 }
+
+// errNotInteractive is serviceUsable's error when this sign-in may not even read the
+// broker service: the service admits interactive sign-ins and services (IU, SU), and a
+// network logon (ssh) or a batch task is neither.
+var errNotInteractive = errors.New("this sign-in is not interactive, and the broker service serves interactive sign-ins only")
 
 // errNoBrokerService is what the error of a start that needs the broker service and
 // cannot use it wraps.
@@ -91,6 +101,10 @@ func chooseBackend(backend, brokerPipe string, customImage bool, p serviceProbe,
 		return backendChoice{pipe: broker.ServicePipe}, nil
 	case !installed && backend == backendAuto:
 		return backendChoice{note: err.Error()}, nil
+	case errors.Is(err, errNotInteractive) && backend == backendAuto && p.hcsAccess != nil && p.hcsAccess():
+		// The service cannot serve this sign-in, but the account may call HCS itself
+		// (Hyper-V Administrators, or elevated), as before the broker: say so and do that.
+		return backendChoice{note: err.Error(), warn: true}, nil
 	}
 	return backendChoice{}, &brokerStartError{code: engine.CodeBrokerUnavailable,
 		err: fmt.Errorf("%w: %w; hyperbutler doctor checks it (--backend hcs runs the VM without it, which needs Hyper-V Administrators or elevation)", errNoBrokerService, err)}
@@ -150,6 +164,9 @@ func canUseHCS() bool {
 // failed query counts as installed: auto must not fall back on it).
 func serviceUsable(p serviceProbe, progress io.Writer) (installed bool, err error) {
 	st, err := p.query()
+	if errors.Is(err, windows.ERROR_ACCESS_DENIED) {
+		return true, fmt.Errorf("%w: %s", errNotInteractive, startHint(windows.ERROR_ACCESS_DENIED))
+	}
 	if err != nil {
 		return true, fmt.Errorf("cannot read the broker service's state: %w", err)
 	}
@@ -162,6 +179,8 @@ func serviceUsable(p serviceProbe, progress io.Writer) (installed bool, err erro
 		switch {
 		case st.State == svc.Running:
 			return true, nil
+		case st.State == svc.Stopped && st.Disabled:
+			return true, fmt.Errorf("the broker service is disabled: %s", startHint(windows.ERROR_SERVICE_DISABLED))
 		case st.State == svc.Stopped && !started:
 			started = true
 			_, _ = fmt.Fprintln(progress, "hyperbutler: starting the broker service...")

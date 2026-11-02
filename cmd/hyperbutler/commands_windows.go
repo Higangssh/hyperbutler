@@ -255,7 +255,12 @@ func cmdStart(args []string, stdout, stderr io.Writer) error {
 		in.recordStartFailure(err)
 		return err
 	}
-	if choice.note != "" && !canUseHCS() {
+	switch {
+	case choice.warn:
+		// The service is installed but cannot serve this sign-in; this account may call
+		// HCS itself, so the engine does.
+		_, _ = fmt.Fprintf(stderr, "hyperbutler: warning: %s; the engine runs the VM itself, with this account's own Hyper-V access\n", choice.note)
+	case choice.note != "" && !canUseHCS():
 		// Without the service, the engine needs HCS access of its own, and this
 		// account has none: say why before the start fails.
 		_, _ = fmt.Fprintf(stderr, "hyperbutler: %s; the engine runs the VM itself, which needs Hyper-V Administrators or an elevated shell (hyperbutler doctor)\n", choice.note)

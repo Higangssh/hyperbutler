@@ -126,17 +126,31 @@ func cmdSetup(args []string, stdout, stderr io.Writer) error {
 	default:
 		return usagef("setup: unknown command %q", args[0])
 	}
-	// The uninstall's remove --all deleted the record; recording its success would bring
-	// the key back.
-	if err != nil || !removedAll {
-		setupRecord{registry.LOCAL_MACHINE, setupKey}.result(step, err)
-	}
+	finishSetup(setupRecord{registry.LOCAL_MACHINE, setupKey}, step, err, removedAll)
 	var note *setupNote
 	if errors.As(err, &note) {
 		_, _ = fmt.Fprintln(stdout, note.msg)
 		return nil
 	}
 	return err
+}
+
+// finishSetup records a verb's outcome in rec (LastResult), except where that would leave
+// the record behind on a machine without the product:
+//
+//   - the uninstall's remove --all deleted the record; recording its success would bring
+//     the key back;
+//   - a broker uninstall that succeeded is the uninstall's, or the rollback of a first
+//     install that failed: when the record names no account, the key goes (and its
+//     parent, if that is empty then), instead of keeping a LastResult for no product.
+func finishSetup(rec setupRecord, step string, err error, removedAll bool) {
+	switch {
+	case err == nil && removedAll:
+		return
+	case err == nil && step == "broker uninstall" && rec.deleteIfEmpty():
+		return
+	}
+	rec.result(step, err)
 }
 
 // setupNote is a verb's outcome that is not a failure but is worth recording, such as a
@@ -247,27 +261,29 @@ func (r setupRecord) result(step string, err error) {
 
 // deleteIfEmpty removes the record's key once it names no account (the uninstall's last
 // step), and its parent (SOFTWARE\hyperbutler) if that is then empty: the installer's own
-// values there are gone by then, but it kept the key for this subkey.
-func (r setupRecord) deleteIfEmpty() {
+// values there are gone by then, but it kept the key for this subkey. It reports whether
+// it deleted the record's key.
+func (r setupRecord) deleteIfEmpty() bool {
 	if v, err := r.added(); err != nil || len(v) != 0 {
-		return
+		return false
 	}
 	if registry.DeleteKey(r.root, r.path) != nil {
-		return
+		return false
 	}
 	parent := r.path[:max(strings.LastIndex(r.path, `\`), 0)]
 	if parent == "" {
-		return
+		return true
 	}
 	k, err := registry.OpenKey(r.root, parent, registry.QUERY_VALUE|registry.ENUMERATE_SUB_KEYS)
 	if err != nil {
-		return
+		return true
 	}
 	info, err := k.Stat()
 	_ = k.Close()
 	if err == nil && info.SubKeyCount == 0 && info.ValueCount == 0 {
 		_ = registry.DeleteKey(r.root, parent)
 	}
+	return true
 }
 
 // localGroupMembersInfo0 is LOCALGROUP_MEMBERS_INFO_0.

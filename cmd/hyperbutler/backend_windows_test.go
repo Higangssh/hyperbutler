@@ -4,6 +4,7 @@ package main
 
 import (
 	"errors"
+	"fmt"
 	"io"
 	"path/filepath"
 	"strings"
@@ -24,8 +25,10 @@ type fakeService struct {
 	afterRun []broker.ServiceState // the states after a start
 	queryErr error
 	startErr error
-	starts   int
-	clock    time.Time
+	// hcs: this account may call HCS itself.
+	hcs    bool
+	starts int
+	clock  time.Time
 }
 
 func (f *fakeService) probe() serviceProbe {
@@ -50,10 +53,11 @@ func (f *fakeService) probe() serviceProbe {
 			}
 			return nil
 		},
-		wait:  10 * time.Second,
-		tick:  time.Second,
-		sleep: func(d time.Duration) { f.clock = f.clock.Add(d) },
-		now:   func() time.Time { return f.clock },
+		wait:      10 * time.Second,
+		tick:      time.Second,
+		sleep:     func(d time.Duration) { f.clock = f.clock.Add(d) },
+		now:       func() time.Time { return f.clock },
+		hcsAccess: func() bool { return f.hcs },
 	}
 }
 
@@ -146,6 +150,39 @@ func TestCustomImageDir(t *testing.T) {
 	}
 	if !customImageDir(filepath.Join(t.TempDir(), "image")) {
 		t.Error("another folder does not count as a custom one")
+	}
+}
+
+// TestChooseBackendNotInteractive: a sign-in that may not even read the service (ssh, a
+// batch task) runs the VM itself, with a warning, when the account has HCS access of its
+// own, and otherwise fails with what to do; --backend broker always fails.
+func TestChooseBackendNotInteractive(t *testing.T) {
+	denied := fmt.Errorf("open service hyperbutler-broker: %w", windows.ERROR_ACCESS_DENIED)
+	f := fakeService{queryErr: denied, hcs: true}
+	got, err := chooseBackend(backendAuto, "", false, f.probe(), io.Discard)
+	if err != nil || got.pipe != "" || !got.warn || !strings.Contains(got.note, "not interactive") {
+		t.Errorf("with HCS access: %+v, %v", got, err)
+	}
+	f = fakeService{queryErr: denied}
+	_, err = chooseBackend(backendAuto, "", false, f.probe(), io.Discard)
+	var be *brokerStartError
+	if !errors.As(err, &be) || !strings.Contains(err.Error(), "interactive sign-in") || !strings.Contains(err.Error(), "sc.exe start") {
+		t.Errorf("without HCS access: %v", err)
+	}
+	f = fakeService{queryErr: denied, hcs: true}
+	if _, err := chooseBackend(backendBroker, "", false, f.probe(), io.Discard); err == nil {
+		t.Error("--backend broker fell back")
+	}
+}
+
+// TestChooseBackendDisabled: a disabled service is not started (and start says nothing
+// about starting it); the error says an administrator disabled it.
+func TestChooseBackendDisabled(t *testing.T) {
+	var out strings.Builder
+	f := fakeService{states: []broker.ServiceState{{Installed: true, State: svc.Stopped, Disabled: true}}, hcs: true}
+	_, err := chooseBackend(backendAuto, "", false, f.probe(), &out)
+	if err == nil || f.starts != 0 || out.Len() != 0 || !strings.Contains(err.Error(), "disabled") {
+		t.Errorf("%v, %d starts, %q", err, f.starts, out.String())
 	}
 }
 

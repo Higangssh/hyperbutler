@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -96,6 +97,21 @@ func brokerCheck(p brokerProbe) DoctorCheck {
 	pipe := broker.ServicePipe
 	c := DoctorCheck{ID: "broker", Args: msgArgs("service", broker.ServiceName, "pipe", pipe)}
 	st, err := p.query()
+	if errors.Is(err, windows.ERROR_ACCESS_DENIED) {
+		// The service admits interactive sign-ins and services only; this one (ssh, a
+		// batch task) is neither, so start cannot use it from here.
+		c.Msg = "doctor.broker.notInteractive"
+		if p.hcsAccess != nil && p.hcsAccess() {
+			c.Status = doctorInfo
+			c.Summary = "this sign-in is not interactive, so the broker service does not serve it; hyperbutler start runs the VM itself, with your Hyper-V access"
+			return c
+		}
+		c.Status = doctorWarn
+		c.Summary = "this sign-in is not interactive, so the broker service does not serve it, and your account cannot use HCS itself: hyperbutler start cannot start the VM from here"
+		c.Fix = "Start hyperbutler from an interactive sign-in (your desktop), or an administrator runs sc.exe start " + broker.ServiceName + "."
+		c.FixMsg = "doctor.fix.brokerInteractive"
+		return c
+	}
 	if err != nil {
 		c.Status, c.Summary = doctorWarn, "cannot query the broker service: "+err.Error()
 		c.Msg, c.Args["detail"] = "doctor.broker.unknown", err.Error()

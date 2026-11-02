@@ -4,9 +4,11 @@ package main
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
+	"golang.org/x/sys/windows"
 	"golang.org/x/sys/windows/svc"
 
 	"github.com/Higangssh/hyperbutler/internal/broker"
@@ -73,7 +75,9 @@ var brokerCases = []struct {
 	{"stopped, own foreground broker", fakeBroker{st: broker.ServiceState{Installed: true, State: svc.Stopped}, pipe: true, pipeOwner: testSelf}, doctorInfo, "doctor.broker.foreground", "", false},
 	{"not installed, own foreground broker", fakeBroker{pipe: true, pipeOwner: testSelf}, doctorInfo, "doctor.broker.foreground", "", false},
 	{"starting", fakeBroker{st: broker.ServiceState{Installed: true, State: svc.StartPending}}, doctorInfo, "doctor.broker.pending", "", false},
-	{"query refused", fakeBroker{queryErr: errors.New("open service: access denied")}, doctorWarn, "doctor.broker.unknown", "", false},
+	{"query fails", fakeBroker{queryErr: errors.New("connect to the service control manager: RPC unavailable")}, doctorWarn, "doctor.broker.unknown", "", false},
+	{"not interactive", fakeBroker{queryErr: fmt.Errorf("open service: %w", windows.ERROR_ACCESS_DENIED), noHCS: true}, doctorWarn, "doctor.broker.notInteractive", "doctor.fix.brokerInteractive", false},
+	{"not interactive, own HCS access", fakeBroker{queryErr: fmt.Errorf("open service: %w", windows.ERROR_ACCESS_DENIED)}, doctorInfo, "doctor.broker.notInteractive", "", false},
 	{"running", fakeBroker{st: broker.ServiceState{Installed: true, State: svc.Running, PID: 42}, pipe: true, proto: proto.Version, version: "0.2.0"}, doctorOK, "doctor.broker.ok", "", true},
 	{"running, newer protocol", fakeBroker{st: broker.ServiceState{Installed: true, State: svc.Running}, pipe: true, proto: proto.Version + 1, version: "0.3.0"}, doctorOK, "doctor.broker.ok", "", true},
 	{"running, older protocol", fakeBroker{st: broker.ServiceState{Installed: true, State: svc.Running}, pipe: true, proto: proto.Version - 1, version: "0.1.0"}, doctorFail, "doctor.broker.old", "doctor.fix.brokerUpgrade", true},

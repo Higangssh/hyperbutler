@@ -85,6 +85,51 @@ func readWXS(t *testing.T) (map[string]*wxsCustom, string, map[string]bool) {
 	return actions, schedule, testOnly
 }
 
+// requires reports whether the Windows Installer condition cond holds only when clause
+// does: cond is a conjunction (no OR outside parentheses) with clause as one of its
+// top-level terms. A substring is not enough: "NOT Installed OR X" runs on a repair.
+func requires(cond, clause string) bool {
+	var terms []string
+	depth, start := 0, 0
+	for i := 0; i < len(cond); i++ {
+		switch {
+		case cond[i] == '(':
+			depth++
+		case cond[i] == ')':
+			depth--
+		case depth == 0 && strings.HasPrefix(cond[i:], " OR "):
+			return false
+		case depth == 0 && strings.HasPrefix(cond[i:], " AND "):
+			terms = append(terms, strings.TrimSpace(cond[start:i]))
+			start = i + len(" AND ")
+		}
+	}
+	terms = append(terms, strings.TrimSpace(cond[start:]))
+	for _, t := range terms {
+		if t == clause {
+			return true
+		}
+	}
+	return false
+}
+
+func TestRequires(t *testing.T) {
+	for cond, want := range map[string]bool{
+		`NOT Installed`:                        true,
+		`NOT Installed AND ADDHYPERVADMIN="1"`: true,
+		`X AND (A OR B) AND NOT Installed`:     true,
+		`NOT Installed OR X`:                   false,
+		`X OR NOT Installed AND Y`:             false,
+		`(NOT Installed OR X) AND Y`:           false,
+		`NOT InstalledFoo AND X`:               false,
+		``:                                     false,
+	} {
+		if got := requires(cond, "NOT Installed"); got != want {
+			t.Errorf("requires(%q) = %v", cond, got)
+		}
+	}
+}
+
 // TestMSISequence holds the installer's custom actions to the rules of ADR 0004,
 // Installer (M4): the one SYSTEM step a repair (which a standard user can start) runs is
 // the idempotent broker install; taking accounts out of Hyper-V Administrators needs a
@@ -101,7 +146,7 @@ func TestMSISequence(t *testing.T) {
 			continue // immediate or rollback, or not a SYSTEM step
 		}
 		cond := c.condition
-		repairRuns := !strings.Contains(cond, "NOT Installed") && !strings.HasPrefix(cond, "REMOVE~=")
+		repairRuns := !requires(cond, "NOT Installed") && !requires(cond, `REMOVE~="ALL"`)
 		if repairRuns && id != "HbBrokerInstall" {
 			t.Errorf("%s runs as SYSTEM on a repair (condition %q)", id, cond)
 		}
