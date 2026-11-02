@@ -73,8 +73,34 @@ Windows Installer consistency checks, and holds the MSI to the same 150 MB limit
 - English only; the window and the CLI follow your language, the installer does not yet.
 - `hyperbutler doctor` reports the group membership and Virtual Machine Platform, but not
   yet the installer's `LastResult`.
-- Not yet installed and uninstalled on a real machine end to end (the build, the
-  consistency checks, the table contents and the `setup` verbs' logic are tested).
+- Tested end to end on one machine (below) only with the basic progress window (`/qb`),
+  on an account that was already in Hyper-V Administrators and with Virtual Machine
+  Platform on. The options page, a first-time group add and the DISM step have not run
+  for real yet.
+
+## Test on a real machine (2026-11-02)
+
+Windows 11 Home 26200, snapshot MSI (115.5 MB), `msiexec /i … /qb ADDHYPERVADMIN=1
+/norestart`, one UAC prompt each:
+
+- Install: files under `C:\Program Files\hyperbutler`, the image folder readable by
+  `NT VIRTUAL MACHINE\Virtual Machines`, two PATH entries at the end, the Start menu
+  shortcut. `setup` took the account from `UserSID`, found it already in the group and
+  recorded nothing; the DISM step was skipped (the Host Compute Service exists).
+- From a new shell: `hyperbutler` and `docker` resolve to the installed copy;
+  `hyperbutler start` answered in 1.5 s, `docker run hello-world` and `docker compose
+  version` work.
+- Upgrade over an older build of the same version: one product left in Apps, `hyperbutler
+  stop` ran first, the membership untouched.
+- Uninstall: files, PATH entries, shortcut, Apps entry and `HKLM\SOFTWARE\hyperbutler`
+  gone; the machine PATH is byte for byte what it was before; the membership, which the
+  installer had not made, stays.
+
+The first rounds found three bugs, fixed before the run above: the exe installed under
+the name `!(bindpath.stage)hyperbutler.exe`; `hyperbutler start` from Program Files failed
+with access denied, because `HcsGrantVmAccess` needs to change the image's DACL (now the
+installer lets every VM read the image folder, and the engine goes on when the group can
+read it); and uninstalling left `HKLM\SOFTWARE\hyperbutler\Setup` behind.
 - Not signed (above).
 - The engine of another user signed in at the same time is not stopped before an upgrade;
   Windows then asks to close it or to restart.

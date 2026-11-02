@@ -104,6 +104,23 @@ surprising. Numbers are from the maintainer's Windows 11 Home laptop unless note
   `spike/gui/measure`.
 - **Audience:** anyone choosing WebView2 / Tauri / Wails against native on Windows.
 
+### 10. Our VM booted from AppData and failed from Program Files
+- **Hook:** the same `hyperbutler.exe` and guest image start a VM in 1.5 s from a folder
+  the user owns, and fail with access denied from `C:\Program Files`, for a user who is in
+  Hyper-V Administrators.
+- **Story:** HCS opens a VM's disks as a per-VM virtual account, and `HcsGrantVmAccess`
+  adds that account to the file's DACL, so it needs WRITE_DAC: fine on your own files,
+  impossible on an installer's. The fix is one inherited ACE for `NT VIRTUAL MACHINE\Virtual
+  Machines` (S-1-5-83-0) on the image folder, set by the MSI, and an engine that skips the
+  per-VM grant when the group can already read. Proved without admin first, with an
+  `OWNER RIGHTS` ACE that takes away the owner's implicit WRITE_DAC. Plus the other things
+  only a real install found: WiX naming a file `!(bindpath.stage)hyperbutler.exe`, and an
+  uninstall step that recreated the registry key it had just deleted.
+- **Evidence:** [docs/install.md](../install.md) "Test on a real machine", commit history
+  of `dist/msi` and `internal/vm/account_windows.go` (`VMGroupCanRead`).
+- **Audience:** anyone shipping a Hyper-V or HCS tool (WSL-like, Kata, sandboxes) with an
+  installer.
+
 ## Smaller posts and tips
 
 - **Changing daemon.json without restarting the VM:** delivered over the hvsock control
