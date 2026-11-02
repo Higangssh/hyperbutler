@@ -16,6 +16,7 @@ import (
 	"golang.org/x/sys/windows"
 
 	"github.com/Higangssh/hyperbutler/guest/image"
+	"github.com/Higangssh/hyperbutler/internal/imageset"
 )
 
 // writeImage makes an image directory: kernel, initrd, a 1 MiB system disk with a
@@ -62,11 +63,11 @@ func writeImage(t *testing.T) (dir, manifest string) {
 
 func TestOpenImage(t *testing.T) {
 	dir, man := writeImage(t)
-	g, err := openImage(man, "")
+	g, err := imageset.Open(man, "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	for got, want := range map[string]string{g.system: "system.vhd", g.kernel: "vmlinuz-virt", g.initrd: "initramfs-hyperbutler.gz"} {
+	for got, want := range map[string]string{g.System: "system.vhd", g.Kernel: "vmlinuz-virt", g.Initrd: "initramfs-hyperbutler.gz"} {
 		a, err1 := os.Stat(got)
 		b, err2 := os.Stat(filepath.Join(dir, want))
 		if err1 != nil || err2 != nil || !os.SameFile(a, b) || !filepath.IsAbs(got) || strings.HasPrefix(got, `\\?\`) {
@@ -134,7 +135,7 @@ func TestOpenImageRejects(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			dir, man := writeImage(t)
 			mutate(t, dir)
-			if g, err := openImage(man, ""); err == nil {
+			if g, err := imageset.Open(man, ""); err == nil {
 				g.Close()
 				t.Fatal("accepted")
 			}
@@ -165,7 +166,7 @@ func TestOpenImageChecksFooter(t *testing.T) {
 	if err := os.WriteFile(man, enc, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if g, err := openImage(man, ""); err == nil || !strings.Contains(err.Error(), "vhd") {
+	if g, err := imageset.Open(man, ""); err == nil || !strings.Contains(err.Error(), "vhd") {
 		if g != nil {
 			g.Close()
 		}
@@ -188,7 +189,7 @@ func manifestSum(t *testing.T, man string) string {
 func TestOpenImagePinned(t *testing.T) {
 	dir, man := writeImage(t)
 	pin := manifestSum(t, man)
-	g, err := openImage(man, pin)
+	g, err := imageset.Open(man, pin)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -211,12 +212,12 @@ func TestOpenImagePinned(t *testing.T) {
 	if err := os.WriteFile(man, enc, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if g, err := openImage(man, ""); err != nil {
+	if g, err := imageset.Open(man, ""); err != nil {
 		t.Fatalf("a development build must accept a consistent image: %v", err)
 	} else {
 		g.Close()
 	}
-	_, err = openImage(man, pin)
+	_, err = imageset.Open(man, pin)
 	if err == nil {
 		t.Fatal("a pinned build accepted a replaced image")
 	}
@@ -230,13 +231,13 @@ func TestOpenImagePinned(t *testing.T) {
 	if err := os.WriteFile(man, mb, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := openImage(man, pin); err == nil || !strings.Contains(err.Error(), "vmlinuz-virt") ||
+	if _, err := imageset.Open(man, pin); err == nil || !strings.Contains(err.Error(), "vmlinuz-virt") ||
 		!strings.Contains(err.Error(), "extract the release zip again") {
 		t.Fatalf("want a kernel mismatch naming the fix, got %v", err)
 	}
 
 	for _, bad := range []string{strings.ToUpper(pin), pin[:63], "x" + pin[1:]} {
-		if _, err := openImage(man, bad); err == nil || !strings.Contains(err.Error(), "malformed") {
+		if _, err := imageset.Open(man, bad); err == nil || !strings.Contains(err.Error(), "malformed") {
 			t.Errorf("pin %q: want a malformed-pin error, got %v", bad, err)
 		}
 	}
@@ -246,7 +247,7 @@ func TestOpenImagePinned(t *testing.T) {
 // opens the kernel, initrd and system disk by path after the check.
 func TestOpenImageHoldsDirectory(t *testing.T) {
 	dir, man := writeImage(t)
-	g, err := openImage(man, manifestSum(t, man))
+	g, err := imageset.Open(man, manifestSum(t, man))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -268,17 +269,17 @@ func TestOpenImageResolvesJunction(t *testing.T) {
 	if out, err := exec.Command("cmd", "/c", "mklink", "/J", link, dir).CombinedOutput(); err != nil {
 		t.Skipf("mklink /J: %v %s", err, out)
 	}
-	g, err := openImage(filepath.Join(link, image.ManifestName), "")
+	g, err := imageset.Open(filepath.Join(link, image.ManifestName), "")
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer g.Close()
-	if strings.HasPrefix(strings.ToLower(g.system), strings.ToLower(link)) {
-		t.Fatalf("system disk path %q goes through the junction", g.system)
+	if strings.HasPrefix(strings.ToLower(g.System), strings.ToLower(link)) {
+		t.Fatalf("system disk path %q goes through the junction", g.System)
 	}
-	a, _ := os.Stat(g.system)
+	a, _ := os.Stat(g.System)
 	b, _ := os.Stat(filepath.Join(dir, "system.vhd"))
 	if !os.SameFile(a, b) {
-		t.Fatalf("%q is not the checked file", g.system)
+		t.Fatalf("%q is not the checked file", g.System)
 	}
 }

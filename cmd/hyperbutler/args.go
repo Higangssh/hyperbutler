@@ -140,13 +140,46 @@ func checkDiagFlags(c diag.Config) error {
 	return nil
 }
 
+// engineImage is what the engine boots: an image manifest, an initramfs-only kernel and
+// initrd, or, with broker set, the image of the HCS access broker on that pipe.
+type engineImage struct {
+	kernel, initrd, manifest string
+	broker                   string
+}
+
+// backendHCS is start's --backend: the engine calls HCS itself (developer mode, ADR 0004
+// option A). It is the only value; --broker selects the broker instead.
+const backendHCS = "hcs"
+
+// checkBackendFlags checks start's --backend and --broker.
+func checkBackendFlags(fs *flag.FlagSet, backend, broker string) error {
+	if backend != backendHCS {
+		return fmt.Errorf("--backend %q: the only backend is %q (use --broker PIPE for the HCS access broker)", backend, backendHCS)
+	}
+	if broker == "" {
+		return nil
+	}
+	explicit := false
+	fs.Visit(func(f *flag.Flag) { explicit = explicit || f.Name == "backend" })
+	if explicit {
+		return errors.New("--backend and --broker exclude each other")
+	}
+	if err := transport.ValidatePipeName(broker); err != nil {
+		return fmt.Errorf("--broker: %w", err)
+	}
+	return nil
+}
+
 // engineArgs is the command line of the background `hyperbutler engine` process.
-func engineArgs(home, kernel, initrd, manifest string, dcfg diag.Config) []string {
+func engineArgs(home string, img engineImage, dcfg diag.Config) []string {
 	args := []string{"engine", "--home", home}
-	if manifest != "" {
-		args = append(args, "--image", manifest)
-	} else {
-		args = append(args, "--kernel", kernel, "--initrd", initrd)
+	switch {
+	case img.broker != "":
+		args = append(args, "--broker", img.broker)
+	case img.manifest != "":
+		args = append(args, "--image", img.manifest)
+	default:
+		args = append(args, "--kernel", img.kernel, "--initrd", img.initrd)
 	}
 	if dcfg.MemoryLimit != "" {
 		args = append(args, "--memlimit", dcfg.MemoryLimit)

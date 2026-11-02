@@ -6,7 +6,10 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
+	"net"
+	"net/netip"
 	"os"
 	"strings"
 	"testing"
@@ -15,6 +18,7 @@ import (
 	"golang.org/x/sys/windows"
 
 	"github.com/Higangssh/hyperbutler/internal/broker/proto"
+	"github.com/Higangssh/hyperbutler/internal/vmtemplate"
 )
 
 const (
@@ -173,9 +177,11 @@ func TestCallerIsolation(t *testing.T) {
 	s, be := newTestServer(t, Config{validateDataDir: acceptAll})
 	a, b := &localPeer{sid: sidA}, &localPeer{sid: sidB}
 
-	wantOK(t, call1(t, s, a, proto.Request{Op: proto.OpSetDataLocation, Handle: tempDirHandle(t)}), proto.OpSetDataLocation)
-	wantOK(t, call1(t, s, a, proto.Request{Op: proto.OpResize, CPUs: 4}), proto.OpResize)
-	started := call1(t, s, a, proto.Request{Op: proto.OpStart})
+	// A's VM lives as long as A's connection (its lease).
+	sa := openSession(t, s, a)
+	wantOK(t, sa.do(proto.Request{Op: proto.OpSetDataLocation, Handle: tempDirHandle(t)}), proto.OpSetDataLocation)
+	wantOK(t, sa.do(proto.Request{Op: proto.OpResize, CPUs: 4}), proto.OpResize)
+	started := sa.do(proto.Request{Op: proto.OpStart})
 	wantOK(t, started, proto.OpStart)
 	if started.State != proto.StateRunning || started.CPUs != 4 || started.VMID == ([16]byte{}) {
 		t.Fatalf("A start: %+v", started)
@@ -186,8 +192,9 @@ func TestCallerIsolation(t *testing.T) {
 	if st.State != proto.StateStopped || st.DataLocationSet || st.VMID != ([16]byte{}) || st.CPUs != 2 {
 		t.Fatalf("B status leaks A's state: %+v", st)
 	}
-	// B cannot stop, resize or start A's VM.
+	// B cannot stop, pause, resize or start A's VM.
 	wantCode(t, call1(t, s, b, proto.Request{Op: proto.OpStop, Force: true}), proto.CodeNotRunning)
+	wantCode(t, call1(t, s, b, proto.Request{Op: proto.OpPause}), proto.CodeNotRunning)
 	wantOK(t, call1(t, s, b, proto.Request{Op: proto.OpResize, CPUs: 1}), proto.OpResize)
 	wantCode(t, call1(t, s, b, proto.Request{Op: proto.OpStart}), proto.CodeNoDataLocation)
 
@@ -198,7 +205,8 @@ func TestCallerIsolation(t *testing.T) {
 	if be.Starts[sidB] != 0 || be.Starts[sidA] != 1 {
 		t.Fatalf("starts: %v", be.Starts)
 	}
-	wantOK(t, call1(t, s, a, proto.Request{Op: proto.OpStop}), proto.OpStop)
+	wantOK(t, sa.do(proto.Request{Op: proto.OpStop}), proto.OpStop)
+	sa.close()
 }
 
 func TestIdentityFromPeerOnce(t *testing.T) {
@@ -280,10 +288,10 @@ func TestResizeLimits(t *testing.T) {
 
 func TestResizeRunningVM(t *testing.T) {
 	s, _ := newTestServer(t, Config{validateDataDir: acceptAll})
-	p := &localPeer{sid: sidA}
-	call1(t, s, p, proto.Request{Op: proto.OpSetDataLocation, Handle: tempDirHandle(t)})
-	wantOK(t, call1(t, s, p, proto.Request{Op: proto.OpStart}), proto.OpStart)
-	r := call1(t, s, p, proto.Request{Op: proto.OpResize, MemoryMB: 4096})
+	ss := openSession(t, s, &localPeer{sid: sidA})
+	ss.do(proto.Request{Op: proto.OpSetDataLocation, Handle: tempDirHandle(t)})
+	wantOK(t, ss.do(proto.Request{Op: proto.OpStart}), proto.OpStart)
+	r := ss.do(proto.Request{Op: proto.OpResize, MemoryMB: 4096})
 	if r.State != proto.StateRunning || r.MemoryMB != 4096 {
 		t.Fatalf("resize running VM: %+v", r)
 	}
@@ -292,8 +300,9 @@ func TestResizeRunningVM(t *testing.T) {
 func TestDataLocationBusyWhileRunning(t *testing.T) {
 	s, _ := newTestServer(t, Config{validateDataDir: acceptAll})
 	p := &localPeer{sid: sidA}
-	call1(t, s, p, proto.Request{Op: proto.OpSetDataLocation, Handle: tempDirHandle(t)})
-	wantOK(t, call1(t, s, p, proto.Request{Op: proto.OpStart}), proto.OpStart)
+	ss := openSession(t, s, p)
+	ss.do(proto.Request{Op: proto.OpSetDataLocation, Handle: tempDirHandle(t)})
+	wantOK(t, ss.do(proto.Request{Op: proto.OpStart}), proto.OpStart)
 	wantCode(t, call1(t, s, p, proto.Request{Op: proto.OpSetDataLocation, Handle: tempDirHandle(t)}), proto.CodeBusy)
 }
 
@@ -487,3 +496,173 @@ func TestCloseReleasesDataDirs(t *testing.T) {
 	s.Close()
 	wantCode(t, call1(t, s, p, proto.Request{Op: proto.OpStatus}), proto.CodeBusy)
 }
+
+// session is one open connection to the server, served in the background.
+type session struct {
+	t    *testing.T
+	c    net.Conn
+	done chan error
+}
+
+func openSession(t *testing.T, s *Server, p Peer) *session {
+	t.Helper()
+	client, server := net.Pipe()
+	ss := &session{t: t, c: client, done: make(chan error, 1)}
+	go func() { ss.done <- s.ServeConn(context.Background(), server, p) }()
+	t.Cleanup(func() { ss.close() })
+	return ss
+}
+
+func (ss *session) do(req proto.Request) proto.Reply {
+	ss.t.Helper()
+	b, err := proto.EncodeRequest(req)
+	if err != nil {
+		ss.t.Fatal(err)
+	}
+	_ = ss.c.SetDeadline(time.Now().Add(5 * time.Second))
+	if _, err := ss.c.Write(b); err != nil {
+		ss.t.Fatalf("write: %v", err)
+	}
+	var buf [proto.MaxFrameSize]byte
+	f, err := proto.ReadFrame(ss.c, &buf)
+	if err != nil {
+		ss.t.Fatalf("read reply: %v", err)
+	}
+	r, err := proto.DecodeReply(f)
+	if err != nil {
+		ss.t.Fatalf("decode reply: %v", err)
+	}
+	return r
+}
+
+// close ends the connection and waits for the server to finish with it.
+func (ss *session) close() {
+	if ss.c == nil {
+		return
+	}
+	_ = ss.c.Close()
+	<-ss.done
+	ss.c = nil
+}
+
+// The connection that started the VM is its lease (Implementation decision 6): when it
+// ends, the VM is terminated; another connection of the same user cannot take it over.
+func TestLease(t *testing.T) {
+	s, be := newTestServer(t, Config{validateDataDir: acceptAll})
+	p := &localPeer{sid: sidA}
+	holder := openSession(t, s, p)
+	wantOK(t, holder.do(proto.Request{Op: proto.OpSetDataLocation, Handle: tempDirHandle(t)}), proto.OpSetDataLocation)
+	first := holder.do(proto.Request{Op: proto.OpStart})
+	wantOK(t, first, proto.OpStart)
+	// The same connection asking again gets the same VM.
+	if again := holder.do(proto.Request{Op: proto.OpStart}); again.VMID != first.VMID || be.Starts[sidA] != 1 {
+		t.Fatalf("second start on the lease: %+v, starts %d", again, be.Starts[sidA])
+	}
+	// Another connection of the owner sees it but cannot start it again.
+	other := openSession(t, s, p)
+	wantCode(t, other.do(proto.Request{Op: proto.OpStart}), proto.CodeLeaseHeld)
+	if st := other.do(proto.Request{Op: proto.OpStatus}); st.State != proto.StateRunning {
+		t.Fatalf("status from another connection: %+v", st)
+	}
+	// Closing the other connection leaves the VM; closing the lease terminates it.
+	other.close()
+	if be.Stops[sidA] != 0 {
+		t.Fatal("a connection without the lease stopped the VM")
+	}
+	holder.close()
+	if be.Stops[sidA] != 1 {
+		t.Fatalf("lease closed: %d stops, want 1", be.Stops[sidA])
+	}
+	wantCode(t, call1(t, s, p, proto.Request{Op: proto.OpStop}), proto.CodeNotRunning)
+
+	// A forced stop ends the lease, and a new start takes it on its own connection.
+	next := openSession(t, s, p)
+	wantOK(t, next.do(proto.Request{Op: proto.OpStart}), proto.OpStart)
+	wantOK(t, next.do(proto.Request{Op: proto.OpStop, Force: true}), proto.OpStop)
+	wantOK(t, next.do(proto.Request{Op: proto.OpStart}), proto.OpStart)
+	stops := be.Stops[sidA]
+	next.close()
+	if be.Stops[sidA] != stops+1 {
+		t.Fatal("the restarted VM outlived its lease")
+	}
+}
+
+func TestStartFields(t *testing.T) {
+	s, be := newTestServer(t, Config{validateDataDir: acceptAll, MaxCPUs: 4, MaxMemoryMB: 8192})
+	ss := openSession(t, s, &localPeer{sid: sidA})
+	ss.do(proto.Request{Op: proto.OpSetDataLocation, Handle: tempDirHandle(t)})
+	wantCode(t, ss.do(proto.Request{Op: proto.OpStart, CPUs: 5}), proto.CodeOutOfRange)
+	wantCode(t, ss.do(proto.Request{Op: proto.OpStart, MemoryMB: 8193}), proto.CodeOutOfRange)
+	if be.Starts[sidA] != 0 {
+		t.Fatal("started outside the limits")
+	}
+	r := ss.do(proto.Request{Op: proto.OpStart, CPUs: 3, MemoryMB: 6144,
+		Features: proto.FeatureNet | proto.FeatureShare | proto.FeatureBlankDisk,
+		NetAddr:  [4]byte{10, 20, 30, 64}, NetPrefix: 26, NetMTU: 1500, NetFlags: proto.NetOffload | proto.NetHostGateway | proto.NetCRCStrict})
+	wantOK(t, r, proto.OpStart)
+	if r.CPUs != 3 || r.MemoryMB != 6144 {
+		t.Fatalf("start reply %+v", r)
+	}
+	got := be.Specs[sidA]
+	want := VMSpec{Owner: sidA, CPUs: 3, MemoryMB: 6144, Share: true, BlankDisk: true,
+		Net: &vmtemplate.Net{Subnet: netip.MustParsePrefix("10.20.30.64/26"), MTU: 1500, Offload: true, HostGateway: true, CRC: vmtemplate.CRCStrict}}
+	if got.Net == nil || *got.Net != *want.Net {
+		t.Fatalf("net %+v, want %+v", got.Net, want.Net)
+	}
+	got.Net, want.Net = nil, nil
+	if got != want {
+		t.Fatalf("spec %+v, want %+v", got, want)
+	}
+	// The values stay for the next start, as a resize's do.
+	if st := ss.do(proto.Request{Op: proto.OpStatus}); st.CPUs != 3 || st.MemoryMB != 6144 {
+		t.Fatalf("status %+v", st)
+	}
+}
+
+func TestPause(t *testing.T) {
+	s, _ := newTestServer(t, Config{validateDataDir: acceptAll})
+	p := &localPeer{sid: sidA}
+	wantCode(t, call1(t, s, p, proto.Request{Op: proto.OpPause}), proto.CodeNotRunning)
+	ss := openSession(t, s, p)
+	ss.do(proto.Request{Op: proto.OpSetDataLocation, Handle: tempDirHandle(t)})
+	wantOK(t, ss.do(proto.Request{Op: proto.OpStart}), proto.OpStart)
+	if r := ss.do(proto.Request{Op: proto.OpPause}); r.State != proto.StatePaused {
+		t.Fatalf("pause: %+v", r)
+	}
+	if r := call1(t, s, p, proto.Request{Op: proto.OpStatus}); r.State != proto.StatePaused {
+		t.Fatalf("status while paused: %+v", r)
+	}
+	// A paused VM is still the lease's.
+	wantCode(t, call1(t, s, p, proto.Request{Op: proto.OpStart}), proto.CodeLeaseHeld)
+	if r := ss.do(proto.Request{Op: proto.OpPause, Resume: true}); r.State != proto.StateRunning {
+		t.Fatalf("resume: %+v", r)
+	}
+}
+
+// Image and disk rejections reach the caller as their own codes, without detail.
+func TestStartRejections(t *testing.T) {
+	for _, tc := range []struct {
+		err  error
+		code proto.Code
+	}{
+		{fmt.Errorf("%w: image.json at C:\\secret does not match", ErrImageRejected), proto.CodeImageRejected},
+		{fmt.Errorf("%w: C:\\secret\\data.vhdx has 2 links", ErrDiskRejected), proto.CodeDiskRejected},
+	} {
+		be := &failingStart{FakeBackend: NewFakeBackend(), err: tc.err}
+		s, _ := newTestServer(t, Config{Backend: be, validateDataDir: acceptAll})
+		ss := openSession(t, s, &localPeer{sid: sidA})
+		ss.do(proto.Request{Op: proto.OpSetDataLocation, Handle: tempDirHandle(t)})
+		r := ss.do(proto.Request{Op: proto.OpStart})
+		wantCode(t, r, tc.code)
+		if strings.Contains(r.Message, "secret") {
+			t.Fatalf("message %q", r.Message)
+		}
+	}
+}
+
+type failingStart struct {
+	*FakeBackend
+	err error
+}
+
+func (f *failingStart) Start(context.Context, VMSpec) (VMStatus, error) { return VMStatus{}, f.err }

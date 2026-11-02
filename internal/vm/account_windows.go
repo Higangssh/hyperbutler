@@ -50,6 +50,12 @@ func VMGroupCanRead(path string) bool {
 	if err != nil {
 		return false
 	}
+	return VMGroupCanReadSD(sd)
+}
+
+// VMGroupCanReadSD is VMGroupCanRead for a security descriptor already read (from a
+// handle, say).
+func VMGroupCanReadSD(sd *windows.SECURITY_DESCRIPTOR) bool {
 	dacl, _, err := sd.DACL()
 	if err != nil || dacl == nil {
 		return false // a NULL DACL would grant everyone, but the installer never sets one
@@ -86,22 +92,64 @@ func VMGroupCanRead(path string) bool {
 // runtime id is a name-based GUID. It grants id access to a new, empty file of its own
 // and reads the account back, so no file in use is touched; the file is then deleted.
 func ProbeRuntimeID(id string) (guid.GUID, error) {
-	f, err := os.CreateTemp("", "hyperbutler-vmaccount-*")
+	rid, _, err := ProbeVMAccount("", id)
+	return rid, err
+}
+
+// ProbeVMAccount is ProbeRuntimeID with the probe file in dir (os.TempDir() if empty),
+// and it also returns the access mask HcsGrantVmAccess gave the VM's account, so that a
+// caller can grant the same access itself, on a handle, instead of by path.
+func ProbeVMAccount(dir, id string) (guid.GUID, uint32, error) {
+	f, err := os.CreateTemp(dir, "hyperbutler-vmaccount-*")
 	if err != nil {
-		return guid.GUID{}, err
+		return guid.GUID{}, 0, err
 	}
 	name := f.Name()
 	_ = f.Close()
 	defer func() { _ = os.Remove(name) }()
 	if err := GrantVMAccess(id, name); err != nil {
-		return guid.GUID{}, err
+		return guid.GUID{}, 0, err
 	}
 	sids, err := AccountsOnFile(name)
 	if err != nil {
-		return guid.GUID{}, err
+		return guid.GUID{}, 0, err
 	}
 	if len(sids) != 1 {
-		return guid.GUID{}, fmt.Errorf("vm: HcsGrantVmAccess for %s added %d VM accounts, want 1", id, len(sids))
+		return guid.GUID{}, 0, fmt.Errorf("vm: HcsGrantVmAccess for %s added %d VM accounts, want 1", id, len(sids))
 	}
-	return RuntimeIDFromSID(sids[0])
+	rid, err := RuntimeIDFromSID(sids[0])
+	if err != nil {
+		return guid.GUID{}, 0, err
+	}
+	mask, err := allowedMask(name, sids[0])
+	if err != nil {
+		return guid.GUID{}, 0, err
+	}
+	return rid, mask, nil
+}
+
+// allowedMask is the union of the allow entries for sid in path's DACL.
+func allowedMask(path, sid string) (uint32, error) {
+	sd, err := windows.GetNamedSecurityInfo(path, windows.SE_FILE_OBJECT, windows.DACL_SECURITY_INFORMATION)
+	if err != nil {
+		return 0, err
+	}
+	dacl, _, err := sd.DACL()
+	if err != nil || dacl == nil {
+		return 0, fmt.Errorf("vm: %s has no DACL", path)
+	}
+	var mask uint32
+	for i := uint32(0); i < uint32(dacl.AceCount); i++ {
+		var ace *windows.ACCESS_ALLOWED_ACE
+		if err := windows.GetAce(dacl, i, &ace); err != nil {
+			return 0, err
+		}
+		if ace.Header.AceType == windows.ACCESS_ALLOWED_ACE_TYPE && (*windows.SID)(unsafe.Pointer(&ace.SidStart)).String() == sid {
+			mask |= uint32(ace.Mask)
+		}
+	}
+	if mask == 0 {
+		return 0, fmt.Errorf("vm: %s grants %s nothing", path, sid)
+	}
+	return mask, nil
 }

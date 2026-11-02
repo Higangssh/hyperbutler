@@ -14,7 +14,7 @@
 # looks for its image in the image\ folder next to it.
 #
 # The SHA-256 of image.json (as copied into the zip) is linked into hyperbutler.exe
-# (-X ...engine.pinnedManifest), so the release binary boots only that image (ADR 0005,
+# (-X ...imageset.pinnedManifest), so the release binary boots only that image (ADR 0005,
 # Decision 4).
 #
 # The docker CLI and the compose plugin (clients\ in the zip) are built here from the
@@ -172,7 +172,7 @@ try {
         $env:GOOS = 'windows'; $env:GOARCH = $goarch; $env:CGO_ENABLED = '0'
         $env:GOTOOLCHAIN = 'local'; $env:GOFLAGS = '-mod=readonly'
         $ldflags = '-s -w -buildid='
-        if ($pin) { $ldflags += " -X github.com/Higangssh/hyperbutler/internal/engine.pinnedManifest=$pin" }
+        if ($pin) { $ldflags += " -X github.com/Higangssh/hyperbutler/internal/imageset.pinnedManifest=$pin" }
         Exec go build -trimpath -buildvcs=true -ldflags $ldflags -o $exe ./cmd/hyperbutler | Out-Null
         $goVersion = (Exec go version) | Select-Object -First 1
         # The pin as the binary reports it: a renamed variable would make -X a silent no-op.

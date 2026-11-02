@@ -14,15 +14,19 @@ type FakeBackend struct {
 	mu  sync.Mutex
 	vms map[string]*VMStatus
 
-	// Starts counts successful Start calls by owner.
+	// Starts counts successful Start calls by owner, and Specs holds the last spec each
+	// owner started.
 	Starts map[string]int
+	Specs  map[string]VMSpec
+	// Stops counts Stop calls that stopped a VM, by owner.
+	Stops map[string]int
 	// Err, if set, is returned by every call.
 	Err error
 }
 
 // NewFakeBackend returns an empty FakeBackend.
 func NewFakeBackend() *FakeBackend {
-	return &FakeBackend{vms: make(map[string]*VMStatus), Starts: make(map[string]int)}
+	return &FakeBackend{vms: make(map[string]*VMStatus), Starts: make(map[string]int), Specs: make(map[string]VMSpec), Stops: make(map[string]int)}
 }
 
 func (f *FakeBackend) Start(_ context.Context, spec VMSpec) (VMStatus, error) {
@@ -39,6 +43,8 @@ func (f *FakeBackend) Start(_ context.Context, spec VMSpec) (VMStatus, error) {
 	vm.ID[0] |= 1 // never all zero
 	f.vms[spec.Owner] = vm
 	f.Starts[spec.Owner]++
+	spec.DataDir = nil // not the backend's to keep
+	f.Specs[spec.Owner] = spec
 	return *vm, nil
 }
 
@@ -52,6 +58,7 @@ func (f *FakeBackend) Stop(_ context.Context, owner string, _ bool) error {
 		return ErrNotRunning
 	}
 	delete(f.vms, owner)
+	f.Stops[owner]++
 	return nil
 }
 
@@ -83,5 +90,19 @@ func (f *FakeBackend) Resize(_ context.Context, owner string, cpus, memoryMB uin
 	if memoryMB != 0 {
 		vm.MemoryMB = memoryMB
 	}
+	return nil
+}
+
+func (f *FakeBackend) Pause(_ context.Context, owner string, resume bool) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.Err != nil {
+		return f.Err
+	}
+	vm, ok := f.vms[owner]
+	if !ok {
+		return ErrNotRunning
+	}
+	vm.Paused = !resume
 	return nil
 }

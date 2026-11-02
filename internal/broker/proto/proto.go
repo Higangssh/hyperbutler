@@ -1,9 +1,12 @@
 // Package proto is the wire format between hyperbutler and the HCS access broker (ADR 0004).
 //
 // It carries only the ADR 0004 verbs: start (create) the caller's VM, stop it, query its
-// status, resize it within fixed limits, set its data location by handle, and report the
-// broker version. There is deliberately no field for a path, a command line, a share, an
-// identity, or an HCS document (ADR 0004 rules 1, 4 and 7).
+// status, resize it within fixed limits, set its data location by handle, pause or resume
+// it (Implementation decision 2), and report the broker version. There is deliberately no
+// field for a path, a command line, a share, an identity, or an HCS document (ADR 0004
+// rules 1, 4 and 7). A start carries the VM's features and network as typed values (an
+// IPv4 subnet, an MTU in a fixed range, flags), which the broker renders itself
+// (Implementation decision 4).
 //
 // # Frame layout
 //
@@ -57,9 +60,12 @@ const (
 	OpStatus          Op = 4
 	OpResize          Op = 5
 	OpSetDataLocation Op = 6
+	// OpPause pauses the caller's running VM, or resumes it with Resume (the free-space
+	// guard, REQ-DISK-004 and REQ-DISK-010).
+	OpPause Op = 7
 )
 
-func (o Op) valid() bool { return o >= OpVersion && o <= OpSetDataLocation }
+func (o Op) valid() bool { return o >= OpVersion && o <= OpPause }
 
 func (o Op) String() string {
 	switch o {
@@ -75,6 +81,8 @@ func (o Op) String() string {
 		return "resize"
 	case OpSetDataLocation:
 		return "set-data-location"
+	case OpPause:
+		return "pause"
 	}
 	return fmt.Sprintf("op(%d)", uint8(o))
 }
@@ -99,6 +107,38 @@ const (
 	MaxHandle     = 0xFFFFFFFF
 	MaxVersionLen = 64
 	MaxMessageLen = 200
+	// MinMTU and MaxMTU bound the guest link MTU (the network stack's own range).
+	MinMTU = 576
+	MaxMTU = 65520
+	// MinNetPrefix and MaxNetPrefix bound the guest subnet's prefix length.
+	MinNetPrefix = 8
+	MaxNetPrefix = 29
+)
+
+// Feature bits of a start request.
+const (
+	// FeatureNet gives the guest the user-mode network; the Net fields describe it.
+	FeatureNet uint8 = 1 << iota
+	// FeatureShare adds the bind-mount file server's service (ADR 0007).
+	FeatureShare
+	// FeatureDaemonConfig makes the guest wait for daemon.json on the control channel.
+	FeatureDaemonConfig
+	// FeatureBlankDisk says the data disk was never written: the guest may format it.
+	FeatureBlankDisk
+	allFeatures = FeatureNet | FeatureShare | FeatureDaemonConfig | FeatureBlankDisk
+)
+
+// Network flags of a start request with FeatureNet.
+const (
+	// NetOffload is the offload link (the host dials the guest).
+	NetOffload uint8 = 1 << iota
+	// NetHostGateway tells the guest the host gateway's address.
+	NetHostGateway
+	// NetCRCOff and NetCRCStrict set the offload link's CRC mode (on by default). At
+	// most one is set, and only with NetOffload.
+	NetCRCOff
+	NetCRCStrict
+	allNetFlags = NetOffload | NetHostGateway | NetCRCOff | NetCRCStrict
 )
 
 // State is a VM state in a status reply.
@@ -107,9 +147,10 @@ type State uint8
 const (
 	StateStopped State = 1
 	StateRunning State = 2
+	StatePaused  State = 3
 )
 
-func (s State) valid() bool { return s == StateStopped || s == StateRunning }
+func (s State) valid() bool { return s >= StateStopped && s <= StatePaused }
 
 // Code is the error code of an error reply.
 type Code uint16
@@ -125,7 +166,10 @@ const (
 	CodeNotRunning           Code = 8 // stop of a VM that is not running
 	CodeBusy                 Code = 9 // operation not allowed in the VM's current state
 	CodeInternal             Code = 10
-	maxCode                       = CodeInternal
+	CodeImageRejected        Code = 11 // the broker's guest image failed its checks
+	CodeDiskRejected         Code = 12 // the data disk below the data location failed its checks
+	CodeLeaseHeld            Code = 13 // the VM runs under another connection's lease
+	maxCode                       = CodeLeaseHeld
 )
 
 func (c Code) valid() bool { return c >= CodeBadRequest && c <= maxCode }
@@ -138,9 +182,21 @@ type Request struct {
 	// OpStop.
 	Force bool
 
-	// OpResize: zero means unchanged; at least one is set.
+	// OpResize: zero means unchanged; at least one is set. OpStart: zero means the
+	// caller's current values.
 	CPUs     uint32
 	MemoryMB uint32
+
+	// OpStart: Feature* bits, and with FeatureNet the guest network: the subnet's
+	// address (masked, private) and prefix length, the link MTU, and Net* flags.
+	Features  uint8
+	NetAddr   [4]byte
+	NetPrefix uint8
+	NetMTU    uint16
+	NetFlags  uint8
+
+	// OpPause: resume instead of pause.
+	Resume bool
 
 	// OpSetDataLocation: the value of a directory handle in the caller's own process.
 	// The broker duplicates it from the authenticated client process.
@@ -164,7 +220,7 @@ type Reply struct {
 	State           State
 	CPUs            uint32
 	MemoryMB        uint32
-	VMID            [16]byte // zero when no VM exists
+	VMID            [16]byte // the runtime id in RFC 4122 byte order; zero when no VM exists
 	DataLocationSet bool
 }
 
@@ -196,7 +252,13 @@ const (
 	tagDataLocationSet = 9
 	tagCode            = 10
 	tagMessage         = 11
-	maxTag             = tagMessage
+	tagFeatures        = 12
+	tagNetAddr         = 13
+	tagNetPrefix       = 14
+	tagNetMTU          = 15
+	tagNetFlags        = 16
+	tagResume          = 17
+	maxTag             = tagResume
 )
 
 type kind uint8
@@ -208,6 +270,7 @@ const (
 	kindU32
 	kindU64
 	kindGUID   // 16 bytes, not all zero
+	kindIPv4   // 4 bytes in network order, not all zero
 	kindString // 1..max bytes of printable ASCII
 )
 
@@ -222,7 +285,10 @@ type schema [maxTag + 1]*fieldSpec
 
 var (
 	optBool   = &fieldSpec{kind: kindBool}
+	optU8     = &fieldSpec{kind: kindU8}
+	optU16    = &fieldSpec{kind: kindU16}
 	optU32    = &fieldSpec{kind: kindU32}
+	optIPv4   = &fieldSpec{kind: kindIPv4}
 	reqU8     = &fieldSpec{kind: kindU8, required: true}
 	reqU16    = &fieldSpec{kind: kindU16, required: true}
 	reqU32    = &fieldSpec{kind: kindU32, required: true}
@@ -241,12 +307,14 @@ var statusSchema = schema{
 }
 
 var schemas = map[uint8]*schema{
-	uint8(OpVersion):         {},
-	uint8(OpStart):           {},
+	uint8(OpVersion): {},
+	uint8(OpStart): {tagCPUs: optU32, tagMemoryMB: optU32, tagFeatures: optU8,
+		tagNetAddr: optIPv4, tagNetPrefix: optU8, tagNetMTU: optU16, tagNetFlags: optU8},
 	uint8(OpStop):            {tagForce: optBool},
 	uint8(OpStatus):          {},
 	uint8(OpResize):          {tagCPUs: optU32, tagMemoryMB: optU32},
 	uint8(OpSetDataLocation): {tagHandle: reqU64},
+	uint8(OpPause):           {tagResume: optBool},
 
 	ReplyFlag | uint8(OpVersion):         {tagProtoVersion: reqU8, tagBrokerVersion: reqVerStr},
 	ReplyFlag | uint8(OpStart):           &statusSchema,
@@ -254,6 +322,7 @@ var schemas = map[uint8]*schema{
 	ReplyFlag | uint8(OpStatus):          &statusSchema,
 	ReplyFlag | uint8(OpResize):          &statusSchema,
 	ReplyFlag | uint8(OpSetDataLocation): {},
+	ReplyFlag | uint8(OpPause):           &statusSchema,
 	TypeError:                            {tagCode: reqU16, tagMessage: optMsgStr},
 }
 
@@ -263,6 +332,7 @@ type fields struct {
 	num     [maxTag + 1]uint64
 	str     [maxTag + 1]string
 	guid    [16]byte
+	ipv4    [4]byte
 }
 
 // The u8, u16 and u32 accessors narrow a decoded number to its tag's wire width.
@@ -295,6 +365,8 @@ func kindSize(k kind) int {
 		return 8
 	case kindGUID:
 		return 16
+	case kindIPv4:
+		return 4
 	}
 	return -1
 }
@@ -379,6 +451,15 @@ func decodeFrame(b []byte) (uint8, *fields, error) {
 				if f.guid == ([16]byte{}) {
 					return 0, nil, invalid("tag %d: zero GUID", tag)
 				}
+			case kindIPv4:
+				copy(f.ipv4[:], v)
+				if f.ipv4 == ([4]byte{}) {
+					return 0, nil, invalid("tag %d: zero address", tag)
+				}
+			}
+			// An optional number is encoded only when it is not zero (canonical form).
+			if !spec.required && spec.kind >= kindU8 && spec.kind <= kindU64 && f.num[tag] == 0 {
+				return 0, nil, invalid("tag %d: zero value must be omitted", tag)
 			}
 		}
 		f.present[tag] = true
@@ -402,21 +483,57 @@ func DecodeRequest(b []byte) (Request, error) {
 		return Request{}, invalid("type 0x%02x is not a request", typ)
 	}
 	r := Request{
-		Op:       Op(typ),
-		Force:    f.num[tagForce] == 1,
-		CPUs:     f.u32(tagCPUs),
-		MemoryMB: f.u32(tagMemoryMB),
-		Handle:   f.num[tagHandle],
+		Op:        Op(typ),
+		Force:     f.num[tagForce] == 1,
+		CPUs:      f.u32(tagCPUs),
+		MemoryMB:  f.u32(tagMemoryMB),
+		Handle:    f.num[tagHandle],
+		Features:  f.u8(tagFeatures),
+		NetAddr:   f.ipv4,
+		NetPrefix: f.u8(tagNetPrefix),
+		NetMTU:    f.u16(tagNetMTU),
+		NetFlags:  f.u8(tagNetFlags),
+		Resume:    f.num[tagResume] == 1,
 	}
+	// decodeFrame rejected every optional number encoded with its zero value, so a
+	// zero here (CPUs or MemoryMB unchanged) was omitted, as the canonical form wants.
 	if err := r.Validate(); err != nil {
 		return Request{}, err
 	}
-	// Optional numbers are encoded only when non-zero. Validate allows a zero CPUs or
-	// MemoryMB (unchanged), so an explicitly encoded zero must be rejected here.
-	if (f.present[tagCPUs] && r.CPUs == 0) || (f.present[tagMemoryMB] && r.MemoryMB == 0) {
-		return Request{}, invalid("resize: zero value must be omitted")
-	}
 	return r, nil
+}
+
+// privateIPv4 reports whether a is in an RFC 1918 range.
+func privateIPv4(a [4]byte) bool {
+	return a[0] == 10 || a[0] == 172 && a[1]&0xf0 == 16 || a[0] == 192 && a[1] == 168
+}
+
+// validateNet checks a start's network fields.
+func (r *Request) validateNet() error {
+	if r.Features&FeatureNet == 0 {
+		if r.NetAddr != ([4]byte{}) || r.NetPrefix != 0 || r.NetMTU != 0 || r.NetFlags != 0 {
+			return invalid("start: network fields without FeatureNet")
+		}
+		return nil
+	}
+	if r.NetPrefix < MinNetPrefix || r.NetPrefix > MaxNetPrefix {
+		return invalid("start: prefix length %d", r.NetPrefix)
+	}
+	addr := binary.BigEndian.Uint32(r.NetAddr[:])
+	if addr == 0 || addr&(uint32(1)<<(32-r.NetPrefix)-1) != 0 || !privateIPv4(r.NetAddr) {
+		return invalid("start: subnet %v/%d is not a masked private IPv4 subnet", r.NetAddr, r.NetPrefix)
+	}
+	if r.NetMTU < MinMTU || r.NetMTU > MaxMTU {
+		return invalid("start: MTU %d", r.NetMTU)
+	}
+	if r.NetFlags&^allNetFlags != 0 {
+		return invalid("start: network flags 0x%02x", r.NetFlags)
+	}
+	crc := r.NetFlags & (NetCRCOff | NetCRCStrict)
+	if crc == NetCRCOff|NetCRCStrict || crc != 0 && r.NetFlags&NetOffload == 0 {
+		return invalid("start: CRC flags 0x%02x", r.NetFlags)
+	}
+	return nil
 }
 
 // Validate checks r against its Op's rules. EncodeRequest and DecodeRequest both apply it.
@@ -444,6 +561,23 @@ func (r *Request) Validate() error {
 		if r.Handle == 0 || r.Handle > MaxHandle {
 			return invalid("set-data-location: handle 0x%x", r.Handle)
 		}
+	case OpStart:
+		zero.CPUs, zero.MemoryMB = r.CPUs, r.MemoryMB
+		zero.Features, zero.NetAddr, zero.NetPrefix, zero.NetMTU, zero.NetFlags = r.Features, r.NetAddr, r.NetPrefix, r.NetMTU, r.NetFlags
+		if r.CPUs > MaxCPUs {
+			return invalid("start: %d CPUs", r.CPUs)
+		}
+		if r.MemoryMB != 0 && (r.MemoryMB < MinMemoryMB || r.MemoryMB > MaxMemoryMB) {
+			return invalid("start: %d MB", r.MemoryMB)
+		}
+		if r.Features&^allFeatures != 0 {
+			return invalid("start: features 0x%02x", r.Features)
+		}
+		if err := r.validateNet(); err != nil {
+			return err
+		}
+	case OpPause:
+		zero.Resume = r.Resume
 	}
 	if *r != zero {
 		return invalid("%s: field not allowed", r.Op)
@@ -591,6 +725,16 @@ func EncodeRequest(r Request) ([]byte, error) {
 	if r.Handle != 0 {
 		e.field(tagHandle, binary.LittleEndian.AppendUint64(nil, r.Handle))
 	}
+	e.u8(tagFeatures, r.Features)
+	if r.NetAddr != ([4]byte{}) {
+		e.field(tagNetAddr, r.NetAddr[:])
+	}
+	e.u8(tagNetPrefix, r.NetPrefix)
+	if r.NetMTU != 0 {
+		e.u16(tagNetMTU, r.NetMTU)
+	}
+	e.u8(tagNetFlags, r.NetFlags)
+	e.boolean(tagResume, r.Resume)
 	return e.finish()
 }
 

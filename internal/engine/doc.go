@@ -18,7 +18,9 @@
 //
 // The VM's HCS document (kernel command line, disks, hvsock services) is built by
 // internal/vmtemplate from typed inputs, the same template the HCS access broker of
-// ADR 0004 uses. HCS is reached directly through internal/vm, which needs membership in
-// Hyper-V Administrators (ADR 0004). The calls Run makes go through the Backend
-// interface.
+// ADR 0004 uses. Run boots the VM through a VMProvider: by default the in-process one,
+// which reaches HCS directly through internal/vm and the Backend interface and needs
+// membership in Hyper-V Administrators (developer mode, ADR 0004 option A); with
+// Config.Broker the HCS access broker's, which sends only sizes, feature bits and the
+// typed network, and returns a Lease that the engine pauses, polls and closes.
 package engine

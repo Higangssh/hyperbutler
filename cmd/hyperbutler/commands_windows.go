@@ -24,6 +24,7 @@ import (
 	"github.com/Higangssh/hyperbutler/internal/diag"
 	"github.com/Higangssh/hyperbutler/internal/engine"
 	"github.com/Higangssh/hyperbutler/internal/engine/dockerctx"
+	"github.com/Higangssh/hyperbutler/internal/transport"
 	"github.com/Higangssh/hyperbutler/internal/updatecheck"
 	"github.com/Higangssh/hyperbutler/internal/vm"
 )
@@ -186,7 +187,12 @@ func cmdStart(args []string, stdout, stderr io.Writer) error {
 	var dcfg diag.Config
 	fs.StringVar(&dcfg.MemoryLimit, "memlimit", "", "Go soft memory limit of the engine process, GOMEMLIMIT syntax (default "+engine.DefaultEngineMemoryLimit+`, "off" for none); kept for later starts. The GOMEMLIMIT variable wins`)
 	fs.StringVar(&dcfg.DebugPipe, "debug-pipe", "", `serve the engine's pprof and runtime stats on this pipe, current user only, e.g. \\.\pipe\hyperbutler-engine-debug (default: $`+debugPipeEnv+`; off when both are empty)`)
+	backend := fs.String("backend", backendHCS, `developer mode: how the engine boots the VM; "hcs" calls HCS from the engine process, which needs Hyper-V Administrators (ADR 0004 option A)`)
+	brokerPipe := fs.String("broker", "", `developer mode: boot the VM through the HCS access broker on this pipe instead (ADR 0004; hyperbutler-broker -hcs-backend), with the broker's own guest image`)
 	if err := parseArgs(fs, args); err != nil {
+		return err
+	}
+	if err := checkBackendFlags(fs, *backend, *brokerPipe); err != nil {
 		return err
 	}
 	if dcfg.DebugPipe == "" {
@@ -219,11 +225,14 @@ func cmdStart(args []string, stdout, stderr io.Writer) error {
 	}
 	memLimitSet := dcfg.MemoryLimit != ""
 	dcfg.MemoryLimit = in.settings.EngineMemoryLimit()
-	kernel, initrd, manifest, err := guestArtifacts(*imageDir)
-	if err != nil {
-		return err
+	var kernel, initrd, manifest string
+	if *brokerPipe == "" {
+		// The broker boots the image next to it, not this one.
+		if kernel, initrd, manifest, err = guestArtifacts(*imageDir); err != nil {
+			return err
+		}
 	}
-	if d := exeDir(); *imageDir == "" && d != "" {
+	if d := exeDir(); *imageDir == "" && *brokerPipe == "" && d != "" {
 		if old := looseImageFiles(d); len(old) > 0 {
 			_, _ = fmt.Fprintf(stderr, "hyperbutler: %s next to hyperbutler.exe in %s are left from an older archive and not used (the guest image is in %s\\); "+
 				"delete them, or extract the release zip into an empty folder\n", strings.Join(old, ", "), d, imageDirName)
@@ -259,7 +268,7 @@ func cmdStart(args []string, stdout, stderr io.Writer) error {
 		return err
 	}
 
-	cmd, err := spawnEngine(in, kernel, initrd, manifest, dcfg)
+	cmd, err := spawnEngine(in, engineImage{kernel, initrd, manifest, *brokerPipe}, dcfg)
 	if err != nil {
 		return err
 	}
@@ -472,7 +481,7 @@ func (in *install) noteCrash(stderr io.Writer) {
 // spawnEngine starts `hyperbutler engine` as a detached background process whose output
 // goes to engine.log. It breaks away from the caller's job object where allowed, so
 // closing the terminal (or a CI step) does not take the engine with it.
-func spawnEngine(in *install, kernel, initrd, manifest string, dcfg diag.Config) (*exec.Cmd, error) {
+func spawnEngine(in *install, img engineImage, dcfg diag.Config) (*exec.Cmd, error) {
 	exe, err := os.Executable()
 	if err != nil {
 		return nil, err
@@ -495,7 +504,7 @@ func spawnEngine(in *install, kernel, initrd, manifest string, dcfg diag.Config)
 		createBreakawayFromJob = 0x01000000
 	)
 	for _, breakaway := range []bool{true, false} {
-		cmd := exec.Command(exe, engineArgs(in.l.Home, kernel, initrd, manifest, dcfg)...) //nolint:gosec // G204: exe is this program (os.Executable); the arguments are built by engineArgs
+		cmd := exec.Command(exe, engineArgs(in.l.Home, img, dcfg)...) //nolint:gosec // G204: exe is this program (os.Executable); the arguments are built by engineArgs
 		cmd.Dir = in.l.Home
 		cmd.Stdout, cmd.Stderr = logf, logf
 		flags := uint32(detachedProcess | createNewProcessGroup)
@@ -1182,6 +1191,7 @@ func cmdEngine(args []string, stderr io.Writer) (int, error) {
 	kernel := fs.String("kernel", "", "guest kernel")
 	initrd := fs.String("initrd", "", "guest initramfs")
 	manifest := fs.String("image", "", "guest image manifest (image.json), instead of --kernel and --initrd")
+	brokerPipe := fs.String("broker", "", "boot the VM through the HCS access broker on this pipe, instead of --image or --kernel and --initrd")
 	debugLog := fs.Bool("debug", false, "debug logging")
 	var dcfg diag.Config
 	fs.StringVar(&dcfg.MemoryLimit, "memlimit", "", "Go soft memory limit, GOMEMLIMIT syntax (default: settings.json's, else "+engine.DefaultEngineMemoryLimit+"; the GOMEMLIMIT variable wins)")
@@ -1190,7 +1200,15 @@ func cmdEngine(args []string, stderr io.Writer) (int, error) {
 		return 2, err
 	}
 	legacy := *kernel != "" || *initrd != ""
-	if *home == "" || (*manifest != "") == legacy || legacy && (*kernel == "" || *initrd == "") {
+	switch {
+	case *brokerPipe != "":
+		if *home == "" || legacy || *manifest != "" {
+			return 2, errors.New("engine: --broker takes --home only: the broker boots its own guest image")
+		}
+		if err := transport.ValidatePipeName(*brokerPipe); err != nil {
+			return 2, fmt.Errorf("engine: --broker: %w", err)
+		}
+	case *home == "" || (*manifest != "") == legacy || legacy && (*kernel == "" || *initrd == ""):
 		return 2, errors.New("engine: --home and either --image or --kernel and --initrd are required (it is started by hyperbutler start)")
 	}
 	level := slog.LevelInfo
@@ -1237,7 +1255,7 @@ func cmdEngine(args []string, stderr io.Writer) (int, error) {
 		exe = ""
 	}
 	err = engine.Serve(engine.ServeOptions{
-		Home: *home, Settings: s, KernelPath: *kernel, InitrdPath: *initrd, Image: *manifest,
+		Home: *home, Settings: s, KernelPath: *kernel, InitrdPath: *initrd, Image: *manifest, Broker: *brokerPipe,
 		Pipe: s.PipeName(), Net: engine.NetConfig{AutoPublish: true, HostGateway: &hg, CRC: frameCheckMode(s)}, Logger: log,
 		Executable: exe, Version: buildVersion(),
 	})

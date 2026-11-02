@@ -73,7 +73,7 @@ func TestReplyRoundTrip(t *testing.T) {
 func TestEncodeRejectsInvalid(t *testing.T) {
 	for _, r := range []Request{
 		{},
-		{Op: 7},
+		{Op: 8},
 		{Op: OpStart, Force: true},
 		{Op: OpStatus, Handle: 4},
 		{Op: OpResize},
@@ -96,7 +96,7 @@ func TestEncodeRejectsInvalid(t *testing.T) {
 		{Type: TypeError, Code: CodeBusy, CPUs: 1},
 		{Type: TypeError, Code: CodeBusy, Message: "bad\nline"},
 		{Type: ReplyFlag | uint8(OpStatus), State: StateRunning, CPUs: 1},
-		{Type: ReplyFlag | uint8(OpStatus), State: 3, CPUs: 1, MemoryMB: 1024},
+		{Type: ReplyFlag | uint8(OpStatus), State: 4, CPUs: 1, MemoryMB: 1024},
 		{Type: ReplyFlag | uint8(OpStop), State: StateRunning},
 		{Type: ReplyFlag | uint8(OpVersion), ProtoVersion: 1},
 		{Type: ReplyFlag | uint8(OpVersion), ProtoVersion: 1, BrokerVersion: strings.Repeat("v", MaxVersionLen+1)},
@@ -125,7 +125,7 @@ func TestDecodeStrict(t *testing.T) {
 		{"oversize", append(frame(Version, uint8(OpStart)), make([]byte, MaxFrameSize)...)},
 		{"version 0", frame(0, uint8(OpStart))},
 		{"version 2", frame(2, uint8(OpStart))},
-		{"unknown op", frame(Version, 7)},
+		{"unknown op", frame(Version, 8)},
 		{"op 0", frame(Version, 0)},
 		{"reply as request", frame(Version, ReplyFlag|uint8(OpStop))},
 		{"unknown tag", frame(Version, uint8(OpStart), 1, 1, 1)},
@@ -166,7 +166,7 @@ func TestDecodeReplyStrict(t *testing.T) {
 		frame(Version, ReplyFlag|uint8(OpStatus), 7, 1, 2),  // CPUs, memory missing
 		frame(Version, uint8(OpStatus)),                     // request as reply
 		frame(Version, ReplyFlag|uint8(OpStop), 8, 16),      // VMID truncated
-		frame(Version, ReplyFlag|7),                         // unknown reply
+		frame(Version, ReplyFlag|8),                         // unknown reply
 		frame(Version, ReplyFlag|uint8(OpVersion), 5, 1, 1), // broker version missing
 	} {
 		if r, err := DecodeReply(in); !errors.Is(err, ErrInvalid) {
@@ -206,6 +206,120 @@ func TestReadFrame(t *testing.T) {
 	}
 	if _, err := ReadFrame(bytes.NewReader([]byte{0}), &buf); err != io.ErrUnexpectedEOF { //nolint:errorlint // ReadFrame's contract is to return io.EOF and io.ErrUnexpectedEOF themselves, unwrapped, like io.ReadFull
 		t.Fatalf("truncated length: %v", err)
+	}
+}
+
+// startNet is a start with every feature and the default network.
+var startNet = Request{Op: OpStart, CPUs: 2, MemoryMB: 4096,
+	Features: FeatureNet | FeatureShare | FeatureDaemonConfig | FeatureBlankDisk,
+	NetAddr:  [4]byte{192, 168, 127, 0}, NetPrefix: 24, NetMTU: 9000, NetFlags: NetOffload | NetHostGateway}
+
+func TestStartAndPauseRoundTrip(t *testing.T) {
+	for _, r := range []Request{
+		startNet,
+		{Op: OpStart, Features: FeatureShare},
+		{Op: OpStart, MemoryMB: MaxMemoryMB},
+		{Op: OpStart, Features: FeatureNet, NetAddr: [4]byte{10, 0, 0, 0}, NetPrefix: MinNetPrefix, NetMTU: MinMTU},
+		{Op: OpStart, Features: FeatureNet, NetAddr: [4]byte{172, 31, 255, 248}, NetPrefix: MaxNetPrefix, NetMTU: MaxMTU, NetFlags: NetOffload | NetCRCStrict},
+		{Op: OpStart, Features: FeatureNet, NetAddr: [4]byte{10, 20, 30, 64}, NetPrefix: 26, NetMTU: 1500, NetFlags: NetOffload | NetCRCOff},
+		{Op: OpPause},
+		{Op: OpPause, Resume: true},
+	} {
+		b, err := EncodeRequest(r)
+		if err != nil {
+			t.Fatalf("encode %+v: %v", r, err)
+		}
+		got, err := DecodeRequest(b)
+		if err != nil {
+			t.Fatalf("decode %+v (%x): %v", r, b, err)
+		}
+		if got != r {
+			t.Fatalf("round trip: %+v != %+v", got, r)
+		}
+	}
+	for _, st := range []State{StateStopped, StateRunning, StatePaused} {
+		r := Reply{Type: ReplyFlag | uint8(OpPause), State: st, CPUs: 2, MemoryMB: 2048, VMID: [16]byte{9}}
+		b, err := EncodeReply(r)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got, err := DecodeReply(b); err != nil || got != r {
+			t.Fatalf("pause reply %+v: %+v, %v", r, got, err)
+		}
+	}
+	for _, c := range []Code{CodeImageRejected, CodeDiskRejected, CodeLeaseHeld} {
+		r := Reply{Type: TypeError, Code: c, Message: "x"}
+		b, err := EncodeReply(r)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got, err := DecodeReply(b); err != nil || got != r {
+			t.Fatalf("error %d: %+v, %v", c, got, err)
+		}
+	}
+}
+
+func TestStartRejectsInvalid(t *testing.T) {
+	net := func(mut func(*Request)) Request {
+		r := startNet
+		mut(&r)
+		return r
+	}
+	for name, r := range map[string]Request{
+		"cpus":                {Op: OpStart, CPUs: MaxCPUs + 1},
+		"memory low":          {Op: OpStart, MemoryMB: MinMemoryMB - 1},
+		"unknown feature":     {Op: OpStart, Features: 0x10},
+		"net without bit":     {Op: OpStart, NetMTU: 1500},
+		"addr without bit":    {Op: OpStart, NetAddr: [4]byte{10}},
+		"flags without bit":   {Op: OpStart, NetFlags: NetOffload},
+		"no prefix":           net(func(r *Request) { r.NetPrefix = 0 }),
+		"prefix 7":            net(func(r *Request) { r.NetPrefix = 7 }),
+		"prefix 30":           net(func(r *Request) { r.NetPrefix = 30 }),
+		"host bits":           net(func(r *Request) { r.NetAddr = [4]byte{192, 168, 127, 1} }),
+		"public":              net(func(r *Request) { r.NetAddr = [4]byte{8, 8, 8, 0} }),
+		"172.32":              net(func(r *Request) { r.NetAddr, r.NetPrefix = [4]byte{172, 32, 0, 0}, 16 }),
+		"no addr":             net(func(r *Request) { r.NetAddr = [4]byte{} }),
+		"mtu low":             net(func(r *Request) { r.NetMTU = MinMTU - 1 }),
+		"mtu high":            net(func(r *Request) { r.NetMTU = MaxMTU + 1 }),
+		"no mtu":              net(func(r *Request) { r.NetMTU = 0 }),
+		"unknown flag":        net(func(r *Request) { r.NetFlags |= 0x10 }),
+		"both crc":            net(func(r *Request) { r.NetFlags |= NetCRCOff | NetCRCStrict }),
+		"crc without offload": net(func(r *Request) { r.NetFlags = NetCRCOff }),
+		"resume on start":     net(func(r *Request) { r.Resume = true }),
+		"force on pause":      {Op: OpPause, Force: true},
+		"cpus on pause":       {Op: OpPause, CPUs: 1},
+		"resume on stop":      {Op: OpStop, Resume: true},
+		"features on resize":  {Op: OpResize, CPUs: 1, Features: FeatureNet},
+	} {
+		if _, err := EncodeRequest(r); !errors.Is(err, ErrInvalid) {
+			t.Errorf("%s: EncodeRequest(%+v) = %v, want ErrInvalid", name, r, err)
+		}
+	}
+	good, err := EncodeRequest(startNet)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cat := func(parts ...[]byte) []byte { return bytes.Join(parts, nil) }
+	fields := good[headerSize:]
+	for name, in := range map[string][]byte{
+		"zero features encoded": frame(Version, uint8(OpStart), tagFeatures, 1, 0),
+		"zero flags encoded":    frame(Version, uint8(OpStart), cat(fields, []byte{tagNetFlags, 1, 0})...),
+		"zero address":          frame(Version, uint8(OpStart), tagFeatures, 1, FeatureNet, tagNetAddr, 4, 0, 0, 0, 0, tagNetPrefix, 1, 24, tagNetMTU, 2, 0x28, 0x23),
+		"address short":         frame(Version, uint8(OpStart), tagFeatures, 1, FeatureNet, tagNetAddr, 3, 10, 0, 0, tagNetPrefix, 1, 24, tagNetMTU, 2, 0x28, 0x23),
+		"mtu as u8":             frame(Version, uint8(OpStart), tagFeatures, 1, FeatureNet, tagNetAddr, 4, 10, 0, 0, 0, tagNetPrefix, 1, 24, tagNetMTU, 1, 0x28),
+		"zero mtu encoded":      frame(Version, uint8(OpStart), tagFeatures, 1, FeatureNet, tagNetAddr, 4, 10, 0, 0, 0, tagNetPrefix, 1, 24, tagNetMTU, 2, 0, 0),
+		"resume false encoded":  frame(Version, uint8(OpPause), tagResume, 1, 0),
+		"handle on pause":       frame(Version, uint8(OpPause), append([]byte{tagHandle, 8}, 1, 0, 0, 0, 0, 0, 0, 0)...),
+		"net out of order":      frame(Version, uint8(OpStart), tagFeatures, 1, FeatureNet, tagNetPrefix, 1, 24, tagNetAddr, 4, 10, 0, 0, 0, tagNetMTU, 2, 0x28, 0x23),
+	} {
+		if r, err := DecodeRequest(in); !errors.Is(err, ErrInvalid) {
+			t.Errorf("%s: DecodeRequest(%x) = %+v, %v; want ErrInvalid", name, in, r, err)
+		}
+	}
+	// The same frame with the fields in order is accepted.
+	ok := frame(Version, uint8(OpStart), tagFeatures, 1, FeatureNet, tagNetAddr, 4, 10, 0, 0, 0, tagNetPrefix, 1, 24, tagNetMTU, 2, 0x28, 0x23)
+	if r, err := DecodeRequest(ok); err != nil || r.NetMTU != 9000 || r.NetAddr != [4]byte{10} {
+		t.Fatalf("DecodeRequest(%x) = %+v, %v", ok, r, err)
 	}
 }
 

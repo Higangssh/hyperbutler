@@ -76,7 +76,7 @@ func (m *fuzzModel) check(t *testing.T, req proto.Request, rep proto.Reply) {
 		}
 	case proto.OpStart:
 		wantErr(proto.CodeNoDataLocation)
-	case proto.OpStop:
+	case proto.OpStop, proto.OpPause:
 		wantErr(proto.CodeNotRunning)
 	case proto.OpStatus:
 		status()
@@ -115,6 +115,10 @@ func FuzzServeConn(f *testing.F) {
 	start := fuzzReq(proto.Request{Op: proto.OpStart})
 	stop := fuzzReq(proto.Request{Op: proto.OpStop, Force: true})
 	setDL := fuzzReq(proto.Request{Op: proto.OpSetDataLocation, Handle: 0x1a4})
+	startNet := fuzzReq(proto.Request{Op: proto.OpStart, CPUs: 4, MemoryMB: 4096, Features: proto.FeatureNet | proto.FeatureShare,
+		NetAddr: [4]byte{192, 168, 127, 0}, NetPrefix: 24, NetMTU: 9000, NetFlags: proto.NetOffload})
+	pause := fuzzReq(proto.Request{Op: proto.OpPause})
+	resume := fuzzReq(proto.Request{Op: proto.OpPause, Resume: true})
 	f.Add([]byte{})
 	f.Add(version)
 	f.Add(status)
@@ -132,6 +136,10 @@ func FuzzServeConn(f *testing.F) {
 	f.Add([]byte{0, 6, 1, byte(proto.OpSetDataLocation), 4, 8})                                      // truncated handle
 	f.Add(cat([]byte{0, 12, 1, byte(proto.OpSetDataLocation), 4, 8}, bytes.Repeat([]byte{0xff}, 8))) // pseudo-handle
 	f.Add(cat(status, []byte{0}))                                                                    // half a length prefix
+	f.Add(startNet)
+	f.Add(cat(pause, resume, startNet, status, pause))
+	f.Add(cat(status, []byte{0, 5, 1, byte(proto.OpPause), 17, 1, 0}))    // resume false encoded
+	f.Add(cat(status, []byte{0, 5, 1, byte(proto.OpStart), 12, 1, 0x80})) // unknown feature
 
 	f.Fuzz(func(t *testing.T, in []byte) {
 		s, err := New(Config{Backend: NewFakeBackend(), Version: "fuzz-1"})

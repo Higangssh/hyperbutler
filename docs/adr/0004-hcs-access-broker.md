@@ -247,8 +247,9 @@ The first review (2026-10-30) raised eight findings. All eight were accepted:
 
 The first implementation of the broker's protocol and request handling is in
 `internal/broker` (server, handle validation, named pipe) and `internal/broker/proto` (wire
-format). `cmd/hyperbutler-broker` runs it in the foreground with an in-memory fake backend. It
-never installs, registers or starts a service. There is no HCS backend yet.
+format). `cmd/hyperbutler-broker` runs it in the foreground with an in-memory fake backend
+(`-fake-backend`) or, since M1, the HCS backend (`-hcs-backend`; see "HCS backend (M1)"). It
+never installs, registers or starts a service.
 
 ### Wire format
 
@@ -264,8 +265,22 @@ never installs, registers or starts a service. There is no HCS backend yet.
   - a length that disagrees with the input, which covers trailing bytes.
 - Decoding is therefore canonical: re-encoding an accepted frame gives the same bytes. The
   fuzzers check this.
-- The only verbs are version, start, stop, status, resize and set-data-location. The
-  version verb and the frame header must stay stable across protocol versions.
+- The only verbs are version, start, stop, status, resize, set-data-location and (since
+  M1, Implementation decision 2) pause, whose optional `Resume` flag resumes. The version
+  verb and the frame header must stay stable across protocol versions. The additions of M1
+  keep version 1, because no broker was released before them.
+- A start carries, all optional: CPUs and memory (zero keeps the caller's values; the
+  server checks its limits and remembers them), feature bits (network, share, daemon.json,
+  blank data disk), and with the network bit the subnet's IPv4 address (masked, RFC 1918),
+  its prefix length (8..29), the MTU (576..65520) and network flags (offload, host
+  gateway, CRC off or strict, the CRC flags only with offload and never both). Network
+  fields without the network bit are rejected. An optional number encoded as zero is
+  rejected for every type. The broker renders these with `internal/vmtemplate`, the
+  template the in-process engine uses too, so no caller text reaches the kernel command
+  line (Implementation decision 4).
+- Status replies can say paused. Errors added in M1: image rejected, disk rejected, lease
+  held. The per-VM secret of rule 6 and per-user pipes (rule 5) come in M3; the tag space
+  (1..255) and the frame size leave room for them.
 
 ### Identity and state
 
@@ -302,6 +317,67 @@ never installs, registers or starts a service. There is no HCS backend yet.
 5. The check runs again on every start.
 6. The whole take-and-check is bounded by a 10-second timeout, because a remote or
    provider-backed file system may never answer.
+
+### HCS backend (M1)
+
+`internal/broker/hcs_windows.go` is the broker's only HCS user. Its HCS calls are
+HcsCreateComputeSystem, HcsStartComputeSystem, HcsGetComputeSystemProperties (runtime id
+and state), HcsPauseComputeSystem, HcsResumeComputeSystem, HcsShutDownComputeSystem,
+HcsTerminateComputeSystem, HcsCloseComputeSystem, HcsEnumerateComputeSystems and
+HcsOpenComputeSystem (the startup sweep), and HcsGrantVmAccess on a probe file of its own
+(below). For each start:
+
+1. **Image.** Only `image\image.json` next to the broker executable is opened, with the
+   kernel, initramfs and system disk it names, all deny-write until the VM is gone, and
+   image.json checked against the SHA-256 pin compiled in (`internal/imageset`, the code
+   `hyperbutler.exe` uses; `-X ...imageset.pinnedManifest` pins both binaries). A build
+   without a pin refuses every start unless `-allow-unpinned-image` is given (development).
+2. **Data disk.** `data.vhdx` is opened relative to the validated data location handle,
+   with `OBJ_DONT_REPARSE`, `FILE_OPEN_REPARSE_POINT` and `FILE_NON_DIRECTORY_FILE`, and
+   must be a regular file on a local disk, not a reparse point, with one link, owned by
+   the caller. The handle shares read and write but not delete, and keeps read access:
+   a handle without data access takes no part in share-mode checks, so it would not stop
+   a rename. HCS gets the handle's `GetFinalPathNameByHandle` path.
+3. **Account.** The VM's runtime id comes from `vm.ProbeVMAccount`: HcsGrantVmAccess on
+   a new file in the broker's private state directory, which also tells the access mask
+   HCS grants. That mask, for `vm.AccountSID(runtimeID)`, is set on the data disk's
+   handle (removing entries of VM accounts a crash left), and read access on the system
+   disk's (reopened with `ReOpenFile`) unless the installer lets every VM read it. Both
+   are removed when the VM is released. A VM whose runtime id differs from the probe's is
+   terminated.
+4. **Document.** `vmtemplate.Build` with the request's typed fields, the files above, the
+   owner tag `hyperbutler-broker/<SID>` as HCS Owner, every service descriptor for the
+   caller's SID only, and no console pipe (Implementation decision 7).
+
+The connection whose start created the VM holds its lease: when it closes, the server
+terminates the VM. A start from another connection of the same user gets "lease held"; a
+forced stop ends the lease. Pause, resume, status and stop are owner-scoped. Status asks
+HCS for the state and releases a VM that stopped on its own. Resizing a running VM is not
+supported yet (the new size applies at the next start). At startup `-hcs-backend`
+terminates every compute system with the owner tag that it does not track; on exit it
+terminates its own.
+
+The client (`internal/broker/client_windows.go`) dials at impersonation level only after
+checking that the pipe's owner is SYSTEM, a service SID (`S-1-5-80-...`) or the user
+itself, since a squatter's pipe could otherwise impersonate the user. In
+`hyperbutler start --broker PIPE` (developer mode, not in the usage text) the engine
+creates the data disk as before, passes the data directory by handle, starts with the
+network as the stack runs it, polls the status every 10 s (which also keeps the lease
+inside the idle timeout), pauses and resumes through the broker for the free-space guard,
+and dials the VM's hvsock services by the returned runtime id. It opens no console pipe:
+the VM's exit is learned from the status, a lost connection or the guest control
+channel. `--backend=hcs`, the default, is the in-process developer mode of
+Implementation decision 5.
+
+Still to check in the integration run (not run yet, see `hcs_integration_test.go`):
+
+- HCS attaches the data disk while the broker holds it with read access and without
+  `FILE_SHARE_DELETE`, and the probe's access mask is what the VM worker needs;
+- the system disk needs only read access when the image folder is not VM-readable;
+- `GetSecurityInfo` on the client's pipe handle reads the owner of the broker's pipe
+  when the broker is SYSTEM;
+- a lease closed by killing the engine terminates the VM, and the sweep finds a VM left
+  by a killed broker.
 
 ### Pipe
 

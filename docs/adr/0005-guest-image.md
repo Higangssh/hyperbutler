@@ -480,7 +480,7 @@ The manifest beside the image is not a trust anchor. Anyone who can write the im
 directory can also replace `hyperbutler.exe`. The release build embeds the manifest's
 SHA-256 in `hyperbutler.exe` (Decision 4) so a replaced image is refused even with a matching
 `image.json`. **Done 2026-11-01:** `dist/package.ps1` links the SHA-256 of the guest-image
-job's `image.json` in with `-X ...engine.pinnedManifest`; the engine holds `image.json`
+job's `image.json` in with `-X ...imageset.pinnedManifest`; the engine holds `image.json`
 deny-write like the other files, hashes the bytes it parses, and refuses a mismatch with
 the file, both folders and the fix (extract the zip again). It hands HCS the final path of
 each held file, so a junction on the way cannot be retargeted after the check.

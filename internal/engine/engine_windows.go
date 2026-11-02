@@ -13,13 +13,13 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/Microsoft/go-winio/pkg/guid"
 	"golang.org/x/sys/windows"
 
 	"github.com/Higangssh/hyperbutler/internal/guestctl"
+	"github.com/Higangssh/hyperbutler/internal/imageset"
 	"github.com/Higangssh/hyperbutler/internal/netstack"
 	"github.com/Higangssh/hyperbutler/internal/spaceguard"
 	"github.com/Higangssh/hyperbutler/internal/transport"
@@ -88,6 +88,11 @@ type Config struct {
 	Logger *slog.Logger
 	// Backend makes the privileged calls (HCSBackend if nil).
 	Backend Backend
+	// Broker, if set, is the pipe of the HCS access broker (ADR 0004) that boots the VM
+	// instead of this process. The broker boots its own guest image, so Image,
+	// KernelPath, InitrdPath, CmdLine, the Extra fields, Backend and OnGrant are not
+	// used, and no serial console is opened; Disk.Data is required.
+	Broker string
 	// ExtraServices and ExtraCmdLine are added to the VM document and the kernel command
 	// line (development harness features such as the network bench).
 	ExtraServices []vm.Service
@@ -270,42 +275,49 @@ func Run(ctx context.Context, cfg Config) (err error) {
 	step := func(format string, a ...any) {
 		log.Info(fmt.Sprintf("[%7.1f ms] %s", float64(time.Since(t0).Microseconds())/1000, fmt.Sprintf(format, a...)))
 	}
-	var kpath, ipath string
-	var img *guestImage
-	pin, pinned := ImagePin()
-	if cfg.Image != "" {
-		// Held open (deny-write) until Run returns, after the VM is gone.
-		if img, err = openImage(cfg.Image, pin); err != nil {
-			return err
-		}
-		defer func() { _ = img.Close() }()
-		kpath, ipath = img.kernel, img.initrd
-		step("verified guest image %s (system disk %s)", cfg.Image, HumanSize(img.man.System.Size))
-		if pinned {
-			step("guest image matches the image.json this build was released with (sha256 %s)", pin)
-		} else {
-			log.Info("development build: no guest image hash is embedded, so the image is checked against its own image.json only")
-		}
+	var provider VMProvider
+	hp := &hcsProvider{cfg: &cfg, step: step}
+	if cfg.Broker != "" {
+		// The broker boots its own guest image (the image folder next to it, checked
+		// against its pin) and grants the VM its disks itself.
+		step("booting through the HCS access broker on %s", cfg.Broker)
+		provider = &brokerProvider{pipe: cfg.Broker, dataDir: cfg.Disk.Data, log: log}
 	} else {
-		if pinned {
-			return fmt.Errorf("engine: this hyperbutler.exe boots only the guest image it was released with (image\\image.json next to it); " +
-				"extract the release zip again, or use a development build for an initramfs-only image")
-		}
-		if kpath, err = filepath.Abs(cfg.KernelPath); err != nil {
-			return err
-		}
-		if ipath, err = filepath.Abs(cfg.InitrdPath); err != nil {
-			return err
-		}
-		for _, p := range []string{kpath, ipath} {
-			if fi, err := os.Stat(p); err != nil || !fi.Mode().IsRegular() {
-				return fmt.Errorf("engine: guest artifact %s is missing (use --image-dir)", p)
+		provider = hp
+		pin, pinned := ImagePin()
+		if cfg.Image != "" {
+			// Held open (deny-write) until Run returns, after the VM is gone.
+			if hp.img, err = imageset.Open(cfg.Image, pin); err != nil {
+				return err
+			}
+			defer func() { _ = hp.img.Close() }()
+			hp.kernel, hp.initrd = hp.img.Kernel, hp.img.Initrd
+			step("verified guest image %s (system disk %s)", cfg.Image, HumanSize(hp.img.Manifest.System.Size))
+			if pinned {
+				step("guest image matches the image.json this build was released with (sha256 %s)", pin)
+			} else {
+				log.Info("development build: no guest image hash is embedded, so the image is checked against its own image.json only")
+			}
+		} else {
+			if pinned {
+				return fmt.Errorf("engine: this hyperbutler.exe boots only the guest image it was released with (image\\image.json next to it); " +
+					"extract the release zip again, or use a development build for an initramfs-only image")
+			}
+			if hp.kernel, err = filepath.Abs(cfg.KernelPath); err != nil {
+				return err
+			}
+			if hp.initrd, err = filepath.Abs(cfg.InitrdPath); err != nil {
+				return err
+			}
+			for _, p := range []string{hp.kernel, hp.initrd} {
+				if fi, err := os.Stat(p); err != nil || !fi.Mode().IsRegular() {
+					return fmt.Errorf("engine: guest artifact %s is missing (use --image-dir)", p)
+				}
 			}
 		}
 	}
 
-	sid, err := currentUserSID()
-	if err != nil {
+	if hp.sid, err = currentUserSID(); err != nil {
 		return err
 	}
 	// Listen first: if the pipe name is taken (another hyperbutler, or a squatter), fail
@@ -332,16 +344,8 @@ func Run(ctx context.Context, cfg Config) (err error) {
 	}
 
 	var disk *dataDisk
-	grant := cfg.granter()
 	dockerSvc := transport.VsockServiceID(DockerPort)
-	consolePipe := `\\.\pipe\` + cfg.VMID + "-com1"
-	spec := &vmtemplate.Spec{
-		Owner: VMOwner, UserSID: sid,
-		MemoryMB: cfg.MemoryMB, CPUs: cfg.CPUs,
-		Net: netSpec, Share: shares != nil, DaemonConfig: cfg.DaemonConfig != nil,
-		ConsolePipe: consolePipe,
-		Dev:         vmtemplate.Dev{CmdLine: cfg.CmdLine, ExtraCmdLine: cfg.ExtraCmdLine, ExtraServices: cfg.ExtraServices},
-	}
+	bs := BootSpec{CPUs: cfg.CPUs, MemoryMB: cfg.MemoryMB, Net: netSpec, Share: shares != nil, DaemonConfig: cfg.DaemonConfig != nil}
 	if cfg.Disk.Data != "" {
 		if disk, err = prepareDisk(cfg.Disk, cfg.DiskSize); err != nil {
 			return err
@@ -349,75 +353,18 @@ func Run(ctx context.Context, cfg Config) (err error) {
 		if disk.created {
 			step("created data disk %s (%s, sparse, 1 MiB blocks)", disk.path, FormatSize(disk.meta.SizeBytes))
 		}
-		// The VM worker runs as a per-VM virtual account; it needs an ACE on the VHDX.
-		if err := grant(disk.path); err != nil {
-			return err
-		}
-		defer func() {
-			if err := cfg.Backend.RevokeAccess(cfg.VMID, disk.path); err != nil {
-				log.Warn("revoke VM access to the data disk", "err", err)
-			}
-		}()
-		spec.Data, spec.BlankData = disk.path, disk.blank
+		hp.disk, bs.BlankDisk = disk, disk.blank
 	}
-	if img != nil {
-		// The system disk, read-only at the hypervisor: the guest cannot change it. Under
-		// Program Files (the MSI) the user cannot change its DACL, so the grant fails; the
-		// installer gives every VM read access there instead (vm.VMGroupCanRead).
-		granted := true
-		if err := grant(img.system); err != nil {
-			if !vm.IsAccessDenied(err) || !vm.VMGroupCanRead(img.system) {
-				return err
-			}
-			granted = false
-			log.Debug("system disk readable by all VMs; no per-VM grant", "path", img.system)
-		}
-		if granted {
-			defer func() {
-				if err := cfg.Backend.RevokeAccess(cfg.VMID, img.system); err != nil {
-					log.Warn("revoke VM access to the system disk", "err", err)
-				}
-			}()
-		}
-		spec.System = img.system
-	}
-	spec.Kernel, spec.Initrd = kpath, ipath
 
-	vcfg, err := vmtemplate.Build(spec)
+	lease, info, err := provider.Boot(ctx, bs)
 	if err != nil {
 		return err
 	}
-	m, err := cfg.Backend.Create(cfg.VMID, vcfg)
-	if err != nil {
-		return err
-	}
-	r := &runner{cfg: &cfg, m: m, log: log, step: step, vmGone: make(chan struct{})}
+	r := &runner{cfg: &cfg, l: lease, log: log, step: step}
 	defer func() { r.stopVM() }()
-	step("created %s", cfg.VMID)
-	if err := m.Start(); err != nil {
-		return err
-	}
-	step("started")
-
-	console, err := openConsole(ctx, consolePipe)
-	if err != nil {
-		return err
-	}
-	// Closed by stopVM after the VM is gone: an early close would look like a VM exit.
-	r.console = console
-	consoleDone := make(chan struct{})
-	go func() {
-		streamConsole(console, cfg.ConsoleLog, step)
-		close(consoleDone)
-	}()
-	go r.watch(consoleDone)
-
-	vmid, err := m.RuntimeID()
-	if err != nil {
-		return err
-	}
+	vmid := info.RuntimeID
 	if cfg.OnCreated != nil {
-		cfg.OnCreated(cfg.VMID, vmid)
+		cfg.OnCreated(info.VMID, vmid)
 	}
 	target := transport.HvsockTarget{VMID: vmid, ServiceID: dockerSvc}
 	step("runtime id %s", vmid)
@@ -434,7 +381,7 @@ func Run(ctx context.Context, cfg Config) (err error) {
 	defer cancelRun()
 	go func() {
 		select {
-		case <-r.vmGone:
+		case <-lease.Gone():
 			cancelRun()
 		case <-runCtx.Done():
 		}
@@ -474,7 +421,7 @@ func Run(ctx context.Context, cfg Config) (err error) {
 		}
 	}
 	if disk != nil {
-		if guard, err = newHostGuard(cfg.Guard, m, sup, disk, log); err != nil {
+		if guard, err = newHostGuard(cfg.Guard, lease, sup, disk, log); err != nil {
 			return err
 		}
 		guard.onPause = cfg.OnGuardPause
@@ -530,7 +477,7 @@ func Run(ctx context.Context, cfg Config) (err error) {
 		if gnet != nil {
 			st = gnet.st
 		}
-		err := cfg.OnReady(runCtx, &Running{VMID: cfg.VMID, RuntimeID: vmid, Docker: target, Stack: st, Started: t0, Ready: ready})
+		err := cfg.OnReady(runCtx, &Running{VMID: info.VMID, RuntimeID: vmid, Docker: target, Stack: st, Started: t0, Ready: ready})
 		if errors.Is(err, ErrDone) {
 			return nil
 		}
@@ -568,25 +515,20 @@ func Run(ctx context.Context, cfg Config) (err error) {
 	return nil
 }
 
-// runner owns the compute system's shutdown.
+// runner owns the VM's shutdown.
 type runner struct {
 	cfg  *Config
-	m    Machine
+	l    Lease
 	log  *slog.Logger
 	step func(string, ...any)
 
-	console  io.Closer
-	vmGone   chan struct{}
-	goneOnce sync.Once
 	// shutdownTried is set once an orderly shutdown was attempted.
 	shutdownTried bool
 }
 
-func (r *runner) markGone() { r.goneOnce.Do(func() { close(r.vmGone) }) }
-
 func (r *runner) exited() bool {
 	select {
-	case <-r.vmGone:
+	case <-r.l.Gone():
 		return true
 	default:
 		return false
@@ -595,26 +537,6 @@ func (r *runner) exited() bool {
 
 func (r *runner) exitErr() error {
 	return codeErr(CodeVMExited, errors.New("the VM stopped on its own; see the console log"))
-}
-
-// watch marks the VM gone when its console closes or HCS reports it stopped.
-func (r *runner) watch(consoleDone <-chan struct{}) {
-	t := time.NewTicker(2 * time.Second)
-	defer t.Stop()
-	for {
-		select {
-		case <-consoleDone:
-			r.markGone()
-			return
-		case <-r.vmGone:
-			return
-		case <-t.C:
-			if s, err := r.m.State(); err == nil && s == "Stopped" {
-				r.markGone()
-				return
-			}
-		}
-	}
 }
 
 // shutdownGuest asks hyperbutlerd for an orderly power-off (dockerd stops the containers,
@@ -635,7 +557,7 @@ func (r *runner) shutdownGuest(sup *guestctl.Supervisor) {
 		// HCS's own shutdown needs an integration service this guest does not run
 		// (HcsShutDownComputeSystem fails with ERROR_NOT_SUPPORTED); try it anyway.
 		r.log.Warn("the guest did not accept an orderly shutdown", "err", err)
-		if err := r.m.ShutDown(); err != nil {
+		if err := r.l.ShutDown(); err != nil {
 			r.log.Warn("HCS shutdown refused too; terminating the VM", "err", err)
 			return
 		}
@@ -645,31 +567,28 @@ func (r *runner) shutdownGuest(sup *guestctl.Supervisor) {
 
 func (r *runner) wait(t time.Time) {
 	select {
-	case <-r.vmGone:
+	case <-r.l.Gone():
 		r.step("guest powered off in %v", time.Since(t).Round(time.Millisecond))
 	case <-time.After(r.cfg.ShutdownTimeout):
 		r.log.Warn("the guest did not power off in time; terminating the VM", "timeout", r.cfg.ShutdownTimeout)
 	}
 }
 
-// stopVM terminates and closes the compute system, after an orderly shutdown if none
-// was tried yet (Run failed before the control channel existed).
+// stopVM terminates the VM and closes its lease, after an orderly shutdown if none was
+// tried yet (Run failed before the control channel existed).
 func (r *runner) stopVM() {
-	defer func() { _ = r.m.Close() }()
+	defer func() { _ = r.l.Close() }()
 	if !r.exited() && !r.shutdownTried {
 		r.shutdownTried = true
 		if r.cfg.OnStopping != nil {
 			r.cfg.OnStopping()
 		}
-		if err := r.m.ShutDown(); err == nil {
+		if err := r.l.ShutDown(); err == nil {
 			r.wait(time.Now())
 		}
 	}
-	if err := r.m.Terminate(); err != nil {
+	if err := r.l.Terminate(); err != nil {
 		r.log.Warn("terminate", "err", err)
-	}
-	if r.console != nil {
-		_ = r.console.Close()
 	}
 	r.step("VM stopped")
 }

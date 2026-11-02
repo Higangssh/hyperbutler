@@ -32,7 +32,7 @@ const vhdxMaxOverhead = 64 << 20
 // whether the host pauses at the margin (the guard looks dead) or at the floor.
 type hostGuard struct {
 	cfg      spaceguard.Config
-	m        Machine
+	m        Pauser
 	sup      *guestctl.Supervisor
 	vhdx     string
 	dir      string
@@ -68,7 +68,7 @@ type hostGuard struct {
 	now func() time.Time
 }
 
-func newHostGuard(cfg spaceguard.Config, m Machine, sup *guestctl.Supervisor, disk *dataDisk, log *slog.Logger) (*hostGuard, error) {
+func newHostGuard(cfg spaceguard.Config, m Pauser, sup *guestctl.Supervisor, disk *dataDisk, log *slog.Logger) (*hostGuard, error) {
 	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}

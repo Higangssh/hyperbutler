@@ -7,12 +7,14 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/netip"
 	"sync"
 	"time"
 
 	"golang.org/x/sys/windows"
 
 	"github.com/Higangssh/hyperbutler/internal/broker/proto"
+	"github.com/Higangssh/hyperbutler/internal/vmtemplate"
 )
 
 // Identity is the caller of one connection, as reported by the OS (ADR 0004 rule 4). It
@@ -39,25 +41,41 @@ type Peer interface {
 }
 
 // VMSpec is what the server asks the backend to start. It is built only from broker
-// state and fixed limits; nothing in it is a caller-supplied path or document.
+// state, fixed limits and the typed fields of the start request; nothing in it is a
+// caller-supplied path, command line or document.
 type VMSpec struct {
 	Owner    string // user SID; the backend tags the VM with it (ADR 0004 rule 9)
 	CPUs     uint32
 	MemoryMB uint32
 	DataDir  *DataDir // validated directory handle; open everything below it by handle
+
+	// Net is the guest network, nil for none; vmtemplate renders it.
+	Net *vmtemplate.Net
+	// Share, DaemonConfig and BlankDisk are the start request's feature bits.
+	Share, DaemonConfig, BlankDisk bool
 }
 
 // VMStatus is a backend's view of one owner's VM.
 type VMStatus struct {
+	// Running is set while the VM exists and has not stopped; Paused says it is paused.
 	Running  bool
+	Paused   bool
 	ID       [16]byte
 	CPUs     uint32
 	MemoryMB uint32
 }
 
-// ErrNotRunning is returned by Backend.Stop and Backend.Resize when the owner has no
-// running VM.
+// ErrNotRunning is returned by Backend.Stop, Backend.Resize and Backend.Pause when the
+// owner has no running VM.
 var ErrNotRunning = errors.New("broker: VM is not running")
+
+// ErrImageRejected and ErrDiskRejected are wrapped by a Backend.Start that refused the
+// broker's guest image or the data disk below the data location. The caller learns only
+// which; the detail is logged.
+var (
+	ErrImageRejected = errors.New("broker: guest image rejected")
+	ErrDiskRejected  = errors.New("broker: data disk rejected")
+)
 
 // Backend runs VMs on behalf of the server. Every method is keyed by the owner SID, and
 // an implementation must never let one owner act on another owner's VM.
@@ -69,6 +87,8 @@ type Backend interface {
 	Status(ctx context.Context, owner string) (VMStatus, error)
 	// Resize changes a running VM. A zero value means unchanged.
 	Resize(ctx context.Context, owner string, cpus, memoryMB uint32) error
+	// Pause pauses the owner's running VM, or resumes it.
+	Pause(ctx context.Context, owner string, resume bool) error
 }
 
 // Config configures a Server. Zero values take the defaults in New.
@@ -116,7 +136,13 @@ type userState struct {
 	cpus     uint32
 	memoryMB uint32
 	dataDir  *DataDir
+	// lease is the connection whose start created the running VM (Implementation
+	// decision 6): when it ends, the VM is terminated.
+	lease *lease
 }
+
+// lease identifies one connection; only its pointer identity matters.
+type lease struct{ _ byte }
 
 // New returns a Server for cfg.
 func New(cfg Config) (*Server, error) {
@@ -237,6 +263,7 @@ func (s *Server) ServeConn(ctx context.Context, rw io.ReadWriter, p Peer) error 
 	var (
 		buf [proto.MaxFrameSize]byte
 		id  *Identity
+		own = new(lease)
 	)
 	dl, _ := rw.(deadliner)
 	write := func(r proto.Reply) error {
@@ -288,6 +315,7 @@ func (s *Server) ServeConn(ctx context.Context, rw io.ReadWriter, p Peer) error 
 					fmt.Errorf("broker: caller %s over its connection limit", got.SID))
 			}
 			defer s.dropConn(got.SID)
+			defer s.release(got.SID, own)
 			id = &got
 		}
 		req, err := proto.DecodeRequest(b)
@@ -297,7 +325,7 @@ func (s *Server) ServeConn(ctx context.Context, rw io.ReadWriter, p Peer) error 
 			}
 			return fail(proto.CodeBadRequest, "malformed request", err)
 		}
-		if err := write(s.handle(ctx, *id, p, req)); err != nil {
+		if err := write(s.handle(ctx, *id, p, own, req)); err != nil {
 			return err
 		}
 	}
@@ -324,8 +352,31 @@ func errorReply(code proto.Code, msg string) proto.Reply {
 	return proto.Reply{Type: proto.TypeError, Code: code, Message: msg}
 }
 
-// handle executes one decoded request for id. It always returns a reply.
-func (s *Server) handle(ctx context.Context, id Identity, p Peer, req proto.Request) proto.Reply {
+// release ends the lease that connection own holds on sid's VM, if it holds one: the VM
+// is terminated (Implementation decision 6, as the engine's exit does in developer mode).
+func (s *Server) release(sid string, own *lease) {
+	s.mu.Lock()
+	u := s.users[sid]
+	s.mu.Unlock()
+	if u == nil {
+		return
+	}
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	if u.lease != own {
+		return
+	}
+	u.lease = nil
+	ctx, cancel := context.WithTimeout(context.Background(), s.cfg.RequestTimeout)
+	defer cancel()
+	if err := s.cfg.Backend.Stop(ctx, sid, true); err != nil && !errors.Is(err, ErrNotRunning) {
+		s.cfg.Logf("broker: terminate the VM of a closed lease: %v", err)
+	}
+}
+
+// handle executes one decoded request for id on the connection own. It always returns a
+// reply.
+func (s *Server) handle(ctx context.Context, id Identity, p Peer, own *lease, req proto.Request) proto.Reply {
 	if req.Op == proto.OpVersion {
 		return proto.Reply{Type: okType(req.Op), ProtoVersion: proto.Version, BrokerVersion: s.cfg.Version}
 	}
@@ -350,14 +401,61 @@ func (s *Server) handle(ctx context.Context, id Identity, p Peer, req proto.Requ
 		if u.dataDir == nil {
 			return errorReply(proto.CodeNoDataLocation, "set a data location first")
 		}
+		cpus, mem := u.cpus, u.memoryMB
+		if req.CPUs != 0 {
+			cpus = req.CPUs
+		}
+		if req.MemoryMB != 0 {
+			mem = req.MemoryMB
+		}
+		if cpus < 1 || cpus > s.cfg.MaxCPUs || mem < s.cfg.MinMemoryMB || mem > s.cfg.MaxMemoryMB {
+			return errorReply(proto.CodeOutOfRange, "start outside the broker's limits")
+		}
+		st, err := s.cfg.Backend.Status(ctx, id.SID)
+		if err != nil {
+			return s.internal("status", err)
+		}
+		if st.Running {
+			// One VM per user, and its lifetime is its lease: a second start on the
+			// same connection reports it, any other connection is refused.
+			if u.lease == own {
+				return s.statusReply(req.Op, u, st)
+			}
+			return errorReply(proto.CodeLeaseHeld, "the VM runs under another connection's lease")
+		}
 		// The owner can change the directory's ACL after it was accepted, so check it
 		// again on every start.
 		if err := u.dataDir.revalidate(id.SID, s.cfg.validateDataDir); err != nil {
 			return rejectReply(err)
 		}
-		st, err := s.cfg.Backend.Start(ctx, VMSpec{Owner: id.SID, CPUs: u.cpus, MemoryMB: u.memoryMB, DataDir: u.dataDir})
-		if err != nil {
+		spec := VMSpec{Owner: id.SID, CPUs: cpus, MemoryMB: mem, DataDir: u.dataDir,
+			Net: startNet(req), Share: req.Features&proto.FeatureShare != 0,
+			DaemonConfig: req.Features&proto.FeatureDaemonConfig != 0, BlankDisk: req.Features&proto.FeatureBlankDisk != 0}
+		st, err = s.cfg.Backend.Start(ctx, spec)
+		switch {
+		case errors.Is(err, ErrImageRejected):
+			s.cfg.Logf("broker: start: %v", err)
+			return errorReply(proto.CodeImageRejected, "the broker's guest image failed its checks")
+		case errors.Is(err, ErrDiskRejected):
+			s.cfg.Logf("broker: start: %v", err)
+			return errorReply(proto.CodeDiskRejected, "the data disk failed its checks")
+		case err != nil:
 			return s.internal("start", err)
+		}
+		u.cpus, u.memoryMB, u.lease = cpus, mem, own
+		return s.statusReply(req.Op, u, st)
+
+	case proto.OpPause:
+		err := s.cfg.Backend.Pause(ctx, id.SID, req.Resume)
+		switch {
+		case errors.Is(err, ErrNotRunning):
+			return errorReply(proto.CodeNotRunning, "VM is not running")
+		case err != nil:
+			return s.internal("pause", err)
+		}
+		st, err := s.cfg.Backend.Status(ctx, id.SID)
+		if err != nil {
+			return s.internal("status", err)
 		}
 		return s.statusReply(req.Op, u, st)
 
@@ -365,9 +463,15 @@ func (s *Server) handle(ctx context.Context, id Identity, p Peer, req proto.Requ
 		err := s.cfg.Backend.Stop(ctx, id.SID, req.Force)
 		switch {
 		case errors.Is(err, ErrNotRunning):
+			u.lease = nil
 			return errorReply(proto.CodeNotRunning, "VM is not running")
 		case err != nil:
 			return s.internal("stop", err)
+		}
+		if req.Force {
+			// Gone now; an orderly stop keeps the lease until the VM is down, so that the
+			// lease holder's close still terminates one that does not power off.
+			u.lease = nil
 		}
 		return proto.Reply{Type: okType(req.Op)}
 
@@ -471,6 +575,28 @@ func (s *Server) openDataDirBounded(ctx context.Context, p Peer, v uint64, sid s
 	}
 }
 
+// startNet is the guest network of a start request, nil without FeatureNet. The request
+// was validated by the decoder: a masked private IPv4 subnet, an MTU in range, known
+// flags.
+func startNet(req proto.Request) *vmtemplate.Net {
+	if req.Features&proto.FeatureNet == 0 {
+		return nil
+	}
+	n := &vmtemplate.Net{
+		Subnet:      netip.PrefixFrom(netip.AddrFrom4(req.NetAddr), int(req.NetPrefix)),
+		MTU:         int(req.NetMTU),
+		Offload:     req.NetFlags&proto.NetOffload != 0,
+		HostGateway: req.NetFlags&proto.NetHostGateway != 0,
+	}
+	switch {
+	case req.NetFlags&proto.NetCRCOff != 0:
+		n.CRC = vmtemplate.CRCOff
+	case req.NetFlags&proto.NetCRCStrict != 0:
+		n.CRC = vmtemplate.CRCStrict
+	}
+	return n
+}
+
 func (s *Server) internal(what string, err error) proto.Reply {
 	// Backend errors can carry host paths and HCS detail; log them, don't send them.
 	s.cfg.Logf("broker: %s: %v", what, err)
@@ -487,6 +613,9 @@ func (s *Server) statusReply(op proto.Op, u *userState, st VMStatus) proto.Reply
 	}
 	if st.Running {
 		r.State, r.VMID = proto.StateRunning, st.ID
+		if st.Paused {
+			r.State = proto.StatePaused
+		}
 		if st.CPUs != 0 {
 			r.CPUs = st.CPUs
 		}

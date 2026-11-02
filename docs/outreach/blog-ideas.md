@@ -145,6 +145,12 @@ surprising. Numbers are from the maintainer's Windows 11 Home laptop unless note
   are invisible. So the engine learns its VM's runtime id before the grant (a probe grant
   on a scratch file), records it in state.json, and `hyperbutler uninstall` removes only
   those. `bench/uninstall`.
+- **"Deny delete" that denies nothing:** the HCS broker holds the user's data disk open
+  without FILE_SHARE_DELETE so it cannot be renamed under the VM, yet a test renamed it
+  at once. A handle without data access (read, write or delete) takes no part in Windows
+  share-mode checks at all, so its share mode is ignored; the handle needs FILE_READ_DATA
+  for the missing FILE_SHARE_DELETE to bite. ADR 0004 "HCS backend",
+  `internal/broker/diskfile_windows.go`, `TestDataDiskAccepted`.
 - **Your Windows trusts CAs Linux has never heard of:** 18 of the 29 valid roots in a
   stock Windows 11 store are missing from Alpine's Mozilla bundle, and the store changes
   by itself (AuthRoot fills on demand), which is why the import runs only at boot and on

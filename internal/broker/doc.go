@@ -13,7 +13,15 @@
 //   - Pipes: the broker creates its pipe with FILE_FLAG_FIRST_PIPE_INSTANCE and an ACL
 //     that admits only the client user (or interactive users for a shared endpoint), and
 //     it never opens a pipe or file name it did not create (rule 5).
+//   - VM lifetime: the connection that started the VM is its lease; when it ends, the
+//     VM is terminated (Implementation decision 6). HCSBackend tags VMs with the owner's
+//     SID and sweeps untracked ones (rule 9).
+//   - No caller-controlled host paths: HCSBackend boots only the image next to the broker
+//     executable, checked against the compiled-in pin, takes the data disk by handle
+//     below the data location, and builds the VM document with internal/vmtemplate from
+//     the request's typed fields (rule 1).
 //
 // This package does not install or register a Windows service. Server runs in any
-// process, against any Backend; FakeBackend lets it run without HCS.
+// process, against any Backend: FakeBackend runs without HCS, HCSBackend through it.
+// Client is the caller's side.
 package broker

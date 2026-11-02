@@ -31,6 +31,8 @@ type ServeOptions struct {
 	// manifest that replaces them (see Config.Image).
 	KernelPath, InitrdPath string
 	Image                  string
+	// Broker, if set, is the HCS access broker's pipe: it boots the VM (Config.Broker).
+	Broker string
 	// Pipe is where the Docker API is served (transport.DefaultPipeName if empty).
 	Pipe    string
 	Net     NetConfig
@@ -146,7 +148,9 @@ func Serve(opts ServeOptions) error {
 	}
 	defer close(finished)
 
-	CleanupOrphans(opts.Backend, l.VMPrefix(), log)
+	if opts.Broker == "" {
+		CleanupOrphans(opts.Backend, l.VMPrefix(), log)
+	} // the broker sweeps its own VMs
 
 	// daemon.json (REQ-UX-007): delivered on every control connection, and again on
 	// `hyperbutler config daemon apply`, which sets the daemon event.
@@ -237,7 +241,7 @@ func Serve(opts ServeOptions) error {
 	}
 	var predicted string // the runtime id OnGrant recorded
 	runErr := Run(ctx, Config{
-		KernelPath: opts.KernelPath, InitrdPath: opts.InitrdPath, Image: opts.Image,
+		KernelPath: opts.KernelPath, InitrdPath: opts.InitrdPath, Image: opts.Image, Broker: opts.Broker,
 		MemoryMB: opts.Settings.Memory(), CPUs: opts.Settings.CPUCount(runtime.NumCPU()),
 		Pipe: opts.Pipe, VMID: l.VMPrefix() + randomHex(6),
 		Disk: l, DiskSize: opts.Settings.DiskSize,

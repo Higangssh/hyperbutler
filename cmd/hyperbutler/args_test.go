@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"io"
 	"strings"
 	"testing"
 	"unicode/utf8"
@@ -10,14 +11,43 @@ import (
 )
 
 func TestEngineArgs(t *testing.T) {
-	got := strings.Join(engineArgs(`C:\h`, "", "", `C:\i\image.json`, diag.Config{MemoryLimit: "256MiB", DebugPipe: `\\.\pipe\d`}), " ")
+	got := strings.Join(engineArgs(`C:\h`, engineImage{manifest: `C:\i\image.json`}, diag.Config{MemoryLimit: "256MiB", DebugPipe: `\\.\pipe\d`}), " ")
 	if got != `engine --home C:\h --image C:\i\image.json --memlimit 256MiB --debug-pipe \\.\pipe\d` {
 		t.Fatal(got)
 	}
 	// The debug endpoint is off unless asked for.
-	got = strings.Join(engineArgs(`C:\h`, "k", "i", "", diag.Config{}), " ")
+	got = strings.Join(engineArgs(`C:\h`, engineImage{kernel: "k", initrd: "i"}, diag.Config{}), " ")
 	if got != `engine --home C:\h --kernel k --initrd i` {
 		t.Fatal(got)
+	}
+	// With the broker, the engine boots no image of its own.
+	got = strings.Join(engineArgs(`C:\h`, engineImage{manifest: `C:\i\image.json`, broker: `\\.\pipe\b`}, diag.Config{}), " ")
+	if got != `engine --home C:\h --broker \\.\pipe\b` {
+		t.Fatal(got)
+	}
+}
+
+func TestCheckBackendFlags(t *testing.T) {
+	for _, tc := range []struct {
+		args []string
+		ok   bool
+	}{
+		{nil, true},
+		{[]string{"--backend", "hcs"}, true},
+		{[]string{"--backend", "broker"}, false},
+		{[]string{"--broker", `\\.\pipe\hyperbutler-broker-dev`}, true},
+		{[]string{"--broker", `C:\not-a-pipe`}, false},
+		{[]string{"--backend", "hcs", "--broker", `\\.\pipe\b`}, false},
+	} {
+		fs := newFlagSet("start", io.Discard)
+		backend := fs.String("backend", backendHCS, "")
+		broker := fs.String("broker", "", "")
+		if err := fs.Parse(tc.args); err != nil {
+			t.Fatal(err)
+		}
+		if err := checkBackendFlags(fs, *backend, *broker); (err == nil) != tc.ok {
+			t.Errorf("%v: %v", tc.args, err)
+		}
 	}
 }
 

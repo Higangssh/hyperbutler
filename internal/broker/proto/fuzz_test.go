@@ -55,7 +55,7 @@ func fuzzRequestSeeds() [][]byte {
 		fuzzFrame(Version, 2, make([]byte, MaxFrameSize-4)...), // exactly MaxFrameSize, junk fields
 		fuzzFrame(0, uint8(OpStart)),
 		fuzzFrame(2, uint8(OpStart)),
-		fuzzFrame(Version, 7),
+		fuzzFrame(Version, 8),
 		fuzzFrame(Version, 0),
 		fuzzFrame(Version, ReplyFlag|uint8(OpStop)),
 		fuzzFrame(Version, uint8(OpStop), 200, 0),
@@ -74,7 +74,27 @@ func fuzzRequestSeeds() [][]byte {
 		fuzzFrame(Version, uint8(OpSetDataLocation), append([]byte{4, 8}, make([]byte, 8)...)...),               // handle 0
 		fuzzFrame(Version, uint8(OpSetDataLocation), fuzzU32(4, 0x10)...),
 		fuzzFrame(Version, uint8(OpStart), 1, 1, 1), // tag not allowed for start
+		// Start fields and the pause verb.
+		fuzzFrame(Version, uint8(OpStart), tagFeatures, 1, 0),                                                                                  // zero features encoded
+		fuzzFrame(Version, uint8(OpStart), tagFeatures, 1, FeatureNet, tagNetAddr, 4, 10, 0, 0, 0, tagNetPrefix, 1, 24, tagNetMTU, 2, 0, 0),    // zero MTU
+		fuzzFrame(Version, uint8(OpStart), tagFeatures, 1, FeatureNet, tagNetAddr, 4, 10, 0, 0, 1, tagNetPrefix, 1, 24, tagNetMTU, 2, 0xdc, 5), // host bits
+		fuzzFrame(Version, uint8(OpStart), tagFeatures, 1, FeatureShare, tagNetMTU, 2, 0xdc, 5),                                                // net field without FeatureNet
+		fuzzFrame(Version, uint8(OpPause), tagResume, 1, 0),
+		fuzzFrame(Version, uint8(OpPause), tagForce, 1, 1),
 	)
+	for _, r := range []Request{
+		{Op: OpStart, CPUs: 2, MemoryMB: 4096, Features: allFeatures, NetAddr: [4]byte{192, 168, 127, 0}, NetPrefix: 24, NetMTU: 9000, NetFlags: NetOffload | NetHostGateway},
+		{Op: OpStart, Features: FeatureNet, NetAddr: [4]byte{172, 16, 0, 0}, NetPrefix: 29, NetMTU: MinMTU, NetFlags: NetOffload | NetCRCStrict},
+		{Op: OpStart, Features: FeatureShare | FeatureDaemonConfig},
+		{Op: OpPause},
+		{Op: OpPause, Resume: true},
+	} {
+		b, err := EncodeRequest(r)
+		if err != nil {
+			panic(err)
+		}
+		out = append(out, b)
+	}
 	return out
 }
 
@@ -91,6 +111,10 @@ func fuzzReplySeeds() [][]byte {
 		{Type: ReplyFlag | uint8(OpSetDataLocation)},
 		{Type: TypeError, Code: CodeBadRequest},
 		{Type: TypeError, Code: CodeInternal, Message: strings.Repeat("x", MaxMessageLen)},
+		{Type: ReplyFlag | uint8(OpPause), State: StatePaused, CPUs: 2, MemoryMB: 2048, VMID: id},
+		{Type: TypeError, Code: CodeLeaseHeld, Message: "VM runs under another connection"},
+		{Type: TypeError, Code: CodeImageRejected},
+		{Type: TypeError, Code: CodeDiskRejected},
 	} {
 		b, err := EncodeReply(r)
 		if err != nil {
@@ -99,6 +123,7 @@ func fuzzReplySeeds() [][]byte {
 		out = append(out, b)
 	}
 	out = append(out,
+		fuzzFrame(Version, ReplyFlag|uint8(OpPause), append(append(fuzzU32(2, 2), fuzzU32(3, 2048)...), 7, 1, 4)...), // state 4
 		fuzzFrame(Version, TypeError),
 		fuzzFrame(Version, TypeError, 10, 2, 0, 0),
 		fuzzFrame(Version, TypeError, 10, 2, 99, 0),
@@ -108,7 +133,7 @@ func fuzzReplySeeds() [][]byte {
 		fuzzFrame(Version, ReplyFlag|uint8(OpStatus), 7, 1, 2),
 		fuzzFrame(Version, uint8(OpStatus)),
 		fuzzFrame(Version, ReplyFlag|uint8(OpStop), 8, 16),
-		fuzzFrame(Version, ReplyFlag|7),
+		fuzzFrame(Version, ReplyFlag|8),
 		fuzzFrame(Version, ReplyFlag|uint8(OpVersion), 5, 1, 1),
 		fuzzFrame(Version, ReplyFlag|uint8(OpVersion), 5, 1, 0, 6, 1, 'v'), // proto version 0 encoded
 		fuzzFrame(Version, ReplyFlag|uint8(OpStatus), append(append(fuzzU32(2, 2), fuzzU32(3, 2048)...), 7, 1, 1, 8, 16, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)...), // zero VMID

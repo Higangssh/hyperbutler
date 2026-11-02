@@ -1,6 +1,6 @@
 //go:build windows
 
-package engine
+package imageset
 
 import (
 	"errors"
@@ -15,21 +15,32 @@ import (
 	"github.com/Higangssh/hyperbutler/guest/image"
 )
 
-// guestImage is a verified image set (ADR 0005): the kernel, the stage-1 initramfs and
-// the read-only system disk named by image.json, each checked against the manifest's
-// size and SHA-256.
+// Set is a verified image set (ADR 0005): the kernel, the stage-1 initramfs and the
+// read-only system disk named by image.json, each checked against the manifest's size
+// and SHA-256.
 //
 // The files and image.json stay open, readable by others but not writable or deletable
 // (FILE_SHARE_READ only), from the check until the VM is gone. So what HCS attaches is
 // what was hashed: nothing can rewrite a file between the check and the boot, nor while
 // the guest reads its system disk.
-type guestImage struct {
-	man                    *image.Manifest
-	kernel, initrd, system string
+type Set struct {
+	Manifest *image.Manifest
+	// Kernel, Initrd and System are the final paths of the open files (finalPath): what
+	// HCS is to open.
+	Kernel, Initrd, System string
 	files                  []*os.File
+	system                 *os.File
 }
 
-func (g *guestImage) Close() error {
+// SystemFile is the open system disk, readable by others but not writable. It stays
+// valid until Close.
+func (g *Set) SystemFile() *os.File { return g.system }
+
+// maxManifestSize bounds image.json.
+const maxManifestSize = 64 << 10
+
+// Close closes every file of the set. It is safe to call more than once.
+func (g *Set) Close() error {
 	var err error
 	for _, f := range g.files {
 		err = errors.Join(err, f.Close())
@@ -38,20 +49,19 @@ func (g *guestImage) Close() error {
 	return err
 }
 
-// openImage reads the manifest at path and verifies the set it names in the same
-// directory. Any mismatch (a half-copied update, a file from another build) is an
+// Open reads the manifest at path and verifies the set it names in the same directory. Any mismatch (a half-copied update, a file from another build) is an
 // error: booting a stage 1 against the wrong system disk is never attempted.
 //
-// A non-empty pin is the SHA-256 that image.json must have (ImagePin, Decision 4).
+// A non-empty pin is the SHA-256 that image.json must have (Pin, ADR 0005 Decision 4).
 // image.json is opened and held like the other files, and the bytes hashed are the
 // bytes parsed, so a replaced manifest is refused even when the files next to it match
 // it.
-func openImage(path, pin string) (_ *guestImage, err error) {
+func Open(path, pin string) (_ *Set, err error) {
 	path, err = filepath.Abs(path)
 	if err != nil {
 		return nil, err
 	}
-	g := &guestImage{}
+	g := &Set{}
 	defer func() {
 		if err != nil {
 			_ = g.Close()
@@ -66,21 +76,21 @@ func openImage(path, pin string) (_ *guestImage, err error) {
 		return nil, fmt.Errorf("engine: guest image %s: %w (%s)", path, err, fix)
 	}
 	g.files = append(g.files, mf)
-	b, err := io.ReadAll(io.LimitReader(mf, maxFileSize+1))
+	b, err := io.ReadAll(io.LimitReader(mf, maxManifestSize+1))
 	if err != nil {
 		return nil, fmt.Errorf("engine: guest image %s: %w", path, err)
 	}
-	if len(b) > maxFileSize {
-		return nil, fmt.Errorf("engine: guest image %s is larger than %d bytes (%s)", path, maxFileSize, fix)
+	if len(b) > maxManifestSize {
+		return nil, fmt.Errorf("engine: guest image %s is larger than %d bytes (%s)", path, maxManifestSize, fix)
 	}
-	if err := checkPin(pin, path, b); err != nil {
+	if err := CheckPin(pin, path, b); err != nil {
 		return nil, err
 	}
 	m, err := image.ParseManifest(b)
 	if err != nil {
 		return nil, fmt.Errorf("engine: %s: %w", path, err)
 	}
-	g.man = m
+	g.Manifest = m
 	dir := filepath.Dir(path)
 	for i, want := range m.Files() {
 		p := filepath.Join(dir, want.Name)
@@ -95,16 +105,16 @@ func openImage(path, pin string) (_ *guestImage, err error) {
 		// HCS opens the files by path. Hand it the path of the file this handle holds,
 		// with any junction or directory link on the way resolved: a link can be
 		// retargeted while the file stays open, the real directories cannot be renamed.
-		if p, err = finalPath(f); err != nil {
+		if p, err = FinalPath(f); err != nil {
 			return nil, fmt.Errorf("engine: guest image file %s: %w", f.Name(), err)
 		}
 		switch i {
 		case 0:
-			g.kernel = p
+			g.Kernel = p
 		case 1:
-			g.initrd = p
+			g.Initrd = p
 		case 2:
-			g.system = p
+			g.System, g.system = p, f
 			if err := checkFooter(f, want.Size); err != nil {
 				return nil, fmt.Errorf("engine: %s: %w", p, err)
 			}
@@ -116,11 +126,14 @@ func openImage(path, pin string) (_ *guestImage, err error) {
 // GetFinalPathNameByHandle flags (fileapi.h).
 const fileNameNormalized, volumeNameDOS = 0x0, 0x0
 
-// finalPath returns the normalized path of the open file f, as a plain drive-letter or
+// FinalPath returns the normalized path of the open file f, as a plain drive-letter or
 // UNC path.
-func finalPath(f *os.File) (string, error) {
+func FinalPath(f *os.File) (string, error) { return FinalPathOf(windows.Handle(f.Fd())) }
+
+// FinalPathOf is FinalPath for a handle.
+func FinalPathOf(h windows.Handle) (string, error) {
 	buf := make([]uint16, windows.MAX_LONG_PATH)
-	n, err := windows.GetFinalPathNameByHandle(windows.Handle(f.Fd()), &buf[0], windows.MAX_LONG_PATH,
+	n, err := windows.GetFinalPathNameByHandle(h, &buf[0], windows.MAX_LONG_PATH,
 		fileNameNormalized|volumeNameDOS)
 	if err != nil {
 		return "", err
