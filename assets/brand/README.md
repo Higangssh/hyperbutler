@@ -2,7 +2,7 @@
 
 | File | Use |
 |---|---|
-| `logo-light.png`, `logo-dark.png` | Wordmark with the mascot, transparent, for light and dark backgrounds (the README switches with `<picture>`) |
+| `logo-banner.webp` | Wordmark with the mascot on its own dark background, 2000x667: the README's header, crisp on light and dark themes alike |
 | `mascot.png` | The butler robot alone, transparent |
 | `mascot-480.png` | `mascot.png` scaled to 480 px wide (bicubic), embedded in the GUI: a quarter of the bytes, and enough for its largest use (230 CSS px at 200%) |
 | `icon-source.png` | Flat app icon (stacked layers with a bolt), 512 px, transparent |
@@ -11,6 +11,5 @@
 | `icon-monochrome.png` | One-colour icon, for places that tint it |
 | `preview-light.png` | 1600x650 banner, for the GitHub social preview |
 
-`logo-dark.png` has the first stroke of the "h" recoloured to match the rest of "hyper";
-it came out navy in the delivered file. The dark banner was left out for the same reason:
-on its navy background the stroke can't be told apart by colour, so it needs a new export.
+The transparent `logo-light.png` and `logo-dark.png` were replaced by `logo-banner.webp`:
+on GitHub's dark theme the white "hyper" of the transparent logo looked soft at the edges.

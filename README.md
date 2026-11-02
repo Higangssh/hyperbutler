@@ -1,8 +1,5 @@
 <p align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="assets/brand/logo-dark.png">
-    <img alt="hyperbutler" src="assets/brand/logo-light.png" width="560">
-  </picture>
+  <img alt="hyperbutler" src="assets/brand/logo-banner.webp" width="720">
 </p>
 
 # hyperbutler
