@@ -41,8 +41,19 @@ Without the window, no one is added to Hyper-V Administrators unless you pass
 `ADDHYPERVADMIN=1`; then it is the account the install runs for. Under a deployment tool
 that runs as SYSTEM no one is added either: users join the group another way (`net
 localgroup`, Intune, Group Policy). `ENABLEVMP=0` leaves Virtual Machine Platform alone.
+`UPDATECHECK=""` turns the daily update check off for every user of the machine (a user
+can still turn it on with `hyperbutler config set updateCheck true`).
 Without `/norestart`, a silent install that turned Virtual Machine Platform on restarts
 Windows by itself; with it, msiexec exits with 3010 (restart needed).
+
+## Privacy
+
+hyperbutler sends no usage data or telemetry. Its one request of its own is the update
+check: at most once a day it asks api.github.com for the latest release, anonymously (no
+identifier beyond the request itself). The installer's options page has a box for it, and
+`hyperbutler config set updateCheck false` turns it off later. Everything else on the
+network (image pulls, registries, proxies) happens because you or your containers asked
+for it.
 
 If a step fails, the install still finishes. `HKLM\SOFTWARE\hyperbutler\Setup` keeps the
 outcome of the last step (`LastResult`) and the accounts the installer added
