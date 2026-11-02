@@ -1,6 +1,6 @@
 # Installing with the MSI
 
-From 0.2 hyperbutler also ships as `hyperbutler-vX.Y.Z-windows-amd64.msi`, next to the zip.
+From v0.1.0-preview.1 hyperbutler also ships as `hyperbutler-vX.Y.Z-windows-amd64.msi`, next to the zip.
 The zip stays: it needs no installer and no admin rights for itself, but leaves the
 prerequisites to you (README, Quick start). The MSI does them in the one UAC prompt of the
 install.

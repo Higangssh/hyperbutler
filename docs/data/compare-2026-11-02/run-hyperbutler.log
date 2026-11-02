@@ -1,0 +1,26 @@
+﻿[12:09:02] start: 1 warm-up + 10 runs (stop, VM gone, start, time to docker info and to a container that ran)
+[12:09:07]   warm-up: info 2.10 s, container 2.49 s
+[12:09:12]   run 1: info 2.09 s, container 2.53 s
+[12:09:17]   run 2: info 2.08 s, container 2.49 s
+[12:09:22]   run 3: info 2.08 s, container 2.49 s
+[12:09:27]   run 4: info 2.06 s, container 2.49 s
+[12:09:32]   run 5: info 2.08 s, container 2.50 s
+[12:09:37]   run 6: info 2.08 s, container 2.48 s
+[12:09:41]   run 7: info 2.09 s, container 2.55 s
+[12:09:46]   run 8: info 2.10 s, container 2.53 s
+[12:09:51]   run 9: info 2.10 s, container 2.59 s
+[12:09:56]   run 10: info 2.09 s, container 2.57 s
+[12:09:58] start: to a container that ran, median 2.51 s (min 2.48, max 2.59); docker info median 2.09 s
+[12:09:58] idle: start, no containers, sample every 10 s for 600 s
+[12:20:06] idle: median 322 MiB from minute 5 to 10 (VM 295 MiB), 3 processes: hyperbutlerx1 vmwpx1 vmmemx1
+[12:20:06] disk: pull node:22, python:3.12, golang:1.24, rust:1.88, delete them, watch the data disk on the host
+[12:20:11]   before: file 0.11 GiB, on disk 0.05 GiB
+[12:21:11]   after pull: file 6.45 GiB, on disk 6.35 GiB
+[12:21:13]   after rmi+prune: file 6.45 GiB, on disk 6.35 GiB
+[12:26:13]   after 5 min: file 6.45 GiB, on disk 1.48 GiB
+[12:26:15]   after stop: file 6.44 GiB, on disk 1.48 GiB
+[12:26:15] reclaim: a container fills 2 GiB of page cache and exits; VM memory before, right after, and 2 min later
+[12:29:33] reclaim: VM 335 MiB before, 2485 right after, 320 two minutes later
+[12:29:33] bind: a Windows folder mounted into a container: 2000 small files, one 512 MiB file
+[12:29:58] bind: stat2000 39 ms, read2000 419 ms, readbig 1050 ms, write2000 1750 ms, writebig 1870 ms
+[12:30:01] wrote C:\Users\user\AppData\Local\Temp\hb-dev\ddbench\results\summary-hyperbutler.json

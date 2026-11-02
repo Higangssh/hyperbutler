@@ -1,0 +1,57 @@
+﻿{
+    "engine":  "hyperbutler",
+    "when":  "2026-11-02T12:08:54",
+    "startInfoMedian":  2.08502735,
+    "startContainerMedian":  2.51317245,
+    "startContainerMin":  2.4834364,
+    "startContainerMax":  2.5904347,
+    "idleMedianMiB_5to10min":  322,
+    "idleVmMedianMiB_5to10min":  295.2,
+    "idleMaxMiB":  482.5,
+    "idleProcesses":  3,
+    "idleProcessNames":  "hyperbutlerx1 vmwpx1 vmmemx1",
+    "disk":  [
+                 {
+                     "engine":  "hyperbutler",
+                     "phase":  "before",
+                     "lengthGiB":  0.11,
+                     "allocatedGiB":  0.05
+                 },
+                 {
+                     "engine":  "hyperbutler",
+                     "phase":  "after pull",
+                     "lengthGiB":  6.45,
+                     "allocatedGiB":  6.35
+                 },
+                 {
+                     "engine":  "hyperbutler",
+                     "phase":  "after rmi+prune",
+                     "lengthGiB":  6.45,
+                     "allocatedGiB":  6.35
+                 },
+                 {
+                     "engine":  "hyperbutler",
+                     "phase":  "after 5 min",
+                     "lengthGiB":  6.45,
+                     "allocatedGiB":  1.48
+                 },
+                 {
+                     "engine":  "hyperbutler",
+                     "phase":  "after stop",
+                     "lengthGiB":  6.44,
+                     "allocatedGiB":  1.48
+                 }
+             ],
+    "reclaimVmMiB":  {
+                         "before":  335,
+                         "after":  2485,
+                         "after2min":  320
+                     },
+    "bindMedianMs":  {
+                         "stat2000":  39,
+                         "read2000":  419,
+                         "readbig":  1050,
+                         "write2000":  1750,
+                         "writebig":  1870
+                     }
+}

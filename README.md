@@ -6,11 +6,12 @@
 
 > A lightweight, Docker-compatible container runtime for Windows that doesn't need WSL.
 
-**Status: early development, pre-0.1.** `hyperbutler start`, `stop`, `status`, `logs`, `delete`, `diagnose` and `uninstall`
+**Status: preview (v0.1.0-preview.1).** `hyperbutler start`, `stop`, `status`, `logs`, `delete`, `diagnose` and `uninstall`
 work end to end on Windows 11 Home, and the stock Windows `docker` CLI runs containers
-against it. No release has been published yet. Until one is, build from source
-([CONTRIBUTING.md](CONTRIBUTING.md)). Idle memory meets the 0.1 target but not yet the 1.0
-one (see [Current status](#current-status)).
+against it. Download the MSI or the zip from
+[Releases](https://github.com/Higangssh/hyperbutler/releases). A preview is published
+before every release gate is met; the ones still open are listed under
+[Current status](#current-status). Not for production yet.
 
 hyperbutler boots a minimal Linux VM directly through the Windows Host Compute Service (HCS, the
 same API WSL2 uses), runs dockerd inside it, and exposes the Docker API on a Windows named
@@ -31,6 +32,28 @@ well-known problems:
 
 hyperbutler aims to fix these by default, with no tuning.
 
+### Measured against Docker Desktop
+
+Both installed on the same laptop (Windows 11 Home, Core Ultra 7 155H, 32 GB), each with
+its out-of-the-box settings, measured by the same script one at a time on 2026-11-02.
+Method, raw data and what was not measured: [docs/compare-docker-desktop.md](docs/compare-docker-desktop.md).
+
+| | hyperbutler | Docker Desktop 4.97 (WSL 2) |
+|---|---|---|
+| Needs WSL | **no** | yes |
+| Download | **116 MB** | 592 MB (+351 MB WSL) |
+| Installed size | **179 MB** | about 6.7 GB |
+| Start until a container runs | **2.5 s** | 5.6 s |
+| Idle memory, VM running | **322 MiB** | 1.7–2.7 GB |
+| Idle memory after Docker Desktop's Resource Saver stops its VM | n/a | 404 MiB (VM off) |
+| Disk 5 min after deleting ~5 GB of images | **1.5 GiB**, given back automatically | 6.8 GiB, kept |
+| VM memory 2 min after a 2 GiB workload | **320 MiB** | 1.3 GB |
+| Bind mount from `C:\`: `stat` / read / write 2000 small files | **0.04 / 0.4 / 1.8 s** | 2.3 / 3.4 / 4.9 s |
+| License | Apache-2.0 | paid subscription for companies with 250+ employees or $10M+ revenue |
+
+Docker Desktop is ahead on breadth: Kubernetes, Windows containers, extensions and a mature
+GUI. One machine is not a general result.
+
 ## Goals
 
 | Target | 0.1 preview | 1.0 |
@@ -44,8 +67,7 @@ hyperbutler aims to fix these by default, with no tuning.
 | Windows editions | Home is first-class | Home, Pro, Enterprise |
 | Download size | ≤ 150 MB | same |
 
-These are targets. The next section says which ones are met. For comparison, Docker
-Desktop is commonly reported at 2.5–3 GB idle RAM and 20–60 s to start. The full list is in
+These are targets. The next section says which ones are met. The full list is in
 [docs/requirements.md](docs/requirements.md).
 
 ## Current status
@@ -67,7 +89,7 @@ documents.
 | Idle memory, minutes 5–10 (`bench/mem-idle`, [ADR 0003](docs/adr/0003-implementation-language.md#consequences)) | **315 MiB** (331 MB): engine 17.7 MiB (Go heap 5.4 MiB), vmmem 292 MiB, vmwp 5.5 MiB, with the erofs system disk | ≤ 400 MB (REQ-MEM-001); 1.0: ≤ 250 MB | Yes for 0.1, **no** for 1.0. The engine commits 65 MiB; a process that reads all of its memory (likely Defender) can make all of it resident |
 | Memory back to the host after a workload, *spike*: `spike/vhdx`, 3 GiB guest ([guest-services](docs/research/guest-services.md)) | 2 GiB of page cache: VM back to 350 MiB (260 MiB at ready) 27 s after the read | REQ-MEM-002 | Partly: the 12 GB / 8 GB bench has not been run |
 | Bind mounts from Windows paths, `docker run -v C:\…` and `--mount type=bind` ([ADR 0007](docs/adr/0007-bind-mounts.md#opens-without-open-fuse_no_open_support-and-the-size-0-report-2026-10-31)) | work through `hyperbutler start`: read/write, `:ro`, single files; shares no container uses are removed; opens cost no round trip. `bench/fs-*`: cached reads 1.12× ext4, sequential write + fsync 278 MiB/s; lstat 2.2×, missing names 1.2×, `git status` 1.7× ext4; a Windows edit reaches inotify in p95 3.4 ms with none missed, and pinned Vite and webpack rebuild; 10k creates 11.5 s (ext4: 0.11 s) | 1.0: REQ-FS-001/002/005; REQ-FS-003 ≤ 200 ms p95 | REQ-FS-002 and REQ-FS-003 **yes**. REQ-FS-001 reads yes; REQ-FS-001 writes and REQ-FS-005 not measured (no WSL 2 for the 9P baseline) |
-| Download size | the release zip is about 80 MB | ≤ 150 MB (REQ-UX-002) | Yes (measured on a local build) |
+| Download size | the zip is 109 MB, the MSI 116 MB (snapshot of the release candidate, 2026-11-02) | ≤ 150 MB (REQ-UX-002) | Yes (measured on a local build) |
 | Soak (ADR 0003), `hyperbutler start`, incl. bind mounts and `-p` | 1 h, 12,827 docker commands, none failed: engine working set +0.56 MiB/h (median 80 MiB), Go heap +0.09 MiB/h, handles, threads and goroutines flat; no leak above about 5 MiB/h | 24 h, no positive trend | 1 h main gate: passed by hand. **24 h: not run.** It blocks the first release |
 
 What is missing for 0.1: the 24-hour soak, the ADR 0004 broker (until it
@@ -78,10 +100,11 @@ release gate.
 
 ## Quick start
 
-Releases will appear on the [Releases](https://github.com/Higangssh/hyperbutler/releases) page.
-0.1 has no installer: hyperbutler is a zip you unpack. The steps below need no admin rights,
-except the one-time prerequisites. From 0.2 an MSI does the prerequisites and PATH for you
-in one UAC prompt ([docs/install.md](docs/install.md)); the zip stays.
+Downloads are on the [Releases](https://github.com/Higangssh/hyperbutler/releases) page.
+**The easy way:** the MSI does the prerequisites and PATH for you in one UAC prompt; then
+sign out and back in (or restart, if it asks) and run `hyperbutler start`
+([docs/install.md](docs/install.md)). The steps below are for the zip, which needs no
+installer and no admin rights, except the one-time prerequisites.
 
 ### Prerequisites (one time)
 
@@ -169,7 +192,7 @@ commands at once instead of the window.
 
 To upgrade, run `hyperbutler stop`, repeat step 2 without the PATH lines (it replaces every
 file, `image\` included), and `hyperbutler start`. The data disk in `%LOCALAPPDATA%\hyperbutler` is kept. Upgrades across releases are not tested yet
-(there has been no release). `hyperbutler status` shows which `hyperbutler.exe` the running
+(this is the first one). `hyperbutler status` shows which `hyperbutler.exe` the running
 engine is and its version. `hyperbutler start` while an engine from another folder or
 another version runs says so; `hyperbutler restart` from the new folder switches to it.
 

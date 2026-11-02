@@ -1,0 +1,13 @@
+﻿[12:42:24] idle: start, no containers, sample every 10 s for 600 s
+[12:52:52] idle: median 404 MiB from minute 5 to 10 (VM 0 MiB), 10 processes: wslservicex1 Docker Desktopx5 com.docker.backendx2 com.docker.buildx1 docker-agentx1
+[12:52:52] disk: pull node:22, python:3.12, golang:1.24, rust:1.88, delete them, watch the data disk on the host
+[12:53:19]   before: file 1.54 GiB, on disk 1.54 GiB
+[12:54:35]   after pull: file 6.79 GiB, on disk 6.79 GiB
+[12:54:37]   after rmi+prune: file 6.79 GiB, on disk 6.79 GiB
+[12:59:37]   after 5 min: file 6.82 GiB, on disk 6.82 GiB
+[12:59:58]   after stop: file 6.79 GiB, on disk 6.79 GiB
+[12:59:58] reclaim: a container fills 2 GiB of page cache and exits; VM memory before, right after, and 2 min later
+[13:03:23] reclaim: VM 2178 MiB before, 4299 right after, 1295 two minutes later
+[13:03:23] bind: a Windows folder mounted into a container: 2000 small files, one 512 MiB file
+[13:04:43] bind: stat2000 2349 ms, read2000 3420 ms, readbig 2699 ms, write2000 4870 ms, writebig 2450 ms
+[13:04:59] wrote C:\Users\user\AppData\Local\Temp\hb-dev\ddbench\results\summary-desktop.json

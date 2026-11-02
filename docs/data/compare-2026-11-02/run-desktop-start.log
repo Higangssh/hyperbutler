@@ -1,0 +1,19 @@
+﻿[12:30:10] start: 1 warm-up + 10 runs (stop, VM gone, start, time to docker info and to a container that ran)
+[12:30:33]   warm-up: info 5.06 s, container 5.67 s
+[12:30:54]   run 1: info 5.06 s, container 5.66 s
+[12:31:16]   run 2: info 4.96 s, container 5.58 s
+[12:31:39]   run 3: info 5.61 s, container 6.29 s
+[12:32:01]   run 4: info 4.96 s, container 5.63 s
+[12:32:23]   run 5: info 4.96 s, container 5.54 s
+[12:32:46]   run 6: info 5.57 s, container 6.17 s
+[12:33:08]   run 7: info 4.94 s, container 5.54 s
+[12:33:30]   run 8: info 5.11 s, container 5.71 s
+[12:33:52]   run 9: info 4.99 s, container 5.60 s
+[12:34:14]   run 10: info 4.98 s, container 5.65 s
+[12:34:29] start: to a container that ran, median 5.64 s (min 5.54, max 6.29); docker info median 4.98 s
+[12:34:29] idle: start, no containers, sample every 10 s for 600 s
+C:\workspace\hyperbutler\bench\compare\run.ps1 : The property 'WorkingSetPrivate' cannot be found on this object. Verif
+y that the property exists.
+    + CategoryInfo          : NotSpecified: (:) [run.ps1], PropertyNotFoundException
+    + FullyQualifiedErrorId : PropertyNotFoundStrict,run.ps1
+ 

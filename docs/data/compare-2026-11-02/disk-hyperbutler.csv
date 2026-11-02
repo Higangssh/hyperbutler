@@ -1,0 +1,6 @@
+"engine","phase","lengthGiB","allocatedGiB"
+"hyperbutler","before","0.11","0.05"
+"hyperbutler","after pull","6.45","6.35"
+"hyperbutler","after rmi+prune","6.45","6.35"
+"hyperbutler","after 5 min","6.45","1.48"
+"hyperbutler","after stop","6.44","1.48"

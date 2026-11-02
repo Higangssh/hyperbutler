@@ -1,0 +1,6 @@
+"engine","phase","lengthGiB","allocatedGiB"
+"desktop","before","1.54","1.54"
+"desktop","after pull","6.79","6.79"
+"desktop","after rmi+prune","6.79","6.79"
+"desktop","after 5 min","6.82","6.82"
+"desktop","after stop","6.79","6.79"
