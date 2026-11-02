@@ -245,10 +245,15 @@ func (s *Server) serveInstance(ctx context.Context, inst *pipeInstance, owner st
 		}
 		backoff = 100 * time.Millisecond
 		peer := &pipePeer{h: inst.h}
-		if err := s.ServeConn(ctx, inst, peer, owner); err != nil && !errors.Is(err, errStopped) {
+		err = s.ServeConn(ctx, inst, peer, owner)
+		if err != nil && !errors.Is(err, errStopped) && !errors.Is(err, errRefusedEarly) {
 			s.cfg.Logf("broker: connection: %v", err)
 		}
-		inst.linger()
+		// A connection refused before it said anything, or that sent nothing in time,
+		// gives the instance back at once: lingering would let silent clients hold it.
+		if !errors.Is(err, errRefusedEarly) && !errors.Is(err, os.ErrDeadlineExceeded) {
+			inst.linger()
+		}
 		// A data-location check abandoned after its timeout may still hold the peer. Once
 		// the peer is closed it can no longer impersonate or query the pipe, so it can
 		// never act as the next client of this instance.
@@ -503,6 +508,34 @@ func impersonate(p *pipePeer, fn func() error) error {
 }
 
 func (p *pipePeer) Impersonate(fn func() error) error { return impersonate(p, fn) }
+
+// ClientProcessUser returns the user of the pipe's client process, read before any
+// frame (processUserPeer). It is only a counting key for the shared endpoint's
+// connection cap: the process may exit and its ID be reused, so it never identifies
+// the caller.
+func (p *pipePeer) ClientProcessUser() (string, error) {
+	var pid uint32
+	if err := p.withPipe(func(h windows.Handle) error {
+		return windows.GetNamedPipeClientProcessId(h, &pid)
+	}); err != nil {
+		return "", err
+	}
+	proc, err := windows.OpenProcess(windows.PROCESS_QUERY_LIMITED_INFORMATION, false, pid)
+	if err != nil {
+		return "", err
+	}
+	defer func() { _ = windows.CloseHandle(proc) }()
+	var tok windows.Token
+	if err := windows.OpenProcessToken(proc, windows.TOKEN_QUERY, &tok); err != nil {
+		return "", err
+	}
+	defer func() { _ = tok.Close() }()
+	tu, err := tok.GetTokenUser()
+	if err != nil {
+		return "", err
+	}
+	return tu.User.Sid.String(), nil
+}
 
 func (p *pipePeer) Identify() (Identity, error) {
 	var id Identity

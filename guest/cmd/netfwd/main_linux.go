@@ -128,10 +128,14 @@ func dialLoop(port uint32) func() *os.File {
 // acceptLoop returns a function that waits for the host to connect (offload mode) and
 // to send the VM secret and then the Hello of link version. Only the host (CID 2) is
 // accepted, and only with the secret; a peer without it is closed before anything is
-// written to it. The host dials because Windows sends slowly on hvsock connections it
-// accepted (ADR 0006).
+// written to it. Connections are checked concurrently, a bounded number at a time
+// (vmsecret.Gate), so a peer that connects and stalls does not delay the host's link.
+// The host dials because Windows sends slowly on hvsock connections it accepted
+// (ADR 0006).
 func acceptLoop(ln int, version byte, secret vmsecret.Secret) func() *os.File {
-	return func() *os.File {
+	links := make(chan *os.File)
+	gate := &vmsecret.Gate{Secret: secret, MaxPending: 4}
+	go func() {
 		for {
 			conn, err := acceptHost(ln)
 			if err != nil {
@@ -139,19 +143,21 @@ func acceptLoop(ln int, version byte, secret vmsecret.Secret) func() *os.File {
 				time.Sleep(100 * time.Millisecond)
 				continue
 			}
-			if err := vmsecret.Admit(conn, secret, 0); err != nil {
-				log.Printf("host link: refused: %v", err)
-				_ = conn.Close()
-				continue
-			}
-			if err := readHello(conn, version); err != nil {
-				log.Printf("host link: %v", err)
-				_ = conn.Close()
-				continue
-			}
-			return conn
+			gate.Go(conn, func(err error) {
+				if err != nil {
+					log.Printf("host link: refused: %v", err)
+					return
+				}
+				if err := readHello(conn, version); err != nil {
+					log.Printf("host link: %v", err)
+					_ = conn.Close()
+					return
+				}
+				links <- conn
+			})
 		}
-	}
+	}()
+	return func() *os.File { return <-links }
 }
 
 // listenHost listens on an AF_VSOCK port for the host.

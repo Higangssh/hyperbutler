@@ -3,11 +3,15 @@
 package broker
 
 import (
+	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
+	"time"
 
 	"golang.org/x/sys/windows"
 
@@ -19,39 +23,72 @@ import (
 // to (ADR 0004 rule 5).
 const DefaultSharedPipe = `\\.\pipe\hyperbutler-broker`
 
-// UserPipeName is the name of sid's own endpoint next to the shared endpoint shared:
-// shared, a dash, and the hex of the first 16 bytes of SHA-256 over sid's canonical
-// string form (S-1-5-21-...). Both the broker and the client derive it, and the client
-// connects only to the name it derived itself.
-func UserPipeName(shared, sid string) string {
+// userPipeSuffixLen is the length of the random hex suffix of a per-user pipe name.
+const userPipeSuffixLen = 16
+
+// userPipePrefix is the fixed part of sid's own endpoint next to the shared endpoint
+// shared: shared, a dash, and the hex of the first 16 bytes of SHA-256 over sid's
+// canonical string form (S-1-5-21-...), then a dash.
+func userPipePrefix(shared, sid string) string {
 	h := sha256.Sum256([]byte(sid))
-	return shared + "-" + hex.EncodeToString(h[:16])
+	return shared + "-" + hex.EncodeToString(h[:16]) + "-"
+}
+
+// newUserPipeName is a fresh name for sid's own endpoint: userPipePrefix and 16 random
+// lowercase hex digits, new for each endpoint the broker creates. Another user can
+// compute the prefix but not the suffix, so cannot create the name before the broker
+// does (ADR 0004 rule 5).
+func newUserPipeName(shared, sid string) (string, error) {
+	var b [userPipeSuffixLen / 2]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return "", err
+	}
+	return userPipePrefix(shared, sid) + hex.EncodeToString(b[:]), nil
+}
+
+// ValidUserPipeName reports whether name has the form of sid's own endpoint next to
+// shared: userPipePrefix and exactly 16 lowercase hex digits. The client connects to
+// nothing else.
+func ValidUserPipeName(shared, sid, name string) bool {
+	suffix, ok := strings.CutPrefix(name, userPipePrefix(shared, sid))
+	if !ok || len(suffix) != userPipeSuffixLen {
+		return false
+	}
+	for i := 0; i < len(suffix); i++ {
+		if c := suffix[i]; (c < '0' || c > '9') && (c < 'a' || c > 'f') {
+			return false
+		}
+	}
+	return true
 }
 
 // EndpointsConfig configures ListenEndpoints. Zero values take the defaults.
 type EndpointsConfig struct {
 	// Name is the shared endpoint (default DefaultSharedPipe).
 	Name string
-	// Instances is the shared endpoint's instance count, UserInstances each per-user
-	// endpoint's (1..16, default 4 each).
+	// Instances is the shared endpoint's instance count (1..16, default 16), and
+	// UserInstances each per-user endpoint's (default 4).
 	Instances, UserInstances int
-	// MaxUsers caps the per-user endpoints (default 64); a user beyond it gets "busy".
+	// MaxUsers caps the per-user endpoints (default 64). At the cap, endpoints with no
+	// connection and no running VM are retired; if none is, a new user gets "busy".
 	MaxUsers int
 }
 
 // Endpoints is the broker's shared endpoint and the per-user endpoints it creates on
 // request (ADR 0004 rule 5). The shared endpoint grants connect to interactive users and
 // serves only the version and open-endpoint verbs; open-endpoint creates the caller's
-// own pipe, UserPipeName, with FILE_FLAG_FIRST_PIPE_INSTANCE and a protected DACL (the
-// broker's account full access, the caller read and write without
-// FILE_CREATE_PIPE_INSTANCE, nobody else), serves every VM verb there for that caller
-// only, and replies with its name. A per-user name that already exists fails the request
-// with CodeEndpointSquatted; the broker never falls back to another name, and tries again
-// on the next request.
+// own pipe, under a new name with a random part (newUserPipeName), with
+// FILE_FLAG_FIRST_PIPE_INSTANCE and a protected DACL (the broker's account full access,
+// the caller read and write without FILE_CREATE_PIPE_INSTANCE, nobody else), serves
+// every VM verb there for that caller only, and replies with its name. A name that
+// already exists fails the request with CodeEndpointSquatted; the broker never falls
+// back to another name, and the next request tries a new one.
 type Endpoints struct {
 	srv    *Server
 	cfg    EndpointsConfig
 	shared *PipeListener
+	// newName replaces newUserPipeName in tests.
+	newName func(shared, sid string) (string, error)
 
 	mu     sync.Mutex
 	closed bool
@@ -66,6 +103,9 @@ func ListenEndpoints(srv *Server, cfg EndpointsConfig) (*Endpoints, error) {
 	if cfg.Name == "" {
 		cfg.Name = DefaultSharedPipe
 	}
+	if cfg.Instances == 0 {
+		cfg.Instances = maxPipeInstances
+	}
 	if cfg.UserInstances == 0 {
 		cfg.UserInstances = 4
 	}
@@ -77,10 +117,10 @@ func ListenEndpoints(srv *Server, cfg EndpointsConfig) (*Endpoints, error) {
 	}
 	// The longest per-user name must still be a valid pipe name and fit an
 	// open-endpoint reply.
-	if long := UserPipeName(cfg.Name, ""); len(long) > proto.MaxPipeNameLen || transport.ValidatePipeName(long) != nil {
+	if long := userPipePrefix(cfg.Name, "") + strings.Repeat("0", userPipeSuffixLen); len(long) > proto.MaxPipeNameLen || transport.ValidatePipeName(long) != nil {
 		return nil, fmt.Errorf("broker: shared endpoint name %q is too long for per-user endpoints", cfg.Name)
 	}
-	e := &Endpoints{srv: srv, cfg: cfg, users: make(map[string]*PipeListener)}
+	e := &Endpoints{srv: srv, cfg: cfg, newName: newUserPipeName, users: make(map[string]*PipeListener)}
 	srv.mu.Lock()
 	taken := srv.opener != nil
 	if !taken {
@@ -118,11 +158,18 @@ func (e *Endpoints) open(sid string) (string, error) {
 		return l.Name(), nil
 	}
 	if len(e.users) >= e.cfg.MaxUsers {
-		return "", errTooManyEndpoints
+		e.retireIdleLocked()
+		if len(e.users) >= e.cfg.MaxUsers {
+			return "", errTooManyEndpoints
+		}
 	}
-	l, err := ListenPipe(PipeConfig{Name: UserPipeName(e.cfg.Name, sid), ClientSID: sid, Instances: e.cfg.UserInstances})
+	name, err := e.newName(e.cfg.Name, sid)
 	if err != nil {
-		return "", err // ErrPipeExists when squatted: reported, and retried next time
+		return "", err
+	}
+	l, err := ListenPipe(PipeConfig{Name: name, ClientSID: sid, Instances: e.cfg.UserInstances})
+	if err != nil {
+		return "", err // ErrPipeExists when squatted: reported, and a new name next time
 	}
 	e.users[sid] = l
 	e.wg.Add(1)
@@ -133,6 +180,30 @@ func (e *Endpoints) open(sid string) (string, error) {
 		}
 	}()
 	return l.Name(), nil
+}
+
+// retireIdleLocked closes the per-user endpoints that have no identified connection and
+// whose owner has no running VM (a VM's lease is a connection, so this is a second
+// check). Their users get a new endpoint, under a new name, when they ask again; a client
+// that got the old name just before may fail to connect once. e.mu is held.
+func (e *Endpoints) retireIdleLocked() {
+	for sid, l := range e.users {
+		e.srv.mu.Lock()
+		busy := e.srv.conns[sid] > 0
+		e.srv.mu.Unlock()
+		if busy {
+			continue
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		st, err := e.srv.cfg.Backend.Status(ctx, sid)
+		cancel()
+		if err != nil || st.Running {
+			continue
+		}
+		_ = l.Close()
+		delete(e.users, sid)
+		e.srv.cfg.Logf("broker: retired the idle endpoint of %s", sid)
+	}
 }
 
 // Serve serves the shared endpoint until Close, then waits for the per-user endpoints'

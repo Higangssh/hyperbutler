@@ -18,6 +18,59 @@ func newSecret(t *testing.T) vmsecret.Secret {
 	return s
 }
 
+// serveHost admits c through a gate of its own and relays it, as serve does, and
+// returns the relay's or the refusal's error.
+func serveHost(c hostConn, want vmsecret.Secret, timeout time.Duration, dial func() (stream, error)) error {
+	return serveThrough(&vmsecret.Gate{Secret: want, Timeout: timeout}, c, dial)
+}
+
+func serveThrough(g *vmsecret.Gate, c hostConn, dial func() (stream, error)) error {
+	done := make(chan error, 1)
+	admitHost(g, c, func(hc hostConn) { done <- relayHost(hc, dial) }, func(err error) { done <- err })
+	return <-done
+}
+
+// A stalled peer (part of a secret, then nothing) does not hold up the host: the host's
+// connection is relayed while the stalled one is still being checked.
+func TestStalledPeerThenHost(t *testing.T) {
+	secret := newSecret(t)
+	g := &vmsecret.Gate{Secret: secret, Timeout: vmsecret.DefaultTimeout, MaxPending: maxPendingAdmits}
+	stalledHost, stalledAgent := tcpPair(t)
+	if _, err := stalledHost.Write(secret[:vmsecret.Size-1]); err != nil {
+		t.Fatal(err)
+	}
+	stalledDone := make(chan error, 1)
+	go func() {
+		stalledDone <- serveThrough(g, stalledAgent, func() (stream, error) { return nil, errors.New("dialed") })
+	}()
+	time.Sleep(20 * time.Millisecond) // the stalled peer is being checked first
+
+	host, agent := tcpPair(t)
+	docker, dockerd := tcpPair(t)
+	start := time.Now()
+	done := make(chan error, 1)
+	go func() { done <- serveThrough(g, agent, func() (stream, error) { return docker, nil }) }()
+	if _, err := host.Write(append(secret[:], 'x')); err != nil {
+		t.Fatal(err)
+	}
+	one := make([]byte, 1)
+	_ = dockerd.SetReadDeadline(time.Now().Add(5 * time.Second))
+	if _, err := io.ReadFull(dockerd, one); err != nil {
+		t.Fatal(err)
+	}
+	if d := time.Since(start); d > 500*time.Millisecond {
+		t.Fatalf("the host was relayed after %v", d)
+	}
+	_ = host.CloseWrite()
+	_ = dockerd.CloseWrite()
+	if err := waitRelay(t, done); err != nil {
+		t.Fatal(err)
+	}
+	if err := waitRelay(t, stalledDone); !errors.Is(err, vmsecret.ErrMismatch) {
+		t.Fatalf("stalled peer: %v", err)
+	}
+}
+
 // With the VM's secret first, the connection reaches dockerd and the bytes after the
 // secret arrive there unchanged.
 func TestServeHostAdmits(t *testing.T) {

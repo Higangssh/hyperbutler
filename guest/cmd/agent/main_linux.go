@@ -131,14 +131,16 @@ func (c *vsockConn) CloseWrite() error {
 	return serr
 }
 
+// serve accepts host connections and admits each through a bounded Gate, so a peer that
+// connects and sends nothing holds up neither the accept loop nor the relays; at most
+// maxConns admitted connections are relayed at once.
 func serve(ln *vsockListener, sock string, maxConns int, secret vmsecret.Secret) error {
 	sem := make(chan struct{}, maxConns)
+	gate := &vmsecret.Gate{Secret: secret, MaxPending: maxPendingAdmits}
 	var backoff time.Duration
 	for {
-		sem <- struct{}{}
 		c, cid, err := ln.accept()
 		if err != nil {
-			<-sem
 			if errors.Is(err, os.ErrClosed) {
 				return err
 			}
@@ -153,13 +155,13 @@ func serve(ln *vsockListener, sock string, maxConns int, secret vmsecret.Secret)
 		if cid != unix.VMADDR_CID_HOST {
 			log.Printf("refused connection from CID %d", cid)
 			_ = c.Close()
-			<-sem
 			continue
 		}
-		go func() {
+		admitHost(gate, c, func(hc hostConn) {
+			sem <- struct{}{}
 			defer func() { <-sem }()
-			handle(c, sock, secret)
-		}()
+			handle(hc, sock)
+		}, func(err error) { refusals.log("refused a connection without the VM secret", err) })
 	}
 }
 
@@ -170,7 +172,10 @@ type rateLimited struct {
 	interval time.Duration
 }
 
-var dialFailures = &rateLimited{interval: 5 * time.Second}
+var (
+	dialFailures = &rateLimited{interval: 5 * time.Second}
+	refusals     = &rateLimited{interval: 5 * time.Second}
+)
 
 func (r *rateLimited) log(what string, err error) {
 	r.mu.Lock()
@@ -181,10 +186,9 @@ func (r *rateLimited) log(what string, err error) {
 	}
 }
 
-var refusals = &rateLimited{interval: 5 * time.Second}
-
-func handle(c *vsockConn, sock string, secret vmsecret.Secret) {
-	err := serveHost(c, secret, vmsecret.DefaultTimeout, func() (stream, error) {
+// handle relays an admitted host connection to dockerd.
+func handle(c hostConn, sock string) {
+	err := relayHost(c, func() (stream, error) {
 		u, err := net.DialTimeout("unix", sock, dialTimeout)
 		if err != nil {
 			return nil, err
@@ -194,8 +198,6 @@ func handle(c *vsockConn, sock string, secret vmsecret.Secret) {
 	var de dialError
 	switch {
 	case err == nil, errors.Is(err, os.ErrClosed), errors.Is(err, net.ErrClosed):
-	case errors.Is(err, vmsecret.ErrMismatch):
-		refusals.log("refused a connection without the VM secret", err)
 	case errors.As(err, &de):
 		// Expected while dockerd is still starting (the host retries), so log at most
 		// once every few seconds.

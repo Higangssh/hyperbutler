@@ -10,7 +10,10 @@
 //
 // A Secret never prints: every fmt verb renders it as "[redacted]", so it cannot reach a
 // log through a %v of a struct that holds it. Hex is the one way to get its text, for
-// the kernel command line.
+// the kernel command line. That holds for exported fields only: fmt does not call the
+// methods of an unexported field's value, so a struct that keeps a Secret in an
+// unexported field prints its bytes under %v and must never be formatted (or must
+// implement fmt.Formatter itself).
 //
 // The package builds on every platform and depends only on the standard library, so
 // the broker, the engine and the guest share it.
@@ -25,6 +28,7 @@ import (
 	"io"
 	"os"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -176,9 +180,10 @@ func Send(w io.Writer, s Secret) error {
 	return err
 }
 
-// DefaultTimeout is how long Admit waits for the secret. The host sends it right after
-// connecting.
-const DefaultTimeout = 5 * time.Second
+// DefaultTimeout is how long Admit waits for the secret. The host writes it in the same
+// dial call that connects (transport.HvsockDialer), before the connection is used, so a
+// peer that has not sent 32 bytes by then is not the host.
+const DefaultTimeout = time.Second
 
 // DeadlineReader is a connection whose reads can be bounded.
 type DeadlineReader interface {
@@ -200,4 +205,58 @@ func Admit(c DeadlineReader, want Secret, timeout time.Duration) error {
 		return err
 	}
 	return c.SetReadDeadline(time.Time{})
+}
+
+// Conn is a connection a Gate admits.
+type Conn interface {
+	DeadlineReader
+	io.Closer
+}
+
+// ErrBusy is passed to a Gate's callback for a connection that arrived while MaxPending
+// others were still being checked; it was closed at once.
+var ErrBusy = errors.New("vmsecret: too many connections waiting to be admitted")
+
+// DefaultMaxPending is a Gate's default bound on connections being checked at once.
+const DefaultMaxPending = 8
+
+// Gate admits connections concurrently, so a peer that connects and sends nothing holds
+// up no one else: each connection is checked (Admit) on a goroutine of its own, at most
+// MaxPending at a time, and one over that bound is closed at once. The zero value admits
+// no one (its Secret is zero).
+type Gate struct {
+	Secret     Secret
+	Timeout    time.Duration // DefaultTimeout if zero
+	MaxPending int           // DefaultMaxPending if zero
+
+	once sync.Once
+	sem  chan struct{}
+}
+
+// Go checks c in the background and then calls done on that goroutine: with nil when c
+// was admitted (the caller then owns c), or with the error after c was closed, without a
+// byte written to it. done is called exactly once; for ErrBusy, before Go returns.
+func (g *Gate) Go(c Conn, done func(err error)) {
+	g.once.Do(func() {
+		n := g.MaxPending
+		if n <= 0 {
+			n = DefaultMaxPending
+		}
+		g.sem = make(chan struct{}, n)
+	})
+	select {
+	case g.sem <- struct{}{}:
+	default:
+		_ = c.Close()
+		done(ErrBusy)
+		return
+	}
+	go func() {
+		err := Admit(c, g.Secret, g.Timeout)
+		<-g.sem
+		if err != nil {
+			_ = c.Close()
+		}
+		done(err)
+	}()
 }

@@ -162,8 +162,13 @@ type hcsVM struct {
 	sysGranted bool // the system disk carries an entry for account
 	cpus       uint32
 	memoryMB   uint32
-	secret     vmsecret.Secret
+	// secret is unexported, so fmt would print its bytes; Format below keeps an hcsVM
+	// from ever printing it.
+	secret vmsecret.Secret
 }
+
+// Format prints an hcsVM as its compute system name only, never its secret.
+func (v hcsVM) Format(f fmt.State, _ rune) { _, _ = fmt.Fprintf(f, "hcsVM{%s}", v.name) }
 
 // NewHCSBackend returns a backend that boots the image in the image folder next to the
 // running executable.

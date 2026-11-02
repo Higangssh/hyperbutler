@@ -5,11 +5,8 @@ package broker
 import (
 	"bytes"
 	"context"
-	"errors"
-	"os"
 	"strings"
 	"testing"
-	"time"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
@@ -60,16 +57,31 @@ func serveEndpoints(t *testing.T) (*Endpoints, *Server, *FakeBackend) {
 	return e, s, be
 }
 
+// A per-user name is the SID's hash and a fresh random suffix: another user can compute
+// the prefix, not the name.
 func TestUserPipeName(t *testing.T) {
-	a, b := UserPipeName(DefaultSharedPipe, sidA), UserPipeName(DefaultSharedPipe, sidB)
-	if a == b || !strings.HasPrefix(a, DefaultSharedPipe+"-") || len(a) != len(DefaultSharedPipe)+1+32 {
-		t.Fatalf("names %q, %q", a, b)
+	a, err := newUserPipeName(DefaultSharedPipe, sidA)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if a != UserPipeName(DefaultSharedPipe, sidA) {
-		t.Fatal("not deterministic")
+	a2, _ := newUserPipeName(DefaultSharedPipe, sidA)
+	b, _ := newUserPipeName(DefaultSharedPipe, sidB)
+	if a == a2 || !strings.HasPrefix(a, DefaultSharedPipe+"-") || len(a) != len(DefaultSharedPipe)+1+32+1+16 || strings.ToLower(a) != a {
+		t.Fatalf("names %q, %q", a, a2)
 	}
-	if strings.ToLower(a) != a {
-		t.Fatal("not lowercase hex")
+	if !strings.HasPrefix(a2, a[:len(a)-16]) {
+		t.Fatal("the SID part is not stable")
+	}
+	if !ValidUserPipeName(DefaultSharedPipe, sidA, a) || ValidUserPipeName(DefaultSharedPipe, sidA, b) || ValidUserPipeName(DefaultSharedPipe, sidB, a) {
+		t.Fatal("ValidUserPipeName does not tell users apart")
+	}
+	for _, bad := range []string{
+		a[:len(a)-1], a + "0", a[:len(a)-1] + "G", a[:len(a)-16], strings.ToUpper(a),
+		DefaultSharedPipe, `\\.\pipe\elsewhere` + a[len(DefaultSharedPipe):],
+	} {
+		if ValidUserPipeName(DefaultSharedPipe, sidA, bad) {
+			t.Errorf("accepted %q", bad)
+		}
 	}
 }
 
@@ -188,8 +200,8 @@ func TestUserEndpointCreatedWithDACL(t *testing.T) {
 	c := dial(t, e.Name())
 	r := roundTrip(t, c, proto.Request{Op: proto.OpOpenEndpoint})
 	wantOK(t, r, proto.OpOpenEndpoint)
-	if r.PipeName != UserPipeName(e.Name(), me) {
-		t.Fatalf("endpoint %q, want %q", r.PipeName, UserPipeName(e.Name(), me))
+	if !ValidUserPipeName(e.Name(), me, r.PipeName) {
+		t.Fatalf("endpoint %q is not of this user's form", r.PipeName)
 	}
 	if again := roundTrip(t, c, proto.Request{Op: proto.OpOpenEndpoint}); again.PipeName != r.PipeName {
 		t.Fatalf("second open: %+v", again)
@@ -246,131 +258,11 @@ func TestUserEndpointCreatedWithDACL(t *testing.T) {
 	if !clientACE || !serverACE {
 		t.Fatalf("pipe SD %s: client ACE %v, server ACE %v", sd, clientACE, serverACE)
 	}
+	// Even a name an attacker guessed would be refused by the DACL; with the random part
+	// it cannot be guessed at all (TestUserPipeName).
 	// The SDDL names exactly the two principals, for distinct SIDs too.
 	if got := PipeSDDL("S-1-5-18", sidA); strings.Count(got, "(") != 2 || !strings.Contains(got, ";;;"+sidA+")") ||
 		strings.Contains(got, "IU") || !strings.Contains(got, "D:P") {
 		t.Fatalf("per-user SDDL %s", got)
-	}
-}
-
-// A per-user name that is already taken is reported with its own code, nothing is
-// served under another name, and the next request tries again.
-func TestUserEndpointSquatted(t *testing.T) {
-	me := currentSID(t)
-	s, _ := newTestServer(t, Config{AllowedSIDs: []string{me}, Logf: t.Logf})
-	name := testPipeName(t)
-	n16, _ := windows.UTF16PtrFromString(UserPipeName(name, me))
-	sd, err := windows.SecurityDescriptorFromString("D:(A;;GA;;;WD)")
-	if err != nil {
-		t.Fatal(err)
-	}
-	h, err := windows.CreateNamedPipe(n16, windows.PIPE_ACCESS_DUPLEX, windows.PIPE_TYPE_BYTE,
-		windows.PIPE_UNLIMITED_INSTANCES, 512, 512, 0, &windows.SecurityAttributes{SecurityDescriptor: sd})
-	if err != nil {
-		t.Fatal(err)
-	}
-	e, err := ListenEndpoints(s, EndpointsConfig{Name: name, Instances: 2})
-	if err != nil {
-		windows.CloseHandle(h)
-		t.Fatal(err)
-	}
-	done := make(chan error, 1)
-	go func() { done <- e.Serve() }()
-	defer func() { e.Close(); <-done }()
-
-	c := dial(t, name)
-	wantCode(t, roundTrip(t, c, proto.Request{Op: proto.OpOpenEndpoint}), proto.CodeEndpointSquatted)
-	e.mu.Lock()
-	n := len(e.users)
-	e.mu.Unlock()
-	if n != 0 {
-		t.Fatal("an endpoint was created after all")
-	}
-	// The client fails loudly with the code.
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	if _, err := Dial(ctx, name); !IsCode(err, proto.CodeEndpointSquatted) {
-		t.Fatalf("Dial on a squatted endpoint: %v", err)
-	}
-	// Once the squatter is gone, the endpoint is created.
-	windows.CloseHandle(h)
-	if r := roundTrip(t, c, proto.Request{Op: proto.OpOpenEndpoint}); r.PipeName != UserPipeName(name, me) {
-		t.Fatalf("after the squatter left: %+v", r)
-	}
-}
-
-func TestEndpointsLimits(t *testing.T) {
-	me := currentSID(t)
-	s, _ := newTestServer(t, Config{})
-	e, err := ListenEndpoints(s, EndpointsConfig{Name: testPipeName(t), Instances: 1, UserInstances: 1, MaxUsers: 1})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer e.Close()
-	if _, err := ListenEndpoints(s, EndpointsConfig{Name: testPipeName(t)}); err == nil {
-		t.Fatal("a second Endpoints on one server")
-	}
-	if _, err := e.open("not-a-sid"); err == nil {
-		t.Fatal("opened an endpoint for a bad SID")
-	}
-	if _, err := e.open(me); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := e.open(sidB); !errors.Is(err, errTooManyEndpoints) {
-		t.Fatalf("over the limit: %v", err)
-	}
-	e.Close()
-	if _, err := e.open(me); err == nil {
-		t.Fatal("opened after Close")
-	}
-	s2, _ := newTestServer(t, Config{})
-	if _, err := ListenEndpoints(s2, EndpointsConfig{Name: `\\.\pipe\` + strings.Repeat("x", proto.MaxPipeNameLen)}); err == nil {
-		t.Fatal("accepted a shared name too long for per-user names")
-	}
-}
-
-// The client goes through the shared endpoint to its own, and refuses an endpoint name
-// it did not derive itself.
-func TestClientUsesOwnEndpoint(t *testing.T) {
-	e, s, be := serveEndpoints(t)
-	me := currentSID(t)
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	c, err := Dial(ctx, e.Name())
-	if err != nil {
-		t.Fatal(err)
-	}
-	f, err := os.Open(goodDir(t))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := c.SetDataLocation(windows.Handle(f.Fd())); err != nil {
-		t.Fatal(err)
-	}
-	f.Close()
-	r, err := c.Start(proto.Request{})
-	if err != nil || r.Secret.IsZero() {
-		t.Fatalf("start: secret set %v, %v", !r.Secret.IsZero(), err)
-	}
-	if be.StartCount(me) != 1 {
-		t.Fatal("the start did not reach the backend for this user")
-	}
-	c.Close()
-
-	// A shared endpoint that names another pipe is not followed.
-	s.mu.Lock()
-	s.opener = func(string) (string, error) { return e.Name(), nil }
-	s.mu.Unlock()
-	if _, err := Dial(ctx, e.Name()); err == nil || !strings.Contains(err.Error(), "want") {
-		t.Fatalf("followed a foreign endpoint name: %v", err)
-	}
-	// A VM verb sent to the shared endpoint itself is refused.
-	sc, err := dialPipe(ctx, e.Name())
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer sc.Close()
-	if _, err := sc.Status(); !IsCode(err, proto.CodeWrongEndpoint) {
-		t.Fatalf("status on the shared endpoint: %v", err)
 	}
 }

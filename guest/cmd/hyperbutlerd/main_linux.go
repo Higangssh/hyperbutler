@@ -281,7 +281,7 @@ func (d *daemon) run() error {
 	if err != nil {
 		log.Printf("%v: refusing every control connection", err)
 	}
-	sessions := &hostSessions{secret: secret, start: func(ctx context.Context, c net.Conn) {
+	sessions := &hostSessions{gate: vmsecret.Gate{Secret: secret, MaxPending: 4}, start: func(ctx context.Context, c net.Conn) {
 		gen := d.box.connect()
 		s := *srv
 		s.Handler = &connHandler{d: d, gen: gen}
@@ -310,11 +310,9 @@ func (d *daemon) run() error {
 			_ = c.Close()
 			continue
 		}
-		go func() {
-			if err := sessions.admit(c); err != nil {
-				log.Printf("refused a control connection without the VM secret: %v", err)
-			}
-		}()
+		sessions.admit(c, func(err error) {
+			log.Printf("refused a control connection without the VM secret: %v", err)
+		})
 	}
 }
 

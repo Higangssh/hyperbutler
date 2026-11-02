@@ -18,15 +18,28 @@ type dialError struct{ err error }
 func (e dialError) Error() string { return e.err.Error() }
 func (e dialError) Unwrap() error { return e.err }
 
-// serveHost admits c only if it begins with the VM's secret (ADR 0004 rule 6), and then
-// relays it to the stream dial opens (dockerd's socket). A connection without the
-// secret is closed before dockerd is dialed and before a byte is written to it, so a
-// peer learns only that it was refused. serveHost always closes c.
-func serveHost(c hostConn, want vmsecret.Secret, timeout time.Duration, dial func() (stream, error)) error {
-	if err := vmsecret.Admit(c, want, timeout); err != nil {
-		_ = c.Close()
-		return err
-	}
+// maxPendingAdmits bounds the connections whose secret is still being read, apart from
+// the relays: peers that connect and send nothing cannot take the relays' slots.
+const maxPendingAdmits = 16
+
+// admitHost checks that c begins with the VM's secret (ADR 0004 rule 6) through g, which
+// checks connections concurrently and a bounded number at a time, and then calls
+// serve(c) on its own goroutine. A connection without the secret is closed before
+// dockerd is dialed and before a byte is written to it, so a peer learns only that it
+// was refused; refused gets the reason.
+func admitHost(g *vmsecret.Gate, c hostConn, serve func(hostConn), refused func(error)) {
+	g.Go(c, func(err error) {
+		if err != nil {
+			refused(err)
+			return
+		}
+		serve(c)
+	})
+}
+
+// relayHost relays an admitted c to the stream dial opens (dockerd's socket). It always
+// closes c.
+func relayHost(c hostConn, dial func() (stream, error)) error {
 	u, err := dial()
 	if err != nil {
 		_ = c.Close()

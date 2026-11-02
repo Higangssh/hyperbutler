@@ -42,6 +42,9 @@ ln -sf /proc/self/fd/0 /dev/stdin
 ln -sf /proc/self/fd/1 /dev/stdout
 ln -sf /proc/self/fd/2 /dev/stderr
 hostname hyperbutler
+# The kernel log holds the command line, and with it hyperbutler.secret (ADR 0004 rule 6):
+# only CAP_SYSLOG may read it, which docker containers do not have by default.
+echo 1 >/proc/sys/kernel/dmesg_restrict
 t mounts-done
 
 # Hypervisor-specific drivers. hv_netvsc is built in; everything else is a module.

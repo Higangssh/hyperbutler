@@ -12,7 +12,7 @@
 //     ValidateDataDir (rule 2). No request carries a path (rule 1).
 //   - Pipes: the broker creates its pipes with FILE_FLAG_FIRST_PIPE_INSTANCE. The shared
 //     endpoint admits interactive users and serves only the version and open-endpoint
-//     verbs; open-endpoint creates the caller's own pipe (UserPipeName), whose ACL admits
+//     verbs; open-endpoint creates the caller's own pipe (under a fresh random name), whose ACL admits
 //     only that user, and every VM verb is served there alone (Endpoints). The broker
 //     never opens a pipe or file name it did not create (rule 5).
 //   - Cross-user isolation on hvsock: every service of the VM allows the owner's SID only,

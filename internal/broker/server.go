@@ -41,6 +41,13 @@ type Peer interface {
 	Impersonate(fn func() error) error
 }
 
+// processUserPeer is a Peer that can name the user of the client process before any
+// frame has been read. The shared endpoint uses it for its pending-connection cap only;
+// identity always comes from Identify.
+type processUserPeer interface {
+	ClientProcessUser() (string, error)
+}
+
 // VMSpec is what the server asks the backend to start. It is built only from broker
 // state, fixed limits and the typed fields of the start request; nothing in it is a
 // caller-supplied path, command line or document.
@@ -118,6 +125,9 @@ type Config struct {
 	// RequestTimeout bounds each backend call and each data-location check.
 	// IdleTimeout bounds the wait for each request frame, and IOTimeout each reply write.
 	RequestTimeout, IdleTimeout, IOTimeout time.Duration
+	// FirstFrameTimeout bounds the wait for the first frame on the shared endpoint
+	// (default 3 s), so connections that send nothing free its instances soon.
+	FirstFrameTimeout time.Duration
 
 	// Logf receives internal errors that are not sent to the caller. Nil discards them.
 	Logf func(format string, args ...any)
@@ -181,6 +191,9 @@ func New(cfg Config) (*Server, error) {
 	}
 	if cfg.RequestTimeout == 0 {
 		cfg.RequestTimeout = 2 * time.Minute
+	}
+	if cfg.FirstFrameTimeout == 0 {
+		cfg.FirstFrameTimeout = 3 * time.Second
 	}
 	if cfg.IdleTimeout == 0 {
 		cfg.IdleTimeout = 30 * time.Second
@@ -305,12 +318,33 @@ func (s *Server) ServeConn(ctx context.Context, rw io.ReadWriter, p Peer, owner 
 		}
 		return cause
 	}
+	if shared {
+		// Before the first frame no token identifies the caller, so the per-user cap
+		// below cannot apply yet; count the client process's user instead (a cap only,
+		// never an identity), so one user's silent connections cannot hold every
+		// instance of the shared endpoint.
+		if pi, ok := p.(processUserPeer); ok {
+			if sid, err := pi.ClientProcessUser(); err == nil {
+				key := "process/" + sid
+				if !s.addConn(key) {
+					return fail(proto.CodeBusy, "too many connections for this user",
+						fmt.Errorf("%w: process user %s over its connection limit on the shared endpoint", errRefusedEarly, sid))
+				}
+				defer s.dropConn(key)
+			}
+		}
+	}
 	for {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
 		if dl != nil {
-			_ = dl.SetReadDeadline(time.Now().Add(s.cfg.IdleTimeout))
+			wait := s.cfg.IdleTimeout
+			if shared && id == nil {
+				// A client of the shared endpoint sends its request at once.
+				wait = s.cfg.FirstFrameTimeout
+			}
+			_ = dl.SetReadDeadline(time.Now().Add(wait))
 		}
 		b, err := proto.ReadFrame(rw, &buf)
 		switch {
@@ -401,6 +435,10 @@ func (s *Server) handleShared(sid string, req proto.Request) proto.Reply {
 	}
 	return errorReply(proto.CodeWrongEndpoint, "open your own endpoint first; the shared endpoint serves only version and open-endpoint")
 }
+
+// errRefusedEarly wraps the error of a connection refused before its first frame, whose
+// pipe instance is given back without lingering.
+var errRefusedEarly = errors.New("broker: connection refused before its first request")
 
 // errTooManyEndpoints is returned by an opener that has reached its per-user endpoint
 // limit.
