@@ -78,15 +78,21 @@ func BenchmarkLog(b *testing.B) {
 	}
 }
 
-// TestLongLines: a long line of matches costs linear time, not quadratic.
+// TestLongLines: a long line of matches costs linear time, not quadratic. It compares a
+// line with the same line at a quarter of the length, so a slow machine or the race
+// detector (about 10x slower) does not fail it: linear is about 4x, quadratic 16x.
 func TestLongLines(t *testing.T) {
+	timeOf := func(s string) time.Duration {
+		t0 := time.Now()
+		_ = String(s)
+		return time.Since(t0)
+	}
 	for _, unit := range []string{`"token":"x",`, `token=x `, `"a":`, `"`, `\"auth\":\"x\" `, `http://a:b@`, `--token x `, `a:b@ `,
 		`password = 'x' `, `token : x `, `login -p x `, `-p `, `"password":` + "\n", `'`, `password='`} {
-		in := strings.Repeat(unit, (1<<20)/len(unit))
-		t0 := time.Now()
-		_ = String(in)
-		if d := time.Since(t0); d > 5*time.Second {
-			t.Errorf("%q x %d: %v", unit, len(in)/len(unit), d)
+		n := (1 << 20) / len(unit)
+		small, large := timeOf(strings.Repeat(unit, n/4)), timeOf(strings.Repeat(unit, n))
+		if large > 8*small+50*time.Millisecond {
+			t.Errorf("%q: x %d took %v, x %d took %v: more than linear", unit, n/4, small, n, large)
 		}
 	}
 }

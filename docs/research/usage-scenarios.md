@@ -573,7 +573,7 @@ Facts from the code that the scenarios below rely on
     across a refused run, a start and a restart, were `127.0.0.1:P` and `[::1]:P`
     listeners only.
 
-  Left: Docker Desktop itself was not run. *Hyperbutler first* still depends on Desktop,
+  Left: Docker Desktop itself was not run. *hyperbutler first* still depends on Desktop,
   whose `0.0.0.0:P` bind may succeed next to hyperbutler's loopback listeners. Random
   ports (`-P`) are not checked before the start, only published all-or-nothing after
   it.

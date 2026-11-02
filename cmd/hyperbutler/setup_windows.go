@@ -160,7 +160,7 @@ func (r setupRecord) added() ([]string, error) {
 	} else if err != nil {
 		return nil, err
 	}
-	defer k.Close()
+	defer func() { _ = k.Close() }()
 	v, _, err := k.GetStringsValue(setupAddedValue)
 	if errors.Is(err, registry.ErrNotExist) {
 		return nil, nil
@@ -174,7 +174,7 @@ func (r setupRecord) setAdded(sids []string) error {
 	if err != nil {
 		return err
 	}
-	defer k.Close()
+	defer func() { _ = k.Close() }()
 	if len(sids) > 0 {
 		return k.SetStringsValue(setupAddedValue, sids)
 	}
@@ -190,7 +190,7 @@ func (r setupRecord) result(step string, err error) {
 	if kerr != nil {
 		return
 	}
-	defer k.Close()
+	defer func() { _ = k.Close() }()
 	s := "ok"
 	if err != nil {
 		s = err.Error()
@@ -220,7 +220,7 @@ func (r setupRecord) deleteIfEmpty() {
 		return
 	}
 	info, err := k.Stat()
-	k.Close()
+	_ = k.Close()
 	if err == nil && info.SubKeyCount == 0 && info.ValueCount == 0 {
 		_ = registry.DeleteKey(r.root, parent)
 	}
@@ -341,7 +341,7 @@ func setupVMPlatform(stdout io.Writer) error {
 		return errors.New("setup vm-platform: SystemRoot is not set")
 	}
 	var out bytes.Buffer
-	c := exec.Command(dism, "/English", "/Online", "/Get-FeatureInfo", "/FeatureName:VirtualMachinePlatform")
+	c := exec.Command(dism, "/English", "/Online", "/Get-FeatureInfo", "/FeatureName:VirtualMachinePlatform") //nolint:gosec // G204: %SystemRoot%\System32\dism.exe with fixed arguments
 	c.Stdout, c.Stderr = &out, &out
 	if err := c.Run(); err != nil {
 		return fmt.Errorf("setup vm-platform: dism /Get-FeatureInfo: %w\n%s", err, out.Bytes())
@@ -354,7 +354,7 @@ func setupVMPlatform(stdout io.Writer) error {
 		return fmt.Errorf("setup vm-platform: no State in dism's output:\n%s", out.Bytes())
 	}
 	out.Reset()
-	c = exec.Command(dism, "/English", "/Online", "/Enable-Feature", "/FeatureName:VirtualMachinePlatform", "/All", "/NoRestart", "/Quiet")
+	c = exec.Command(dism, "/English", "/Online", "/Enable-Feature", "/FeatureName:VirtualMachinePlatform", "/All", "/NoRestart", "/Quiet") //nolint:gosec // G204: %SystemRoot%\System32\dism.exe with fixed arguments
 	c.Stdout, c.Stderr = &out, &out
 	err := c.Run()
 	if ee := (*exec.ExitError)(nil); errors.As(err, &ee) && ee.ExitCode() == 3010 {

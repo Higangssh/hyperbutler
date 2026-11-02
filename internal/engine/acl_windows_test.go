@@ -16,10 +16,17 @@ func checkUserOnly(t *testing.T, path string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want, err := CurrentUserSDDL()
+	wantSDDL, err := CurrentUserSDDL()
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Round-tripped, so both sides use the same aliases: Windows writes the built-in
+	// Administrator account (a CI runner's) as LA, not as its SID.
+	wsd, err := windows.SecurityDescriptorFromString(wantSDDL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := wsd.String()
 	// AI (auto-inherited) is a flag for propagation to children, not a grant.
 	if got := strings.Replace(sd.String(), "D:PAI(", "D:P(", 1); got != want {
 		t.Fatalf("%s: DACL %s, want %s", path, got, want)

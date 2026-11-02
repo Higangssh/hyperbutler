@@ -81,7 +81,7 @@ func parseArgs(fs *flag.FlagSet, args []string) error {
 		return &flagError{err}
 	}
 	if fs.NArg() != 0 {
-		return usagef("%s: unexpected argument %q%s", fs.Name(), fs.Arg(0), listHint(fs, args[:len(args)-fs.NArg()]))
+		return usagef("%s: unexpected argument %q%s", fs.Name(), fs.Arg(0), listHint(fs, args[:len(args)-fs.NArg()])) //nolint:gosec // G602: fs.NArg() counts what is left of args, so it is at most len(args)
 	}
 	return nil
 }
