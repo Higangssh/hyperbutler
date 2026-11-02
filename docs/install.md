@@ -114,7 +114,7 @@ is never a release.
 
 - English only; the window and the CLI follow your language, the installer does not yet.
 - The broker service install (M4) ran from the MSI once (2026-11-03, below), on one
-  machine; its steps with a second account (4, 7, 8) have not run yet.
+  machine; step 8 (a sign-in that is not interactive) has not run yet.
 - Tested end to end on one machine (below) only with the basic progress window (`/qb`),
   on an account that was already in Hyper-V Administrators and with Virtual Machine
   Platform on. The options page and the DISM step have not run for real yet.
@@ -264,7 +264,9 @@ CLI with its own `HYPERBUTLER_HOME`:
 | 13 first-install rollback | Passed: the service was installed and started, then uninstalled by the rollback; nothing left. |
 | 14 squatted pipe | Passed: the service stopped at once (could not take its pipe), `HbBrokerInstallFirst` failed the install, nothing left. |
 | 15 silent first install | Passed: `LastResult` "broker install: ok", then step 2 again. |
-| 4, 7, 8 | Not run yet (they need the `hbtest` account's password). |
+| 4 without the group | Passed, as `hbtest` (`runas`, medium integrity, not in Hyper-V Administrators): answered after 1.5 s, `hello-world` ran, doctor `hcs` and `hyperv-admins` info ("need not be"), `broker` ok, stop 1.6 s. The M4 goal. |
+| 7 a user's repair | Passed, one layer earlier than the step expects: Windows Installer refused the repair of `hbtest` (not elevated) before any custom action, "SECREPAIR: Found custom action requiring elevation: HbBrokerInstall", error 1730, exit 1603; `hbtest` stayed in the group. The record and the membership were taken out afterwards. |
+| 8 | Not run (optional). |
 
 Findings, fixed after the run:
 
