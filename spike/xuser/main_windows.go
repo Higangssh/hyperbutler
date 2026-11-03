@@ -29,12 +29,12 @@ import (
 	"sync"
 	"time"
 
-	"github.com/Higangssh/hyperbutler/internal/guid"
-	"github.com/Higangssh/hyperbutler/internal/winipc"
 	"golang.org/x/sys/windows"
 
 	"github.com/Higangssh/hyperbutler/internal/broker"
+	"github.com/Higangssh/hyperbutler/internal/guid"
 	"github.com/Higangssh/hyperbutler/internal/transport"
+	"github.com/Higangssh/hyperbutler/internal/winipc"
 )
 
 var failed int

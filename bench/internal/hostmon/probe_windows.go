@@ -16,10 +16,10 @@ import (
 	"time"
 	"unsafe"
 
-	"github.com/Higangssh/hyperbutler/internal/winipc"
 	"golang.org/x/sys/windows"
 
 	"github.com/Higangssh/hyperbutler/internal/diag"
+	"github.com/Higangssh/hyperbutler/internal/winipc"
 )
 
 // SampleCIM reads the perf counters of pids in one CIM query. A PID that has exited is

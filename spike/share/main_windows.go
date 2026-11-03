@@ -29,13 +29,12 @@ import (
 	"sync"
 	"time"
 
-	"github.com/Higangssh/hyperbutler/internal/guid"
-	"github.com/Higangssh/hyperbutler/internal/winipc"
-
 	"github.com/Higangssh/hyperbutler/guest/cpio"
 	"github.com/Higangssh/hyperbutler/internal/engine"
+	"github.com/Higangssh/hyperbutler/internal/guid"
 	"github.com/Higangssh/hyperbutler/internal/transport"
 	"github.com/Higangssh/hyperbutler/internal/vm"
+	"github.com/Higangssh/hyperbutler/internal/winipc"
 )
 
 const (

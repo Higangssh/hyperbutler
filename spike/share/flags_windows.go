@@ -15,10 +15,9 @@ import (
 	"time"
 
 	"github.com/Higangssh/hyperbutler/internal/guid"
-	"github.com/Higangssh/hyperbutler/internal/winipc"
-
 	"github.com/Higangssh/hyperbutler/internal/share"
 	"github.com/Higangssh/hyperbutler/internal/transport"
+	"github.com/Higangssh/hyperbutler/internal/winipc"
 )
 
 func flagDuration(name string, def time.Duration, usage string) *time.Duration {

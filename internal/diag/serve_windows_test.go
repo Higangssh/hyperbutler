@@ -16,10 +16,10 @@ import (
 	"time"
 	"unsafe"
 
-	"github.com/Higangssh/hyperbutler/internal/winipc"
 	"golang.org/x/sys/windows"
 
 	"github.com/Higangssh/hyperbutler/internal/transport"
+	"github.com/Higangssh/hyperbutler/internal/winipc"
 )
 
 var pipeSeq atomic.Int64

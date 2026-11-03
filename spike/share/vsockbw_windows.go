@@ -5,9 +5,8 @@ import (
 	"io"
 
 	"github.com/Higangssh/hyperbutler/internal/guid"
-	"github.com/Higangssh/hyperbutler/internal/winipc"
-
 	"github.com/Higangssh/hyperbutler/internal/transport"
+	"github.com/Higangssh/hyperbutler/internal/winipc"
 )
 
 var vsockBW = flagBool("vsockbw", false, "measure raw hvsock bandwidth and latency (guest buffer sizes 0, 256 KiB, 1 MiB)")

@@ -20,7 +20,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/Higangssh/hyperbutler/internal/winipc"
 	"golang.org/x/sys/windows"
 
 	"github.com/Higangssh/hyperbutler/internal/daemoncfg"
@@ -32,6 +31,7 @@ import (
 	"github.com/Higangssh/hyperbutler/internal/gui/webview2"
 	"github.com/Higangssh/hyperbutler/internal/mcpserver"
 	"github.com/Higangssh/hyperbutler/internal/schema"
+	"github.com/Higangssh/hyperbutler/internal/winipc"
 )
 
 // The GUI (REQ-UX-011, ADR 0008) is `hyperbutler gui`, in this executable: see
