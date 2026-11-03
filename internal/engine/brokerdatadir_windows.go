@@ -38,7 +38,7 @@ func (e *DataDirError) Unwrap() error { return e.Err }
 // path in it (icacls "<dir>\data.vhdx") could act on whatever another user renames or
 // links there between the check and the run. FixBrokerDataDir works through handles.
 const (
-	fixAccess = "hyperbutler doctor --fix limits the folder and everything in it to you, SYSTEM and Administrators (stop hyperbutler first)"
+	fixAccess = "hyperbutler doctor --fix limits the folder and everything in it to you, SYSTEM and Administrators (stop hyperbutler first); if other accounts could write to it, a new folder is the safe choice (hyperbutler delete, then hyperbutler start --data <a folder that does not exist yet>), as files they opened before stay open to them"
 	fixOwner  = "an administrator makes you the owner of the folder (its Properties, Security, Advanced, Owner), then hyperbutler doctor --fix does the rest; or use a new folder: hyperbutler delete, then hyperbutler start --data <a folder that does not exist yet>"
 	fixOther  = "use a folder on a local NTFS drive that is not a link: hyperbutler delete, then hyperbutler start --data <a folder that does not exist yet>"
 	fixRoot   = "a drive's root cannot be the data folder: hyperbutler delete, then hyperbutler start --data <a folder on that drive>"
@@ -168,6 +168,14 @@ func checkBrokerDataDir(dir string, fix bool) error {
 			err = fmt.Errorf("%s appeared while the fix ran", extra)
 		}
 		return &DataDirError{Dir: dir, Reason: err.Error(), Fix: fixEntry + " (another account may be writing to it)", Err: err}
+	}
+	// A file may have got a second name (a hard link) since it was checked.
+	for _, e := range entries {
+		var bi windows.ByHandleFileInformation
+		if err := windows.GetFileInformationByHandle(e.h, &bi); err != nil || (!e.dir && bi.NumberOfLinks != 1) {
+			err = fmt.Errorf("%s got another name while the fix ran", e.name)
+			return &DataDirError{Dir: dir, Reason: err.Error(), Fix: fixEntry + " (another account may be writing to it)", Err: err}
+		}
 	}
 	// The final check on the held handle: the path is not resolved again.
 	if err := broker.ValidateDataDir(h, sid); err != nil {
@@ -307,7 +315,8 @@ func relOrDot(rel string) string {
 // dirNames lists the names in the directory handle h (not . and ..).
 func dirNames(h windows.Handle) ([]string, error) {
 	var names []string
-	buf := make([]byte, 64<<10)
+	// 8-byte aligned, as the kernel writes FILE_FULL_DIR_INFO with 64-bit fields.
+	buf := unsafe.Slice((*byte)(unsafe.Pointer(&make([]uint64, 8<<10)[0])), 64<<10)
 	class := uint32(windows.FileFullDirectoryRestartInfo)
 	for {
 		err := windows.GetFileInformationByHandleEx(h, class, &buf[0], uint32(len(buf)))
@@ -365,7 +374,9 @@ func hasVMAccount(sd *windows.SECURITY_DESCRIPTOR) bool {
 	}
 	for i := uint32(0); i < uint32(dacl.AceCount); i++ {
 		var ace *windows.ACCESS_ALLOWED_ACE
-		if windows.GetAce(dacl, i, &ace) != nil {
+		if windows.GetAce(dacl, i, &ace) != nil || ace.Header.AceType > 1 {
+			// Only allow and deny ACEs have the SID where ACCESS_ALLOWED_ACE says;
+			// the fix replaces the DACL anyway.
 			continue
 		}
 		if strings.HasPrefix((*windows.SID)(unsafe.Pointer(&ace.SidStart)).String(), "S-1-5-83-") {
@@ -439,4 +450,64 @@ func IsDataDirError(err error) (*DataDirError, bool) {
 	var de *DataDirError
 	ok := errors.As(err, &de)
 	return de, ok
+}
+
+// checkPrivateFile refuses path unless it is a plain file with one link, owned by this
+// user, whose DACL lets in only them, SYSTEM and Administrators (deny ACEs aside): what
+// the engine trusts it to read. disk.json decides whether the guest formats the data
+// disk, so another account able to change it could have the disk wiped.
+func checkPrivateFile(path string) error {
+	tu, err := windows.GetCurrentProcessToken().GetTokenUser()
+	if err != nil {
+		return err
+	}
+	p, err := windows.UTF16PtrFromString(path)
+	if err != nil {
+		return err
+	}
+	h, err := windows.CreateFile(p, fileReadAttributes|windows.READ_CONTROL, windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE|windows.FILE_SHARE_DELETE,
+		nil, windows.OPEN_EXISTING, windows.FILE_FLAG_OPEN_REPARSE_POINT|windows.FILE_FLAG_BACKUP_SEMANTICS, 0)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = windows.CloseHandle(h) }()
+	var bi windows.ByHandleFileInformation
+	if err := windows.GetFileInformationByHandle(h, &bi); err != nil {
+		return err
+	}
+	switch {
+	case bi.FileAttributes&(windows.FILE_ATTRIBUTE_REPARSE_POINT|windows.FILE_ATTRIBUTE_DIRECTORY) != 0:
+		return fmt.Errorf("%s is not a plain file", path)
+	case bi.NumberOfLinks != 1:
+		return fmt.Errorf("%s has %d names (a hard link)", path, bi.NumberOfLinks)
+	}
+	sd, err := windows.GetSecurityInfo(h, windows.SE_FILE_OBJECT, windows.OWNER_SECURITY_INFORMATION|windows.DACL_SECURITY_INFORMATION)
+	if err != nil {
+		return err
+	}
+	if o, _, err := sd.Owner(); err != nil || o == nil || !o.Equals(tu.User.Sid) {
+		return fmt.Errorf("%s is not yours", path)
+	}
+	dacl, _, err := sd.DACL()
+	if err != nil || dacl == nil {
+		return fmt.Errorf("%s has no DACL (everyone may change it)", path)
+	}
+	for i := uint32(0); i < uint32(dacl.AceCount); i++ {
+		var ace *windows.ACCESS_ALLOWED_ACE
+		if err := windows.GetAce(dacl, i, &ace); err != nil {
+			return err
+		}
+		switch ace.Header.AceType {
+		case 1: // access denied
+			continue
+		case 0: // access allowed
+		default:
+			return fmt.Errorf("%s has an ACE of type %d", path, ace.Header.AceType)
+		}
+		sid := (*windows.SID)(unsafe.Pointer(&ace.SidStart))
+		if !sid.Equals(tu.User.Sid) && !sid.IsWellKnown(windows.WinLocalSystemSid) && !sid.IsWellKnown(windows.WinBuiltinAdministratorsSid) {
+			return fmt.Errorf("%s can be opened by another account (%s)", path, sid)
+		}
+	}
+	return nil
 }

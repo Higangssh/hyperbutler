@@ -268,3 +268,24 @@ func TestFixBrokerDataDirHeldOpen(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// TestCheckPrivateFile: disk.json is trusted only while no other account may change it.
+func TestCheckPrivateFile(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "d")
+	if err := MkdirPrivate(dir); err != nil {
+		t.Fatal(err)
+	}
+	p := filepath.Join(dir, "disk.json")
+	if err := os.WriteFile(p, []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := checkPrivateFile(p); err != nil {
+		t.Fatalf("a file in a folder hyperbutler made: %v", err)
+	}
+	if out, err := exec.Command("icacls", p, "/grant", "*S-1-1-0:M").CombinedOutput(); err != nil {
+		t.Fatalf("icacls: %v: %s", err, out)
+	}
+	if err := checkPrivateFile(p); err == nil || !strings.Contains(err.Error(), "another account") {
+		t.Fatalf("a disk.json Everyone may change: %v", err)
+	}
+}

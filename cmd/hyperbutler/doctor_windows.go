@@ -420,6 +420,7 @@ func fixDataDir(in *install, w io.Writer) {
 		return
 	}
 	_, _ = fmt.Fprintf(w, "doctor --fix: limited %s to you, SYSTEM and Administrators\n", dir)
+	_, _ = fmt.Fprintln(w, "doctor --fix: what other accounts opened before keeps working until they close it; if they could write to the folder, a new folder is the safe choice (hyperbutler delete, then hyperbutler start --data <a folder that does not exist yet>)")
 }
 
 // dataDirCheck runs the broker service's data directory check (ADR 0004 rule 2) on dir,

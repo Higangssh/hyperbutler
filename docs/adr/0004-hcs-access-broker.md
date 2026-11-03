@@ -1224,6 +1224,27 @@ image (the broker changes the disk's DACL through the handle the user passed; th
 folder is readable by every VM), and the per-user pipes' DACLs (the service sets them
 itself).
 
+An eighth review (of c79bb24) found the limit of fixing in place:
+
+- **High. A handle opened before the fix with only `WRITE_DAC`, `WRITE_OWNER` or
+  `FILE_WRITE_ATTRIBUTES`** takes no part in sharing, so the fix cannot see it, and it
+  still works after the fix: another account that prepared one can open the folder or
+  `disk.json` again. Windows cannot revoke an open handle, so a folder other accounts
+  could write to cannot be made safe in place. **Decided:** `doctor --fix` stays (it only
+  narrows, and it is enough for the common case, such as a security product's group
+  inherited from `%TEMP%`), and says plainly that for a folder other accounts could
+  write to, a new folder is the safe choice. **And the attack it enabled is closed on
+  its own:** the engine reads `disk.json`, which decides whether the guest formats the
+  disk, only if it is a plain file with one link, owned by the user, whose DACL lets in
+  only them, SYSTEM and Administrators (`checkPrivateFile`, in `prepareDisk`); every
+  folder hyperbutler made since `MkdirPrivate` (2026-10-30, before the first release)
+  passes.
+- **Medium.** Handles opened to read before the fix keep reading. The same limit; the
+  same advice.
+- **Low, fixed.** The fix reads each file's link count again before its final check;
+  `hasVMAccount` reads SIDs only from allow and deny ACEs; the directory buffer is
+  8-byte aligned.
+
 ### Virtual account spike, second and third tries (2026-11-03)
 
 The same switch, with builds that fix each step found before (each time put back to

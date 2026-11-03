@@ -74,7 +74,12 @@ func TestPrepareDisk(t *testing.T) {
 }
 
 func TestPrepareDiskRefusesNonSparse(t *testing.T) {
-	dir := testDir(t)
+	// As hyperbutler makes it (a temp folder may let other accounts in, and disk.json
+	// is read only from a folder that does not).
+	dir := filepath.Join(testDir(t), "data")
+	if err := MkdirPrivate(dir); err != nil {
+		t.Fatal(err)
+	}
 	l := Layout{Home: dir, Data: dir}
 	if err := saveDiskMeta(l, &DiskMeta{SizeBytes: MinDiskSize, BlockSize: 1 << 20}); err != nil {
 		t.Fatal(err)

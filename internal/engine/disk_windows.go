@@ -109,6 +109,13 @@ func prepareDisk(l Layout, size uint64) (*dataDisk, error) {
 		return nil, err
 	}
 	path, tmp := l.DiskPath(), l.DiskPath()+".new"
+	// disk.json says whether the disk is blank, which has the guest format it: it is
+	// read only if no other account could have changed it.
+	if _, err := os.Lstat(l.DiskMetaPath()); err == nil {
+		if err := checkPrivateFile(l.DiskMetaPath()); err != nil {
+			return nil, codeErr(CodeDataDisk, fmt.Errorf("%w; hyperbutler doctor --fix limits the data folder to you, or hyperbutler delete starts over", err))
+		}
+	}
 	meta, merr := LoadDiskMeta(l)
 	_, derr := os.Lstat(path)
 	switch {
