@@ -76,7 +76,7 @@ func ioCompletionLoop(port windows.Handle) {
 				var ioErr error
 				// Internal holds the operation's NTSTATUS; only error and warning codes
 				// (the high bit set) fail it, as GetOverlappedResult decides.
-				if st := windows.NTStatus(op.o.Internal & 0xffffffff); st&0x80000000 != 0 { //nolint:gosec // G115: masked to the NTSTATUS's 32 bits
+				if st := windows.NTStatus(op.o.Internal & 0xffffffff); st&0x80000000 != 0 {
 					ioErr = st.Errno()
 				}
 				op.ch <- ioResult{n: e.bytes, err: ioErr}
