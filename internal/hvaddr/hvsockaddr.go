@@ -11,8 +11,8 @@ import (
 )
 
 // vsockTemplate is the hvsock service GUID that maps to AF_VSOCK ports in a Linux guest:
-// the port number replaces Data1. See the Hyper-V sockets documentation and go-winio's
-// VsockServiceID.
+// the port number replaces Data1. See the Hyper-V sockets documentation ("Integrate
+// with Linux": the VSOCK template GUID).
 var vsockTemplate = guid.GUID{
 	Data1: 0x00000000,
 	Data2: 0xfacb,

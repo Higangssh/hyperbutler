@@ -7,8 +7,8 @@ import (
 )
 
 // TestMain fails the package's tests if any goroutine is still running after
-// they finish (ADR 0003, guardrail 1). The container list's tests open go-winio pipes,
+// they finish (ADR 0003, guardrail 1). The container list's tests open winipc pipes,
 // whose completion-port goroutine lives as long as the process.
 func TestMain(m *testing.M) {
-	leaktest.VerifyTestMain(m, leaktest.IgnoreWinioIOCP)
+	leaktest.VerifyTestMain(m, leaktest.IgnoreIOCP)
 }

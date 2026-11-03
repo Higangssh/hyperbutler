@@ -10,7 +10,7 @@ import (
 )
 
 func TestMain(m *testing.M) {
-	leaktest.VerifyTestMain(m, leaktest.IgnoreWinioIOCP)
+	leaktest.VerifyTestMain(m, leaktest.IgnoreIOCP)
 }
 
 func TestFindNewVM(t *testing.T) {

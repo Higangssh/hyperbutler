@@ -16,11 +16,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/Microsoft/go-winio"
-
 	"github.com/Higangssh/hyperbutler/internal/engine"
 	"github.com/Higangssh/hyperbutler/internal/mcpenv"
 	"github.com/Higangssh/hyperbutler/internal/mcpserver"
+	"github.com/Higangssh/hyperbutler/internal/winipc"
 )
 
 // cmdMCP is `hyperbutler mcp` (REQ-UX-012): a Model Context Protocol server on stdin and
@@ -59,7 +58,7 @@ func cmdMCP(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 		AllowWrite: *allowWrite, AllowDelete: *allowDelete,
 		AllowPersistent: *allowPersistent, AllowRegistries: registries,
 		Host:    &mcpHost{},
-		Dial:    func(ctx context.Context, pipe string) (net.Conn, error) { return winio.DialPipeContext(ctx, pipe) },
+		Dial:    func(ctx context.Context, pipe string) (net.Conn, error) { return winipc.DialPipe(ctx, pipe) },
 		Version: buildVersion(),
 	}
 	return mcpserver.Run(context.Background(), o, io.NopCloser(stdin), nopWriteCloser{stdout})

@@ -1,5 +1,3 @@
-github.com/Microsoft/go-winio v0.6.4 h1:kJF2pamtYCWXf0xAT8sAkwKC0pMl2HYBrRPHAqyUc+g=
-github.com/Microsoft/go-winio v0.6.4/go.mod h1:1xl5JXG4ze/m74GH6Dc4Mwxfc3VL5siRVQjIAlHH07U=
 github.com/containers/gvisor-tap-vsock v0.9.0 h1:wu/FkG0i0ThG1FiloQOx45W99EnZBGn0YXwZ1OD/Kw4=
 github.com/containers/gvisor-tap-vsock v0.9.0/go.mod h1:FioitCwxk4Yo9zLQKRp2IvSdX707iOdVz5KwDu8WItM=
 github.com/golang-jwt/jwt/v5 v5.3.1 h1:kYf81DTWFe7t+1VvL7eS+jKFVWaUnK9cB1qbwn63YCY=

@@ -30,8 +30,7 @@ import (
 	"time"
 
 	"github.com/Higangssh/hyperbutler/internal/guid"
-	"github.com/Microsoft/go-winio"
-	wguid "github.com/Microsoft/go-winio/pkg/guid"
+	"github.com/Higangssh/hyperbutler/internal/winipc"
 	"golang.org/x/sys/windows"
 
 	"github.com/Higangssh/hyperbutler/internal/broker"
@@ -94,13 +93,13 @@ func main() {
 		}
 		p := `\\.\pipe\` + name
 		ctx2, cancel := context.WithTimeout(ctx, 2*time.Second)
-		conn, err := winio.DialPipeContext(ctx2, p)
+		conn, err := winipc.DialPipe(ctx2, p)
 		cancel()
 		if conn != nil {
 			_ = conn.Close()
 		}
 		report(err != nil, "pipe: open another user's endpoint "+short(name), err)
-		l, err := winio.ListenPipe(p, nil)
+		l, err := winipc.ListenPipe(p, nil)
 		if l != nil {
 			_ = l.Close()
 		}
@@ -114,12 +113,12 @@ func main() {
 
 	// 4. Listen in A's VM's place (guest-to-host services).
 	for _, port := range []uint32{1024, 2385} {
-		l, err := winio.ListenHvsock(&winio.HvsockAddr{VMID: wguid.GUID(vmid), ServiceID: wguid.GUID(transport.VsockServiceID(port))})
+		l, err := winipc.ListenHvsock(winipc.HvsockAddr{VMID: vmid, ServiceID: transport.VsockServiceID(port)})
 		if l != nil {
 			_ = l.Close()
 		}
 		report(err != nil, fmt.Sprintf("hvsock: listen for A's VM on port %d", port), err)
-		l, err = winio.ListenHvsock(&winio.HvsockAddr{VMID: wguid.GUID{}, ServiceID: wguid.GUID(transport.VsockServiceID(port))})
+		l, err = winipc.ListenHvsock(winipc.HvsockAddr{VMID: guid.GUID{}, ServiceID: transport.VsockServiceID(port)})
 		if l != nil {
 			_ = l.Close()
 		}
@@ -153,7 +152,7 @@ func catch(d time.Duration, vmid string) {
 	var mu sync.Mutex
 	conns := 0
 	for _, port := range []uint32{1024, 2385} {
-		l, err := winio.ListenHvsock(&winio.HvsockAddr{VMID: wguid.GUID{}, ServiceID: wguid.GUID(transport.VsockServiceID(port))})
+		l, err := winipc.ListenHvsock(winipc.HvsockAddr{VMID: guid.GUID{}, ServiceID: transport.VsockServiceID(port)})
 		if err != nil {
 			report(true, fmt.Sprintf("hvsock: listen for every VM on port %d", port), err)
 			continue

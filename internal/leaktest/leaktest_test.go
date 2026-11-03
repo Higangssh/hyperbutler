@@ -169,7 +169,7 @@ func TestGoleakOnlyHere(t *testing.T) {
 func TestVerifyMainPattern(t *testing.T) {
 	for _, ok := range []string{
 		"func TestMain(m *testing.M) {\n\tleaktest.VerifyTestMain(m)\n}",
-		"func TestMain(m *testing.M) {\n\tleaktest.VerifyTestMain(m, leaktest.IgnoreWinioIOCP)\n}",
+		"func TestMain(m *testing.M) {\n\tleaktest.VerifyTestMain(m, leaktest.IgnoreIOCP)\n}",
 	} {
 		if !verifyMain.MatchString(ok) {
 			t.Errorf("rejected %q", ok)
@@ -178,7 +178,7 @@ func TestVerifyMainPattern(t *testing.T) {
 	for _, bad := range []string{
 		"func TestMain(m *testing.M) {\n\tgoleak.VerifyTestMain(m)\n}",
 		"func TestMain(m *testing.M) {\n\tleaktest.VerifyTestMain(m, goleak.IgnoreCurrent())\n}",
-		"func TestMain(m *testing.M) {\n\tleaktest.VerifyTestMain(m, leaktest.IgnoreWinioIOCP, goleak.IgnoreTopFunction(\"x\"))\n}",
+		"func TestMain(m *testing.M) {\n\tleaktest.VerifyTestMain(m, leaktest.IgnoreIOCP, goleak.IgnoreTopFunction(\"x\"))\n}",
 		"func TestMain(m *testing.M) {\n\tos.Exit(m.Run())\n}",
 		// An unqualified call could be a local look-alike outside this package.
 		"func TestMain(m *testing.M) {\n\tVerifyTestMain(m)\n}",

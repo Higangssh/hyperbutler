@@ -7,17 +7,17 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
 
-	"github.com/Microsoft/go-winio"
-
 	"github.com/Higangssh/hyperbutler/internal/guid"
 	"github.com/Higangssh/hyperbutler/internal/transport"
 	"github.com/Higangssh/hyperbutler/internal/vm"
 	"github.com/Higangssh/hyperbutler/internal/vmtemplate"
+	"github.com/Higangssh/hyperbutler/internal/winipc"
 )
 
 // TestHCSBackendBoots boots a real VM through the HCS backend: the image from
@@ -65,7 +65,7 @@ func TestHCSBackendBoots(t *testing.T) {
 	var con bytes.Buffer
 	if console == "" {
 		// nothing to read
-	} else if c, err := winio.DialPipe(console, nil); err == nil {
+	} else if c, err := dialConsole(console); err == nil {
 		go func() { _, _ = io.Copy(&con, c) }()
 		defer c.Close()
 		defer func() {
@@ -120,4 +120,11 @@ func TestHCSBackendBoots(t *testing.T) {
 	if got, _ := vm.AccountsOnFile(disk); len(got) != 0 {
 		t.Fatalf("VM accounts left on the data disk: %v", got)
 	}
+}
+
+// dialConsole opens the guest's console pipe, waiting up to 2 s while it is busy.
+func dialConsole(name string) (net.Conn, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	return winipc.DialPipe(ctx, name)
 }

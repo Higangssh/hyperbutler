@@ -20,16 +20,24 @@ internal/engine/net_windows.go net/http.Transport 1 DialContext is transport.Hvs
 internal/engine/share_windows.go net/http.Client 3 container events and list from the guest dockerd over hvsock (share pruning): the client and the two functions it is passed to
 internal/engine/share_windows.go net/http.Transport 1 DialContext is transport.HvsockDialer (the guest)
 
+# internal/winipc is the Hyper-V socket layer under every hvsock above (and the named
+# pipes, which are not network APIs). Its sockets are AF_HYPERV only: WSASocket is called
+# with AF_HYPERV and HV_PROTOCOL_RAW, and ws2_32's bind and getsockname take only a
+# SOCKADDR_HV. AF_HYPERV reaches only partitions on this machine (a utility VM, or this
+# host through the loopback VM ID).
+internal/winipc/hvsock_windows.go dll:ws2_32.dll 1 bind and getsockname on AF_HYPERV sockets (SOCKADDR_HV only): VMs on this machine
+internal/winipc/hvsock_windows.go golang.org/x/sys/windows.WSASocket 1 creates AF_HYPERV stream sockets only: VMs on this machine
+
 # One Docker API client (internal/dockerapi) serves every caller on a local named pipe:
 # the CLI's REQ-UX-017 list before a stop or restart (cmd/hyperbutler/containers_windows.go),
 # hyperbutler mcp (REQ-UX-012, cmd/hyperbutler/mcp_windows.go), the GUI (REQ-UX-011,
 # cmd/hyperbutler/gui_windows.go), and hyperbutler import --from-desktop (REQ-UX-023),
 # which reads Docker Desktop's engine and writes hyperbutler's. Its Transport has no Proxy
 # and its DialContext ignores the address: it calls the Dial it is given, which is always
-# winio.DialPipeContext on a local pipe (internal/desktopimport passes Options.Dial, which
+# winipc.DialPipe on a local pipe (internal/desktopimport passes Options.Dial, which
 # cmd/hyperbutler/import_windows.go sets to it).
 internal/dockerapi/dockerapi.go net/http.Client 2 Docker API calls over a local named pipe (hyperbutler's or Docker Desktop's): the Client field and the literal
-internal/dockerapi/dockerapi.go net/http.Transport 1 DialContext is the caller's Dial (winio.DialPipeContext, a local named pipe)
+internal/dockerapi/dockerapi.go net/http.Transport 1 DialContext is the caller's Dial (winipc.DialPipe, a local named pipe)
 
 # The guest network (ADR 0006): the host side of connections and DNS queries the guest
 # makes. Only the guest's (the user's containers' and pulls') traffic goes this way;

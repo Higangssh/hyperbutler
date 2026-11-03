@@ -43,7 +43,7 @@ var (
 
 // Options say where the two engines are.
 type Options struct {
-	// Dial opens a connection to a named pipe on this machine (winio.DialPipeContext).
+	// Dial opens a connection to a named pipe on this machine (winipc.DialPipe).
 	Dial func(ctx context.Context, pipe string) (net.Conn, error)
 	// DockerConfig is the docker CLI's config directory; empty: %DOCKER_CONFIG% or
 	// ~/.docker. Only the desktop-linux context's meta.json is read from it.

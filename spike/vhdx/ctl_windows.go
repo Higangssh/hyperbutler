@@ -15,8 +15,6 @@ import (
 	"time"
 	"unsafe"
 
-	wguid "github.com/Microsoft/go-winio/pkg/guid"
-
 	hguid "github.com/Higangssh/hyperbutler/internal/guid"
 	"golang.org/x/sys/windows"
 
@@ -114,26 +112,26 @@ func hvSocketDevice(sddl string) map[string]any {
 	}}
 }
 
-func runtimeID(system uintptr) (wguid.GUID, error) {
+func runtimeID(system uintptr) (hguid.GUID, error) {
 	props, err := hcsCall("HcsGetComputeSystemProperties", 10*time.Second, func(op uintptr) uintptr {
 		hr, _, _ := procHcsGetProperties.Call(system, op, uintptr(unsafe.Pointer(u16(`{"PropertyTypes":[]}`))))
 		return hr
 	})
 	if err != nil {
-		return wguid.GUID{}, err
+		return hguid.GUID{}, err
 	}
 	var p struct{ RuntimeId string }
 	if err := json.Unmarshal([]byte(props), &p); err != nil {
-		return wguid.GUID{}, err
+		return hguid.GUID{}, err
 	}
-	return wguid.FromString(p.RuntimeId)
+	return hguid.FromString(p.RuntimeId)
 }
 
 // startCtl connects to hyperbutlerd and keeps the connection up.
-func startCtl(system uintptr, start time.Time) (*guestctl.Supervisor, wguid.GUID, func(), error) {
+func startCtl(system uintptr, start time.Time) (*guestctl.Supervisor, hguid.GUID, func(), error) {
 	id, err := runtimeID(system)
 	if err != nil {
-		return nil, wguid.GUID{}, nil, err
+		return nil, hguid.GUID{}, nil, err
 	}
 	logf := func(format string, args ...any) {
 		fmt.Printf("  [%6.1fs] %s\n", time.Since(start).Seconds(), fmt.Sprintf(format, args...))
@@ -141,7 +139,7 @@ func startCtl(system uintptr, start time.Time) (*guestctl.Supervisor, wguid.GUID
 	var lastLog time.Time
 	var lastSteps uint64
 	sup := &guestctl.Supervisor{
-		Dial: guestctl.HvsockDialer(hguid.GUID(id), ctlSecret),
+		Dial: guestctl.HvsockDialer(id, ctlSecret),
 		Logf: logf,
 		Config: guestctl.ClientConfig{OnStatus: func(s guestctl.Status) {
 			// Liveness counts only a guard that is applying the budget and whose step

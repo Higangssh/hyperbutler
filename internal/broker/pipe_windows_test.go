@@ -15,7 +15,7 @@ import (
 	"time"
 	"unsafe"
 
-	"github.com/Microsoft/go-winio"
+	"github.com/Higangssh/hyperbutler/internal/winipc"
 	"golang.org/x/sys/windows"
 
 	"github.com/Higangssh/hyperbutler/internal/broker/proto"
@@ -53,8 +53,8 @@ func dial(t *testing.T, name string) net.Conn {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	// Impersonation level: the broker needs it to identify the caller and to take
-	// handles from it. go-winio's DialPipe connects anonymously.
-	c, err := winio.DialPipeAccessImpLevel(ctx, name, windows.GENERIC_READ|windows.GENERIC_WRITE, winio.PipeImpLevelImpersonation)
+	// handles from it. winipc.DialPipe connects anonymously.
+	c, err := winipc.DialPipeImp(ctx, name, winipc.ImpImpersonation)
 	if err != nil {
 		t.Fatalf("dial: %v", err)
 	}
@@ -62,8 +62,8 @@ func dial(t *testing.T, name string) net.Conn {
 	return c
 }
 
-// isClosed reports whether err means the server closed the connection (go-winio reports
-// a disconnected pipe as ERROR_PIPE_NOT_CONNECTED rather than io.EOF).
+// isClosed reports whether err means the server closed the connection (a disconnected
+// pipe may also read as ERROR_PIPE_NOT_CONNECTED rather than io.EOF).
 func isClosed(err error) bool {
 	return errors.Is(err, io.EOF) || errors.Is(err, windows.ERROR_PIPE_NOT_CONNECTED) || errors.Is(err, windows.ERROR_BROKEN_PIPE)
 }
@@ -255,13 +255,13 @@ func TestPipeIdentifyIsClientToken(t *testing.T) {
 	wantOK(t, roundTrip(t, c, proto.Request{Op: proto.OpStatus}), proto.OpStatus)
 }
 
-// A client that connects with an anonymous security QoS (go-winio's default) gives the
+// A client that connects with an anonymous security QoS (winipc.DialPipe's) gives the
 // broker no identity and is rejected.
 func TestPipeAnonymousClientRejected(t *testing.T) {
 	l, _ := servePipe(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	c, err := winio.DialPipeContext(ctx, l.Name())
+	c, err := winipc.DialPipe(ctx, l.Name())
 	if err != nil {
 		t.Fatal(err)
 	}

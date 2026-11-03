@@ -18,8 +18,8 @@ import (
 	"unsafe"
 
 	"github.com/Higangssh/hyperbutler/internal/guid"
-	"github.com/Microsoft/go-winio"
-	wguid "github.com/Microsoft/go-winio/pkg/guid"
+	"github.com/Higangssh/hyperbutler/internal/hvaddr"
+	"github.com/Higangssh/hyperbutler/internal/winipc"
 	"golang.org/x/sys/windows"
 
 	"github.com/Higangssh/hyperbutler/internal/hcn"
@@ -305,7 +305,7 @@ func runRelay(args []string) error {
 	if err != nil {
 		return err
 	}
-	svc := winio.VsockServiceID(uint32(*port))
+	svc := hvaddr.VsockServiceID(uint32(*port))
 	sd, err := userSD()
 	if err != nil {
 		return err
@@ -330,7 +330,7 @@ func runRelay(args []string) error {
 	}
 	if *bulk > 0 {
 		table := spec.hvsocket["HvSocketConfig"].(map[string]any)["ServiceTable"].(map[string]any)
-		table[winio.VsockServiceID(uint32(*bulk)).String()] = map[string]any{
+		table[hvaddr.VsockServiceID(uint32(*bulk)).String()] = map[string]any{
 			"BindSecurityDescriptor":    sd,
 			"ConnectSecurityDescriptor": sd,
 		}
@@ -349,7 +349,7 @@ func runRelay(args []string) error {
 			}
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
-			return winio.Dial(ctx, &winio.HvsockAddr{VMID: wguid.GUID(vmID), ServiceID: wguid.GUID(winio.VsockServiceID(uint32(*bulk)))})
+			return winipc.DialHvsock(ctx, winipc.HvsockAddr{VMID: vmID, ServiceID: hvaddr.VsockServiceID(uint32(*bulk))})
 		}
 	}
 	return bootAndProbe(spec, 3*time.Minute, *verbose, func(runtimeID string) (func(), error) {
@@ -358,7 +358,7 @@ func runRelay(args []string) error {
 			return nil, fmt.Errorf("runtime id %q: %w", runtimeID, err)
 		}
 		t := time.Now()
-		ln, err := winio.ListenHvsock(&winio.HvsockAddr{VMID: wguid.GUID(vmID), ServiceID: wguid.GUID(svc)})
+		ln, err := winipc.ListenHvsock(winipc.HvsockAddr{VMID: vmID, ServiceID: svc})
 		fmt.Printf("ListenHvsock(%s, %s): %s, err=%v\n", vmID, svc, ms(time.Since(t)), err)
 		if err != nil {
 			return nil, err

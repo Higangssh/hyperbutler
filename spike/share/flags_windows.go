@@ -15,8 +15,7 @@ import (
 	"time"
 
 	"github.com/Higangssh/hyperbutler/internal/guid"
-	"github.com/Microsoft/go-winio"
-	wguid "github.com/Microsoft/go-winio/pkg/guid"
+	"github.com/Higangssh/hyperbutler/internal/winipc"
 
 	"github.com/Higangssh/hyperbutler/internal/share"
 	"github.com/Higangssh/hyperbutler/internal/transport"
@@ -78,7 +77,7 @@ func startSync(ctx context.Context, g *guest, vmid guid.GUID) (*syncTarget, erro
 	}
 	fmt.Printf("sync: wrote %d files on Windows in %v\n", *files, d.Round(time.Millisecond))
 	guestDir := "/mnt/ext4/sync"
-	ln, err := winio.ListenHvsock(&winio.HvsockAddr{VMID: wguid.GUID(vmid), ServiceID: wguid.GUID(transport.VsockServiceID(syncPort))})
+	ln, err := winipc.ListenHvsock(winipc.HvsockAddr{VMID: vmid, ServiceID: transport.VsockServiceID(syncPort)})
 	if err != nil {
 		return nil, err
 	}

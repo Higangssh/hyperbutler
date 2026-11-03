@@ -18,8 +18,9 @@ import (
 	"time"
 	"unsafe"
 
-	"github.com/Microsoft/go-winio"
 	"golang.org/x/sys/windows"
+
+	"github.com/Higangssh/hyperbutler/internal/winipc"
 )
 
 var pipeSeq atomic.Int64
@@ -33,7 +34,7 @@ func dialPipe(t *testing.T, name string) net.Conn {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	c, err := winio.DialPipeContext(ctx, name)
+	c, err := winipc.DialPipe(ctx, name)
 	if err != nil {
 		t.Fatalf("dial %s: %v", name, err)
 	}
@@ -71,7 +72,7 @@ func acceptPair(t *testing.T) (client net.Conn, server *pipeConn, ln net.Listene
 
 func TestPipeSecurityDescriptor(t *testing.T) {
 	_, server, _ := acceptPair(t)
-	sd, err := windows.GetSecurityInfo(server.h, windows.SE_KERNEL_OBJECT,
+	sd, err := windows.GetSecurityInfo(windows.Handle(server.Fd()), windows.SE_KERNEL_OBJECT,
 		windows.OWNER_SECURITY_INFORMATION|windows.DACL_SECURITY_INFORMATION)
 	if err != nil {
 		t.Fatal(err)
@@ -123,15 +124,14 @@ func TestPipeSecurityDescriptor(t *testing.T) {
 func TestPipeRemoteClientsRejected(t *testing.T) {
 	_, server, _ := acceptPair(t)
 	var flags uint32
-	if err := windows.GetNamedPipeInfo(server.h, &flags, nil, nil, nil); err != nil {
+	if err := windows.GetNamedPipeInfo(windows.Handle(server.Fd()), &flags, nil, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	if flags&windows.PIPE_TYPE_MESSAGE == 0 {
-		t.Error("pipe is not in message mode; CloseWrite would not reach go-winio clients")
+		t.Error("pipe is not in message mode; CloseWrite would not reach the Docker CLI")
 	}
-	// PIPE_REJECT_REMOTE_CLIENTS is not reported by GetNamedPipeInfo; it is set by
-	// go-winio's makeServerPipeHandle (FILE_PIPE_REJECT_REMOTE_CLIENTS). Pin the
-	// dependency version so a change there is noticed in review.
+	// PIPE_REJECT_REMOTE_CLIENTS is not reported by GetNamedPipeInfo; winipc's
+	// createInstance sets it (FILE_PIPE_REJECT_REMOTE_CLIENTS) on every instance.
 }
 
 func TestListenPipeRejectsBadNames(t *testing.T) {
@@ -273,12 +273,6 @@ func TestPipeCloseInterruptsCloseWrite(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("CloseWrite still blocked after Close")
 	}
-	leaked.mu.Lock()
-	n := len(leaked.ovs)
-	leaked.mu.Unlock()
-	if n != 0 {
-		t.Fatalf("%d OVERLAPPED leaked", n)
-	}
 }
 
 // TestPipeCloseWriteClientGone: the client disconnects with data still queued; the
@@ -340,7 +334,7 @@ func pipeProxy(t *testing.T, d *fakeDockerd) (name string, stop func() error) {
 	return name, stop
 }
 
-// TestPipeProxyAttach is the full host path the Docker CLI uses: go-winio client on the
+// TestPipeProxyAttach is the full host path the Docker CLI uses: a pipe client on the
 // named pipe, upgrade, CloseWrite on stdin, output after the half-close.
 func TestPipeProxyAttach(t *testing.T) {
 	d := newFakeDockerd(t)
@@ -436,7 +430,7 @@ func TestPipeProxyVanishedClientFreesUpstream(t *testing.T) {
 }
 func TestPipeProxyShutdownNoLeak(t *testing.T) {
 	d := newFakeDockerd(t)
-	// go-winio starts a process-wide I/O completion goroutine on first use and never
+	// winipc starts a process-wide I/O completion goroutine on first use and never
 	// stops it; start it before taking the baseline so the test works in isolation.
 	warm, _, _ := acceptPair(t)
 	warm.Close()

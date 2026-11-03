@@ -557,7 +557,7 @@ not turn the gateway into a proxy. It found 7 issues:
   ADR 0004 broker to gain HCN verbs, and its VPN and coexistence cost has to be recorded.
 - **Dependencies:** gvisor-tap-vsock, gVisor (Apache-2.0), miekg/dns (BSD-3) and their
   transitive modules are recorded in `NOTICE`. `gvproxy` itself is not used.
-  `winio.ListenHvsock` on the VM's runtime ID, declared in the HCS document, needs no
+  `winipc.ListenHvsock` on the VM's runtime ID, declared in the HCS document, needs no
   registry entry and no elevation.
 - **Protocol gaps:** ICMP from containers (`ping`) is limited in user-mode stacks. UDP
   needs per-flow NAT in the stack. Document both in `docs/compat.md`.

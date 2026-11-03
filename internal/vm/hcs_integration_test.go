@@ -129,8 +129,8 @@ func TestIntegrationHvSocketServiceTable(t *testing.T) {
 		t.Fatalf("/_ping: %v %q", err, resp)
 	}
 
-	// A connect to an allowed port with no listener stays pending in go-winio until the
-	// hvsock connect timeout; HvsockDialer must still return when its context ends.
+	// A connect to an allowed port with no listener stays pending until the hvsock
+	// connect timeout; HvsockDialer must still return when its context ends.
 	t0 := time.Now()
 	if _, err := dialOnce(2377, 500*time.Millisecond); !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("pending connect: got %v, want context.DeadlineExceeded", err)

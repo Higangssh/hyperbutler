@@ -21,7 +21,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Microsoft/go-winio"
+	"github.com/Higangssh/hyperbutler/internal/winipc"
 )
 
 func integrationTarget(t *testing.T) HvsockTarget {
@@ -50,7 +50,7 @@ func TestIntegrationHvsockPing(t *testing.T) {
 
 	client := &http.Client{Timeout: 30 * time.Second, Transport: &http.Transport{
 		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-			return winio.DialPipeContext(ctx, name)
+			return winipc.DialPipe(ctx, name)
 		},
 	}}
 	defer client.CloseIdleConnections()

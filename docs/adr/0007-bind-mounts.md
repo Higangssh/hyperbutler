@@ -111,7 +111,7 @@ trees.
 2. **Engine (`internal/engine`). Done** (`share_windows.go`).
    - add `vm.Service{ID: transport.VsockServiceID(2385), BindSDDL: <user-only>}` to the
      fixed service list;
-   - after `RuntimeID`, listen with `winio.ListenHvsock` and run `share.Server.Serve` for
+   - after `RuntimeID`, listen with `winipc.ListenHvsock` and run `share.Server.Serve` for
      each accepted connection (as `gnet.start` does);
    - call `Server.Close` on stop.
 

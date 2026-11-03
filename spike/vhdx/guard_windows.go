@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"errors"
 	"flag"
 	"fmt"
@@ -15,10 +16,9 @@ import (
 	"time"
 	"unsafe"
 
-	"github.com/Microsoft/go-winio"
-
 	"github.com/Higangssh/hyperbutler/internal/guestctl"
 	"github.com/Higangssh/hyperbutler/internal/spaceguard"
+	"github.com/Higangssh/hyperbutler/internal/winipc"
 )
 
 type guestctlSupervisor = guestctl.Supervisor
@@ -155,14 +155,14 @@ func startHostGuard(o *guardOpts, system uintptr, vhdx string, virtSize, vmeta u
 		go g.loop()
 		return g, nil
 	}
-	// The pipe is opened for overlapped I/O (go-winio). With a synchronous handle, Windows
+	// The pipe is opened for overlapped I/O (winipc). With a synchronous handle, Windows
 	// serializes the reader's pending ReadFile and the sender's WriteFile, so budgets
 	// only got through when the guest happened to print a status line.
 	var conn net.Conn
 	var err error
 	for deadline := time.Now().Add(10 * time.Second); ; {
 		timeout := time.Second
-		conn, err = winio.DialPipe(guardPipe, &timeout)
+		conn, err = dialPipeTimeout(guardPipe, timeout)
 		if err == nil {
 			break
 		}
@@ -446,4 +446,11 @@ func freeBytesErr(dir string) (uint64, error) {
 		return 0, e
 	}
 	return free, nil
+}
+
+// dialPipeTimeout dials the pipe name, waiting up to d while every instance is busy.
+func dialPipeTimeout(name string, d time.Duration) (net.Conn, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), d)
+	defer cancel()
+	return winipc.DialPipe(ctx, name)
 }

@@ -17,12 +17,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Microsoft/go-winio"
-
 	"github.com/Higangssh/hyperbutler/internal/desktopimport"
 	"github.com/Higangssh/hyperbutler/internal/engine"
 	"github.com/Higangssh/hyperbutler/internal/mcpserver"
 	"github.com/Higangssh/hyperbutler/internal/redact"
+	"github.com/Higangssh/hyperbutler/internal/winipc"
 )
 
 // cmdImport is `hyperbutler import --from-desktop` (REQ-UX-023): copy images and
@@ -86,7 +85,7 @@ func cmdImport(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 		return err
 	}
 	im, err := desktopimport.Open(ctx, desktopimport.Options{
-		Dial:       func(ctx context.Context, pipe string) (net.Conn, error) { return winio.DialPipeContext(ctx, pipe) },
+		Dial:       func(ctx context.Context, pipe string) (net.Conn, error) { return winipc.DialPipe(ctx, pipe) },
 		SourcePipe: *fromPipe,
 		TargetPipe: target,
 		Home:       home,

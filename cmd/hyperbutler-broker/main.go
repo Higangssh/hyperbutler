@@ -117,8 +117,8 @@ func run(o options) error {
 		// A release build boots only the image it was built with.
 		return errors.New("-allow-unpinned-image is for development builds only")
 	}
-	// No debug endpoint: its pipe listener is go-winio's, which the broker may not link
-	// (ADR 0004 rule 10).
+	// No debug endpoint: its pipe listener is internal/transport's, which the broker does
+	// not link, so its surface stays the verbs of ADR 0004 rule 10.
 	if _, err := diag.Start(o.dcfg); err != nil {
 		return err
 	}

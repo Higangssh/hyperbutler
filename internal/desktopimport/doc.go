@@ -13,7 +13,7 @@
 //	res, err := im.Run(ctx, plan, desktopimport.Selection{AllImages: true}, func(e desktopimport.Event) { ... })
 //	ok := res.OK()
 //
-// Options.Dial opens a named pipe (winio.DialPipeContext); Options.TargetPipe is
+// Options.Dial opens a named pipe (winipc.DialPipe); Options.TargetPipe is
 // hyperbutler's pipe (state.json's); Options.Home its state directory (default
 // engine.DefaultHome). Discover and Open fail with errors wrapping
 // ErrDesktopNotRunning ("start Docker Desktop first"), ErrTargetNotRunning or

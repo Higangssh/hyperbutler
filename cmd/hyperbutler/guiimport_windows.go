@@ -9,11 +9,10 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/Microsoft/go-winio"
-
 	"github.com/Higangssh/hyperbutler/internal/desktopimport"
 	"github.com/Higangssh/hyperbutler/internal/gui/bridge"
 	"github.com/Higangssh/hyperbutler/internal/mcpserver"
+	"github.com/Higangssh/hyperbutler/internal/winipc"
 )
 
 // guiImporter is the window's Docker Desktop import (REQ-UX-023): a thin adapter of
@@ -47,7 +46,7 @@ func (g *guiImporter) open(ctx context.Context) (*desktopimport.Importer, error)
 		return nil, bridge.Coded(bridge.CodeEngineBusy, err)
 	}
 	im, err := desktopimport.Open(ctx, desktopimport.Options{
-		Dial:       func(ctx context.Context, pipe string) (net.Conn, error) { return winio.DialPipeContext(ctx, pipe) },
+		Dial:       func(ctx context.Context, pipe string) (net.Conn, error) { return winipc.DialPipe(ctx, pipe) },
 		SourcePipe: g.sourcePipe,
 		TargetPipe: target,
 	})

@@ -10,11 +10,10 @@ import (
 	"golang.org/x/sys/windows"
 )
 
-// pipeClient is the client end of a broker pipe, with only x/sys: the broker package may
-// not link go-winio (ADR 0004 rule 10). It reuses pipeInstance's overlapped I/O; Close
-// from another goroutine ends an operation in progress at once (through the stop event)
-// and closes the handle only after that operation returned, as the kernel owns its
-// OVERLAPPED until then.
+// pipeClient is the client end of a broker pipe, with only x/sys (ADR 0004 rule 10). It
+// reuses pipeInstance's overlapped I/O; Close from another goroutine ends an operation
+// in progress at once (through the stop event) and closes the handle only after that
+// operation returned, as the kernel owns its OVERLAPPED until then.
 type pipeClient struct {
 	name string
 	io   sync.Mutex // held for each Read or Write

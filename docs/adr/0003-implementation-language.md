@@ -67,8 +67,9 @@ budget or leaks, and the problem can be traced to the language rather than to th
 Why Go here specifically:
 1. **The Windows container stack is Go.** Microsoft's high-level HCS wrapper (`hcsshim`), its
    hvsock and named-pipe library (`go-winio`), containerd's Windows support and moby are Go.
-   hyperbutler uses `go-winio` and reads `hcsshim`'s schema and behaviour as its reference. It
-   calls `computecore.dll` and `computenetwork.dll` directly, not through hcsshim.
+   hyperbutler reads `hcsshim`'s schema and behaviour and `go-winio`'s I/O as its reference
+   (its own `internal/winipc` replaced go-winio on 2026-11-03). It calls `computecore.dll`
+   and `computenetwork.dll` directly, not through hcsshim.
    - Rust has raw bindings for the same DLLs in Microsoft's `windows-sys` crate. There is
      also a small `hcs-rs` crate.
    - So this is a **weak** reason. Rust would lose the reference implementation in the same
@@ -155,7 +156,7 @@ For 0.1 that trade favours Go. Two things would re-open it:
   - Goroutine-leak checks (1): **in place.** Every test package's `TestMain` calls
     `internal/leaktest` (goleak), and a meta-test fails CI if a test package lacks it,
     passes any exception other than `leaktest.Ignore*`, or imports goleak directly. The
-    one exception is go-winio's process-lifetime I/O completion goroutine. The pending
+    one exception is `internal/winipc`'s process-lifetime I/O completion goroutine. The pending
     list is empty: `cmd/hyperbutler-dev` has its `TestMain`. A Linux CI job runs the guest
     packages' tests under goleak and `-race`. Gap: the goroutine loops in
     `guest/cmd/hyperbutlerd` and `guest/cmd/spaceguard` (`_linux.go`) have no tests yet, so

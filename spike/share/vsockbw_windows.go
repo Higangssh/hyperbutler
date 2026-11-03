@@ -5,8 +5,7 @@ import (
 	"io"
 
 	"github.com/Higangssh/hyperbutler/internal/guid"
-	"github.com/Microsoft/go-winio"
-	wguid "github.com/Microsoft/go-winio/pkg/guid"
+	"github.com/Higangssh/hyperbutler/internal/winipc"
 
 	"github.com/Higangssh/hyperbutler/internal/transport"
 )
@@ -15,7 +14,7 @@ var vsockBW = flagBool("vsockbw", false, "measure raw hvsock bandwidth and laten
 
 func runVsockBW(g *guest, vmid guid.GUID) {
 	for _, sb := range []int{0, 256 << 10, 1 << 20} {
-		ln, err := winio.ListenHvsock(&winio.HvsockAddr{VMID: wguid.GUID(vmid), ServiceID: wguid.GUID(transport.VsockServiceID(syncPort))})
+		ln, err := winipc.ListenHvsock(winipc.HvsockAddr{VMID: vmid, ServiceID: transport.VsockServiceID(syncPort)})
 		if err != nil {
 			fmt.Println("vsockbw:", err)
 			return
@@ -54,7 +53,7 @@ func runVsockBW(g *guest, vmid guid.GUID) {
 
 func runVsockPar(g *guest, vmid guid.GUID) {
 	for _, n := range []int{1, 2, 4, 8} {
-		ln, err := winio.ListenHvsock(&winio.HvsockAddr{VMID: wguid.GUID(vmid), ServiceID: wguid.GUID(transport.VsockServiceID(syncPort))})
+		ln, err := winipc.ListenHvsock(winipc.HvsockAddr{VMID: vmid, ServiceID: transport.VsockServiceID(syncPort)})
 		if err != nil {
 			fmt.Println("vsockpar:", err)
 			return

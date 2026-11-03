@@ -16,7 +16,7 @@ import (
 	"time"
 	"unsafe"
 
-	"github.com/Microsoft/go-winio"
+	"github.com/Higangssh/hyperbutler/internal/winipc"
 	"golang.org/x/sys/windows"
 
 	"github.com/Higangssh/hyperbutler/internal/diag"
@@ -114,7 +114,7 @@ func NewDiagClient(pipe string) *DiagClient {
 		Timeout: 90 * time.Second, // longer than a capped pprof profile
 		Transport: &http.Transport{
 			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-				return winio.DialPipeContext(ctx, pipe)
+				return winipc.DialPipe(ctx, pipe)
 			},
 			MaxIdleConns:    1,
 			IdleConnTimeout: time.Minute,

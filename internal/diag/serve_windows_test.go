@@ -16,7 +16,7 @@ import (
 	"time"
 	"unsafe"
 
-	"github.com/Microsoft/go-winio"
+	"github.com/Higangssh/hyperbutler/internal/winipc"
 	"golang.org/x/sys/windows"
 
 	"github.com/Higangssh/hyperbutler/internal/transport"
@@ -33,7 +33,7 @@ func pipeClient(name string) *http.Client {
 		Timeout: 10 * time.Second,
 		Transport: &http.Transport{
 			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-				return winio.DialPipeContext(ctx, name)
+				return winipc.DialPipe(ctx, name)
 			},
 		},
 	}
@@ -168,7 +168,7 @@ func TestCloseInterruptsProfile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	conn, err := winio.DialPipe(name, nil)
+	conn, err := dialTimeout(name, 2*time.Second)
 	if err != nil {
 		s.Close()
 		t.Fatal(err)
@@ -218,7 +218,7 @@ func TestConnLimit(t *testing.T) {
 		return resp.Body.Close()
 	}
 	for i := 0; i < MaxConns; i++ {
-		c, err := winio.DialPipe(name, nil)
+		c, err := dialTimeout(name, 2*time.Second)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -227,11 +227,11 @@ func TestConnLimit(t *testing.T) {
 			t.Fatalf("conn %d: %v", i, err)
 		}
 	}
-	// go-winio creates the next pipe instance only when Accept is called, and Accept is
-	// not called while every slot is held, so a further client cannot even connect. If
-	// a future go-winio queued instances, the request must still go unanswered.
+	// winipc keeps one pipe instance waiting between Accept calls, and Accept is not
+	// called while every slot is held, so a further client may connect but must go
+	// unanswered.
 	short := 500 * time.Millisecond
-	if extra, err := winio.DialPipe(name, &short); err == nil {
+	if extra, err := dialTimeout(name, short); err == nil {
 		held = append(held, extra)
 		if err := extra.SetDeadline(time.Now().Add(short)); err != nil {
 			t.Fatal(err)
@@ -249,7 +249,7 @@ func TestConnLimit(t *testing.T) {
 
 	held[0].Close()
 	held = held[1:]
-	c, err := winio.DialPipe(name, nil)
+	c, err := dialTimeout(name, 2*time.Second)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -262,4 +262,11 @@ func TestConnLimit(t *testing.T) {
 // testServe starts the endpoint on name as the engine does, with transport's pipe.
 func testServe(name string) (*Server, error) {
 	return Start(Config{DebugPipe: name, Listen: transport.ListenPipe})
+}
+
+// dialTimeout dials the pipe name, waiting up to d while every instance is busy.
+func dialTimeout(name string, d time.Duration) (net.Conn, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), d)
+	defer cancel()
+	return winipc.DialPipe(ctx, name)
 }

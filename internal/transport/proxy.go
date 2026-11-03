@@ -189,9 +189,9 @@ type unlockedCloseWriter interface {
 
 var errNoHalfClose = errors.New("transport: connection does not support CloseWrite")
 
-// halfConn serializes CloseWrite against Close. Some CloseWrite implementations (hvsock
-// shutdown in go-winio) read the OS handle without synchronization while Close clears
-// it, so the two must never overlap. Read and Write are not wrapped; Close unblocks them.
+// halfConn serializes CloseWrite against Close, for connections whose CloseWrite is not
+// safe to overlap with Close (winipc's are, but other net.Conn implementations need not
+// be). Read and Write are not wrapped; Close unblocks them.
 type halfConn struct {
 	conn   net.Conn
 	mu     sync.Mutex

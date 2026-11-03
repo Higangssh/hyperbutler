@@ -30,8 +30,7 @@ import (
 	"time"
 
 	"github.com/Higangssh/hyperbutler/internal/guid"
-	"github.com/Microsoft/go-winio"
-	wguid "github.com/Microsoft/go-winio/pkg/guid"
+	"github.com/Higangssh/hyperbutler/internal/winipc"
 
 	"github.com/Higangssh/hyperbutler/guest/cpio"
 	"github.com/Higangssh/hyperbutler/internal/engine"
@@ -444,7 +443,7 @@ func streamConsole(pipe, logPath string) {
 	var err error
 	for i := 0; i < 100; i++ {
 		d := 2 * time.Second
-		c, err = winio.DialPipe(pipe, &d)
+		c, err = dialPipeTimeout(pipe, d)
 		if err == nil {
 			break
 		}
@@ -499,7 +498,7 @@ type event struct {
 }
 
 func acceptGuest(vmid guid.GUID, timeout time.Duration) (*guest, error) {
-	ln, err := winio.ListenHvsock(&winio.HvsockAddr{VMID: wguid.GUID(vmid), ServiceID: wguid.GUID(transport.VsockServiceID(ctlPort))})
+	ln, err := winipc.ListenHvsock(winipc.HvsockAddr{VMID: vmid, ServiceID: transport.VsockServiceID(ctlPort)})
 	if err != nil {
 		return nil, err
 	}
@@ -613,4 +612,11 @@ func (g *guest) bench(args map[string]string) (map[string]float64, error) {
 		}
 	}
 	return m, nil
+}
+
+// dialPipeTimeout dials the pipe name, waiting up to d while every instance is busy.
+func dialPipeTimeout(name string, d time.Duration) (net.Conn, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), d)
+	defer cancel()
+	return winipc.DialPipe(ctx, name)
 }

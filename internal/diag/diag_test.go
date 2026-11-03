@@ -12,7 +12,7 @@ import (
 )
 
 func TestMain(m *testing.M) {
-	leaktest.VerifyTestMain(m, leaktest.IgnoreWinioIOCP)
+	leaktest.VerifyTestMain(m, leaktest.IgnoreIOCP)
 }
 
 func TestParseMemoryLimit(t *testing.T) {

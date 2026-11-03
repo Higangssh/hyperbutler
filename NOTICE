@@ -14,20 +14,20 @@ and license.
   gvisor-tap-vsock Authors. The code was written for hyperbutler; no file was copied.
 - internal/netstack/frame: the 4-byte big-endian length prefix is gvisor-tap-vsock's
   "qemu" stream protocol (same source and license).
+- internal/winipc follows the design of go-winio v0.6.4 (one goroutine draining a
+  process-wide I/O completion port; a pipe's first instance created with
+  NtCreateNamedPipeFile and no read or write access, so it holds the name but takes no
+  client; binding a dialing AF_HYPERV socket to its target before ConnectEx),
+  https://github.com/microsoft/go-winio, MIT License, Copyright (c) 2015 Microsoft. The
+  code was written for hyperbutler; no file was copied.
 
 Third-party Go modules linked into hyperbutler binaries:
-
-- github.com/Microsoft/go-winio v0.6.4
-  https://github.com/microsoft/go-winio
-  MIT License, Copyright (c) 2015 Microsoft.
-  Used by internal/transport for the named-pipe listener and AF_HYPERV (hvsock)
-  dialer. The vsock service GUID template in internal/transport/hvsockaddr.go is the
-  value documented by Microsoft and used by go-winio's VsockServiceID.
 
 - golang.org/x/sys v0.49.0
   https://cs.opensource.google/go/x/sys
   BSD 3-Clause License, Copyright 2009 The Go Authors.
-  Used by internal/transport for Windows API calls (security descriptors, pipe I/O),
+  Used by internal/winipc (named pipes and AF_HYPERV sockets, overlapped I/O) and
+  internal/transport for Windows API calls (security descriptors, pipe I/O),
   by guest/cmd/netfwd for the TAP device and AF_VSOCK,
   and by internal/diag and bench/soak (process handle count, process snapshots).
 

@@ -3,7 +3,6 @@ module github.com/Higangssh/hyperbutler
 go 1.27
 
 require (
-	github.com/Microsoft/go-winio v0.6.4
 	github.com/containers/gvisor-tap-vsock v0.9.0
 	github.com/jchv/go-webview2 v0.0.0-20260205173254-56598839c808
 	github.com/miekg/dns v1.1.73
@@ -27,4 +26,5 @@ require (
 	golang.org/x/oauth2 v0.35.0 // indirect
 	golang.org/x/sync v0.23.0 // indirect
 	golang.org/x/time v0.15.0 // indirect
+	golang.org/x/tools v0.50.0 // indirect
 )

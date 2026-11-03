@@ -309,8 +309,8 @@ Since M2 it also installs itself as a Windows service and runs as one (see "Serv
   impersonating after the first frame, because a pipe cannot be impersonated before data
   has been read from it.
 - Anonymous, AppContainer, restricted and below-medium-integrity tokens are rejected.
-- Clients must connect at impersonation level. go-winio's default dial is anonymous and is
-  rejected.
+- Clients must connect at impersonation level. An anonymous dial (`winipc.DialPipe`'s
+  default) is rejected.
 - State is keyed by SID. Each user may have at most 2 concurrent connections
   (`MaxConnsPerUser`).
 
@@ -1075,8 +1075,9 @@ lease; the sweep; the MSI's conditions. Its findings:
    pipe client is its own (`pipeclient_windows.go`, on the same overlapped I/O as its
    server); `vmtemplate` no longer imports `guestctl`; `diag` takes its listener from
    the caller, and the broker has no debug pipe. The broker binary now links only the
-   standard library, `x/sys` and hyperbutler's packages. The engine still uses go-winio
-   for its hvsock and pipe I/O (the data path); replacing that too is later work.
+   standard library, `x/sys` and hyperbutler's packages. The engine still used go-winio
+   for its hvsock and pipe I/O (the data path) until `internal/winipc` replaced it
+   (2026-11-03); no hyperbutler binary links go-winio now.
 7. **Info. The sweep runs once, at start.** Accepted: a VM ends with the broker's handle
    (`ShouldTerminateOnLastHandleClosed`).
 8. **Info. The hvsock dialer sends no secret when it is zero.** Kept: the bench paths of

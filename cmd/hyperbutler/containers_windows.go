@@ -10,10 +10,9 @@ import (
 	"net"
 	"time"
 
-	"github.com/Microsoft/go-winio"
-
 	"github.com/Higangssh/hyperbutler/internal/dockerapi"
 	"github.com/Higangssh/hyperbutler/internal/engine"
+	"github.com/Higangssh/hyperbutler/internal/winipc"
 )
 
 // REQ-UX-017: before a stop or restart of the VM or of dockerd, say which running
@@ -48,7 +47,7 @@ const containerAPITimeout = 5 * time.Second
 func listRunningContainers(ctx context.Context, pipe string) ([]RunningContainer, error) {
 	ctx, cancel := context.WithTimeout(ctx, containerAPITimeout)
 	defer cancel()
-	d := dockerapi.New(func(ctx context.Context) (net.Conn, error) { return winio.DialPipeContext(ctx, pipe) })
+	d := dockerapi.New(func(ctx context.Context) (net.Conn, error) { return winipc.DialPipe(ctx, pipe) })
 	defer d.Close()
 	return dockerapi.ListRunning(ctx, d)
 }

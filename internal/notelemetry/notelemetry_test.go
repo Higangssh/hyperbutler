@@ -33,7 +33,6 @@ var shippedBinaries = map[string][]string{
 // whether it starts anything at init, dials, or reports anywhere).
 var reviewedModules = map[string]string{
 	"github.com/Higangssh/hyperbutler":       "this repository; its own code is scanned by ScanGo",
-	"github.com/Microsoft/go-winio":          "named pipes, hvsock and GUIDs: local IPC only",
 	"github.com/containers/gvisor-tap-vsock": "only its tap.LinkEndpoint (the gateway NIC) is used; it dials nothing",
 	"github.com/miekg/dns":                   "DNS message packing for the guest's DNS forwarder; its client (Exchange, Client) is a reported API",
 	"golang.org/x/sys":                       "system call wrappers; connect and socket calls are reported by ScanGo",

@@ -20,7 +20,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/Microsoft/go-winio"
+	"github.com/Higangssh/hyperbutler/internal/winipc"
 	"golang.org/x/sys/windows"
 
 	"github.com/Higangssh/hyperbutler/internal/daemoncfg"
@@ -258,7 +258,7 @@ func (h *guiHost) Docker(ctx context.Context) (*dockerapi.Client, error) {
 	case err != nil:
 		return nil, bridge.Coded(bridge.CodeEngineBusy, err)
 	}
-	return dockerapi.New(func(ctx context.Context) (net.Conn, error) { return winio.DialPipeContext(ctx, pipe) }), nil
+	return dockerapi.New(func(ctx context.Context) (net.Conn, error) { return winipc.DialPipe(ctx, pipe) }), nil
 }
 
 // engineArgs are the CLI arguments of an engine operation.
