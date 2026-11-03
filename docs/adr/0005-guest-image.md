@@ -651,7 +651,9 @@ their sources go into the bundle like every other origin.
   `init` gains only the netfilter `modprobe` above.
 - `linux-virt` moved from 6.18.58-r0 to 6.18.59-r0: Alpine had dropped 6.18.58-r0 from
   its mirrors, so a clean build could not fetch the old pin (the case the release's
-  input mirror exists for).
+  input mirror exists for). On 2026-11-03 it moved again, to 6.18.60-r0 (upstream
+  2026-10-30, in v3.24), before v0.1.0: stable point releases carry security fixes, and
+  the old pin would be dropped next.
 - `build.ps1` now checks signatures too, on every build: after the SHA-256 pins it streams
   the lock, the pinned files and `fetch-verify.sh` into the digest-pinned Alpine container
   (`--network=none`), which runs the CI check (`apk verify`, `.PKGINFO` name) and returns

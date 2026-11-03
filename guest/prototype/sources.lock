@@ -6,13 +6,15 @@
 # data segment). The key matched both https://alpinelinux.org/keys/ and the aports git
 # copy. linux-virt moved from 6.18.58-r0 (the kernel of ADR 0002, whose vmlinuz-virt was
 # byte-identical to the v3.24 netboot one) to 6.18.59-r0 on 2026-10-31: Alpine had dropped
-# 6.18.58-r0 from the mirrors, so a clean build could no longer fetch it.
+# 6.18.58-r0 from the mirrors, so a clean build could no longer fetch it. It moved to
+# 6.18.60-r0 (upstream 2026-10-30) on 2026-11-03, before v0.1.0, so the release is on the
+# current stable point release and is not caught by the next mirror drop.
 #
 # The pin alone is not the trust anchor: every build checks the signatures again. The CI
 # build runs `apk verify` on each package (scripts/guest-image/fetch-verify.sh), and so
 # does build.ps1, in the digest-pinned Alpine container it already uses for mkfs.erofs.
 # A release accepts nothing else (strict mode); ADR 0005, "Docker Engine from Alpine".
-linux-virt     73ad4774ca26c196103a00e2fb8d28ed02de4c08c11fad96e903da03dcb085f4 https://dl-cdn.alpinelinux.org/alpine/v3.24/main/x86_64/linux-virt-6.18.59-r0.apk
+linux-virt     3ff658cf5aada14687238527f48526cef7a75ac8c673fc597f3a65791c86a25e https://dl-cdn.alpinelinux.org/alpine/v3.24/main/x86_64/linux-virt-6.18.60-r0.apk
 ca-certificates-bundle bb008f6d214b6af7576324659856fb63dc8dcb4373f8345ff706388696f1254d https://dl-cdn.alpinelinux.org/alpine/v3.24/main/x86_64/ca-certificates-bundle-20261020-r0.apk
 busybox-static b0d6cfc585d7fdd12df359cc5d38d5e45894e9e9e78c4059eb41577d022ec734 https://dl-cdn.alpinelinux.org/alpine/v3.24/main/x86_64/busybox-static-1.37.0-r31.apk
 # Docker Engine (Moby) and what it runs, from community (main for libseccomp). These are
