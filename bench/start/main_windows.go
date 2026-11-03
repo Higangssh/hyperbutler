@@ -90,7 +90,8 @@ func run() error {
 		// Never stop an engine this tool did not start: -home may name someone's install.
 		return fmt.Errorf("the installation in %s is already running; stop it first (start is measured with no VM running)", c.hb.Home)
 	}
-	firstBoot, uptime := bootMarker(c.hb.Home)
+	firstBoot, uptime, markBoot := bootMarker(c.hb.Home)
+	defer markBoot()
 	logf("host uptime %s; first start since boot as far as this installation knows: %v", uptime.Round(time.Second), firstBoot)
 
 	var runs []Run
@@ -132,18 +133,22 @@ func foreignNote(f string) string {
 }
 
 // bootMarker reports whether this is the first time the tool runs since the host
-// booted (by a marker file in home holding the boot time), and the uptime.
-func bootMarker(home string) (bool, time.Duration) {
-	up := windows.DurationSinceBoot()
+// booted (by a marker file in home holding the boot time), and the uptime. mark writes
+// the marker; call it after the runs. It never creates home: a home made before
+// hyperbutler makes it inherits its parent's ACL, which the broker refuses (a folder
+// under %TEMP% can carry a group's Modify grant), so the marker waits for the first
+// start to create it.
+func bootMarker(home string) (first bool, up time.Duration, mark func()) {
+	up = windows.DurationSinceBoot()
 	boot := time.Now().Add(-up).Truncate(time.Minute).Unix()
 	p := filepath.Join(home, "bench-start-boot")
 	old, _ := os.ReadFile(p) //nolint:gosec // G304: the path comes from the operator's own flags or this tool's work directory
-	first := strings.TrimSpace(string(old)) != strconv.FormatInt(boot, 10)
-	if first {
-		_ = os.MkdirAll(home, 0o700)
-		_ = os.WriteFile(p, []byte(strconv.FormatInt(boot, 10)), 0o600)
+	first = strings.TrimSpace(string(old)) != strconv.FormatInt(boot, 10)
+	return first, up, func() {
+		if first {
+			_ = os.WriteFile(p, []byte(strconv.FormatInt(boot, 10)), 0o600)
+		}
 	}
-	return first, up
 }
 
 // once measures one start, then stops the engine and waits for its VM to go away.

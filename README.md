@@ -31,7 +31,7 @@ and lets the stock `docker` CLI and Docker Compose talk to it. No WSL, no Docker
 
 - **No WSL.** The VM runs on Hyper-V's Host Compute Service. WSL can stay off, and its updates
   never touch hyperbutler.
-- **Light.** 361 MiB of memory at idle with the broker service, a 120 MB download, 197 MB
+- **Light.** 319 MiB of memory at idle with the broker service, a 120 MB download, 197 MB
   installed.
 - **Disk space comes back by itself.** Delete images and the data disk shrinks. No
   compaction, no admin step.
@@ -56,7 +56,7 @@ script, one engine at a time ([method and raw data](docs/compare-docker-desktop.
 | Download | **120 MB** | 592 MB (+351 MB WSL) |
 | Installed size | **197 MB** | about 6.7 GB |
 | Start until a container runs | **2.5 s** | 5.6 s |
-| Idle memory, VM running | **322 MiB** (361 MiB with the broker service, preview.2) | 1.7–2.7 GB |
+| Idle memory, VM running | **319 MiB** (with the broker service, v0.1.0-rc.1) | 1.7–2.7 GB |
 | Disk 5 min after deleting ~5 GB of images | **1.5 GiB**, given back automatically | 6.8 GiB, kept |
 | VM memory 2 min after a 2 GiB workload | **320 MiB** | 1.3 GB |
 | Bind mount from `C:\`: `stat` / read / write 2000 small files | **0.04 / 0.4 / 1.8 s** | 2.3 / 3.4 / 4.9 s |

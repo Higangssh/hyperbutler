@@ -268,6 +268,11 @@ soak runs separately and its result goes here.
   and then runs that guard; it logs the guard's starting readings to the Application
   event log. To verify with the release candidate: the broker's private working set at
   idle, and any "working set emptied" events.
+  2026-11-03, v0.1.0-rc.1 from its MSI (upgrade over preview.2), same bench: median
+  **319.3 MiB (335 MB)**, PASS (engine 20.5, vmmem 286.9, vmwp 5.0, broker service
+  6.9 MiB). Verified: the service logged "working-set guard started (partial rule true;
+  trimmed first true: private working set 430080, …, data section 114688)", and the
+  broker went from 38.8 to 6.9 MiB.
 - [ ] REQ-START-001 is re-measured with the release image (20 runs, warm), and the first
   start after a host reboot is reported separately. 2026-11-01, same build and image:
   median 1.48 s, p95 1.49 s over 20 runs (1 warm-up discarded), stop median 1.28 s, PASS.
@@ -283,6 +288,9 @@ soak runs separately and its result goes here.
   from the previous run's last report of the same data disk, which cannot change while
   no VM runs; with no such report for an existing disk it still waits. Re-measure with
   the release candidate.
+  2026-11-03, v0.1.0-rc.1 from its MSI, through the broker service: median **1.44 s**,
+  p95 1.45 s over 20 runs (1 warm-up discarded), stop median 1.56 s, PASS. The 0.42 s
+  wait is gone; the start through the broker now matches the in-process 1.48 s.
 
 **ADR 0006 (guest networking)**
 - [ ] Every row of the ADR 0006 acceptance gate reads "Yes" ("Gate results"), or ADR 0006
