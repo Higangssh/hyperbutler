@@ -8,6 +8,7 @@ import (
 	"io"
 	"net"
 	"os"
+	"runtime"
 	"sync"
 	"syscall"
 	"time"
@@ -346,6 +347,8 @@ func connectHvsock(ctx context.Context, f *file, addr HvsockAddr) (*HvsockConn, 
 		}
 		return 0, e
 	})
+	// The kernel may read sc until ConnectEx completes; do has waited for that.
+	runtime.KeepAlive(sc)
 	f.wmu.Unlock()
 	f.end()
 	if errors.Is(err, errCanceled) {

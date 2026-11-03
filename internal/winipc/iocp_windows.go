@@ -7,6 +7,7 @@ import (
 	"net"
 	"os"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 	"unsafe"
@@ -305,6 +306,10 @@ func (f *file) flush() error {
 	return err
 }
 
+// testHookPending, if set (by tests only), runs between issuing an operation that went
+// pending and waiting for it.
+var testHookPending atomic.Pointer[func()]
+
 // errCanceled is do's result when its cancel channel closed first.
 var errCanceled = errors.New("winipc: operation canceled")
 
@@ -332,9 +337,26 @@ func (f *file) do(op *ioOp, d *deadline, cancel <-chan struct{}, start func(o *w
 		// (FILE_SKIP_COMPLETION_PORT_ON_SUCCESS) or on failure.
 		return n, err
 	}
+	if h := testHookPending.Load(); h != nil {
+		(*h)()
+	}
 	var why error
 	select {
 	case r := <-op.ch:
+		if !f.aborted(r.err) {
+			return f.result(op, r)
+		}
+		// Canceled by someone else: a Close that started before this select (its
+		// CancelIoEx covers every operation on the handle), or, on hvsock, an abort
+		// reported for the same reason. Report why, as the cancel paths below do.
+		switch {
+		case isDone(f.closing):
+			return r.n, net.ErrClosed
+		case isDone(expired):
+			return r.n, os.ErrDeadlineExceeded
+		case isDone(cancel):
+			return r.n, errCanceled
+		}
 		return f.result(op, r)
 	case <-f.closing:
 		why = net.ErrClosed
@@ -345,14 +367,30 @@ func (f *file) do(op *ioOp, d *deadline, cancel <-chan struct{}, start func(o *w
 	}
 	_ = windows.CancelIoEx(f.h, &op.o)
 	r := <-op.ch
-	// Test the raw status. The hvsock provider completes a canceled receive with
-	// STATUS_CONNECTION_ABORTED (Winsock: WSAECONNABORTED) rather than STATUS_CANCELLED,
-	// although the connection stays usable; it must not read as a broken connection.
-	if errors.Is(r.err, windows.ERROR_OPERATION_ABORTED) ||
-		(f.socket && errors.Is(r.err, windows.ERROR_CONNECTION_ABORTED)) {
+	if f.aborted(r.err) {
 		return r.n, why
 	}
 	return f.result(op, r)
+}
+
+// aborted reports whether a completion status means the operation was canceled. The
+// hvsock provider completes a canceled receive with STATUS_CONNECTION_ABORTED (Winsock:
+// WSAECONNABORTED) rather than STATUS_CANCELLED, although the connection stays usable;
+// it must not read as a broken connection. The raw status is tested, before result maps
+// it to a Winsock code.
+func (f *file) aborted(err error) bool {
+	return errors.Is(err, windows.ERROR_OPERATION_ABORTED) ||
+		(f.socket && errors.Is(err, windows.ERROR_CONNECTION_ABORTED))
+}
+
+// isDone reports whether ch is closed; a nil channel never is.
+func isDone(ch <-chan struct{}) bool {
+	select {
+	case <-ch:
+		return true
+	default:
+		return false
+	}
 }
 
 // result turns a completion into do's return values. A failed socket operation's

@@ -499,7 +499,6 @@ func (c *PipeConn) CloseWrite() error {
 		f.end()
 		return c.opErr("close", wrapSyscall("FlushFileBuffers", err))
 	}
-	c.writeClosed = true
 	// The zero-byte write may stay pending until the peer reads it; it must not hold up
 	// CloseWrite (or the write lock) for that long, so it completes in the background.
 	// It uses its own ioOp, and close cancels it.
@@ -511,8 +510,10 @@ func (c *PipeConn) CloseWrite() error {
 		if err != nil {
 			return c.opErr("close", wrapSyscall("WriteFile", err))
 		}
+		c.writeClosed = true
 		return nil
 	}
+	c.writeClosed = true
 	go func() {
 		defer f.end()
 		select {
