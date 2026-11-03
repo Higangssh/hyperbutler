@@ -1244,5 +1244,6 @@ DACL change on it) done as the caller, while impersonating, during the request t
 the caller's token, with the handle then kept for HCS; or the folder made to admit the
 service SID too, which rule 2 forbids today. That is a design change, not a fix; the
 question HCS answers (does it accept the account through the group) is still not
-reached. The service stays SYSTEM for v0.1.0 (Implementation decision 1); option C is
-open for after it.
+reached. Decided by the owner (2026-11-03): the service stays SYSTEM for v0.1.0
+(Implementation decision 1); option C, with the user-file opens done as the caller, is
+work for after v0.1.0, as a hardening of the same design (users see no difference).
