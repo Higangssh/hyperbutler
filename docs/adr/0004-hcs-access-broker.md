@@ -1081,11 +1081,8 @@ A second review of those fixes (the same day) found no way past the requirement,
 
 1. **Medium. The printed fix kept ACEs set on the folder itself** (an explicit grant to
    Everyone survived `/inheritance:r /grant:r`, so the user who followed it saw the same
-   refusal). **Fixed:** the fix is two commands, `icacls "<dir>" /reset /T /C` (the folder
-   and what is in it back to what they inherit, the data disk's own ACEs included), then
-   the inheritance cut and the three grants. `TestCheckBrokerDataDir` runs them on a
-   folder that inherits Everyone, one with Everyone set on itself and its disk, and one
-   whose disk alone has it.
+   refusal). Fixed first with `icacls "<dir>" /reset /T /C` before the grants, which a
+   third review found worse (below); now as described there.
 2. **Medium. `--data D:\` was accepted,** and the fix then printed `"D:\"` (cmd reads
    `\"` as an escaped quote) and `/setowner ... /T` for the whole drive. **Fixed:**
    `data.dir` refuses a drive's root; the fix drops a trailing backslash and gives no
@@ -1101,6 +1098,31 @@ A second review of those fixes (the same day) found no way past the requirement,
 6. **Info, open.** The client side still ends the lease if the host sleeps while a
    status request waits for its reply (its I/O deadline expires on wake): a window of
    milliseconds every 10 s. To be tried with a real sleep before the soak.
+
+A third review (of 7ea09fc):
+
+1. **High. `/T` follows junctions.** `icacls /reset /T` and `/setowner /T` recurse
+   through a junction in the folder, and the folder they are printed for is one other
+   users could write to: one of them puts a junction to a system folder in it, and an
+   administrator following the owner fix makes the user the owner of what is behind it.
+   **Fixed:** no command recurses. They act on the folder and `data.vhdx` only: cut the
+   folder's inheritance and grant the three accounts (which closes it at once), remove
+   the grants set on the folder itself for other accounts (`/remove:g *SID`, from the
+   folder's own DACL), reset the disk to inherit that; the owner fix sets the owner of
+   both, by name. A folder with a link in it gets no command, only words.
+   `TestCheckBrokerDataDir` makes one with a junction to a folder outside and checks
+   that no command is given.
+2. **Medium. Between `/reset` and the grants the folder inherited its parent's access**,
+   and stayed so if the second command failed. **Fixed** by the order above: the first
+   command closes it. The test checks the state after the first command.
+3. **Low. `$` and the backtick change a path in PowerShell.** **Fixed:** the commands
+   are for cmd and say so; a path with `%`, `$` or `` ` `` gets no command.
+4. **Low. A `data.dir` of `D:\` saved by an earlier preview** still loads, and the fix
+   printed `icacls "D:"`. **Fixed:** a drive's root gets words only (delete, then
+   start with a folder).
+5. **Low, open.** A disk the user cannot open with `WRITE_DAC` (owned by
+   Administrators, no grant to the user) is refused by the service with no fix: the
+   engine's check cannot open it either.
 
 ### Virtual account spike (M5, first try, 2026-11-03)
 
