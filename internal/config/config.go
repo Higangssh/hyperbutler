@@ -200,6 +200,11 @@ var Keys = []*Key{
 			if strings.HasPrefix(abs, `\\`) || runtime.GOOS == "windows" && !drivePath(abs) {
 				return fmt.Errorf("data.dir %s: the data disk must be on a local volume (a path such as D:\\hyperbutler)", v)
 			}
+			if vol := filepath.VolumeName(abs); vol != "" && strings.EqualFold(filepath.Clean(abs), vol+`\`) {
+				// The folder is hyperbutler's alone (the broker service wants it private,
+				// ADR 0004 rule 2); a drive's root is everyone's.
+				return fmt.Errorf("data.dir %s: a drive's root; use a folder on it (a path such as %shyperbutler)", v, vol+`\`)
+			}
 			// Windows drops trailing spaces and dots from path elements, so such a name
 			// would not be the directory it says.
 			for _, el := range strings.FieldsFunc(abs, func(r rune) bool { return r == '\\' || r == '/' }) {

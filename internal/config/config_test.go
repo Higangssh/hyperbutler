@@ -153,7 +153,7 @@ func TestSetRefuses(t *testing.T) {
 		{"memory", "512MiB"}, {"memory", "4.5GiB"}, {"memory", "lots"}, {"memory", ""}, {"memory", "2000000MiB"},
 		{"cpus", "0"}, {"cpus", "257"}, {"cpus", "13"}, {"cpus", "two"}, {"cpus", "1.5"},
 		{"disk.size", "1GiB"}, {"disk.size", "65GiB1"}, {"disk.size", "17TiB"}, {"disk.size", "4294967297"},
-		{"data.dir", ""}, {"data.dir", `\\server\share`}, {"data.dir", "a\x00b"},
+		{"data.dir", ""}, {"data.dir", `\\server\share`}, {"data.dir", "a\x00b"}, {"data.dir", `D:\`}, {"data.dir", `c:/`},
 		{"pipe", `C:\pipe`}, {"pipe", `\\.\pipe\`}, {"pipe", `\\server\pipe\x`},
 		{"context.manage", "maybe"},
 		{"hostGateway.enabled", "maybe"}, {"hostGateway.ports", "0"}, {"hostGateway.ports", "65536"}, {"hostGateway.ports", "9-8"}, {"hostGateway.ports", "80;443"},

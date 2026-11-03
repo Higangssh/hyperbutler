@@ -202,7 +202,11 @@ func startService(f serviceFlags, log serviceLog) (_ broker.ServiceInstance, err
 		}
 		// The state directory's DACL admits the service account only. Those of runs that
 		// ended without a stop (a crash, the stop limit) go first.
-		removeStaleStateDirs(serviceTempDir(), self.User.Sid, log.Infof)
+		if base, ok := systemTempDir(); ok {
+			// Only there: users cannot write to it. The fallback (%TEMP%) lets them
+			// make a folder of that name and swap it for a junction mid-check.
+			removeStaleStateDirs(base, self.User.Sid, log.Infof)
+		}
 		state, err := privateDir(serviceTempDir(), self.User.Sid.String())
 		if err != nil {
 			return nil, err
@@ -236,13 +240,21 @@ func startService(f serviceFlags, log serviceLog) (_ broker.ServiceInstance, err
 // serviceTempDir is %SystemRoot%\SystemTemp, which only SYSTEM and Administrators may
 // use, where Windows has it; otherwise the temporary directory.
 func serviceTempDir() string {
+	if d, ok := systemTempDir(); ok {
+		return d
+	}
+	return os.TempDir()
+}
+
+// systemTempDir is %SystemRoot%\SystemTemp, if it exists (Windows 11 has it).
+func systemTempDir() (string, bool) {
 	if win, err := windows.GetWindowsDirectory(); err == nil {
 		d := filepath.Join(win, "SystemTemp")
 		if fi, err := os.Lstat(d); err == nil && fi.IsDir() {
-			return d
+			return d, true
 		}
 	}
-	return os.TempDir()
+	return "", false
 }
 
 // stateDirName matches the names privateDir makes.

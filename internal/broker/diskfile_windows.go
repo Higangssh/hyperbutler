@@ -47,6 +47,18 @@ type diskInfo struct {
 	deviceType uint32
 }
 
+// CheckDataDisk checks the data disk below the open data directory dir as the service
+// does before it starts a VM (checkDiskInfo), for the caller sid, and closes it again.
+// The engine runs it, as the user, to say why the service refused a disk. The error's
+// reason is caller-safe text.
+func CheckDataDisk(dir windows.Handle, sid string) error {
+	d, err := openDataDisk(dir, DataDiskName, sid)
+	if err != nil {
+		return err
+	}
+	return d.Close()
+}
+
 // openDataDisk opens name below the directory handle dir with OBJ_DONT_REPARSE and
 // FILE_OPEN_REPARSE_POINT, as a non-directory file, and checks it with checkDiskInfo
 // for the caller sid. The handle shares read and write (HCS opens the disk for both)

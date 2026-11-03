@@ -211,6 +211,42 @@ func TestPipeEndToEnd(t *testing.T) {
 	}
 }
 
+// On a real pipe, the lease's connection outlives IdleTimeout, and Close still ends its
+// read, which has no deadline, and with it the VM.
+func TestPipeLeaseReadAndClose(t *testing.T) {
+	me := currentSID(t)
+	s, be := newTestServer(t, Config{AllowedSIDs: []string{me}, Logf: t.Logf, IdleTimeout: 200 * time.Millisecond})
+	l, err := ListenPipe(PipeConfig{Name: testPipeName(t), ClientSID: me, Instances: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- s.Serve(l) }()
+	c := dial(t, l.Name())
+	f, err := os.Open(goodDir(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantOK(t, roundTrip(t, c, proto.Request{Op: proto.OpSetDataLocation, Handle: uint64(f.Fd())}), proto.OpSetDataLocation)
+	f.Close()
+	wantOK(t, roundTrip(t, c, proto.Request{Op: proto.OpStart}), proto.OpStart)
+	time.Sleep(700 * time.Millisecond)
+	if r := roundTrip(t, c, proto.Request{Op: proto.OpStatus}); r.State != proto.StateRunning {
+		t.Fatalf("status after the idle wait: %+v", r)
+	}
+	start := time.Now()
+	l.Close()
+	if err := <-done; err != nil && !errors.Is(err, ErrListenerClosed) {
+		t.Fatal(err)
+	}
+	if d := time.Since(start); d > 2*time.Second {
+		t.Fatalf("Close took %v with the lease's read waiting", d)
+	}
+	if be.Stops[me] != 1 {
+		t.Fatalf("after Close: %d stops, want 1", be.Stops[me])
+	}
+}
+
 func TestPipeIdentifyIsClientToken(t *testing.T) {
 	l, _ := servePipe(t)
 	c := dial(t, l.Name())

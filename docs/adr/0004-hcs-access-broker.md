@@ -1075,3 +1075,28 @@ lease; the sweep; the MSI's conditions. Its findings:
 
 Measurements still to record: `bench/noadmin` through the installed service, and
 REQ-MEM-001 with the broker process counted.
+
+A second review of those fixes (the same day) found no way past the requirement, and:
+
+1. **Medium. The printed fix kept ACEs set on the folder itself** (an explicit grant to
+   Everyone survived `/inheritance:r /grant:r`, so the user who followed it saw the same
+   refusal). **Fixed:** the fix is two commands, `icacls "<dir>" /reset /T /C` (the folder
+   and what is in it back to what they inherit, the data disk's own ACEs included), then
+   the inheritance cut and the three grants. `TestCheckBrokerDataDir` runs them on a
+   folder that inherits Everyone, one with Everyone set on itself and its disk, and one
+   whose disk alone has it.
+2. **Medium. `--data D:\` was accepted,** and the fix then printed `"D:\"` (cmd reads
+   `\"` as an escaped quote) and `/setowner ... /T` for the whole drive. **Fixed:**
+   `data.dir` refuses a drive's root; the fix drops a trailing backslash and gives no
+   command for a path with `%` (cmd would expand it).
+3. **Low. A refused data disk had no reason or fix.** **Fixed:** on `CodeDiskRejected`
+   the engine runs the disk check (`broker.CheckDataDisk`) itself, and doctor's
+   `data-dir` checks the disk too; a disk it cannot open (the VM runs) is not reported.
+4. **Low. The stale state folders' cleanup in the `%TEMP%` fallback** could be raced
+   with a junction there, which users may create. **Fixed:** the cleanup runs only in
+   `%SystemRoot%\SystemTemp`.
+5. **Test gap.** `TestPipeLeaseReadAndClose`: on a real pipe the lease outlives
+   `IdleTimeout` and `Close` still ends its read and the VM.
+6. **Info, open.** The client side still ends the lease if the host sleeps while a
+   status request waits for its reply (its I/O deadline expires on wake): a window of
+   milliseconds every 10 s. To be tried with a real sleep before the soak.

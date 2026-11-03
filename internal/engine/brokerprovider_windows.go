@@ -20,8 +20,8 @@ import (
 )
 
 // brokerPoll is how often the broker provider asks for the VM's status: it notices a
-// VM that stopped on its own, and keeps the connection (the lease) inside the broker's
-// idle timeout.
+// VM that stopped on its own. The broker sets no idle limit on the lease's connection
+// (a host's sleep would end it), so the poll is not what keeps the lease.
 const brokerPoll = 10 * time.Second
 
 // brokerShutdownPoll replaces brokerPoll once a shutdown was asked for, so the engine
@@ -159,6 +159,11 @@ func (p *brokerProvider) Boot(ctx context.Context, bs BootSpec) (_ Lease, _ Runt
 	}
 	r, err := c.Start(req)
 	if err != nil {
+		if broker.IsCode(err, proto.CodeDiskRejected) {
+			if de, ok := IsDataDirError(CheckBrokerDataDir(p.dataDir)); ok {
+				return nil, RuntimeInfo{}, codeErr(CodeBrokerRefused, fmt.Errorf("engine: %w", de))
+			}
+		}
 		return nil, RuntimeInfo{}, brokerError(fmt.Errorf("engine: the broker did not start the VM: %w", err))
 	}
 	if r.State == proto.StateStopped || r.VMID == ([16]byte{}) {
