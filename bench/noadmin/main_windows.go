@@ -89,7 +89,7 @@ func record(args []string) ([]check, error) {
 	if *status == "" || *out == "" {
 		return nil, errors.New("record: -status and -out are required")
 	}
-	b, err := os.ReadFile(*status) //nolint:gosec // G304: the file the person running the bench names
+	b, err := os.ReadFile(*status)
 	if err != nil {
 		return nil, err
 	}
@@ -139,7 +139,7 @@ func probe(args []string) ([]check, error) {
 		return nil, errors.New("probe: -expect must be allow or deny")
 	}
 	allow := *expect == "allow"
-	b, err := os.ReadFile(*ownerPath) //nolint:gosec // G304: the file the person running the bench names
+	b, err := os.ReadFile(*ownerPath)
 	if err != nil {
 		return nil, err
 	}
