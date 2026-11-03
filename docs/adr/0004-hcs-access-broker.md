@@ -1124,6 +1124,23 @@ A third review (of 7ea09fc):
    Administrators, no grant to the user) is refused by the service with no fix: the
    engine's check cannot open it either.
 
+A fourth review (of cf65e18 and f27e997) found, all fixed:
+
+- **Medium. A data disk that is a hard link** (the service refuses it: two links) got
+  `/setowner` and `/reset` on its name, which act on the other name's file. Now a disk
+  that is not a plain file with one link gets no command, only `hyperbutler delete`.
+- **Medium. A conditional ACE** (which a standard user may set) is refused by the
+  service, and icacls cannot remove it: the fix printed commands that left it. Now words
+  only (the Security settings).
+- **Low. Symbolic links** (Developer Mode lets users make them): every command has
+  `/L`, so icacls acts on a link, not its target.
+- **Low.** `!` (delayed expansion) joins `% $ `` ` ``; accounts are named by SID in the
+  commands (a computer or user name may hold `%`); the commands are one `&&` chain, so a
+  failed one stops the rest (a disk reset must not run while the folder is still
+  open); the owner fix says "a cmd started with Run as administrator".
+- **Info.** As a service account the service never removes stale state folders (only
+  in SystemTemp); they stay in its `%TEMP%`.
+
 ### Virtual account spike (M5, first try, 2026-11-03)
 
 The installed service (v0.1.0-preview.3) was switched to `NT SERVICE\hyperbutler-broker`

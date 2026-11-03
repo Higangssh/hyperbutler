@@ -48,12 +48,13 @@ func CheckBrokerDataDir(dir string) error {
 	sid := tu.User.Sid.String()
 	if err := broker.ValidateDataDir(h, sid); err != nil {
 		reason := strings.TrimPrefix(err.Error(), "broker: data location: ")
-		fix, cmds := dataDirFix(dir, reason, accountName(tu.User.Sid), diskExists(dir), hasLinks(dir), foreignGrants(dir, tu.User.Sid))
+		disk, diskLinked := diskExists(dir)
+		fix, cmds := dataDirFix(dir, reason, "*"+sid, disk, diskLinked, hasLinks(dir), foreignGrants(dir, tu.User.Sid))
 		return &DataDirError{Dir: dir, Reason: reason, Fix: fix, Commands: cmds, Err: err}
 	}
 	// The disk in it, once there is one: its own ACEs (set on it directly, or kept from a
 	// copy) are checked too, and the folder's fix resets them.
-	if !diskExists(dir) {
+	if disk, _ := diskExists(dir); !disk {
 		return nil
 	}
 	if err := broker.CheckDataDisk(h, sid); err != nil {
@@ -73,16 +74,40 @@ func CheckBrokerDataDir(dir string) error {
 			return &DataDirError{Dir: dir, Reason: "its data disk " + reason, Err: err,
 				Fix: "hyperbutler delete removes the data disk (and the images and containers in it); the next start makes a new one"}
 		}
-		fix, cmds := dataDirFix(dir, why, accountName(tu.User.Sid), true, hasLinks(dir), foreignGrants(dir, tu.User.Sid))
+		_, diskLinked := diskExists(dir)
+		fix, cmds := dataDirFix(dir, why, "*"+sid, true, diskLinked, hasLinks(dir), foreignGrants(dir, tu.User.Sid))
 		return &DataDirError{Dir: dir, Reason: "its data disk " + reason, Fix: fix, Commands: cmds, Err: err}
 	}
 	return nil
 }
 
-// diskExists reports whether dir holds the data disk, as a plain file.
-func diskExists(dir string) bool {
-	fi, err := os.Lstat(filepath.Join(dir, broker.DataDiskName))
-	return err == nil && fi.Mode().IsRegular()
+// diskExists reports whether dir holds the data disk. linked is true when the name is
+// there but not as a plain file with one link (a reparse point or a hard link, which a
+// fix acting on the name would act on another file through).
+func diskExists(dir string) (exists, linked bool) {
+	p := filepath.Join(dir, broker.DataDiskName)
+	fi, err := os.Lstat(p)
+	if err != nil {
+		return false, false
+	}
+	if !fi.Mode().IsRegular() {
+		return true, true
+	}
+	u, err := windows.UTF16PtrFromString(p)
+	if err != nil {
+		return true, true
+	}
+	h, err := windows.CreateFile(u, windows.FILE_READ_ATTRIBUTES, windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE|windows.FILE_SHARE_DELETE,
+		nil, windows.OPEN_EXISTING, windows.FILE_FLAG_OPEN_REPARSE_POINT|windows.FILE_FLAG_BACKUP_SEMANTICS, 0)
+	if err != nil {
+		return true, true
+	}
+	defer func() { _ = windows.CloseHandle(h) }()
+	var bi windows.ByHandleFileInformation
+	if err := windows.GetFileInformationByHandle(h, &bi); err != nil {
+		return true, true
+	}
+	return true, bi.NumberOfLinks != 1 || bi.FileAttributes&windows.FILE_ATTRIBUTE_REPARSE_POINT != 0
 }
 
 // diskRuleReason reports whether reason is one of checkDiskInfo's.
@@ -97,15 +122,17 @@ func diskRuleReason(reason string) bool {
 }
 
 // dataDirFix says how to make dir pass, for the reason the check gave, and returns the
-// commands it names, for cmd. They act on the folder and its data disk only, never
-// recursively (icacls /T follows junctions out of the folder): the folder's inheritance
+// commands it names, for cmd, which the fix joins with && so a failed one stops the rest.
+// They act on the folder and its data disk only, never recursively (icacls /T follows
+// junctions out of the folder) and never through a link (/L): the folder's inheritance
 // is cut and only the three accounts the service admits are granted, which closes it at
 // once; then the grants set on the folder itself for other accounts (foreign) are
 // removed; then the disk, if there is one, is reset to inherit that (its own ACEs go). The
-// owner's fix makes the user the owner of both first. No command is given for a path
-// cmd or PowerShell would change (% $ `), a drive's root, or a folder with links in it
-// (disk tells whether there is a data disk; links whether the folder holds a link).
-func dataDirFix(dir, reason, account string, disk, links bool, foreign []string) (string, []string) {
+// owner's fix makes the user the owner of both first. Accounts are named by SID (sid,
+// *S-1-...): a name may hold characters cmd expands. No command is given for a path a
+// shell would change (% ! $ `), a drive's root, a folder with links in it, a disk that
+// is a link (diskLinked), or a conditional ACE, which icacls cannot remove.
+func dataDirFix(dir, reason, sid string, disk, diskLinked, links bool, foreign []string) (string, []string) {
 	dir = strings.TrimRight(dir, `\`)
 	access := strings.HasPrefix(reason, "DACL") || strings.HasPrefix(reason, "has a NULL DACL") || strings.HasPrefix(reason, "has no DACL")
 	owner := strings.HasPrefix(reason, "owner is not the caller")
@@ -116,10 +143,14 @@ func dataDirFix(dir, reason, account string, disk, links bool, foreign []string)
 	switch {
 	case vol == "" || strings.EqualFold(filepath.Clean(dir+`\`), vol+`\`):
 		return "a drive's root cannot be the data folder: hyperbutler delete, then hyperbutler start --data <a folder on that drive>", nil
-	case strings.ContainsAny(dir, "%$`"):
-		return words(owner) + " (the folder's name has % or $ or `, which a shell would expand, so no command is given)", nil
+	case strings.ContainsAny(dir, "%!$`"):
+		return words(owner) + " (the folder's name has % ! $ or `, which a shell may expand, so no command is given)", nil
 	case links:
 		return words(owner) + " (the folder holds a link, a junction or a symbolic link, which a fix must not follow: remove it first; no command is given)", nil
+	case diskLinked:
+		return "its data disk is a link (a hard link, junction or symbolic link), which a fix must not act through: hyperbutler delete, then hyperbutler start makes a new one", nil
+	case strings.HasPrefix(reason, "DACL has an ACE of type"):
+		return words(owner) + " (it holds an ACE icacls cannot remove, such as a conditional one: remove it in the folder's Security settings, Advanced; no command is given)", nil
 	}
 	var cmds []string
 	targets := []string{dir}
@@ -128,10 +159,10 @@ func dataDirFix(dir, reason, account string, disk, links bool, foreign []string)
 	}
 	if owner {
 		for _, t := range targets {
-			cmds = append(cmds, fmt.Sprintf(`icacls "%s" /setowner "%s"`, t, account))
+			cmds = append(cmds, fmt.Sprintf(`icacls "%s" /setowner %s /L`, t, sid))
 		}
 	}
-	cmds = append(cmds, fmt.Sprintf(`icacls "%s" /inheritance:r /grant:r "%s:(OI)(CI)F" "*S-1-5-18:(OI)(CI)F" "*S-1-5-32-544:(OI)(CI)F"`, dir, account))
+	cmds = append(cmds, fmt.Sprintf(`icacls "%s" /inheritance:r /grant:r "%s:(OI)(CI)F" "*S-1-5-18:(OI)(CI)F" "*S-1-5-32-544:(OI)(CI)F" /L`, dir, sid))
 	if len(foreign) > 0 {
 		// Grants set on the folder itself stay through the above; they were there
 		// before, so taking them out second opens no window.
@@ -139,15 +170,16 @@ func dataDirFix(dir, reason, account string, disk, links bool, foreign []string)
 		for i, f := range foreign {
 			r[i] = "*" + f
 		}
-		cmds = append(cmds, fmt.Sprintf(`icacls "%s" /remove:g %s`, dir, strings.Join(r, " ")))
+		cmds = append(cmds, fmt.Sprintf(`icacls "%s" /remove:g %s /L`, dir, strings.Join(r, " ")))
 	}
 	if disk {
-		cmds = append(cmds, fmt.Sprintf(`icacls "%s" /reset`, targets[1]))
+		cmds = append(cmds, fmt.Sprintf(`icacls "%s" /reset /L`, targets[1]))
 	}
+	line := strings.Join(cmds, " && ")
 	if owner {
-		return fmt.Sprintf("an administrator runs, in cmd: %s", strings.Join(cmds, ", then ")), cmds
+		return "an administrator runs, in a cmd started with Run as administrator: " + line, cmds
 	}
-	return fmt.Sprintf("limit its access to you, SYSTEM and Administrators, in cmd: %s", strings.Join(cmds, ", then ")), cmds
+	return "limit its access to you, SYSTEM and Administrators, in cmd: " + line, cmds
 }
 
 // words is the fix without commands.
@@ -202,17 +234,6 @@ func hasLinks(dir string) bool {
 		}
 	}
 	return false
-}
-
-// accountName is sid's DOMAIN\name, or the SID in icacls's *S-1-... form.
-func accountName(sid *windows.SID) string {
-	if a, d, _, err := sid.LookupAccount(""); err == nil && a != "" {
-		if d != "" {
-			return d + `\` + a
-		}
-		return a
-	}
-	return "*" + sid.String()
 }
 
 // IsDataDirError reports whether err is a refusal CheckBrokerDataDir explains.

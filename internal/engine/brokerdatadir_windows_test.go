@@ -106,6 +106,31 @@ func TestCheckBrokerDataDir(t *testing.T) {
 		}
 	}
 
+	// hardlinked: the disk is a second name of a file outside; the fix must not act on it.
+	hardlinked := mkdir(filepath.Join(gp, "hardlinked"))
+	other := filepath.Join(t.TempDir(), "other.bin")
+	if err := os.WriteFile(other, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	icacls(other, "/grant", "*S-1-1-0:R")
+	if out, err := exec.Command("cmd", "/c", "mklink", "/H", filepath.Join(hardlinked, "data.vhdx"), other).CombinedOutput(); err != nil {
+		t.Fatalf("mklink /H: %v: %s", err, out)
+	}
+	if de, ok := IsDataDirError(CheckBrokerDataDir(hardlinked)); !ok || de.Commands != nil || !strings.Contains(de.Fix, "hyperbutler delete") {
+		t.Fatalf("a hard-linked disk: %+v", de)
+	}
+	// conditional: an ACE icacls cannot remove gets words only.
+	conditional := mkdir(filepath.Join(parent, "conditional"))
+	ps := `$a = Get-Acl -LiteralPath $env:HB_DIR; $a.SetSecurityDescriptorSddlForm($a.Sddl + '(XA;OICI;FA;;;BU;(Member_of {SID(BA)}))'); Set-Acl -LiteralPath $env:HB_DIR -AclObject $a`
+	cmd := exec.Command("powershell", "-NoProfile", "-Command", ps)
+	cmd.Env = append(os.Environ(), "HB_DIR="+conditional)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("Set-Acl: %v: %s", err, out)
+	}
+	if de, ok := IsDataDirError(CheckBrokerDataDir(conditional)); !ok || de.Commands != nil || !strings.HasPrefix(de.Reason, "DACL has an ACE of type") {
+		t.Fatalf("a conditional ACE: %+v", de)
+	}
+
 	// linked: a refused folder with a junction to a folder outside gets no command.
 	linked := mkdir(filepath.Join(gp, "linked"))
 	outside := t.TempDir()
@@ -123,32 +148,47 @@ func TestCheckBrokerDataDir(t *testing.T) {
 	}
 }
 
-// TestDataDirFix: no recursion; a trailing backslash dropped; no command for a drive's
-// root, a path a shell would expand, or a folder with links; the owner's fix covers the
-// folder and its disk.
+// TestDataDirFix: no recursion and no following links (/L); accounts by SID; one &&
+// chain; a trailing backslash dropped; no command for a drive's root, a path a shell
+// would expand, a folder with links, a linked disk or a conditional ACE; the owner's
+// fix covers the folder and its disk, in an elevated cmd.
 func TestDataDirFix(t *testing.T) {
-	const acl = "DACL grants access to another account"
-	if _, cmds := dataDirFix(`D:\data\`, acl, `PC\me`, false, false, nil); len(cmds) != 1 || strings.Contains(cmds[0], `\"`) {
+	const acl, me = "DACL grants access to another account", "*S-1-5-21-1-2-3-1001"
+	fix, cmds := dataDirFix(`D:\data\`, acl, me, false, false, false, nil)
+	if len(cmds) != 1 || strings.Contains(cmds[0], `\"`) || !strings.Contains(cmds[0], me+":") {
 		t.Errorf("trailing backslash: %q", cmds)
 	}
-	for _, d := range []string{`D:\`, `D:`, `D:\100%done`, `D:\my$data`, "D:\\back`tick"} {
-		if fix, cmds := dataDirFix(d, acl, `PC\me`, true, false, nil); cmds != nil || strings.Contains(fix, "icacls") {
+	if !strings.HasSuffix(fix, cmds[0]) {
+		t.Errorf("fix %q", fix)
+	}
+	for _, d := range []string{`D:\`, `D:`, `D:\100%done`, `D:\my$data`, "D:\back`tick", `D:\a!b`} {
+		if fix, cmds := dataDirFix(d, acl, me, true, false, false, nil); cmds != nil || strings.Contains(fix, "icacls") {
 			t.Errorf("%s: %q %q", d, fix, cmds)
 		}
 	}
-	if _, cmds := dataDirFix(`D:\h`, acl, `PC\me`, true, true, nil); cmds != nil {
-		t.Errorf("links: %q", cmds)
+	for name, c := range map[string]struct {
+		reason            string
+		diskLinked, links bool
+	}{
+		"links":       {acl, false, true},
+		"linked disk": {acl, true, false},
+		"conditional": {"DACL has an ACE of type 9", false, false},
+	} {
+		if _, cmds := dataDirFix(`D:\h`, c.reason, me, true, c.diskLinked, c.links, nil); cmds != nil {
+			t.Errorf("%s: %q", name, cmds)
+		}
 	}
-	fix, cmds := dataDirFix(`D:\h`, "owner is not the caller", `PC\me`, true, false, nil)
-	if len(cmds) != 4 || !strings.Contains(cmds[0], `/setowner`) || !strings.Contains(cmds[1], `data.vhdx" /setowner`) || !strings.Contains(fix, "administrator") {
+	fix, cmds = dataDirFix(`D:\h`, "owner is not the caller", me, true, false, false, []string{"S-1-1-0"})
+	if len(cmds) != 5 || !strings.Contains(cmds[0], `"D:\h" /setowner `+me) || !strings.Contains(cmds[1], `data.vhdx" /setowner`) ||
+		!strings.Contains(cmds[3], "/remove:g *S-1-1-0") || !strings.Contains(fix, "Run as administrator") || !strings.Contains(fix, strings.Join(cmds, " && ")) {
 		t.Errorf("owner: %q %q", fix, cmds)
 	}
 	for _, c := range cmds {
-		if strings.Contains(c, "/T") {
-			t.Errorf("recursive: %q", c)
+		if strings.Contains(c, "/T") || !strings.HasSuffix(c, " /L") {
+			t.Errorf("%q: recursive, or without /L", c)
 		}
 	}
-	if _, cmds := dataDirFix(`D:\h`, "is a reparse point", `PC\me`, false, false, nil); cmds != nil {
+	if _, cmds := dataDirFix(`D:\h`, "is a reparse point", me, false, false, false, nil); cmds != nil {
 		t.Errorf("reparse point: %q", cmds)
 	}
 }
