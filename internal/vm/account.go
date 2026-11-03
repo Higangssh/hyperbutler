@@ -6,7 +6,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/Microsoft/go-winio/pkg/guid"
+	"github.com/Higangssh/hyperbutler/internal/guid"
 )
 
 // AccountPrefix starts the account of every VM worker process: NT VIRTUAL MACHINE\<id>.

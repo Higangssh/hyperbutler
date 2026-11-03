@@ -15,7 +15,7 @@ import (
 	"time"
 	"unsafe"
 
-	"github.com/Microsoft/go-winio/pkg/guid"
+	"github.com/Higangssh/hyperbutler/internal/guid"
 	"golang.org/x/sys/windows"
 
 	"github.com/Higangssh/hyperbutler/internal/engine"

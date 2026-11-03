@@ -16,7 +16,7 @@ import (
 	"golang.org/x/sys/windows"
 
 	"github.com/Higangssh/hyperbutler/internal/broker/proto"
-	"github.com/Higangssh/hyperbutler/internal/transport"
+	"github.com/Higangssh/hyperbutler/internal/hvaddr"
 )
 
 // DefaultSharedPipe is the broker's shared endpoint, which interactive users may connect
@@ -117,7 +117,7 @@ func ListenEndpoints(srv *Server, cfg EndpointsConfig) (*Endpoints, error) {
 	}
 	// The longest per-user name must still be a valid pipe name and fit an
 	// open-endpoint reply.
-	if long := userPipePrefix(cfg.Name, "") + strings.Repeat("0", userPipeSuffixLen); len(long) > proto.MaxPipeNameLen || transport.ValidatePipeName(long) != nil {
+	if long := userPipePrefix(cfg.Name, "") + strings.Repeat("0", userPipeSuffixLen); len(long) > proto.MaxPipeNameLen || hvaddr.ValidatePipeName(long) != nil {
 		return nil, fmt.Errorf("broker: shared endpoint name %q is too long for per-user endpoints", cfg.Name)
 	}
 	e := &Endpoints{srv: srv, cfg: cfg, newName: newUserPipeName, users: make(map[string]*PipeListener)}

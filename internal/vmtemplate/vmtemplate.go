@@ -11,8 +11,8 @@
 // Implementation decision 4). The paths in Spec are those of files the caller has opened
 // and verified itself.
 //
-// The package builds on every platform and depends only on the standard library, vm,
-// transport and guestctl, so the broker can use it within its surface budget (rule 10).
+// The package builds on every platform and depends only on the standard library, vm
+// and hvaddr, so the broker can use it within its surface budget (rule 10).
 package vmtemplate
 
 import (
@@ -22,8 +22,7 @@ import (
 	"net/netip"
 	"strings"
 
-	"github.com/Higangssh/hyperbutler/internal/guestctl"
-	"github.com/Higangssh/hyperbutler/internal/transport"
+	"github.com/Higangssh/hyperbutler/internal/hvaddr"
 	"github.com/Higangssh/hyperbutler/internal/vm"
 	"github.com/Higangssh/hyperbutler/internal/vmsecret"
 )
@@ -60,6 +59,9 @@ const (
 	NetPort = 1024
 	// SharePort is the port the guest's share relay connects to (ADR 0007).
 	SharePort = 2385
+	// ControlPort is the guest control channel's (guestctl.ControlPort, which a test
+	// holds equal: guestctl dials, and the broker may not link it).
+	ControlPort = 2380
 )
 
 // Network limits, the ones netstack enforces (netstack.Config.Validate and
@@ -254,8 +256,8 @@ func Build(s *Spec) (*vm.Config, error) {
 	cmdline += HashTableArgs(s.MemoryMB)
 	cmdline += " " + vmsecret.CmdlineKey + "=" + s.Secret.Hex()
 	svcs := []vm.Service{
-		{ID: transport.VsockServiceID(DockerPort), ConnectSDDL: sddl},
-		{ID: transport.VsockServiceID(guestctl.ControlPort), ConnectSDDL: sddl},
+		{ID: hvaddr.VsockServiceID(DockerPort), ConnectSDDL: sddl},
+		{ID: hvaddr.VsockServiceID(ControlPort), ConnectSDDL: sddl},
 	}
 	if n := s.Net; n != nil {
 		if err := n.Validate(); err != nil {
@@ -272,7 +274,7 @@ func Build(s *Spec) (*vm.Config, error) {
 		// Only this user may listen on the link's service (for a guest forwarder that
 		// dials the host) and, in offload mode, connect to it (netfwd -vnet listens in
 		// the guest).
-		svc := vm.Service{ID: transport.VsockServiceID(n.port()), BindSDDL: sddl}
+		svc := vm.Service{ID: hvaddr.VsockServiceID(n.port()), BindSDDL: sddl}
 		if n.Offload {
 			svc.ConnectSDDL = sddl
 			cmdline += " hyperbutler.netvnet=1" + n.CRC.kernelArg()
@@ -281,7 +283,7 @@ func Build(s *Spec) (*vm.Config, error) {
 	}
 	if s.Share {
 		// The guest connects to the host on this service; only this user may listen on it.
-		svcs = append(svcs, vm.Service{ID: transport.VsockServiceID(SharePort), BindSDDL: sddl})
+		svcs = append(svcs, vm.Service{ID: hvaddr.VsockServiceID(SharePort), BindSDDL: sddl})
 		cmdline += fmt.Sprintf(" hyperbutler.share=%d", SharePort)
 	}
 	cmdline += s.Dev.ExtraCmdLine

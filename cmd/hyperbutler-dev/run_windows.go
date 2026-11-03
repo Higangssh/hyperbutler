@@ -46,6 +46,7 @@ func runCmd(args []string) error {
 		fs.Usage()
 		return errors.New("run: either -image, or -kernel and -initrd, is required")
 	}
+	dcfg.Listen = transport.ListenPipe
 	dbg, err := diag.Start(dcfg)
 	if err != nil {
 		return err

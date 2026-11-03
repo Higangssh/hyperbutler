@@ -11,11 +11,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/Microsoft/go-winio"
 	"golang.org/x/sys/windows"
 
 	"github.com/Higangssh/hyperbutler/internal/broker/proto"
-	"github.com/Higangssh/hyperbutler/internal/transport"
+	"github.com/Higangssh/hyperbutler/internal/hvaddr"
 )
 
 // Client is one connection to the broker. Its requests are serialized; it is safe for
@@ -73,7 +72,7 @@ const (
 // SYSTEM, a service account (S-1-5-80-...), or this user (a broker run in the foreground
 // by the same user, which can impersonate no one else).
 func Dial(ctx context.Context, shared string) (*Client, error) {
-	if err := transport.ValidatePipeName(shared); err != nil {
+	if err := hvaddr.ValidatePipeName(shared); err != nil {
 		return nil, err
 	}
 	self, err := processSID()
@@ -84,7 +83,7 @@ func Dial(ctx context.Context, shared string) (*Client, error) {
 	if err != nil {
 		return nil, err
 	}
-	if !ValidUserPipeName(shared, self, r.PipeName) || transport.ValidatePipeName(r.PipeName) != nil {
+	if !ValidUserPipeName(shared, self, r.PipeName) || hvaddr.ValidatePipeName(r.PipeName) != nil {
 		// The client connects only to a name of this user's own form.
 		return nil, fmt.Errorf("broker: %s named endpoint %q, which is not this user's (%w)", shared, r.PipeName, ErrUntrustedPipe)
 	}
@@ -127,7 +126,7 @@ func openEndpoint(ctx context.Context, shared string) (proto.Reply, string, erro
 
 // dialPipe connects to one broker pipe after checking its owner, which it returns.
 func dialPipe(ctx context.Context, pipe string) (*Client, string, error) {
-	c, err := winio.DialPipeAccessImpLevel(ctx, pipe, windows.GENERIC_READ|windows.GENERIC_WRITE, winio.PipeImpLevelImpersonation)
+	c, err := dialPipeClient(ctx, pipe)
 	if err != nil {
 		return nil, "", fmt.Errorf("broker: connect to %s: %w", pipe, err)
 	}

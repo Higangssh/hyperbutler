@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"flag"
+	"github.com/Higangssh/hyperbutler/internal/guestctl"
 	"net/netip"
 	"os"
 	"path/filepath"
@@ -241,5 +242,12 @@ func TestHashTableArgs(t *testing.T) {
 		if !strings.HasPrefix(a, " ") || !strings.Contains(a, "dhash_entries=524288") || !strings.Contains(a, "ihash_entries=262144") {
 			t.Errorf("%d MiB: %q", mb, a)
 		}
+	}
+}
+
+// TestControlPort: the template's control port is the one guestctl dials.
+func TestControlPort(t *testing.T) {
+	if ControlPort != guestctl.ControlPort {
+		t.Fatalf("ControlPort %d, guestctl.ControlPort %d", ControlPort, guestctl.ControlPort)
 	}
 }

@@ -6,7 +6,7 @@ import (
 	"context"
 	"net"
 
-	"github.com/Microsoft/go-winio/pkg/guid"
+	"github.com/Higangssh/hyperbutler/internal/guid"
 
 	"github.com/Higangssh/hyperbutler/internal/transport"
 	"github.com/Higangssh/hyperbutler/internal/vmsecret"

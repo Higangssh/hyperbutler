@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/Microsoft/go-winio/pkg/guid"
+	"github.com/Higangssh/hyperbutler/internal/guid"
 )
 
 // The runtime id is on record (OnGrant) before the first grant, and learned once.

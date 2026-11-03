@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/Microsoft/go-winio/pkg/guid"
+	"github.com/Higangssh/hyperbutler/internal/guid"
 )
 
 // FuzzUserOnlySDDL: an accepted SID can never add an SDDL clause or widen the DACL; the

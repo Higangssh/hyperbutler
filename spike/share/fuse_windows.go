@@ -6,8 +6,9 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/Higangssh/hyperbutler/internal/guid"
 	"github.com/Microsoft/go-winio"
-	"github.com/Microsoft/go-winio/pkg/guid"
+	wguid "github.com/Microsoft/go-winio/pkg/guid"
 
 	"github.com/Higangssh/hyperbutler/internal/share"
 	"github.com/Higangssh/hyperbutler/internal/transport"
@@ -35,7 +36,7 @@ func startFuse(ctx context.Context, g *guest, vmid guid.GUID, hostDir string, no
 	if err := srv.AddShare(&share.Share{Name: "src", FS: fs}); err != nil {
 		return "", err
 	}
-	ln, err := winio.ListenHvsock(&winio.HvsockAddr{VMID: vmid, ServiceID: transport.VsockServiceID(fusePort)})
+	ln, err := winio.ListenHvsock(&winio.HvsockAddr{VMID: wguid.GUID(vmid), ServiceID: wguid.GUID(transport.VsockServiceID(fusePort))})
 	if err != nil {
 		return "", err
 	}

@@ -17,7 +17,7 @@ import (
 	"golang.org/x/sys/windows"
 
 	"github.com/Higangssh/hyperbutler/internal/broker/proto"
-	"github.com/Higangssh/hyperbutler/internal/transport"
+	"github.com/Higangssh/hyperbutler/internal/hvaddr"
 )
 
 // ErrPipeExists is returned by ListenPipe when the pipe name is already taken, for
@@ -55,7 +55,7 @@ func PipeSDDL(serverSID, clientSID string) string {
 
 // PipeConfig configures ListenPipe.
 type PipeConfig struct {
-	// Name is a local pipe name (transport.ValidatePipeName).
+	// Name is a local pipe name (hvaddr.ValidatePipeName).
 	Name string
 	// ClientSID is the only user that may connect, and the pipe is that user's own
 	// endpoint: Serve serves every VM verb on it, for that user only. Empty means
@@ -87,7 +87,7 @@ var ErrAlreadyServing = errors.New("broker: listener is already being served")
 // ListenPipe creates every instance of the pipe up front. It fails with ErrPipeExists if
 // the name is taken.
 func ListenPipe(cfg PipeConfig) (*PipeListener, error) {
-	if err := transport.ValidatePipeName(cfg.Name); err != nil {
+	if err := hvaddr.ValidatePipeName(cfg.Name); err != nil {
 		return nil, err
 	}
 	n := cfg.Instances

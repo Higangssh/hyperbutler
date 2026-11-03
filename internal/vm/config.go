@@ -18,7 +18,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/Microsoft/go-winio/pkg/guid"
+	"github.com/Higangssh/hyperbutler/internal/guid"
 )
 
 // DenyAllSDDL is a security descriptor with a protected, empty DACL: nobody gets access.

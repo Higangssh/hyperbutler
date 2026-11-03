@@ -83,7 +83,6 @@ func main() {
 	flag.BoolVar(&o.allowUnpinned, "allow-unpinned-image", false, "with -hcs-backend in a development build (no image pin compiled in): boot the image checked against its own image.json only")
 	flag.StringVar(&o.dcfg.MemoryLimit, "memlimit", defaultMemLimit, "Go soft memory limit, GOMEMLIMIT syntax (the GOMEMLIMIT variable wins)")
 	versionJSON := flag.Bool("version-json", false, "print the broker version and its guest image pin as JSON, and exit (dist/package.ps1 checks them)")
-	flag.StringVar(&o.dcfg.DebugPipe, "debug-pipe", "", `serve pprof and runtime stats on this pipe, current user only (off when empty), e.g. \\.\pipe\hyperbutler-broker-debug`)
 	flag.Usage = func() {
 		w := flag.CommandLine.Output()
 		_, _ = fmt.Fprintln(w, "usage: hyperbutler-broker install | uninstall | run    (the Windows service; install and uninstall as administrator)")
@@ -118,19 +117,10 @@ func run(o options) error {
 		// A release build boots only the image it was built with.
 		return errors.New("-allow-unpinned-image is for development builds only")
 	}
-	// The debug pipe's DACL names the user's SID, which an elevated token shares with
-	// the same user's medium-integrity processes. Exposing heap dumps and profiles of an
-	// elevated broker to those would cross the ADR 0004 boundary, so refuse it.
-	if o.dcfg.DebugPipe != "" && windows.GetCurrentProcessToken().IsElevated() {
-		return fmt.Errorf("-debug-pipe is refused in an elevated broker")
-	}
-	dbg, err := diag.Start(o.dcfg)
-	if err != nil {
+	// No debug endpoint: its pipe listener is go-winio's, which the broker may not link
+	// (ADR 0004 rule 10).
+	if _, err := diag.Start(o.dcfg); err != nil {
 		return err
-	}
-	defer func() { _ = dbg.Close() }()
-	if o.dcfg.DebugPipe != "" {
-		log.Printf("debug endpoint on %s", o.dcfg.DebugPipe)
 	}
 	tu, err := windows.GetCurrentProcessToken().GetTokenUser()
 	if err != nil {

@@ -1,10 +1,10 @@
-package transport
+package hvaddr
 
 import (
 	"strings"
 	"testing"
 
-	"github.com/Microsoft/go-winio/pkg/guid"
+	"github.com/Higangssh/hyperbutler/internal/guid"
 )
 
 const testVM = "6d3a1f4e-8c2b-4f7a-9e01-2b3c4d5e6f70"
@@ -55,9 +55,11 @@ func TestParseHvsockTarget(t *testing.T) {
 	}
 }
 
-func TestVsockServiceIDMatchesWinio(t *testing.T) {
-	// go-winio documents this template; keep ours in sync.
-	mustEqual(t, VsockServiceID(0x94f).String(), "0000094f-facb-11e6-bd58-64006a7986d3")
+func TestVsockServiceIDTemplate(t *testing.T) {
+	// The documented AF_VSOCK service ID template (port in Data1).
+	if got := VsockServiceID(0x94f).String(); got != "0000094f-facb-11e6-bd58-64006a7986d3" {
+		t.Fatalf("got %s", got)
+	}
 }
 
 func TestValidatePipeName(t *testing.T) {

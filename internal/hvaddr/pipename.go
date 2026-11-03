@@ -1,4 +1,4 @@
-package transport
+package hvaddr
 
 import (
 	"errors"

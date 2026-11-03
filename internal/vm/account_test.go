@@ -3,7 +3,7 @@ package vm
 import (
 	"testing"
 
-	"github.com/Microsoft/go-winio/pkg/guid"
+	"github.com/Higangssh/hyperbutler/internal/guid"
 )
 
 func TestAccountSID(t *testing.T) {

@@ -17,8 +17,9 @@ import (
 	"time"
 	"unsafe"
 
+	"github.com/Higangssh/hyperbutler/internal/guid"
 	"github.com/Microsoft/go-winio"
-	"github.com/Microsoft/go-winio/pkg/guid"
+	wguid "github.com/Microsoft/go-winio/pkg/guid"
 	"golang.org/x/sys/windows"
 
 	"github.com/Higangssh/hyperbutler/internal/hcn"
@@ -348,7 +349,7 @@ func runRelay(args []string) error {
 			}
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
-			return winio.Dial(ctx, &winio.HvsockAddr{VMID: vmID, ServiceID: winio.VsockServiceID(uint32(*bulk))})
+			return winio.Dial(ctx, &winio.HvsockAddr{VMID: wguid.GUID(vmID), ServiceID: wguid.GUID(winio.VsockServiceID(uint32(*bulk)))})
 		}
 	}
 	return bootAndProbe(spec, 3*time.Minute, *verbose, func(runtimeID string) (func(), error) {
@@ -357,7 +358,7 @@ func runRelay(args []string) error {
 			return nil, fmt.Errorf("runtime id %q: %w", runtimeID, err)
 		}
 		t := time.Now()
-		ln, err := winio.ListenHvsock(&winio.HvsockAddr{VMID: vmID, ServiceID: svc})
+		ln, err := winio.ListenHvsock(&winio.HvsockAddr{VMID: wguid.GUID(vmID), ServiceID: wguid.GUID(svc)})
 		fmt.Printf("ListenHvsock(%s, %s): %s, err=%v\n", vmID, svc, ms(time.Since(t)), err)
 		if err != nil {
 			return nil, err

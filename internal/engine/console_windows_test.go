@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Microsoft/go-winio/pkg/guid"
+	"github.com/Higangssh/hyperbutler/internal/guid"
 
 	"github.com/Higangssh/hyperbutler/internal/transport"
 )

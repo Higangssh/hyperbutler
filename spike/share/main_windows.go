@@ -29,8 +29,9 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Higangssh/hyperbutler/internal/guid"
 	"github.com/Microsoft/go-winio"
-	"github.com/Microsoft/go-winio/pkg/guid"
+	wguid "github.com/Microsoft/go-winio/pkg/guid"
 
 	"github.com/Higangssh/hyperbutler/guest/cpio"
 	"github.com/Higangssh/hyperbutler/internal/engine"
@@ -498,7 +499,7 @@ type event struct {
 }
 
 func acceptGuest(vmid guid.GUID, timeout time.Duration) (*guest, error) {
-	ln, err := winio.ListenHvsock(&winio.HvsockAddr{VMID: vmid, ServiceID: transport.VsockServiceID(ctlPort)})
+	ln, err := winio.ListenHvsock(&winio.HvsockAddr{VMID: wguid.GUID(vmid), ServiceID: wguid.GUID(transport.VsockServiceID(ctlPort))})
 	if err != nil {
 		return nil, err
 	}

@@ -16,8 +16,9 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Higangssh/hyperbutler/internal/guid"
 	"github.com/Microsoft/go-winio"
-	"github.com/Microsoft/go-winio/pkg/guid"
+	wguid "github.com/Microsoft/go-winio/pkg/guid"
 
 	"github.com/Higangssh/hyperbutler/internal/share"
 	"github.com/Higangssh/hyperbutler/internal/transport"
@@ -86,7 +87,7 @@ func setupShares(sc ShareConfig, log *slog.Logger) (s *shareService) {
 // Each begins with secret, the VM's (ADR 0004 rule 6), which the guest checks before it
 // mounts: a listener of another user on a wildcard VM id cannot send it.
 func (s *shareService) listen(vmid guid.GUID, secret vmsecret.Secret) error {
-	ln, err := winio.ListenHvsock(&winio.HvsockAddr{VMID: vmid, ServiceID: s.svc})
+	ln, err := winio.ListenHvsock(&winio.HvsockAddr{VMID: wguid.GUID(vmid), ServiceID: wguid.GUID(s.svc)})
 	if err != nil {
 		return fmt.Errorf("listen hvsock %s: %w", s.svc, err)
 	}

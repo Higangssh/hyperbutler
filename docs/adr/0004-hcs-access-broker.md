@@ -128,7 +128,9 @@ SYSTEM otherwise.** It follows these design rules.
      terminates any it does not track. That releases orphaned `vmmem` memory (REQ-MEM-001).
 10. **Surface budget instead of a line count.**
     - No network listeners.
-    - Dependencies are limited to the Go standard library and `golang.org/x/sys`.
+    - Dependencies are limited to the Go standard library and `golang.org/x/sys`
+      (and hyperbutler's own packages, which follow the same rule as far as the broker
+      links them). `cmd/hyperbutler-broker`'s `TestDependencies` checks it.
     - Only the verbs above are accepted.
     - Every decoder is fuzzed.
     - Any change to the broker requires an adversarial review.
@@ -1064,10 +1066,17 @@ lease; the sweep; the MSI's conditions. Its findings:
    checking is off for every user, so a disk whose ACL its owner widened could be opened
    by name. **Fixed:** the disk's allow ACEs must be for the caller, SYSTEM,
    Administrators or the VM accounts (`S-1-5-83-...`). `TestCheckDiskInfo`.
-6. **Info. Rule 10's dependencies:** the broker uses go-winio's `guid` (also through
-   `internal/vm`) and, in the client the engine uses, its pipe dial; rule 10 allows only
-   the standard library and `x/sys`. Open: the owner decides whether rule 10 admits
-   go-winio or the broker replaces both uses.
+6. **Info. Rule 10's dependencies:** the broker linked go-winio (its `guid`, its pipe
+   dial in the client, and its hvsock and pipe I/O through `transport`, `guestctl` and
+   `diag`). **Fixed, as the owner decided (2026-11-03): replaced, not admitted.**
+   `internal/guid` is hyperbutler's own GUID type (go-winio's layout, so the engine's
+   remaining go-winio calls convert with a plain conversion; a test holds the two
+   equal); the address forms moved to `internal/hvaddr`, which does no I/O; the broker's
+   pipe client is its own (`pipeclient_windows.go`, on the same overlapped I/O as its
+   server); `vmtemplate` no longer imports `guestctl`; `diag` takes its listener from
+   the caller, and the broker has no debug pipe. The broker binary now links only the
+   standard library, `x/sys` and hyperbutler's packages. The engine still uses go-winio
+   for its hvsock and pipe I/O (the data path); replacing that too is later work.
 7. **Info. The sweep runs once, at start.** Accepted: a VM ends with the broker's handle
    (`ShouldTerminateOnLastHandleClosed`).
 8. **Info. The hvsock dialer sends no secret when it is zero.** Kept: the bench paths of

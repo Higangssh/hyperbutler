@@ -3,7 +3,7 @@
 package engine
 
 import (
-	"github.com/Microsoft/go-winio/pkg/guid"
+	"github.com/Higangssh/hyperbutler/internal/guid"
 
 	"github.com/Higangssh/hyperbutler/internal/vm"
 )

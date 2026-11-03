@@ -16,7 +16,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/Microsoft/go-winio/pkg/guid"
+	"github.com/Higangssh/hyperbutler/internal/guid"
 
 	"github.com/Higangssh/hyperbutler/internal/broker"
 	"github.com/Higangssh/hyperbutler/internal/dockerenv"

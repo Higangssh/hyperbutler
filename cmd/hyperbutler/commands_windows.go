@@ -1253,6 +1253,7 @@ func cmdEngine(args []string, stderr io.Writer) (int, error) {
 	if err := checkDiagFlags(dcfg); err != nil {
 		return 2, err
 	}
+	dcfg.Listen = transport.ListenPipe
 	dbg, err := diag.Start(dcfg)
 	if err != nil {
 		return 1, err

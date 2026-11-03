@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/Higangssh/hyperbutler/internal/transport"
 	"net"
 	"net/http"
 	"os"
@@ -39,7 +40,7 @@ func pipeClient(name string) *http.Client {
 
 func TestServeStatsOverPipe(t *testing.T) {
 	name := testPipeName()
-	s, err := Serve(name)
+	s, err := testServe(name)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -64,7 +65,7 @@ func TestServeStatsOverPipe(t *testing.T) {
 // The pipe's DACL must grant the current user and nobody else.
 func TestServePipeACL(t *testing.T) {
 	name := testPipeName()
-	s, err := Serve(name)
+	s, err := testServe(name)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -126,11 +127,11 @@ func TestServePipeACL(t *testing.T) {
 
 func TestServeRejectsTakenName(t *testing.T) {
 	name := testPipeName()
-	s, err := Serve(name)
+	s, err := testServe(name)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if s2, err := Serve(name); err == nil {
+	if s2, err := testServe(name); err == nil {
 		s2.Close()
 		t.Fatal("second Serve on the same pipe name succeeded")
 	}
@@ -138,7 +139,7 @@ func TestServeRejectsTakenName(t *testing.T) {
 		t.Fatal(err)
 	}
 	// After Close the name is free again.
-	s3, err := Serve(name)
+	s3, err := testServe(name)
 	if err != nil {
 		t.Fatalf("Serve after Close: %v", err)
 	}
@@ -146,8 +147,12 @@ func TestServeRejectsTakenName(t *testing.T) {
 }
 
 func TestServeInvalidName(t *testing.T) {
-	for _, name := range []string{"", `\\server\pipe\x`, `\\.\pipe\`, `\\.\pipe\a\b`} {
-		if s, err := Serve(name); err == nil {
+	// An empty name is no endpoint at all (Start's "off"), not an error.
+	if s, err := testServe(""); s != nil || err != nil {
+		t.Errorf(`Serve(""): %v %v`, s, err)
+	}
+	for _, name := range []string{`\\server\pipe\x`, `\\.\pipe\`, `\\.\pipe\a\b`} {
+		if s, err := testServe(name); err == nil {
 			s.Close()
 			t.Errorf("Serve(%q) succeeded", name)
 		}
@@ -158,7 +163,7 @@ func TestServeInvalidName(t *testing.T) {
 // leave no goroutine behind (TestMain checks the latter).
 func TestCloseInterruptsProfile(t *testing.T) {
 	name := testPipeName()
-	s, err := Serve(name)
+	s, err := testServe(name)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -186,7 +191,7 @@ func TestCloseInterruptsProfile(t *testing.T) {
 // frees.
 func TestConnLimit(t *testing.T) {
 	name := testPipeName()
-	s, err := Serve(name)
+	s, err := testServe(name)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -251,4 +256,9 @@ func TestConnLimit(t *testing.T) {
 	if err := get(c); err != nil {
 		t.Fatalf("after a slot freed: %v", err)
 	}
+}
+
+// testServe starts the endpoint on name as the engine does, with transport's pipe.
+func testServe(name string) (*Server, error) {
+	return Start(Config{DebugPipe: name, Listen: transport.ListenPipe})
 }

@@ -20,8 +20,9 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Higangssh/hyperbutler/internal/guid"
 	"github.com/Microsoft/go-winio"
-	"github.com/Microsoft/go-winio/pkg/guid"
+	wguid "github.com/Microsoft/go-winio/pkg/guid"
 	"golang.org/x/sys/windows"
 
 	"github.com/Higangssh/hyperbutler/internal/diag"
@@ -177,7 +178,7 @@ func (f levelFilter) WithGroup(n string) slog.Handler {
 // start listens for the guest forwarder on the VM's hvsock address and opens the static
 // publishes.
 func (g *guestNet) start(ctx context.Context, vmid guid.GUID, secret vmsecret.Secret, step func(string, ...any)) error {
-	ln, err := winio.ListenHvsock(&winio.HvsockAddr{VMID: vmid, ServiceID: g.svc})
+	ln, err := winio.ListenHvsock(&winio.HvsockAddr{VMID: wguid.GUID(vmid), ServiceID: wguid.GUID(g.svc)})
 	if err != nil {
 		return fmt.Errorf("listen hvsock %s: %w", g.svc, err)
 	}

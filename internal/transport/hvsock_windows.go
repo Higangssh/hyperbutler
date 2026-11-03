@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/Microsoft/go-winio"
+	wguid "github.com/Microsoft/go-winio/pkg/guid"
 )
 
 // HvsockDialer dials an AF_HYPERV socket in a utility VM, typically the guest's dockerd
@@ -27,7 +28,7 @@ func (d *HvsockDialer) DialContext(ctx context.Context) (net.Conn, error) {
 	// winio.HvsockDialer keeps a retry timer in the struct, so it is not safe to share
 	// between goroutines; build one per dial.
 	wd := &winio.HvsockDialer{Retries: d.Retries, RetryWait: d.RetryWait}
-	addr := &winio.HvsockAddr{VMID: d.Target.VMID, ServiceID: d.Target.ServiceID}
+	addr := &winio.HvsockAddr{VMID: wguid.GUID(d.Target.VMID), ServiceID: wguid.GUID(d.Target.ServiceID)}
 
 	// go-winio checks ctx only between attempts, not while ConnectEx is pending, and a
 	// connect to a guest port nobody listens on yet (a booting guest) stays pending

@@ -13,7 +13,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Microsoft/go-winio/pkg/guid"
+	"github.com/Higangssh/hyperbutler/internal/guid"
 
 	"github.com/Higangssh/hyperbutler/guest/image"
 	"github.com/Higangssh/hyperbutler/internal/engine"

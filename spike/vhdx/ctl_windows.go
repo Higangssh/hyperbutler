@@ -16,6 +16,8 @@ import (
 	"unsafe"
 
 	wguid "github.com/Microsoft/go-winio/pkg/guid"
+
+	hguid "github.com/Higangssh/hyperbutler/internal/guid"
 	"golang.org/x/sys/windows"
 
 	"github.com/Higangssh/hyperbutler/internal/guestctl"
@@ -139,7 +141,7 @@ func startCtl(system uintptr, start time.Time) (*guestctl.Supervisor, wguid.GUID
 	var lastLog time.Time
 	var lastSteps uint64
 	sup := &guestctl.Supervisor{
-		Dial: guestctl.HvsockDialer(id, ctlSecret),
+		Dial: guestctl.HvsockDialer(hguid.GUID(id), ctlSecret),
 		Logf: logf,
 		Config: guestctl.ClientConfig{OnStatus: func(s guestctl.Status) {
 			// Liveness counts only a guard that is applying the budget and whose step

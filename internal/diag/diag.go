@@ -14,6 +14,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"net"
 	"os"
 	"runtime"
 	"runtime/debug"
@@ -31,6 +32,11 @@ type Config struct {
 	// DebugPipe, when non-empty, is the named pipe the debug endpoint listens on, for
 	// example `\\.\pipe\hyperbutler-dev-debug`. Empty means no endpoint (the default).
 	DebugPipe string
+	// Listen opens the endpoint's listener on DebugPipe: transport.ListenPipe, a pipe
+	// only the current user may open. diag does no pipe I/O of its own, so the broker
+	// service, which may link nothing but the standard library and x/sys (ADR 0004
+	// rule 10), can use the rest of it.
+	Listen func(name string) (net.Listener, error)
 }
 
 // MinMemoryLimit is the smallest limit ApplyMemoryLimit accepts. Below it the GC runs
@@ -91,7 +97,14 @@ func Start(cfg Config) (*Server, error) {
 	if cfg.DebugPipe == "" {
 		return nil, nil
 	}
-	return Serve(cfg.DebugPipe)
+	if cfg.Listen == nil {
+		return nil, errors.New("diag: no listener for the debug endpoint")
+	}
+	ln, err := cfg.Listen(cfg.DebugPipe)
+	if err != nil {
+		return nil, err
+	}
+	return serve(ln), nil
 }
 
 // LimitSource says where the effective memory limit came from.

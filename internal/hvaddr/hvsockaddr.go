@@ -1,4 +1,4 @@
-package transport
+package hvaddr
 
 import (
 	"errors"
@@ -6,7 +6,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/Microsoft/go-winio/pkg/guid"
+	"github.com/Higangssh/hyperbutler/internal/guid"
 
 	"github.com/Higangssh/hyperbutler/internal/vmsecret"
 )

@@ -29,8 +29,9 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Higangssh/hyperbutler/internal/guid"
 	"github.com/Microsoft/go-winio"
-	"github.com/Microsoft/go-winio/pkg/guid"
+	wguid "github.com/Microsoft/go-winio/pkg/guid"
 	"golang.org/x/sys/windows"
 
 	"github.com/Higangssh/hyperbutler/internal/broker"
@@ -113,12 +114,12 @@ func main() {
 
 	// 4. Listen in A's VM's place (guest-to-host services).
 	for _, port := range []uint32{1024, 2385} {
-		l, err := winio.ListenHvsock(&winio.HvsockAddr{VMID: vmid, ServiceID: transport.VsockServiceID(port)})
+		l, err := winio.ListenHvsock(&winio.HvsockAddr{VMID: wguid.GUID(vmid), ServiceID: wguid.GUID(transport.VsockServiceID(port))})
 		if l != nil {
 			_ = l.Close()
 		}
 		report(err != nil, fmt.Sprintf("hvsock: listen for A's VM on port %d", port), err)
-		l, err = winio.ListenHvsock(&winio.HvsockAddr{VMID: guid.GUID{}, ServiceID: transport.VsockServiceID(port)})
+		l, err = winio.ListenHvsock(&winio.HvsockAddr{VMID: wguid.GUID{}, ServiceID: wguid.GUID(transport.VsockServiceID(port))})
 		if l != nil {
 			_ = l.Close()
 		}
@@ -152,7 +153,7 @@ func catch(d time.Duration, vmid string) {
 	var mu sync.Mutex
 	conns := 0
 	for _, port := range []uint32{1024, 2385} {
-		l, err := winio.ListenHvsock(&winio.HvsockAddr{VMID: guid.GUID{}, ServiceID: transport.VsockServiceID(port)})
+		l, err := winio.ListenHvsock(&winio.HvsockAddr{VMID: wguid.GUID{}, ServiceID: wguid.GUID(transport.VsockServiceID(port))})
 		if err != nil {
 			report(true, fmt.Sprintf("hvsock: listen for every VM on port %d", port), err)
 			continue
