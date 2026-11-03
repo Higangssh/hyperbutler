@@ -276,6 +276,18 @@ soak runs separately and its result goes here.
   an open item in ADR 0006.
 - [ ] `bench/net-vpn`, `bench/coexist` and `bench/noadmin` have run (ADR 0006,
   "What stays unverified").
+  - `bench/noadmin`, 2026-11-03, v0.1.0-preview.2 from its MSI, the owner's engine on a
+    test home through the broker, `hbtest` (standard, not in Hyper-V Administrators,
+    medium integrity) through `runas`: 40 checks, 39 passed at the time. Every way into
+    the owner's engine was refused with access denied, before and after `hbtest`'s own
+    run: the Docker API pipe and the per-user broker endpoint (open and adding an
+    instance), the engine's stop, daemon and settings events, and AF_HYPERV to the
+    owner's VM on 2375, 2380, 1024 and 2385. `hbtest`'s own `hyperbutler start --backend
+    broker` worked on its own pipe and VM, `hello-world` ran, doctor said `hcs` and
+    `hyperv-admins` info and `broker` ok, stop and uninstall passed. The one FAIL was the
+    bench's own matcher: `docker -H` to the owner's pipe was refused, but the docker CLI
+    says "permission denied while trying to connect" instead of Windows' text; the check
+    accepts both since. **noadmin: met.**
 
 **Requirements**
 - [ ] REQ-UX-002: the zip is ≤ 150 MB (`package.ps1` enforces it). Record the size in the

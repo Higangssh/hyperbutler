@@ -121,3 +121,13 @@ func TestStats(t *testing.T) {
 		t.Fatal("degenerate slope")
 	}
 }
+
+func TestByName(t *testing.T) {
+	ps := []Proc{{PID: 4, Name: "System"}, {PID: 10, Name: "HYPERBUTLER-BROKER.EXE"}, {PID: 11, Name: "hyperbutler.exe"}}
+	if got := ByName(ps, BrokerName); len(got) != 1 || got[0] != 10 {
+		t.Fatalf("got %v", got)
+	}
+	if got := ByName(ps, "nope.exe"); got != nil {
+		t.Fatalf("got %v", got)
+	}
+}

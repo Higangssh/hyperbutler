@@ -107,7 +107,19 @@ func TestWriteCSV(t *testing.T) {
 		t.Fatal(err)
 	}
 	rows, err := csv.NewReader(&b).ReadAll()
-	if err != nil || len(rows) != 3 || len(rows[0]) != len(csvHeader) || rows[2][len(csvHeader)-1] != ss[1].Foreign || rows[1][5] != "335544320" {
+	if err != nil || len(rows) != 3 || len(rows[0]) != len(csvHeader) || rows[2][len(csvHeader)-1] != ss[1].Foreign || rows[1][6] != "335544320" {
 		t.Fatalf("%v %v", rows, err)
+	}
+}
+
+func TestTotalCountsTheBroker(t *testing.T) {
+	s := sample(300, 16*mb, 300*mb, 5*mb)
+	without := s.Total()
+	s.BrokerWS = 3 * mb
+	if s.Total() != without+3*mb {
+		t.Fatalf("total %d, want %d", s.Total(), without+3*mb)
+	}
+	if b := Summarize([]Sample{s}, 400e6).Broker.Median; b != 3*mb {
+		t.Fatalf("broker median %v", b)
 	}
 }

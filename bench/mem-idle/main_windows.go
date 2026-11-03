@@ -251,6 +251,9 @@ func measure(ctx context.Context, c *config, cfgDir string) (ss []Sample, err er
 		}
 		helpers := hostmon.ChildrenOf(ps, enginePID)
 		pids := append([]uint32{enginePID, vm.VMMem, vm.VMWP}, helpers...)
+		// The broker service runs as SYSTEM; the process list still gives its counters.
+		brokers := hostmon.ByName(ps, hostmon.BrokerName)
+		pids = append(pids, brokers...)
 		sm, err := c.sample(ctx, pids)
 		if err != nil {
 			return ss, err
@@ -274,11 +277,14 @@ func measure(ctx context.Context, c *config, cfgDir string) (ss []Sample, err er
 		for _, h := range helpers {
 			s.HelpersWS += sm[h].WorkingSetPriv
 		}
+		for _, p := range brokers {
+			s.BrokerWS += sm[p].WorkingSetPriv
+		}
 		// Everything foreign seen since the previous sample (for the first sample: since
 		// the start command), so a VM that came and went in between still counts.
 		s.Foreign = watch.Take()
-		logf("t=%3.0fs engine %s vmmem %s vmwp %s total %s heap %s goroutines %d%s", s.T, mib(float64(s.EngineWS)), mib(float64(s.VMMemWS)),
-			mib(float64(s.VMWPWS)), mib(float64(s.Total())), mib(float64(st.MemStats.HeapAlloc)), st.Goroutines, foreignNote(s.Foreign))
+		logf("t=%3.0fs engine %s vmmem %s vmwp %s broker %s total %s heap %s goroutines %d%s", s.T, mib(float64(s.EngineWS)), mib(float64(s.VMMemWS)),
+			mib(float64(s.VMWPWS)), mib(float64(s.BrokerWS)), mib(float64(s.Total())), mib(float64(st.MemStats.HeapAlloc)), st.Goroutines, foreignNote(s.Foreign))
 		ss = append(ss, s)
 	}
 	if err := checkIdle("at the end"); err != nil {

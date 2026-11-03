@@ -18,6 +18,7 @@ const (
 	VMWPName   = "vmwp.exe" // the VM worker process
 	EngineName = "hyperbutler.exe"
 	DevName    = "hyperbutler-dev.exe"
+	BrokerName = "hyperbutler-broker.exe" // the HCS access broker service (ADR 0004)
 )
 
 func isName(p Proc, name string) bool { return strings.EqualFold(p.Name, name) }
@@ -163,4 +164,15 @@ func ChildrenOf(ps []Proc, pid uint32) []uint32 {
 		}
 	}
 	return c
+}
+
+// ByName returns the PIDs of the processes with this image name.
+func ByName(ps []Proc, name string) []uint32 {
+	var pids []uint32
+	for _, p := range ps {
+		if isName(p, name) {
+			pids = append(pids, p.PID)
+		}
+	}
+	return pids
 }

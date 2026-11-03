@@ -18,13 +18,16 @@ type Sample struct {
 	VMMemWS   uint64  // this VM's vmmem private working set
 	VMWPWS    uint64  // this VM's vmwp private working set
 	HelpersWS uint64  // the engine's child processes, if any
+	BrokerWS  uint64  // the HCS access broker service (hyperbutler-broker.exe), 0 without it
 	Threads   uint64  // engine thread count (perf counter)
 	Stats     diag.Stats
 	Foreign   string // other VMs or engines seen at this sample ("" when none)
 }
 
 // Total is the REQ-MEM-001 host memory of one sample.
-func (s Sample) Total() uint64 { return s.EngineWS + s.VMMemWS + s.VMWPWS + s.HelpersWS }
+// The broker service is counted whole: it is one process per machine, and with a
+// single user all of it is there for that user's VM.
+func (s Sample) Total() uint64 { return s.EngineWS + s.VMMemWS + s.VMWPWS + s.HelpersWS + s.BrokerWS }
 
 // Schedule returns the sample offsets from the start: from, from+interval, ... up to
 // and including to. REQ-MEM-001 samples every 10 s from minute 5 to minute 10, which
@@ -49,7 +52,7 @@ type Summary struct {
 	N          int
 	Overlapped int // samples during which another VM or engine was running
 
-	Engine, VMMem, VMWP, Helpers, Total Stat // private working set, bytes
+	Engine, VMMem, VMWP, Helpers, Broker, Total Stat // private working set, bytes
 
 	// The engine's Go runtime, medians over the window. GC slack is memory the heap
 	// holds but does not use: HeapIdle - HeapReleased, plus HeapInuse - HeapAlloc
@@ -105,6 +108,7 @@ func Summarize(ss []Sample, target uint64) Summary {
 	sum.VMMem = stat(col(func(s Sample) float64 { return float64(s.VMMemWS) }))
 	sum.VMWP = stat(col(func(s Sample) float64 { return float64(s.VMWPWS) }))
 	sum.Helpers = stat(col(func(s Sample) float64 { return float64(s.HelpersWS) }))
+	sum.Broker = stat(col(func(s Sample) float64 { return float64(s.BrokerWS) }))
 	sum.Total = stat(col(func(s Sample) float64 { return float64(s.Total()) }))
 	sum.HeapAlloc = stat(heapAlloc)
 	sum.HeapInuse = stat(col(func(s Sample) float64 { return float64(s.Stats.MemStats.HeapInuse) }))
@@ -141,7 +145,7 @@ func (s Summary) Print(w io.Writer) {
 	for _, r := range []struct {
 		name string
 		st   Stat
-	}{{"engine (hyperbutler.exe)", s.Engine}, {"vmmem (this VM)", s.VMMem}, {"vmwp (this VM)", s.VMWP}, {"engine helpers", s.Helpers}, {"**total**", s.Total}} {
+	}{{"engine (hyperbutler.exe)", s.Engine}, {"vmmem (this VM)", s.VMMem}, {"vmwp (this VM)", s.VMWP}, {"engine helpers", s.Helpers}, {"broker service", s.Broker}, {"**total**", s.Total}} {
 		_, _ = fmt.Fprintf(w, "| %s | %s | %s | %s |\n", r.name, mib(r.st.Median), mib(r.st.Min), mib(r.st.Max))
 	}
 	_, _ = fmt.Fprintf(w, "\nEngine Go runtime (medians): heap alloc %s, heap in use %s, GC slack (free but retained) %s, stacks %s, Go Sys %s; goroutines %.0f, handles %.0f; %d GCs in the window\n",
@@ -163,7 +167,7 @@ func (s Summary) Print(w io.Writer) {
 }
 
 // csvHeader names the CSV columns WriteCSV writes.
-var csvHeader = []string{"t_seconds", "engine_ws", "vmmem_ws", "vmwp_ws", "helpers_ws", "total", "engine_threads",
+var csvHeader = []string{"t_seconds", "engine_ws", "vmmem_ws", "vmwp_ws", "helpers_ws", "broker_ws", "total", "engine_threads",
 	"goroutines", "handles", "heap_alloc", "heap_inuse", "heap_idle", "heap_released", "stack_inuse", "go_sys", "num_gc",
 	"os_private", "os_heap_committed", "foreign"}
 
@@ -174,7 +178,7 @@ func WriteCSV(w io.Writer, ss []Sample) error {
 	u := func(v uint64) string { return strconv.FormatUint(v, 10) }
 	for _, s := range ss {
 		m := s.Stats.MemStats
-		_ = cw.Write([]string{strconv.FormatFloat(s.T, 'f', 1, 64), u(s.EngineWS), u(s.VMMemWS), u(s.VMWPWS), u(s.HelpersWS), u(s.Total()), u(s.Threads),
+		_ = cw.Write([]string{strconv.FormatFloat(s.T, 'f', 1, 64), u(s.EngineWS), u(s.VMMemWS), u(s.VMWPWS), u(s.HelpersWS), u(s.BrokerWS), u(s.Total()), u(s.Threads),
 			strconv.Itoa(s.Stats.Goroutines), strconv.FormatInt(s.Stats.Handles, 10), u(m.HeapAlloc), u(m.HeapInuse), u(m.HeapIdle), u(m.HeapReleased),
 			u(m.StackInuse), u(m.Sys), strconv.FormatUint(uint64(m.NumGC), 10),
 			strconv.FormatFloat(osField(s, func(o *diag.OSMemory) uint64 { return o.PrivateBytes }), 'f', 0, 64),

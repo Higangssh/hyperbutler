@@ -193,8 +193,10 @@ Invoke-Helper '(b,d)' @('probe', '-owner', $ownerJson, '-expect', 'deny')
 
 # c. The docker CLI on the owner's pipe.
 $r = Invoke-Tool $Docker @('-H', (Npipe-Host $owner.dockerPipe), 'version', '--format', '{{.Server.Version}}')
-# Go formats Windows errors in English whatever the display language.
-$denied = $r.Err -match 'Access is denied'
+# Go formats Windows errors in English whatever the display language. The docker CLI
+# reports ERROR_ACCESS_DENIED (os.ErrPermission) as its own "permission denied while
+# trying to connect" and drops the Windows text; a missing pipe reads differently.
+$denied = $r.Err -match 'Access is denied|permission denied while trying to connect'
 Check "(c) docker -H $(Npipe-Host $owner.dockerPipe) version is refused" (($r.Code -ne 0) -and $denied) "exit $($r.Code): $($r.Err) $($r.Out)"
 
 # e, f. Its own hyperbutler, through the broker service.
