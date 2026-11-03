@@ -1223,3 +1223,26 @@ installer, so writing should work), `HcsGrantVmAccess` on the user's data disk a
 image (the broker changes the disk's DACL through the handle the user passed; the image
 folder is readable by every VM), and the per-user pipes' DACLs (the service sets them
 itself).
+
+### Virtual account spike, second and third tries (2026-11-03)
+
+The same switch, with builds that fix each step found before (each time put back to
+LocalSystem afterwards, and `hyperbutler start` checked):
+
+- v0.1.0-preview.4 (state directory in the account's own `%TEMP%`): the service started
+  and served its pipe as the account. `hyperbutler start` was refused: "cannot take the
+  handle from the caller". The service opened the client's process token as itself, and
+  a token's DACL admits its user and SYSTEM, not a service account. Fixed in c8065ae: it
+  is opened while impersonating the caller.
+- v0.1.0-preview.5: the handle was taken and the data location accepted. The start was
+  refused at the data disk: "open data.vhdx: {Access Denied}". The service opens the
+  disk relative to the data folder's handle as itself, and the disk, like the folder,
+  admits only the user, SYSTEM and Administrators.
+
+So option C needs every open of a user's file (the data disk, and HcsGrantVmAccess's
+DACL change on it) done as the caller, while impersonating, during the request that has
+the caller's token, with the handle then kept for HCS; or the folder made to admit the
+service SID too, which rule 2 forbids today. That is a design change, not a fix; the
+question HCS answers (does it accept the account through the group) is still not
+reached. The service stays SYSTEM for v0.1.0 (Implementation decision 1); option C is
+open for after it.
