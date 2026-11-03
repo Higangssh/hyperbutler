@@ -23,7 +23,7 @@ directly through the Windows Host Compute Service (the API WSL 2 uses), runs doc
 and lets the stock `docker` CLI and Docker Compose talk to it. No WSL, no Docker Desktop.
 
 > [!NOTE]
-> **Preview.** v0.1.0-preview.1 works end to end on Windows 11 Home. v0.1.0 waits on a
+> **Preview.** v0.1.0-preview.2 works end to end on Windows 11 Home. v0.1.0 waits on a
 > 24-hour soak test and an install test on a clean machine ([status](docs/status.md)).
 > Not for production yet.
 
@@ -69,8 +69,8 @@ You need Windows 11 (Home, Pro or Enterprise) on x64 with virtualization enabled
 firmware.
 
 1. Download the MSI from the [latest release](https://github.com/Higangssh/hyperbutler/releases/latest)
-   and run it. One UAC prompt; it sets up the PATH and turns on Virtual Machine Platform if
-   it is off.
+   and run it. One UAC prompt: it installs the broker service that starts your VM, sets up
+   the PATH, and turns on Virtual Machine Platform if it is off.
 2. Restart if it asks.
 
 Builds are not code-signed yet: SmartScreen says "Windows protected your PC", so choose
@@ -178,9 +178,10 @@ Kubernetes, Windows containers and extensions; hyperbutler does not.
 
 **Windows containers? Windows 10?** No to both: Linux containers on Windows 11 only.
 
-**Do I need to be an administrator?** Once, for the MSI. After that, no: from v0.1.0 the broker
-service starts your VM for you (v0.1.0-preview.1 still adds you to Hyper-V Administrators). The zip, without the service, needs Hyper-V Administrators
-membership ([install guide](docs/install.md)).
+**Do I need to be an administrator?** Once, for the MSI. After that, no: the broker service it
+installs starts your VM for you (since v0.1.0-preview.2; preview.1 added you to Hyper-V
+Administrators instead, and upgrading takes that membership out again). The zip, without the
+service, needs Hyper-V Administrators membership ([install guide](docs/install.md)).
 
 **Why Go?** The container stack (containerd, moby, gVisor's network stack) is Go, and the cost
 is measured: the engine idles at about 18 MB. Leaks are design bugs in any language, so every
