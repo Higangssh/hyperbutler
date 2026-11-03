@@ -76,7 +76,7 @@ func ioCompletionLoop(port windows.Handle) {
 				var ioErr error
 				// Internal holds the operation's NTSTATUS; only error and warning codes
 				// (the high bit set) fail it, as GetOverlappedResult decides.
-				if st := windows.NTStatus(op.o.Internal); int32(st) < 0 {
+				if st := windows.NTStatus(op.o.Internal & 0xffffffff); st&0x80000000 != 0 { //nolint:gosec // G115: masked to the NTSTATUS's 32 bits
 					ioErr = st.Errno()
 				}
 				op.ch <- ioResult{n: e.bytes, err: ioErr}
@@ -375,7 +375,7 @@ func (f *file) do(op *ioOp, d *deadline, cancel <-chan struct{}, start func(o *w
 
 // aborted reports whether a completion status means the operation was canceled. The
 // hvsock provider completes a canceled receive with STATUS_CONNECTION_ABORTED (Winsock:
-// WSAECONNABORTED) rather than STATUS_CANCELLED, although the connection stays usable;
+// WSAECONNABORTED) rather than the status of a canceled I/O, although the connection stays usable;
 // it must not read as a broken connection. The raw status is tested, before result maps
 // it to a Winsock code.
 func (f *file) aborted(err error) bool {

@@ -4,6 +4,7 @@ package winipc
 
 import (
 	"bytes"
+	"errors"
 	"io"
 	"net"
 	"testing"
@@ -102,7 +103,7 @@ func transfer(t *testing.T, w, r net.Conn, data []byte, wchunk, rchunk int) {
 	for {
 		n, err := r.Read(buf)
 		got.Write(buf[:n])
-		if err == io.EOF {
+		if errors.Is(err, io.EOF) {
 			break
 		}
 		if err != nil {

@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"math"
 	"net"
 	"os"
 	"runtime"
@@ -110,7 +111,7 @@ func wsaStartup() error {
 
 func bind(s windows.Handle, sa *rawHvsockAddr) error {
 	r, _, err := procBind.Call(uintptr(s), uintptr(unsafe.Pointer(sa)), unsafe.Sizeof(*sa))
-	if int32(r) != 0 {
+	if r != 0 { // 0, or SOCKET_ERROR
 		return os.NewSyscallError("bind", err)
 	}
 	return nil
@@ -120,7 +121,7 @@ func getsockname(s windows.Handle) (HvsockAddr, error) {
 	var sa rawHvsockAddr
 	n := int32(unsafe.Sizeof(sa))
 	r, _, err := procGetsockname.Call(uintptr(s), uintptr(unsafe.Pointer(&sa)), uintptr(unsafe.Pointer(&n)))
-	if int32(r) != 0 {
+	if r != 0 { // 0, or SOCKET_ERROR
 		return HvsockAddr{}, os.NewSyscallError("getsockname", err)
 	}
 	return sa.addr(), nil
@@ -400,7 +401,7 @@ func (c *HvsockConn) Read(b []byte) (int, error) {
 	op.buf = b
 	n, err := f.do(op, &f.rd, nil, func(o *windows.Overlapped) (uint32, error) {
 		var n, flags uint32
-		wb := windows.WSABuf{Len: uint32(len(b)), Buf: &b[0]}
+		wb := windows.WSABuf{Len: ioLen(len(b)), Buf: &b[0]}
 		err := windows.WSARecv(f.h, &wb, 1, &n, &flags, o, nil)
 		return n, err
 	})
@@ -432,7 +433,7 @@ func (c *HvsockConn) Write(b []byte) (int, error) {
 		op.buf = chunk
 		n, err := f.do(op, &f.wd, nil, func(o *windows.Overlapped) (uint32, error) {
 			var n uint32
-			wb := windows.WSABuf{Len: uint32(len(chunk)), Buf: &chunk[0]}
+			wb := windows.WSABuf{Len: ioLen(len(chunk)), Buf: &chunk[0]}
 			err := windows.WSASend(f.h, &wb, 1, &n, 0, o, nil)
 			return n, err
 		})
@@ -492,3 +493,13 @@ var (
 	_ net.Conn     = (*HvsockConn)(nil)
 	_ net.Listener = (*HvsockListener)(nil)
 )
+
+// ioLen is n as a WSABuf length: callers pass at most one buffer of their own, and a
+// length past what a uint32 holds is cut to the largest one (the call then reads or
+// writes less, which Read and Write report).
+func ioLen(n int) uint32 {
+	if n > math.MaxUint32 {
+		return math.MaxUint32
+	}
+	return uint32(n) //nolint:gosec // G115: bounded above
+}

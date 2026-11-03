@@ -349,7 +349,7 @@ func TestPipeManyClients(t *testing.T) {
 			}
 			got, err := io.ReadAll(c)
 			if err != nil || !bytes.Equal(got, msg) {
-				errs <- fmt.Errorf("echo %q, %v", got, err)
+				errs <- fmt.Errorf("echo %q: %w", got, err)
 			}
 		}()
 	}
@@ -393,7 +393,7 @@ func TestPipeCloseWriteDeliversEOFAfterData(t *testing.T) {
 				t.Fatal("second CloseWrite succeeded")
 			}
 			// EOF is sticky, and the other direction still works.
-			if n, err := r.Read(make([]byte, 1)); n != 0 || err != io.EOF {
+			if n, err := r.Read(make([]byte, 1)); n != 0 || !errors.Is(err, io.EOF) {
 				t.Fatalf("Read after EOF: %d, %v", n, err)
 			}
 			if _, err := r.Write([]byte("ping")); err != nil {
