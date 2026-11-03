@@ -70,6 +70,8 @@ function Field([string]$page, [string]$key) {
 
 $script:proj = Join-Path ([IO.Path]::GetTempPath()) ("hbcompose-" + [guid]::NewGuid().ToString('N').Substring(0, 8))
 Copy-Item -Recurse (Join-Path $PSScriptRoot 'project') $script:proj
+# .env is git-ignored in this repository, so it is kept as project.env.
+Copy-Item (Join-Path $PSScriptRoot 'project.env') (Join-Path $script:proj '.env')
 New-Item -ItemType Directory (Join-Path $script:proj 'shared') | Out-Null
 $token = [guid]::NewGuid().ToString('N')
 [IO.File]::WriteAllText((Join-Path $script:proj 'shared\host.txt'), $token)
