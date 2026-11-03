@@ -227,7 +227,8 @@ Taken by the owner before the HCS backend was written:
 ## Open questions
 
 - Does HCS accept a virtual service account that is a member of Hyper-V Administrators
-  (option C)? This needs an elevated spike.
+  (option C)? This needs an elevated spike. First try 2026-11-03 (M5, below): the
+  installed service does not start as that account, before any HCS call.
 - Answered 2026-11-02 (two-account run, below): Home enforces the connect descriptors. A
   standard user's connects to another user's VM on 2375, 2380, 1024 and 2385 are refused
   by the OS (WSAEACCES) before the guest sees them. A wildcard-VM listener
@@ -1100,3 +1101,23 @@ A second review of those fixes (the same day) found no way past the requirement,
 6. **Info, open.** The client side still ends the lease if the host sleeps while a
    status request waits for its reply (its I/O deadline expires on wake): a window of
    milliseconds every 10 s. To be tried with a real sleep before the soak.
+
+### Virtual account spike (M5, first try, 2026-11-03)
+
+The installed service (v0.1.0-preview.3) was switched to `NT SERVICE\hyperbutler-broker`
+(`sc.exe config hyperbutler-broker obj= "NT SERVICE\hyperbutler-broker"`), the account
+added to Hyper-V Administrators, and the service started; afterwards both were put back
+(LocalSystem, the group as before) and `hyperbutler start` worked again. It did not
+start: "did not start: Access is denied" (event 3), twice, then the SCM stopped retrying.
+The cause is the state directory: the service makes it in `%SystemRoot%\SystemTemp`,
+which only SYSTEM may write (and a standard user may not even list). So the question
+HCS answers was not reached. Since then the event says which step failed and where.
+
+Next try: let the service make its state directory where the account may write (its
+profile's `%TEMP%`, `C:\Windows\ServiceProfiles\hyperbutler-broker\AppData\Local\Temp`,
+private to the service SID), then run the spike again. What else SYSTEM gives today and
+the account may lack, to check then: writing the event log source (registered by the
+installer, so writing should work), `HcsGrantVmAccess` on the user's data disk and the
+image (the broker changes the disk's DACL through the handle the user passed; the image
+folder is readable by every VM), and the per-user pipes' DACLs (the service sets them
+itself).

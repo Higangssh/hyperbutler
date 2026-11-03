@@ -209,7 +209,7 @@ func startService(f serviceFlags, log serviceLog) (_ broker.ServiceInstance, err
 		}
 		state, err := privateDir(serviceTempDir(), self.User.Sid.String())
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("create the state directory in %s as %s: %w", serviceTempDir(), self.User.Sid, err)
 		}
 		cleanup = append(cleanup, func() { _ = os.RemoveAll(state) })
 		hb, err := broker.NewHCSBackend(broker.HCSConfig{StateDir: state, AllowUnpinned: f.allowUnpinned, Logf: log.Infof})
