@@ -338,7 +338,7 @@ func (e *expiringConn) Read(b []byte) (int, error) {
 	if !first {
 		return e.Conn.Read(b)
 	}
-	_ = e.Conn.SetReadDeadline(time.Now().Add(-time.Second))
+	_ = e.SetReadDeadline(time.Now().Add(-time.Second))
 	n, err := e.Conn.Read(b)
 	if errors.Is(err, os.ErrDeadlineExceeded) {
 		close(e.timedOut)
@@ -347,7 +347,7 @@ func (e *expiringConn) Read(b []byte) (int, error) {
 }
 
 // On a real pipe: a read whose deadline had passed when it began (the overlapped read is
-// cancelled on its timeout) is made again, and the reply the broker sends after it is
+// canceled on its timeout) is made again, and the reply the broker sends after it is
 // read whole.
 func TestClientRewaitsOnPipe(t *testing.T) {
 	l, err := ListenPipe(PipeConfig{Name: testPipeName(t), ClientSID: currentSID(t), Instances: 1})

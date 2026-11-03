@@ -112,7 +112,7 @@ func awakeTime() time.Duration {
 	}
 	var t uint64 // 100 ns units
 	_, _, _ = procQueryUnbiasedInterruptTime.Call(uintptr(unsafe.Pointer(&t)))
-	return time.Duration(t) * 100 //nolint:gosec // G115: 2^63 ns is 292 years of uptime
+	return time.Duration(t) * 100 // 2^63 ns is 292 years of uptime
 }
 
 // Dial connects to this user's own endpoint of the broker whose shared endpoint is
