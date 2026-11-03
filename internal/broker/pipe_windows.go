@@ -640,22 +640,25 @@ func (p *pipePeer) DuplicateHandle(v uint64) (windows.Handle, error) {
 		return 0, fmt.Errorf("broker: client process: %w", err)
 	}
 	var proc windows.Handle
+	var tok windows.Token
 	err := p.Impersonate(func() error {
 		var err error
 		proc, err = windows.OpenProcess(windows.PROCESS_DUP_HANDLE|windows.PROCESS_QUERY_LIMITED_INFORMATION, false, pid)
 		if err != nil {
 			return fmt.Errorf("broker: open client process: %w", err)
 		}
+		// Also as the caller: a process token's DACL admits its user and SYSTEM, not a
+		// service account (ADR 0004 option C), and the caller may query its own.
+		if err := windows.OpenProcessToken(proc, windows.TOKEN_QUERY, &tok); err != nil {
+			return fmt.Errorf("broker: client process token: %w", err)
+		}
 		return nil
 	})
+	if proc != 0 {
+		defer func() { _ = windows.CloseHandle(proc) }()
+	}
 	if err != nil {
 		return 0, err
-	}
-	defer func() { _ = windows.CloseHandle(proc) }()
-
-	var tok windows.Token
-	if err := windows.OpenProcessToken(proc, windows.TOKEN_QUERY, &tok); err != nil {
-		return 0, fmt.Errorf("broker: client process token: %w", err)
 	}
 	tu, err := tok.GetTokenUser()
 	_ = tok.Close()

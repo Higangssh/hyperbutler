@@ -654,6 +654,8 @@ func (s *Server) handle(ctx context.Context, id Identity, p Peer, own *lease, re
 		defer dcancel()
 		d, err := s.openDataDirBounded(dctx, p, req.Handle, id.SID)
 		if err != nil {
+			// The reply carries the fixed reason only; the cause is for the log.
+			s.cfg.Logf("broker: set data location for %s: %v", id.SID, err)
 			return rejectReply(err)
 		}
 		if u.dataDir != nil {
