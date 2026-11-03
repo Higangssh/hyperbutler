@@ -370,32 +370,55 @@ Three parts, each with as little privilege as its job needs: the **engine**, a p
 of your own; the **broker service**, the only privileged part, which starts VMs and
 nothing else; and the **guest**, a small Linux VM that runs dockerd.
 
-```
- Windows (your account, not elevated)                    Linux VM (HCS, no WSL)
-┌─────────────────────────────────────────┐            ┌──────────────────────────────┐
-│ docker CLI / compose / SDKs / VS Code   │            │ hyperbutlerd (guest agent)   │
-│        │ \.\pipe\docker_engine_...     │            │   gates every hvsock service │
-│        ▼                                │   hvsock   │   on the VM's secret         │
-│ hyperbutler engine (hyperbutler.exe)    │◀══════════▶│ dockerd + containerd         │
-│  ├ Docker API relay ............ :2375  │            │ netfwd (network) .... :1024  │
-│  ├ network: gVisor netstack ...  :1024  │            │ share client (FUSE) . :2385  │
-│  │   (NAT, DNS, published ports)        │            │ control channel ..... :2380  │
-│  ├ file server for bind mounts . :2385  │            │                              │
-│  └ disk space guard, status, GUI        │            │ system disk: erofs, read-only│
-│        │ start / stop / status          │            │   pinned by hash             │
-│        ▼  (per-user pipe, your token)   │            │ data disk: sparse VHDX,      │
-├─────────────────────────────────────────┤            │   freed blocks go back       │
-│ hyperbutler-broker (Windows service)    │── HCS ───▶ │                              │
-│  the only part that calls HCS           │  create,   └──────────────────────────────┘
-│  7 typed requests, fixed VM template    │  start, stop
-└─────────────────────────────────────────┘
+```mermaid
+flowchart TB
+  subgraph WIN["🪟 Windows · your account, no admin rights"]
+    direction LR
+    tools["<b>Your tools</b><br/>docker CLI<br/>Compose · SDKs"]
+    engine["<b>hyperbutler engine</b><br/>Docker API relay<br/>user-mode network: NAT, DNS, ports<br/>file server for bind mounts<br/>disk-space guard · status · window"]
+    tools -- "named pipe" --> engine
+  end
+  subgraph SVC["🔒 Windows service · SYSTEM"]
+    broker["<b>hyperbutler broker</b><br/>the only part that calls HCS<br/>7 typed requests<br/>fixed VM template"]
+  end
+  subgraph VM["🐧 Linux VM on Hyper-V · no WSL"]
+    direction TB
+    agent["<b>hyperbutlerd</b> guest agent<br/>admits only the VM's secret"]
+    dockerd["<b>dockerd + containerd</b><br/>read-only system disk, hash-pinned<br/>sparse data disk that gives space back"]
+    agent --> dockerd
+  end
+  engine <== "Hyper-V sockets · API, network, files" ==> agent
+  engine -- "start · stop · status" --> broker
+  broker -- "HCS" --> VM
+
+  classDef eng fill:#0b2a4a,stroke:#3d9bff,color:#e8f1ff
+  classDef brk fill:#3a2a06,stroke:#f5b83d,color:#fff4dc
+  classDef box fill:#141b26,stroke:#5b6b82,color:#e8edf5
+  class engine eng
+  class broker brk
+  class tools,agent,dockerd box
 ```
 
-| Part | Runs as | What it does | Why this way |
-|---|---|---|---|
-| Engine (`hyperbutler.exe`) | you, not elevated | Relays the Docker API from a Windows named pipe to dockerd; runs the VM's network in user mode (gVisor netstack: NAT, DNS, published ports, `host.docker.internal`); serves bind mounts from `C:\` over FUSE; pauses the VM before the host disk fills; the CLI, the window and the MCP server | No virtual switch and no admin rights for daily use: the VM's traffic leaves Windows from your own process |
-| Broker service (`hyperbutler-broker.exe`) | SYSTEM, installed by the MSI | Creates, starts, stops and resizes your VM through the Host Compute Service, from a fixed template and the image next to it (hash compiled in); 7 short typed requests over a pipe only you can open | Windows lets only administrators and Hyper-V Administrators use HCS; this lets everyone else run a VM without that group. It takes no paths or command lines from you, learns who you are from the pipe, and refuses links and other owners' folders ([ADR 0004](docs/adr/0004-hcs-access-broker.md)) |
-| Guest (Linux VM) | a utility VM on HCS | `hyperbutlerd` starts dockerd and containerd and admits only connections that carry the VM's secret; `netfwd` and the FUSE client connect back to the engine | A minimal Alpine userland on a read-only, hash-pinned system disk; a sparse data disk that gives freed space back to Windows by itself |
+**Engine** (`hyperbutler.exe`), runs as you, no admin rights
+- Relays the Docker API from a Windows named pipe to dockerd in the VM.
+- Runs the VM's network in user mode (gVisor netstack): NAT, DNS, published ports,
+  `host.docker.internal`. No virtual switch.
+- Serves bind mounts from `C:\` over FUSE, and pauses the VM before the host disk fills.
+- Also the CLI, the window and the MCP server.
+
+**Broker service** (`hyperbutler-broker.exe`), a Windows service as SYSTEM, installed by the MSI
+- The only part that calls the Host Compute Service: it creates, starts, stops and
+  resizes your VM, from a fixed template and the image next to it (hash compiled in).
+- Takes 7 short, typed requests over a pipe only you can open; no paths or command lines
+  from you. It learns who you are from the pipe and refuses links and other users' folders.
+- Exists because Windows lets only administrators and Hyper-V Administrators use HCS
+  ([ADR 0004](docs/adr/0004-hcs-access-broker.md)).
+
+**Guest**, a small Linux VM on Hyper-V
+- `hyperbutlerd` starts dockerd and containerd, and admits only connections that carry
+  the VM's secret.
+- A minimal Alpine userland on a read-only, hash-pinned system disk, and a sparse data
+  disk that gives freed space back to Windows by itself.
 
 All traffic between Windows and the VM goes over Hyper-V sockets (hvsock), which only
 your account can reach for your VM. Without the broker service (the zip, or
