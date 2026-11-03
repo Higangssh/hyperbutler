@@ -266,7 +266,8 @@ func (l *brokerLease) watch(every time.Duration) {
 		case <-t.C:
 		}
 		r, err := l.c.Status()
-		switch l.note(err); {
+		err = l.note(err)
+		switch {
 		case errors.Is(err, broker.ErrLost):
 			// The connection is gone, and with it the lease: the broker terminates the VM.
 			l.log.Warn("lost the connection to the broker", "err", err)
