@@ -1163,9 +1163,8 @@ A fifth review (of c8065ae and 5fed362) ended the printed commands:
 - **Medium.** A disk the user could not open read as "a link" and was sent to
   `hyperbutler delete`: gone with the commands (a disk it cannot open is left to the
   service's message).
-- **Low.** The token handle leaked if reverting the impersonation failed; c8065ae keeps
-  it, as the thread is then destroyed and the service restarts that connection only.
-  Accepted.
+- **Low.** The token handle leaked if reverting the impersonation failed. **Fixed:** it
+  is closed on every path.
 - **Info.** The new log line holds the SID and the fixed reason, nothing more.
 
 ### Virtual account spike (M5, first try, 2026-11-03)

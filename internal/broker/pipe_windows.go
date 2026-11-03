@@ -657,11 +657,13 @@ func (p *pipePeer) DuplicateHandle(v uint64) (windows.Handle, error) {
 	if proc != 0 {
 		defer func() { _ = windows.CloseHandle(proc) }()
 	}
+	if tok != 0 {
+		defer func() { _ = tok.Close() }()
+	}
 	if err != nil {
 		return 0, err
 	}
 	tu, err := tok.GetTokenUser()
-	_ = tok.Close()
 	if err != nil {
 		return 0, fmt.Errorf("broker: client process user: %w", err)
 	}
