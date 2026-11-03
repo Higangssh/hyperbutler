@@ -141,6 +141,13 @@ func redactURL(u *url.URL) string {
 	}
 	b.WriteString(u.Host)
 	b.WriteString(u.Path)
+	if b.Len() > MaxProxyURL && u.User != nil {
+		// Escaping can triple a user name past the limit; then the mask stands for
+		// all of the user info, so the redacted form stays a valid proxy URL.
+		u2 := *u
+		u2.User = nil
+		return u.Scheme + "://***@" + strings.TrimPrefix(redactURL(&u2), u.Scheme+"://")
+	}
 	return b.String()
 }
 

@@ -3,6 +3,7 @@ package dockerenv
 import (
 	"bytes"
 	"net/netip"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -31,8 +32,17 @@ func FuzzProxyURL(f *testing.F) {
 			return
 		}
 		r := Redact(v)
-		if pw, ok := u.User.Password(); ok && len(pw) >= 3 && strings.Contains(r, pw) && !strings.Contains(u.Host, pw) && !strings.Contains(u.User.Username(), pw) && !strings.Contains(u.Scheme, pw) {
-			t.Fatalf("Redact(%q) = %q shows the password", v, r)
+		// The user info, between "://" and the first "@" (the user name is escaped, so
+		// it has none), must be the user name and the mask and nothing else. A substring
+		// search for the password finds it across "://" ("tp:" in "http:") or the mask
+		// ("0:*" in "0:***") when nothing leaked.
+		if _, ok := u.User.Password(); ok {
+			rest := strings.TrimPrefix(r, u.Scheme+"://")
+			want := url.User(u.User.Username()).String() + ":***"
+			// "***" alone when the escaped user name would pass MaxProxyURL.
+			if at := strings.Index(rest, "@"); at < 0 || rest[:at] != want && rest[:at] != "***" {
+				t.Fatalf("Redact(%q) = %q shows the password (user info is not %q)", v, r, want)
+			}
 		}
 		if strings.Contains(r, "@") && !strings.Contains(r, "***@") {
 			t.Fatalf("Redact(%q) = %q keeps user info", v, r)
