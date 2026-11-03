@@ -1233,17 +1233,27 @@ An eighth review (of c79bb24) found the limit of fixing in place:
   could write to cannot be made safe in place. **Decided:** `doctor --fix` stays (it only
   narrows, and it is enough for the common case, such as a security product's group
   inherited from `%TEMP%`), and says plainly that for a folder other accounts could
-  write to, a new folder is the safe choice. **And the attack it enabled is closed on
-  its own:** the engine reads `disk.json`, which decides whether the guest formats the
-  disk, only if it is a plain file with one link, owned by the user, whose DACL lets in
-  only them, SYSTEM and Administrators (`checkPrivateFile`, in `prepareDisk`); every
-  folder hyperbutler made since `MkdirPrivate` (2026-10-30, before the first release)
-  passes.
+  write to, a new folder is the safe choice. **And a narrower check stands on its own:**
+  the engine reads `disk.json`, which decides whether the guest formats the disk, only
+  if it is a plain file with one link, owned by the user (or Administrators or SYSTEM,
+  as what an elevated shell writes is), whose DACL lets in only them, SYSTEM and
+  Administrators; the checks and the read use one handle (`readPrivateFile`, in
+  `prepareDisk`), and a new `disk.json` is given to the user, as `data.vhdx` is. It
+  catches a folder that was made wrong or whose ACLs drifted; it cannot catch an
+  account that kept a `WRITE_DAC` handle and put the DACL back after writing, which is
+  why the advice for such a folder is a new one.
 - **Medium.** Handles opened to read before the fix keep reading. The same limit; the
   same advice.
 - **Low, fixed.** The fix reads each file's link count again before its final check;
   `hasVMAccount` reads SIDs only from allow and deny ACEs; the directory buffer is
   8-byte aligned.
+- **Open, for after v0.1.0.** With `HYPERBUTLER_HOME` or `--data` on a folder other
+  accounts may write to (developer mode has no folder check at all), more than
+  `disk.json` is trusted: `settings.json` (where the data is), `daemon.json` and
+  `daemon.applied.json` (registry mirrors), `ca-extra.pem` (trusted CAs), and in
+  developer mode `data.vhdx` itself (no owner check). The default home is private
+  (`MkdirPrivate`); the fix is a check of the home and data folders at start, the same
+  rule as the broker's.
 
 ### Virtual account spike, second and third tries (2026-11-03)
 

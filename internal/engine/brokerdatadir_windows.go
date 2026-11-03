@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -452,62 +453,91 @@ func IsDataDirError(err error) (*DataDirError, bool) {
 	return de, ok
 }
 
-// checkPrivateFile refuses path unless it is a plain file with one link, owned by this
-// user, whose DACL lets in only them, SYSTEM and Administrators (deny ACEs aside): what
-// the engine trusts it to read. disk.json decides whether the guest formats the data
-// disk, so another account able to change it could have the disk wiped.
-func checkPrivateFile(path string) error {
+// readPrivateFile reads path, at most maxFileSize bytes, if it is a plain file with one
+// link, owned by this user (or by Administrators or SYSTEM, as a file an elevated shell
+// made is), whose DACL lets in only them, SYSTEM and Administrators (deny ACEs aside):
+// what the engine trusts. The checks and the read use one handle, so the file cannot
+// be swapped in between. A missing file is os.ErrNotExist. disk.json decides whether the
+// guest formats the data disk, so another account able to change it could have the
+// disk wiped.
+func readPrivateFile(path string) ([]byte, error) {
 	tu, err := windows.GetCurrentProcessToken().GetTokenUser()
 	if err != nil {
-		return err
+		return nil, err
 	}
 	p, err := windows.UTF16PtrFromString(path)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	h, err := windows.CreateFile(p, fileReadAttributes|windows.READ_CONTROL, windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE|windows.FILE_SHARE_DELETE,
+	const fileReadData = 0x0001
+	h, err := windows.CreateFile(p, fileReadData|fileReadAttributes|windows.READ_CONTROL|windows.SYNCHRONIZE,
+		windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE|windows.FILE_SHARE_DELETE,
 		nil, windows.OPEN_EXISTING, windows.FILE_FLAG_OPEN_REPARSE_POINT|windows.FILE_FLAG_BACKUP_SEMANTICS, 0)
+	if errors.Is(err, windows.ERROR_FILE_NOT_FOUND) || errors.Is(err, windows.ERROR_PATH_NOT_FOUND) {
+		return nil, fmt.Errorf("%s: %w", path, os.ErrNotExist)
+	}
 	if err != nil {
-		return err
+		return nil, fmt.Errorf("open %s: %w", path, err)
 	}
 	defer func() { _ = windows.CloseHandle(h) }()
 	var bi windows.ByHandleFileInformation
 	if err := windows.GetFileInformationByHandle(h, &bi); err != nil {
-		return err
+		return nil, fmt.Errorf("%s: %w", path, err)
 	}
 	switch {
 	case bi.FileAttributes&(windows.FILE_ATTRIBUTE_REPARSE_POINT|windows.FILE_ATTRIBUTE_DIRECTORY) != 0:
-		return fmt.Errorf("%s is not a plain file", path)
+		return nil, fmt.Errorf("%s is not a plain file", path)
 	case bi.NumberOfLinks != 1:
-		return fmt.Errorf("%s has %d names (a hard link)", path, bi.NumberOfLinks)
+		return nil, fmt.Errorf("%s has %d names (a hard link)", path, bi.NumberOfLinks)
 	}
 	sd, err := windows.GetSecurityInfo(h, windows.SE_FILE_OBJECT, windows.OWNER_SECURITY_INFORMATION|windows.DACL_SECURITY_INFORMATION)
 	if err != nil {
-		return err
+		return nil, fmt.Errorf("%s: %w", path, err)
 	}
-	if o, _, err := sd.Owner(); err != nil || o == nil || !o.Equals(tu.User.Sid) {
-		return fmt.Errorf("%s is not yours", path)
+	trusted := func(s *windows.SID) bool {
+		return s.Equals(tu.User.Sid) || s.IsWellKnown(windows.WinLocalSystemSid) || s.IsWellKnown(windows.WinBuiltinAdministratorsSid)
+	}
+	if o, _, err := sd.Owner(); err != nil || o == nil || !trusted(o) {
+		return nil, fmt.Errorf("%s belongs to another account", path)
 	}
 	dacl, _, err := sd.DACL()
 	if err != nil || dacl == nil {
-		return fmt.Errorf("%s has no DACL (everyone may change it)", path)
+		return nil, fmt.Errorf("%s has no DACL (every account may change it)", path)
 	}
 	for i := uint32(0); i < uint32(dacl.AceCount); i++ {
 		var ace *windows.ACCESS_ALLOWED_ACE
 		if err := windows.GetAce(dacl, i, &ace); err != nil {
-			return err
+			return nil, fmt.Errorf("%s: %w", path, err)
 		}
 		switch ace.Header.AceType {
 		case 1: // access denied
 			continue
 		case 0: // access allowed
 		default:
-			return fmt.Errorf("%s has an ACE of type %d", path, ace.Header.AceType)
+			return nil, fmt.Errorf("%s has an ACE of type %d", path, ace.Header.AceType)
 		}
-		sid := (*windows.SID)(unsafe.Pointer(&ace.SidStart))
-		if !sid.Equals(tu.User.Sid) && !sid.IsWellKnown(windows.WinLocalSystemSid) && !sid.IsWellKnown(windows.WinBuiltinAdministratorsSid) {
-			return fmt.Errorf("%s can be opened by another account (%s)", path, sid)
+		if sid := (*windows.SID)(unsafe.Pointer(&ace.SidStart)); !trusted(sid) {
+			name := sid.String()
+			if a, d, _, err := sid.LookupAccount(""); err == nil {
+				name = d + `\` + a
+			}
+			return nil, fmt.Errorf("%s can be opened by another account (%s)", path, name)
 		}
 	}
-	return nil
+	buf := make([]byte, maxFileSize+1)
+	n := 0
+	for n < len(buf) {
+		var got uint32
+		if err := windows.ReadFile(h, buf[n:], &got, nil); err != nil {
+			return nil, fmt.Errorf("read %s: %w", path, err)
+		}
+		if got == 0 {
+			break
+		}
+		n += int(got)
+	}
+	if n > maxFileSize {
+		return nil, fmt.Errorf("%s is larger than %d bytes", path, maxFileSize)
+	}
+	return buf[:n], nil
 }

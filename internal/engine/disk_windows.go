@@ -111,12 +111,14 @@ func prepareDisk(l Layout, size uint64) (*dataDisk, error) {
 	path, tmp := l.DiskPath(), l.DiskPath()+".new"
 	// disk.json says whether the disk is blank, which has the guest format it: it is
 	// read only if no other account could have changed it.
-	if _, err := os.Lstat(l.DiskMetaPath()); err == nil {
-		if err := checkPrivateFile(l.DiskMetaPath()); err != nil {
-			return nil, codeErr(CodeDataDisk, fmt.Errorf("%w; hyperbutler doctor --fix limits the data folder to you, or hyperbutler delete starts over", err))
-		}
+	var meta *DiskMeta
+	b, merr := readPrivateFile(l.DiskMetaPath())
+	switch {
+	case merr == nil:
+		meta, merr = ParseDiskMeta(b)
+	case !errors.Is(merr, os.ErrNotExist):
+		return nil, codeErr(CodeDataDisk, fmt.Errorf("%w; hyperbutler doctor --fix limits the data folder to you, or hyperbutler delete starts over", merr))
 	}
-	meta, merr := LoadDiskMeta(l)
 	_, derr := os.Lstat(path)
 	switch {
 	case merr == nil && derr == nil:
@@ -156,7 +158,12 @@ func prepareDisk(l Layout, size uint64) (*dataDisk, error) {
 		return nil, codeErr(CodeDataDisk, fmt.Errorf("%s did not become a sparse file; the volume must be NTFS", tmp))
 	}
 	meta = &DiskMeta{SizeBytes: size, BlockSize: vm.DataDiskBlockSize, MetadataBytes: u.Allocated, Created: time.Now().UTC().Truncate(time.Second)}
-	if err := saveDiskMeta(l, meta); err != nil {
+	err = saveDiskMeta(l, meta)
+	if err == nil {
+		// As data.vhdx: what an elevated shell writes belongs to Administrators.
+		err = ownByUser(l.DiskMetaPath())
+	}
+	if err != nil {
 		_ = os.Remove(tmp)
 		return nil, err
 	}

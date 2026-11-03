@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -269,8 +270,8 @@ func TestFixBrokerDataDirHeldOpen(t *testing.T) {
 	}
 }
 
-// TestCheckPrivateFile: disk.json is trusted only while no other account may change it.
-func TestCheckPrivateFile(t *testing.T) {
+// TestReadPrivateFile: disk.json is trusted only while no other account may change it.
+func TestReadPrivateFile(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "d")
 	if err := MkdirPrivate(dir); err != nil {
 		t.Fatal(err)
@@ -279,13 +280,38 @@ func TestCheckPrivateFile(t *testing.T) {
 	if err := os.WriteFile(p, []byte("{}"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := checkPrivateFile(p); err != nil {
+	if _, err := readPrivateFile(p); err != nil {
 		t.Fatalf("a file in a folder hyperbutler made: %v", err)
 	}
 	if out, err := exec.Command("icacls", p, "/grant", "*S-1-1-0:M").CombinedOutput(); err != nil {
 		t.Fatalf("icacls: %v: %s", err, out)
 	}
-	if err := checkPrivateFile(p); err == nil || !strings.Contains(err.Error(), "another account") {
+	if _, err := readPrivateFile(p); err == nil || !strings.Contains(err.Error(), "another account") {
 		t.Fatalf("a disk.json Everyone may change: %v", err)
+	}
+}
+
+// TestReadPrivateFileShapes: a missing file is os.ErrNotExist; a hard link or a symbolic
+// link is refused; the content comes from the checked handle.
+func TestReadPrivateFileShapes(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "d")
+	if err := MkdirPrivate(dir); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := readPrivateFile(filepath.Join(dir, "none.json")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("missing: %v", err)
+	}
+	p := filepath.Join(dir, "disk.json")
+	if err := os.WriteFile(p, []byte(`{"v":1}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if b, err := readPrivateFile(p); err != nil || string(b) != `{"v":1}` {
+		t.Fatalf("read: %q %v", b, err)
+	}
+	if err := os.Link(p, filepath.Join(dir, "second")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := readPrivateFile(p); err == nil || !strings.Contains(err.Error(), "hard link") {
+		t.Fatalf("hard link: %v", err)
 	}
 }
