@@ -1,0 +1,33 @@
+# The project bench/compose/run.ps1 brings up: what a small web app's compose file uses.
+name: hbcompose
+
+services:
+  db:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - dbdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 1s
+      timeout: 3s
+      retries: 30
+
+  app:
+    build:
+      context: ./app
+      args:
+        GREETING: ${GREETING:-unset}
+    environment:
+      DB_HOST: db
+      APP_MESSAGE: ${APP_MESSAGE:-unset}
+    depends_on:
+      db:
+        condition: service_healthy
+    volumes:
+      - ./shared:/shared
+    ports:
+      - "${APP_PORT:-18090}:8080"
+
+volumes:
+  dbdata:

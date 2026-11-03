@@ -4,7 +4,7 @@
 
 # hyperbutler
 
-> A lightweight, Docker-compatible container runtime for Windows that doesn't need WSL.
+> Run Docker on Windows with less RAM, less disk, and no WSL.
 
 **Status: preview (v0.1.0-preview.1).** `hyperbutler start`, `stop`, `status`, `logs`, `delete`, `diagnose` and `uninstall`
 work end to end on Windows 11 Home, and the stock Windows `docker` CLI runs containers
@@ -15,8 +15,9 @@ before every release gate is met; the ones still open are listed under
 
 hyperbutler boots a minimal Linux VM directly through the Windows Host Compute Service (HCS, the
 same API WSL2 uses), runs dockerd inside it, and exposes the Docker API on a Windows named
-pipe. The stock `docker` CLI talks to that pipe through a `hyperbutler` docker context. Docker
-Compose has not been tested yet.
+pipe. The stock `docker` CLI and Docker Compose talk to that pipe through a `hyperbutler`
+docker context; `bench/compose` (build, healthchecks, service names, named volumes, bind
+mounts, published ports) passed all its checks on 2026-11-03.
 
 ## Why
 
@@ -92,10 +93,9 @@ documents.
 | Download size | the zip is 109 MB, the MSI 116 MB (snapshot of the release candidate, 2026-11-02) | ≤ 150 MB (REQ-UX-002) | Yes (measured on a local build) |
 | Soak (ADR 0003), `hyperbutler start`, incl. bind mounts and `-p` | 1 h, 12,827 docker commands, none failed: engine working set +0.56 MiB/h (median 80 MiB), Go heap +0.09 MiB/h, handles, threads and goroutines flat; no leak above about 5 MiB/h | 24 h, no positive trend | 1 h main gate: passed by hand. **24 h: not run.** It blocks the first release |
 
-What is missing for 0.1: the 24-hour soak, the installed broker service's first run on a
-clean machine (from the MSI, it replaces Hyper-V Administrators membership; the zip still
-needs the membership, see below), and Compose testing
-(`hyperbutler doctor` is in the tree for 0.2). Bind mounts from Windows paths work but are not yet fast for write-heavy
+What is missing for 0.1: the 24-hour soak, and the installed broker service's first run
+on a clean machine (from the MSI, it replaces Hyper-V Administrators membership; the zip
+still needs the membership, see below). Bind mounts from Windows paths work but are not yet fast for write-heavy
 trees: use a named volume for `node_modules`. [docs/release.md](docs/release.md) lists every
 release gate.
 
@@ -366,37 +366,47 @@ See [docs/compat.md](docs/compat.md#hostdockerinternal).
 
 ## Architecture
 
+Three parts, each with as little privilege as its job needs: the **engine**, a process
+of your own; the **broker service**, the only privileged part, which starts VMs and
+nothing else; and the **guest**, a small Linux VM that runs dockerd.
+
 ```
-docker CLI ──npipe──▶ hyperbutler (Windows) ──hvsock──▶ guest agent ─▶ dockerd/containerd
-                         │                              (minimal Linux VM on HCS)
-                         └─ HCS broker service (ADR 0004, installed by the MSI) for non-admin use
+ Windows (your account, not elevated)                    Linux VM (HCS, no WSL)
+┌─────────────────────────────────────────┐            ┌──────────────────────────────┐
+│ docker CLI / compose / SDKs / VS Code   │            │ hyperbutlerd (guest agent)   │
+│        │ \.\pipe\docker_engine_...     │            │   gates every hvsock service │
+│        ▼                                │   hvsock   │   on the VM's secret         │
+│ hyperbutler engine (hyperbutler.exe)    │◀══════════▶│ dockerd + containerd         │
+│  ├ Docker API relay ............ :2375  │            │ netfwd (network) .... :1024  │
+│  ├ network: gVisor netstack ...  :1024  │            │ share client (FUSE) . :2385  │
+│  │   (NAT, DNS, published ports)        │            │ control channel ..... :2380  │
+│  ├ file server for bind mounts . :2385  │            │                              │
+│  └ disk space guard, status, GUI        │            │ system disk: erofs, read-only│
+│        │ start / stop / status          │            │   pinned by hash             │
+│        ▼  (per-user pipe, your token)   │            │ data disk: sparse VHDX,      │
+├─────────────────────────────────────────┤            │   freed blocks go back       │
+│ hyperbutler-broker (Windows service)    │── HCS ───▶ │                              │
+│  the only part that calls HCS           │  create,   └──────────────────────────────┘
+│  7 typed requests, fixed VM template    │  start, stop
+└─────────────────────────────────────────┘
 ```
 
-- **Data plane, as you.** The engine runs in your own process with no elevation: the Docker
-  API relay, a user-mode network stack (gVisor netstack) and a FUSE file server, each over
-  a Hyper-V socket (hvsock) to the guest.
-- **Guest.** A minimal Alpine userland on a read-only erofs system disk, pinned by hash, and
-  a sparse VHDX data disk whose freed blocks go back to the host.
-- **Control plane, privileged and small.** Windows lets only administrators and Hyper-V
-  Administrators use HCS. The broker service, which the MSI installs, stands in for that
-  group, the way `wslservice` does for WSL: it is the only part that calls HCS, and it
-  accepts seven short, typed requests (version, start, stop, status, resize, data
-  location, pause) over a per-user pipe. It takes no paths, command lines or
-  HCS documents from the caller and builds the VM from a fixed template; it learns who you
-  are from the pipe's client token, not from the message; it takes the data directory as an
-  open handle and refuses links, other owners and network drives; it boots only the image
-  next to itself whose hash is compiled in; and it lets only your account reach your VM's
-  hvsock services. The connection that started a VM is its lease. These rules exist
-  because they are where privileged container services have had local privilege
-  escalations before (ADR 0004, Options). `hyperbutler start` goes through the service
-  whenever it is installed (starting it if it is stopped), and otherwise runs the VM in
-  its own process, which needs the group or elevation (`--backend hcs`, developer mode;
-  `hyperbutler doctor` says which applies). Status: the service, its per-user pipes and
-  the MSI that installs it are in the tree; the installer's run on a clean machine is
-  still to do (docs/install.md).
+| Part | Runs as | What it does | Why this way |
+|---|---|---|---|
+| Engine (`hyperbutler.exe`) | you, not elevated | Relays the Docker API from a Windows named pipe to dockerd; runs the VM's network in user mode (gVisor netstack: NAT, DNS, published ports, `host.docker.internal`); serves bind mounts from `C:\` over FUSE; pauses the VM before the host disk fills; the CLI, the window and the MCP server | No virtual switch and no admin rights for daily use: the VM's traffic leaves Windows from your own process |
+| Broker service (`hyperbutler-broker.exe`) | SYSTEM, installed by the MSI | Creates, starts, stops and resizes your VM through the Host Compute Service, from a fixed template and the image next to it (hash compiled in); 7 short typed requests over a pipe only you can open | Windows lets only administrators and Hyper-V Administrators use HCS; this lets everyone else run a VM without that group. It takes no paths or command lines from you, learns who you are from the pipe, and refuses links and other owners' folders ([ADR 0004](docs/adr/0004-hcs-access-broker.md)) |
+| Guest (Linux VM) | a utility VM on HCS | `hyperbutlerd` starts dockerd and containerd and admits only connections that carry the VM's secret; `netfwd` and the FUSE client connect back to the engine | A minimal Alpine userland on a read-only, hash-pinned system disk; a sparse data disk that gives freed space back to Windows by itself |
 
-Design decisions are recorded in [docs/adr](docs/adr). How releases are built and checked
-is in [docs/release.md](docs/release.md).
+All traffic between Windows and the VM goes over Hyper-V sockets (hvsock), which only
+your account can reach for your VM. Without the broker service (the zip, or
+`--backend hcs`), the engine starts the VM in its own process, which needs Hyper-V
+Administrators or elevation; `hyperbutler doctor` says which applies.
+
+How it compares in numbers: [Measured against Docker Desktop](#measured-against-docker-desktop).
+Design decisions are in [docs/adr](docs/adr): the VM runtime (0002), the guest image (0005),
+networking (0006), bind mounts (0007) and the broker (0004).
+
+How releases are built and checked is in [docs/release.md](docs/release.md).
 
 ## Why Go, not Rust?
 
