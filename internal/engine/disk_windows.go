@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"time"
 	"unsafe"
 
@@ -72,6 +73,34 @@ func ownByUser(path string) error {
 		return err
 	}
 	return windows.SetNamedSecurityInfo(path, windows.SE_FILE_OBJECT, windows.OWNER_SECURITY_INFORMATION, tu.User.Sid, nil, nil, nil)
+}
+
+// writeDiskMeta saves disk.json and makes it the user's alone: owned by the user (what
+// an elevated shell writes belongs to Administrators) with a protected DACL for them,
+// SYSTEM and Administrators. prepareDisk reads it only so (readPrivateFile), and the data
+// folder may be one made before and open to others: without its own DACL the file would
+// inherit that and the next start would refuse it.
+func writeDiskMeta(l Layout, meta *DiskMeta) error {
+	if err := saveDiskMeta(l, meta); err != nil {
+		return err
+	}
+	tu, err := windows.GetCurrentProcessToken().GetTokenUser()
+	if err != nil {
+		return err
+	}
+	sd, err := windows.SecurityDescriptorFromString("D:P(A;;FA;;;" + tu.User.Sid.String() + ")(A;;FA;;;SY)(A;;FA;;;BA)")
+	if err != nil {
+		return err
+	}
+	dacl, _, err := sd.DACL()
+	if err != nil {
+		return err
+	}
+	err = windows.SetNamedSecurityInfo(l.DiskMetaPath(), windows.SE_FILE_OBJECT,
+		windows.OWNER_SECURITY_INFORMATION|windows.DACL_SECURITY_INFORMATION|windows.PROTECTED_DACL_SECURITY_INFORMATION,
+		tu.User.Sid, nil, dacl, nil)
+	runtime.KeepAlive(sd)
+	return err
 }
 
 func isReparse(path string) bool {
@@ -158,12 +187,7 @@ func prepareDisk(l Layout, size uint64) (*dataDisk, error) {
 		return nil, codeErr(CodeDataDisk, fmt.Errorf("%s did not become a sparse file; the volume must be NTFS", tmp))
 	}
 	meta = &DiskMeta{SizeBytes: size, BlockSize: vm.DataDiskBlockSize, MetadataBytes: u.Allocated, Created: time.Now().UTC().Truncate(time.Second)}
-	err = saveDiskMeta(l, meta)
-	if err == nil {
-		// As data.vhdx: what an elevated shell writes belongs to Administrators.
-		err = ownByUser(l.DiskMetaPath())
-	}
-	if err != nil {
+	if err := writeDiskMeta(l, meta); err != nil {
 		_ = os.Remove(tmp)
 		return nil, err
 	}

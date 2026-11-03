@@ -356,3 +356,30 @@ func ownTree(t *testing.T, root string) {
 		t.Fatal(err)
 	}
 }
+
+// TestWriteDiskMetaPrivate: disk.json written into a data folder made before (one that
+// lets Everyone in) gets its own DACL, so the next start reads it instead of refusing it.
+func TestWriteDiskMetaPrivate(t *testing.T) {
+	parent := filepath.Join(t.TempDir(), "p")
+	if err := MkdirPrivate(parent); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := exec.Command("icacls", parent, "/grant", "*S-1-1-0:(OI)(CI)R").CombinedOutput(); err != nil {
+		t.Fatalf("icacls: %v: %s", err, out)
+	}
+	dir := filepath.Join(parent, "data")
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	l := Layout{Home: dir, Data: dir}
+	if err := writeDiskMeta(l, &DiskMeta{SizeBytes: MinDiskSize, BlockSize: 1 << 20}); err != nil {
+		t.Fatal(err)
+	}
+	b, err := readPrivateFile(l.DiskMetaPath())
+	if err != nil {
+		t.Fatalf("disk.json in a folder open to Everyone: %v", err)
+	}
+	if _, err := ParseDiskMeta(b); err != nil {
+		t.Fatal(err)
+	}
+}
