@@ -51,12 +51,16 @@ func msgArgs(kv ...string) map[string]string {
 func cmdDoctor(args []string, stdout, stderr io.Writer) error {
 	fs := newFlagSet("doctor", stderr)
 	asJSON := fs.Bool("json", false, fmt.Sprintf("print JSON (schema %d)", SchemaVersion))
+	fix := fs.Bool("fix", false, "first fix the data folder's access for the broker service, where you may (ADR 0004 rule 2)")
 	if err := parseArgs(fs, args); err != nil {
 		return err
 	}
 	in, err := openInstallLenient()
 	if err != nil {
 		return err
+	}
+	if *fix {
+		fixDataDir(in, stderr)
 	}
 	r := runDoctor(in)
 	if *asJSON {
@@ -384,6 +388,30 @@ func warnCredHelpers(stderr io.Writer) {
 	for _, p := range probs {
 		_, _ = fmt.Fprintf(stderr, "hyperbutler: warning: %s\n        %s\n", p.Message, p.Fix)
 	}
+}
+
+// fixDataDir runs engine.FixBrokerDataDir on the data folder, unless hyperbutler runs
+// (the disk is in use), and says what it did on w.
+func fixDataDir(in *install, w io.Writer) {
+	dir := in.l.Data
+	if _, err := os.Lstat(dir); err != nil {
+		_, _ = fmt.Fprintf(w, "doctor --fix: %s does not exist yet; hyperbutler makes it as the broker service wants it\n", dir)
+		return
+	}
+	if up, _ := in.running(); up {
+		_, _ = fmt.Fprintln(w, "doctor --fix: hyperbutler is running; stop it first (hyperbutler stop)")
+		return
+	}
+	before := engine.CheckBrokerDataDir(dir)
+	if _, ok := engine.IsDataDirError(before); !ok {
+		_, _ = fmt.Fprintf(w, "doctor --fix: %s needs no fix\n", dir)
+		return
+	}
+	if err := engine.FixBrokerDataDir(dir); err != nil {
+		_, _ = fmt.Fprintf(w, "doctor --fix: %v\n", err)
+		return
+	}
+	_, _ = fmt.Fprintf(w, "doctor --fix: limited %s to you, SYSTEM and Administrators\n", dir)
 }
 
 // dataDirCheck runs the broker service's data directory check (ADR 0004 rule 2) on dir,

@@ -5,26 +5,15 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"syscall"
 	"testing"
 )
 
-// runFix runs one of a fix's commands as a user pastes it into cmd.
-func runFix(t *testing.T, c string) {
-	t.Helper()
-	cmd := exec.Command("cmd")
-	cmd.SysProcAttr = &syscall.SysProcAttr{CmdLine: "cmd /c " + c}
-	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("the fix %s: %v: %s", c, err, out)
-	}
-}
-
-// TestCheckBrokerDataDir: a folder hyperbutler made passes; one that inherits access for
-// Everyone, one with Everyone set on itself and its disk, and one whose disk alone has it
-// are refused with a fix whose commands make it pass, and the folder is closed after the
-// first one already. A folder with a junction in it gets no command, and nothing past
-// the junction changes.
-func TestCheckBrokerDataDir(t *testing.T) {
+// TestFixBrokerDataDir: a folder hyperbutler made passes; folders that inherit access for
+// Everyone, have it set on themselves or on their disk, or hold a conditional ACE are
+// refused as fixable, and FixBrokerDataDir makes them pass. A hard-linked disk is not
+// fixed (the other name's file keeps its ACL), and a folder swapped for a junction after
+// the check is refused, the junction's target untouched.
+func TestFixBrokerDataDir(t *testing.T) {
 	// A temp folder itself may inherit other groups' access, so the test's parent is
 	// made as hyperbutler makes the data directory.
 	parent := filepath.Join(t.TempDir(), "p q")
@@ -55,71 +44,28 @@ func TestCheckBrokerDataDir(t *testing.T) {
 		}
 		return p
 	}
+	aclOf := func(p string) string {
+		t.Helper()
+		out, err := exec.Command("icacls", p).CombinedOutput()
+		if err != nil {
+			t.Fatalf("icacls %s: %v: %s", p, err, out)
+		}
+		return strings.ReplaceAll(string(out), p, "")
+	}
 
-	// inherited: inherits Everyone from a parent that grants it; no disk yet.
 	gp := mkdir(filepath.Join(parent, "gp"))
 	icacls(gp, "/grant", "*S-1-1-0:(OI)(CI)R")
 	inherited := mkdir(filepath.Join(gp, "data"))
-	// explicit: Everyone set on the folder itself and on its disk.
+	writeDisk(inherited)
 	explicit := mkdir(filepath.Join(parent, "explicit"))
 	icacls(explicit, "/grant", "*S-1-1-0:(OI)(CI)R")
 	icacls(writeDisk(explicit), "/grant", "*S-1-1-0:F")
-	// diskOnly: the folder passes, its disk has Everyone set on it.
 	diskOnly := mkdir(filepath.Join(parent, "diskonly"))
 	disk := writeDisk(diskOnly)
 	if err := CheckBrokerDataDir(diskOnly); err != nil {
 		t.Fatalf("a folder and disk of the user's: %v", err)
 	}
 	icacls(disk, "/grant", "*S-1-1-0:F")
-
-	for _, c := range []struct {
-		dir, reason string
-		cmds        int
-	}{
-		{inherited, "DACL grants access to another account", 1},
-		{explicit, "DACL grants access to another account", 3},
-		{diskOnly, "its data disk DACL grants access to another account", 2},
-	} {
-		de, ok := IsDataDirError(CheckBrokerDataDir(c.dir))
-		if !ok {
-			t.Fatalf("%s: passed", c.dir)
-		}
-		if de.Dir != c.dir || !strings.HasPrefix(de.Reason, c.reason) || len(de.Commands) != c.cmds || !strings.Contains(de.Error(), c.dir) {
-			t.Fatalf("%s: refusal %+v", c.dir, de)
-		}
-		for i, cmd := range de.Commands {
-			if !strings.Contains(de.Fix, cmd) || strings.Contains(cmd, "/T") {
-				t.Errorf("%s: command %q (Fix %q)", c.dir, cmd, de.Fix)
-			}
-			runFix(t, cmd)
-			if i == 0 && c.dir == inherited {
-				// The first command already closes what the folder inherited: no
-				// window in which it is wider than before. (Grants set on the folder
-				// itself, as explicit's, were there before and go with the second.)
-				if de2, ok := IsDataDirError(CheckBrokerDataDir(c.dir)); ok && !strings.HasPrefix(de2.Reason, "its data disk") {
-					t.Errorf("%s after the first command: %v", c.dir, de2)
-				}
-			}
-		}
-		if err := CheckBrokerDataDir(c.dir); err != nil {
-			t.Fatalf("%s after the fix: %v", c.dir, err)
-		}
-	}
-
-	// hardlinked: the disk is a second name of a file outside; the fix must not act on it.
-	hardlinked := mkdir(filepath.Join(gp, "hardlinked"))
-	other := filepath.Join(t.TempDir(), "other.bin")
-	if err := os.WriteFile(other, nil, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	icacls(other, "/grant", "*S-1-1-0:R")
-	if out, err := exec.Command("cmd", "/c", "mklink", "/H", filepath.Join(hardlinked, "data.vhdx"), other).CombinedOutput(); err != nil {
-		t.Fatalf("mklink /H: %v: %s", err, out)
-	}
-	if de, ok := IsDataDirError(CheckBrokerDataDir(hardlinked)); !ok || de.Commands != nil || !strings.Contains(de.Fix, "hyperbutler delete") {
-		t.Fatalf("a hard-linked disk: %+v", de)
-	}
-	// conditional: an ACE icacls cannot remove gets words only.
 	conditional := mkdir(filepath.Join(parent, "conditional"))
 	ps := `$a = Get-Acl -LiteralPath $env:HB_DIR; $a.SetSecurityDescriptorSddlForm($a.Sddl + '(XA;OICI;FA;;;BU;(Member_of {SID(BA)}))'); Set-Acl -LiteralPath $env:HB_DIR -AclObject $a`
 	cmd := exec.Command("powershell", "-NoProfile", "-Command", ps)
@@ -127,68 +73,75 @@ func TestCheckBrokerDataDir(t *testing.T) {
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("Set-Acl: %v: %s", err, out)
 	}
-	if de, ok := IsDataDirError(CheckBrokerDataDir(conditional)); !ok || de.Commands != nil || !strings.HasPrefix(de.Reason, "DACL has an ACE of type") {
-		t.Fatalf("a conditional ACE: %+v", de)
+
+	for _, c := range []struct{ dir, reason string }{
+		{inherited, "DACL grants access to another account"},
+		{explicit, "DACL grants access to another account"},
+		{diskOnly, "its data disk DACL grants access to another account"},
+		{conditional, "DACL has an ACE of type"},
+	} {
+		cerr := CheckBrokerDataDir(c.dir)
+		de, ok := IsDataDirError(cerr)
+		if !ok {
+			t.Fatalf("%s: %v", c.dir, cerr)
+		}
+		if !de.Fixable || !strings.HasPrefix(de.Reason, c.reason) || !strings.Contains(de.Fix, "doctor --fix") || strings.Contains(de.Fix, "icacls") {
+			t.Fatalf("%s: refusal %+v", c.dir, de)
+		}
+		if err := FixBrokerDataDir(c.dir); err != nil {
+			t.Fatalf("%s: fix: %v", c.dir, err)
+		}
+		if err := CheckBrokerDataDir(c.dir); err != nil {
+			t.Fatalf("%s after the fix: %v", c.dir, err)
+		}
+	}
+	if acl := aclOf(filepath.Join(explicit, "data.vhdx")); strings.Contains(acl, "Everyone") {
+		t.Errorf("the disk after the fix: %s", acl)
 	}
 
-	// linked: a refused folder with a junction to a folder outside gets no command.
-	linked := mkdir(filepath.Join(gp, "linked"))
-	outside := t.TempDir()
-	keep := filepath.Join(outside, "keep")
-	if err := os.WriteFile(keep, nil, 0o600); err != nil {
+	// hardlinked: the disk is a second name of a file outside; nothing acts on it.
+	hardlinked := mkdir(filepath.Join(gp, "hardlinked"))
+	other := filepath.Join(t.TempDir(), "other.bin")
+	if err := os.WriteFile(other, nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	icacls(keep, "/grant", "*S-1-1-0:R")
-	if out, err := exec.Command("cmd", "/c", "mklink", "/J", filepath.Join(linked, "j"), outside).CombinedOutput(); err != nil {
-		t.Fatalf("mklink: %v: %s", err, out)
+	icacls(other, "/grant", "*S-1-1-0:R")
+	before := aclOf(other)
+	if out, err := exec.Command("cmd", "/c", "mklink", "/H", filepath.Join(hardlinked, "data.vhdx"), other).CombinedOutput(); err != nil {
+		t.Fatalf("mklink /H: %v: %s", err, out)
 	}
-	de, ok := IsDataDirError(CheckBrokerDataDir(linked))
-	if !ok || de.Commands != nil || !strings.Contains(de.Fix, "link") {
-		t.Fatalf("a folder with a junction: %+v", de)
+	if err := FixBrokerDataDir(hardlinked); err == nil {
+		t.Fatal("a hard-linked disk was fixed")
+	} else if de, ok := IsDataDirError(err); !ok || !strings.Contains(de.Fix, "hyperbutler delete") {
+		t.Fatalf("a hard-linked disk: %v", err)
 	}
-}
+	if after := aclOf(other); after != before {
+		t.Errorf("the other name's file changed:\n%s\n%s", before, after)
+	}
 
-// TestDataDirFix: no recursion and no following links (/L); accounts by SID; one &&
-// chain; a trailing backslash dropped; no command for a drive's root, a path a shell
-// would expand, a folder with links, a linked disk or a conditional ACE; the owner's
-// fix covers the folder and its disk, in an elevated cmd.
-func TestDataDirFix(t *testing.T) {
-	const acl, me = "DACL grants access to another account", "*S-1-5-21-1-2-3-1001"
-	fix, cmds := dataDirFix(`D:\data\`, acl, me, false, false, false, nil)
-	if len(cmds) != 1 || strings.Contains(cmds[0], `\"`) || !strings.Contains(cmds[0], me+":") {
-		t.Errorf("trailing backslash: %q", cmds)
+	// swapped: after the check, the folder is renamed and a junction of its name points
+	// at another folder of the user's with a disk; the fix refuses it.
+	swapped := mkdir(filepath.Join(gp, "swapped"))
+	if _, ok := IsDataDirError(CheckBrokerDataDir(swapped)); !ok {
+		t.Fatal("the folder to swap passed")
 	}
-	if !strings.HasSuffix(fix, cmds[0]) {
-		t.Errorf("fix %q", fix)
+	victim := filepath.Join(t.TempDir(), "victim")
+	if err := MkdirPrivate(victim); err != nil {
+		t.Fatal(err)
 	}
-	for _, d := range []string{`D:\`, `D:`, `D:\100%done`, `D:\my$data`, "D:\back`tick", `D:\a!b`} {
-		if fix, cmds := dataDirFix(d, acl, me, true, false, false, nil); cmds != nil || strings.Contains(fix, "icacls") {
-			t.Errorf("%s: %q %q", d, fix, cmds)
-		}
+	vdisk := writeDisk(victim)
+	icacls(vdisk, "/grant", "*S-1-1-0:R")
+	vbefore, vdbefore := aclOf(victim), aclOf(vdisk)
+	if err := os.Rename(swapped, swapped+".old"); err != nil {
+		t.Fatal(err)
 	}
-	for name, c := range map[string]struct {
-		reason            string
-		diskLinked, links bool
-	}{
-		"links":       {acl, false, true},
-		"linked disk": {acl, true, false},
-		"conditional": {"DACL has an ACE of type 9", false, false},
-	} {
-		if _, cmds := dataDirFix(`D:\h`, c.reason, me, true, c.diskLinked, c.links, nil); cmds != nil {
-			t.Errorf("%s: %q", name, cmds)
-		}
+	if out, err := exec.Command("cmd", "/c", "mklink", "/J", swapped, victim).CombinedOutput(); err != nil {
+		t.Fatalf("mklink /J: %v: %s", err, out)
 	}
-	fix, cmds = dataDirFix(`D:\h`, "owner is not the caller", me, true, false, false, []string{"S-1-1-0"})
-	if len(cmds) != 5 || !strings.Contains(cmds[0], `"D:\h" /setowner `+me) || !strings.Contains(cmds[1], `data.vhdx" /setowner`) ||
-		!strings.Contains(cmds[3], "/remove:g *S-1-1-0") || !strings.Contains(fix, "Run as administrator") || !strings.Contains(fix, strings.Join(cmds, " && ")) {
-		t.Errorf("owner: %q %q", fix, cmds)
+	if err := FixBrokerDataDir(swapped); err == nil {
+		t.Fatal("a junction in the folder's place was fixed")
 	}
-	for _, c := range cmds {
-		if strings.Contains(c, "/T") || !strings.HasSuffix(c, " /L") {
-			t.Errorf("%q: recursive, or without /L", c)
-		}
-	}
-	if _, cmds := dataDirFix(`D:\h`, "is a reparse point", me, false, false, false, nil); cmds != nil {
-		t.Errorf("reparse point: %q", cmds)
+	if aclOf(victim) != vbefore || aclOf(vdisk) != vdbefore {
+		t.Error("the junction's target changed")
 	}
 }

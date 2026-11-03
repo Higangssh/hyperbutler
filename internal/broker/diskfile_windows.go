@@ -59,6 +59,39 @@ func CheckDataDisk(dir windows.Handle, sid string) error {
 	return d.Close()
 }
 
+// ResetDataDisk gives the data disk below the open data directory dir a protected DACL
+// of full control for sid, SYSTEM and Administrators, dropping every other ACE: the
+// engine's fix for a disk the service refuses for its DACL. It opens the disk as the
+// service does (relative to dir, not through a reparse point), changes it only if it is
+// a plain local file with one link owned by sid, so it never acts on another file
+// through a link, and sets the DACL on the handle (no path is resolved again).
+func ResetDataDisk(dir windows.Handle, sid string) error {
+	caller, err := windows.StringToSid(sid)
+	if err != nil {
+		return err
+	}
+	h, err := openRelative(dir, DataDiskName)
+	if err != nil {
+		return fmt.Errorf("open %s: %w", DataDiskName, err)
+	}
+	defer func() { _ = windows.CloseHandle(h) }()
+	info, err := readDiskInfo(h)
+	if err != nil {
+		return fmt.Errorf("%s: %w", DataDiskName, err)
+	}
+	info.sd = nil // the DACL is what is being fixed
+	if err := checkDiskInfo(info, caller); err != nil {
+		return fmt.Errorf("%s %w", DataDiskName, err)
+	}
+	sd, err := windows.SecurityDescriptorFromString("D:P(A;;FA;;;" + sid + ")(A;;FA;;;SY)(A;;FA;;;BA)")
+	if err != nil {
+		return err
+	}
+	err = windows.SetKernelObjectSecurity(h, windows.DACL_SECURITY_INFORMATION|windows.PROTECTED_DACL_SECURITY_INFORMATION, sd)
+	runtime.KeepAlive(sd)
+	return err
+}
+
 // openDataDisk opens name below the directory handle dir with OBJ_DONT_REPARSE and
 // FILE_OPEN_REPARSE_POINT, as a non-directory file, and checks it with checkDiskInfo
 // for the caller sid. The handle shares read and write (HCS opens the disk for both)

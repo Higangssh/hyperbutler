@@ -1141,6 +1141,33 @@ A fourth review (of cf65e18 and f27e997) found, all fixed:
 - **Info.** As a service account the service never removes stale state folders (only
   in SystemTemp); they stay in its `%TEMP%`.
 
+A fifth review (of c8065ae and 5fed362) ended the printed commands:
+
+- **High. `/L` guards only a path's last element.** Between the check and the run,
+  another user who may write to the folder (the very case the fix is for) renames it and
+  puts a junction of its name to a third user's data folder; `icacls "<dir>\data.vhdx"
+  /setowner` then gives the user that disk. No command that names a path in such a folder
+  can be safe. **Fixed:** no command is printed. `hyperbutler doctor --fix` fixes the
+  folder through a handle opened without following a reparse point (a junction in its
+  place is refused), after `ValidateDataDir` found it the user's and only its DACL wrong,
+  and sets a protected DACL for the user, SYSTEM and Administrators with
+  `SetKernelObjectSecurity`, which does not rewrite what is in the folder
+  (`SetSecurityInfo` does, through hard links to files outside: a test caught it). The
+  disk is opened relative to that handle, as the service opens it, and gets the same DACL
+  on its handle only if it is a plain local file with one link owned by the user. A
+  folder owned by someone else gets words only (an administrator makes the user its
+  owner, or a new folder). `TestFixBrokerDataDir` covers a folder that inherits access,
+  one with its own ACEs, a disk with its own, a conditional ACE (the fix replaces the
+  whole DACL), a hard-linked disk (the outside file is unchanged) and the
+  rename-and-junction attack (refused, the target unchanged).
+- **Medium.** A disk the user could not open read as "a link" and was sent to
+  `hyperbutler delete`: gone with the commands (a disk it cannot open is left to the
+  service's message).
+- **Low.** The token handle leaked if reverting the impersonation failed; c8065ae keeps
+  it, as the thread is then destroyed and the service restarts that connection only.
+  Accepted.
+- **Info.** The new log line holds the SID and the fixed reason, nothing more.
+
 ### Virtual account spike (M5, first try, 2026-11-03)
 
 The installed service (v0.1.0-preview.3) was switched to `NT SERVICE\hyperbutler-broker`
