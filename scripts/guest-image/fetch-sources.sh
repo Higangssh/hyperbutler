@@ -52,13 +52,17 @@ echo "fetch-sources: distfiles mirror $DISTFILES_MIRROR"
 git init -q --bare "$git_dir"
 git --git-dir="$git_dir" remote add alpine https://gitlab.alpinelinux.org/alpine/aports.git
 git --git-dir="$git_dir" remote add github https://github.com/alpinelinux/aports.git
+# Alpine's cgit host serves the same repository. gitlab.alpinelinux.org answers CI clients
+# with 418, and the GitHub mirror can lag by days (on 2026-11-03 it stopped at 10-28, a
+# week before the linux-lts 6.18.60 commit), so this is the third way to the commit.
+git --git-dir="$git_dir" remote add cgit https://git.alpinelinux.org/aports
 fetch_commit() { # commit
     # A full (not partial) shallow fetch of one commit: about 40 MB, and git archive then
-    # needs no lazy blob fetches. Both servers allow fetching a reachable commit by hash.
-    # Both servers sometimes refuse or drop CI clients for a while, so make a few rounds
+    # needs no lazy blob fetches. Each server allows fetching a reachable commit by hash.
+    # They sometimes refuse or drop CI clients for a while, so make a few rounds
     # with a pause before giving up.
     for round in 1 2 3; do
-        for remote in alpine github; do
+        for remote in alpine github cgit; do
             if git --git-dir="$git_dir" fetch -q --depth 1 "$remote" "$1" 2>"$work/fetch.err"; then
                 # The object name is the commit hash, so the mirror cannot substitute content.
                 [ "$(git --git-dir="$git_dir" rev-parse FETCH_HEAD)" = "$1" ] || fail "fetched the wrong commit for $1"
