@@ -95,19 +95,20 @@ func openDataDisk(dir windows.Handle, name, sid string) (_ *diskFile, err error)
 }
 
 func openRelative(dir windows.Handle, name string) (windows.Handle, error) {
-	return openEntry(dir, name, diskFileAccess, windows.FILE_NON_DIRECTORY_FILE)
+	return openEntry(dir, name, diskFileAccess, windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE, windows.FILE_NON_DIRECTORY_FILE)
 }
 
 // OpenEntry opens name, a plain name below the directory handle dir, as the broker
 // opens the data disk: by the handle and the name only, never through a reparse point
 // (OBJ_DONT_REPARSE, and the reparse point itself if name is one), a file or a
-// directory, with access; it shares read and write, not delete. The engine's data
-// folder fix opens every entry of the folder with it.
-func OpenEntry(dir windows.Handle, name string, access uint32) (windows.Handle, error) {
-	return openEntry(dir, name, access, 0)
+// directory, with access and share. The engine's data folder fix opens every entry of
+// the folder with it, sharing read only: an entry someone holds open to write is
+// refused, and none can be renamed or written while the fix holds it.
+func OpenEntry(dir windows.Handle, name string, access, share uint32) (windows.Handle, error) {
+	return openEntry(dir, name, access, share, 0)
 }
 
-func openEntry(dir windows.Handle, name string, access, opts uint32) (windows.Handle, error) {
+func openEntry(dir windows.Handle, name string, access, share, opts uint32) (windows.Handle, error) {
 	if name == "" || strings.ContainsAny(name, `\/:`) || name == "." || name == ".." {
 		return 0, errors.New("not a plain file name")
 	}
@@ -129,7 +130,7 @@ func openEntry(dir windows.Handle, name string, access, opts uint32) (windows.Ha
 		iosb windows.IO_STATUS_BLOCK
 	)
 	err = windows.NtCreateFile(&h, access, &oa, &iosb, nil, 0,
-		windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE,
+		share,
 		windows.FILE_OPEN,
 		opts|windows.FILE_OPEN_REPARSE_POINT|windows.FILE_SYNCHRONOUS_IO_NONALERT,
 		0, 0)

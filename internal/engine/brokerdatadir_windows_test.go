@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"golang.org/x/sys/windows"
 )
 
 // TestFixBrokerDataDir: a folder hyperbutler made passes; folders that inherit access for
@@ -221,5 +223,48 @@ func TestFixBrokerDataDirEntries(t *testing.T) {
 		if !ok || de.Fixable || !strings.Contains(de.Fix, "drive's root") {
 			t.Errorf("%s: %+v", root, de)
 		}
+	}
+}
+
+// TestFixBrokerDataDirHeldOpen: an entry another program holds open to write is refused
+// (its handle would outlive the new DACL), and fixed once it is closed; a folder named by
+// its short (8.3) path is the same folder.
+func TestFixBrokerDataDirHeldOpen(t *testing.T) {
+	base := filepath.Join(t.TempDir(), "b")
+	if err := MkdirPrivate(base); err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(base, "a long folder name")
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	meta := filepath.Join(dir, "disk.json")
+	if err := os.WriteFile(meta, []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := exec.Command("icacls", dir, "/grant", "*S-1-1-0:(OI)(CI)F", "/T").CombinedOutput(); err != nil {
+		t.Fatalf("icacls: %v: %s", err, out)
+	}
+	w, err := os.OpenFile(meta, os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if de, ok := IsDataDirError(FixBrokerDataDir(dir)); !ok || !strings.Contains(de.Reason, "open to write") {
+		t.Fatalf("an entry held open to write: %+v", de)
+	}
+	_ = w.Close()
+
+	short := dir
+	if u, err := windows.UTF16PtrFromString(dir); err == nil {
+		buf := make([]uint16, windows.MAX_PATH)
+		if n, err := windows.GetShortPathName(u, &buf[0], uint32(len(buf))); err == nil && n > 0 {
+			short = windows.UTF16ToString(buf[:n])
+		}
+	}
+	if err := FixBrokerDataDir(short); err != nil {
+		t.Fatalf("fix by %s: %v", short, err)
+	}
+	if err := CheckBrokerDataDir(dir); err != nil {
+		t.Fatal(err)
 	}
 }

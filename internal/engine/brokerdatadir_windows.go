@@ -66,7 +66,13 @@ func openDirForFix(dir string, fix bool) (windows.Handle, error) {
 	if fix {
 		access |= windows.WRITE_DAC
 	}
-	return windows.CreateFile(p, access, windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE|windows.FILE_SHARE_DELETE, nil,
+	share := uint32(windows.FILE_SHARE_READ | windows.FILE_SHARE_WRITE | windows.FILE_SHARE_DELETE)
+	if fix {
+		// Read only: a folder someone holds open to add files is refused, and while the
+		// fix holds it, it cannot be renamed nor opened to add files.
+		share = windows.FILE_SHARE_READ
+	}
+	return windows.CreateFile(p, access, share, nil,
 		windows.OPEN_EXISTING, windows.FILE_FLAG_BACKUP_SEMANTICS|windows.FILE_FLAG_OPEN_REPARSE_POINT, 0)
 }
 
@@ -136,7 +142,13 @@ func checkBrokerDataDir(dir string, fix bool) error {
 		return problem
 	}
 
-	// Fix: check every entry, holding each open, then set the DACLs on those handles.
+	// Fix. The folder first: ValidateDataDir found it the user's, and narrowing it ends
+	// other users' adding entries by path. Then every entry, checked and held open
+	// before any is changed; then their DACLs, on those handles. An entry that appeared
+	// in between is caught by listing the tree again.
+	if err := setPrivate(h, tu.User.Sid, true); err != nil {
+		return fmt.Errorf("engine: limit the access of %s: %w", dir, err)
+	}
 	entries, ferr := collectEntries(h, tu.User.Sid)
 	defer func() {
 		for _, e := range entries {
@@ -146,15 +158,52 @@ func checkBrokerDataDir(dir string, fix bool) error {
 	if ferr != nil {
 		return &DataDirError{Dir: dir, Reason: ferr.Error(), Fix: fixEntry, Err: ferr}
 	}
-	if err := setPrivate(h, tu.User.Sid, true); err != nil {
-		return fmt.Errorf("engine: limit the access of %s: %w", dir, err)
-	}
 	for _, e := range entries {
 		if err := setPrivate(e.h, tu.User.Sid, e.dir); err != nil {
 			return fmt.Errorf("engine: limit the access of %s: %w", filepath.Join(dir, e.name), err)
 		}
 	}
-	return checkBrokerDataDir(dir, false)
+	if extra, err := newEntries(h, entries); err != nil || extra != "" {
+		if err == nil {
+			err = fmt.Errorf("%s appeared while the fix ran", extra)
+		}
+		return &DataDirError{Dir: dir, Reason: err.Error(), Fix: fixEntry + " (another account may be writing to it)", Err: err}
+	}
+	// The final check on the held handle: the path is not resolved again.
+	if err := broker.ValidateDataDir(h, sid); err != nil {
+		return &DataDirError{Dir: dir, Reason: strings.TrimPrefix(err.Error(), "broker: data location: "), Fix: fixOther, Err: err}
+	}
+	if dp := checkDataDisk(h, sid); dp != nil {
+		return &DataDirError{Dir: dir, Reason: "its data disk " + dp.reason, Fix: fixDisk, Err: dp.err}
+	}
+	return nil
+}
+
+// newEntries lists the tree below h again, through the held directory handles, and
+// returns the first name not among entries.
+func newEntries(h windows.Handle, entries []entry) (string, error) {
+	known := make(map[string]bool, len(entries))
+	for _, e := range entries {
+		known[strings.ToLower(e.name)] = true
+	}
+	dirs := []entry{{h: h}}
+	for _, e := range entries {
+		if e.dir {
+			dirs = append(dirs, e)
+		}
+	}
+	for _, d := range dirs {
+		names, err := dirNames(d.h)
+		if err != nil {
+			return "", fmt.Errorf("cannot list %s again: %w", relOrDot(d.name), err)
+		}
+		for _, n := range names {
+			if name := filepath.Join(d.name, n); !known[strings.ToLower(name)] {
+				return name, nil
+			}
+		}
+	}
+	return "", nil
 }
 
 // diskProblem is a data disk refusal: the rule's reason, and the error.
@@ -201,9 +250,18 @@ func collectEntries(h windows.Handle, me *windows.SID) ([]entry, error) {
 				return fmt.Errorf("more than %d entries", maxFixEntries)
 			}
 			name := filepath.Join(rel, n)
-			eh, err := broker.OpenEntry(parent, n, fileListDirectory|fileTraverse|fileReadAttributes|windows.READ_CONTROL|windows.WRITE_DAC|windows.SYNCHRONIZE)
+			// FILE_READ_DATA (FILE_LIST_DIRECTORY) makes the open take part in sharing;
+			// sharing read only refuses an entry someone holds open to write.
+			eh, err := broker.OpenEntry(parent, n, fileListDirectory|fileReadAttributes|windows.READ_CONTROL|windows.WRITE_DAC|windows.SYNCHRONIZE, windows.FILE_SHARE_READ)
 			if err != nil {
-				return fmt.Errorf("cannot open %s (in use, or not yours): %w", name, err)
+				why := "cannot open it"
+				switch {
+				case errors.Is(err, windows.STATUS_SHARING_VIOLATION):
+					why = "another program holds it open to write (stop hyperbutler, or the program)"
+				case errors.Is(err, windows.STATUS_ACCESS_DENIED):
+					why = "you may not read it or change its access"
+				}
+				return fmt.Errorf("%s: %s: %w", name, why, err)
 			}
 			var bi windows.ByHandleFileInformation
 			if err := windows.GetFileInformationByHandle(eh, &bi); err != nil {
@@ -260,28 +318,41 @@ func dirNames(h windows.Handle) ([]string, error) {
 			return nil, err
 		}
 		class = windows.FileFullDirectoryInfo
-		// FILE_FULL_DIR_INFO: NextEntryOffset at 0, FileNameLength at 60, FileName at 68.
-		for off := 0; ; {
-			if off+68 > len(buf) {
-				return nil, errors.New("bad directory information")
-			}
-			next := int(binary.LittleEndian.Uint32(buf[off:]))
-			nlen := int(binary.LittleEndian.Uint32(buf[off+60:]))
-			if off+68+nlen > len(buf) || nlen%2 != 0 {
-				return nil, errors.New("bad directory information")
-			}
-			u := make([]uint16, nlen/2)
-			for i := range u {
-				u[i] = binary.LittleEndian.Uint16(buf[off+68+2*i:])
-			}
-			if n := windows.UTF16ToString(u); n != "." && n != ".." {
-				names = append(names, n)
-			}
-			if next == 0 {
-				break
-			}
-			off += next
+		got, err := parseFullDirInfo(buf)
+		if err != nil {
+			return nil, err
 		}
+		names = append(names, got...)
+	}
+}
+
+// parseFullDirInfo reads the names (not . and ..) from a buffer of FILE_FULL_DIR_INFO
+// records: NextEntryOffset at 0, FileNameLength at 60, FileName at 68.
+func parseFullDirInfo(buf []byte) ([]string, error) {
+	var names []string
+	for off := 0; ; {
+		if off < 0 || off+68 > len(buf) {
+			return nil, errors.New("bad directory information")
+		}
+		next := int(binary.LittleEndian.Uint32(buf[off:]))
+		nlen := int(binary.LittleEndian.Uint32(buf[off+60:]))
+		if nlen%2 != 0 || nlen > len(buf)-off-68 {
+			return nil, errors.New("bad directory information")
+		}
+		u := make([]uint16, nlen/2)
+		for i := range u {
+			u[i] = binary.LittleEndian.Uint16(buf[off+68+2*i:])
+		}
+		if n := windows.UTF16ToString(u); n != "." && n != ".." {
+			names = append(names, n)
+		}
+		if next == 0 {
+			return names, nil
+		}
+		if next < 68 || next > len(buf)-off {
+			return nil, errors.New("bad directory information")
+		}
+		off += next
 	}
 }
 
@@ -322,12 +393,19 @@ func setPrivate(h windows.Handle, sid *windows.SID, dir bool) error {
 	return err
 }
 
-// samePathName reports whether final, a handle's final path (\\?\C:\...), names dir.
+// samePathName reports whether final, a handle's final path (\\?\C:\...), names dir,
+// which may be written with a \\?\ prefix or with short (8.3) names.
 func samePathName(final, dir string) bool {
 	final = strings.TrimPrefix(final, `\\?\`)
-	abs, err := filepath.Abs(dir)
+	abs, err := filepath.Abs(strings.TrimPrefix(dir, `\\?\`))
 	if err != nil {
 		return false
+	}
+	if u, err := windows.UTF16PtrFromString(abs); err == nil {
+		buf := make([]uint16, windows.MAX_LONG_PATH)
+		if n, err := windows.GetLongPathName(u, &buf[0], uint32(len(buf))); err == nil && n > 0 && int(n) < len(buf) {
+			abs = windows.UTF16ToString(buf[:n])
+		}
 	}
 	return strings.EqualFold(filepath.Clean(final), filepath.Clean(abs))
 }

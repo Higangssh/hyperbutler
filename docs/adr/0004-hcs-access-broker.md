@@ -1186,6 +1186,24 @@ A sixth review (of f8386d2) found, all fixed:
   says what it could not do; it refuses an entry a VM uses (its disk has a VM account's
   ACE) rather than removing that ACE.
 
+A seventh review (of 152e1a2) found races, all fixed:
+
+- **Medium-high. Entries made during the walk** (by another user who may write to the
+  folder) were neither checked nor changed. **Fixed:** the folder is narrowed first
+  (ValidateDataDir found it the user's), which ends adding entries by path; after the
+  entries are set, the tree is listed again through the held handles, and a name not
+  seen before fails the fix.
+- **Medium. A handle opened to write before the fix keeps writing after it** (access is
+  checked at open). **Fixed:** the folder and every entry are opened sharing read only,
+  so one someone holds open to write is refused ("another program holds it open to
+  write"), and none can be renamed or opened to write while the fix holds them.
+- **Low.** The final check reopened the path; it now runs on the held handle. Short
+  (8.3) and `\?\` spellings of the folder are the same folder. Entries are opened with
+  no more access than needed, and a refusal says whether the entry is in use or not
+  readable.
+- **Test gap.** The directory record parser is split out, tested and fuzzed
+  (`FuzzParseFullDirInfo`).
+
 ### Virtual account spike (M5, first try, 2026-11-03)
 
 The installed service (v0.1.0-preview.3) was switched to `NT SERVICE\hyperbutler-broker`
