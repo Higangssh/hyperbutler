@@ -72,11 +72,22 @@ func TestFixBrokerDataDir(t *testing.T) {
 	}
 	icacls(disk, "/grant", "*S-1-1-0:F")
 	conditional := mkdir(filepath.Join(parent, "conditional"))
-	ps := `$a = Get-Acl -LiteralPath $env:HB_DIR; $a.SetSecurityDescriptorSddlForm($a.Sddl + '(XA;OICI;FA;;;BU;(Member_of {SID(BA)}))'); Set-Acl -LiteralPath $env:HB_DIR -AclObject $a`
-	cmd := exec.Command("powershell", "-NoProfile", "-Command", ps)
-	cmd.Env = append(os.Environ(), "HB_DIR="+conditional)
-	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("Set-Acl: %v: %s", err, out)
+	// A conditional (callback) ACE, which a standard user may set on a folder of theirs
+	// and icacls cannot remove: appended to the folder's DACL as SDDL.
+	cur, err := windows.GetNamedSecurityInfo(conditional, windows.SE_FILE_OBJECT, windows.DACL_SECURITY_INFORMATION)
+	if err != nil {
+		t.Fatal(err)
+	}
+	withXA, err := windows.SecurityDescriptorFromString(cur.String() + "(XA;OICI;FA;;;BU;(Member_of {SID(BA)}))")
+	if err != nil {
+		t.Fatal(err)
+	}
+	xa, _, err := withXA.DACL()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := windows.SetNamedSecurityInfo(conditional, windows.SE_FILE_OBJECT, windows.DACL_SECURITY_INFORMATION, nil, nil, xa, nil); err != nil {
+		t.Fatal(err)
 	}
 
 	for _, c := range []struct{ dir, reason string }{
