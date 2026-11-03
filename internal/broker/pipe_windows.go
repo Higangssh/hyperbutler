@@ -340,11 +340,7 @@ func (p *pipeInstance) do(deadline time.Time, start func(ov *windows.Overlapped)
 	}
 	wait := uint32(windows.INFINITE)
 	if !deadline.IsZero() {
-		d := time.Until(deadline)
-		if d < 0 {
-			d = 0
-		}
-		wait = uint32(d / time.Millisecond)
+		wait = waitMillis(time.Until(deadline))
 	}
 	which, werr := windows.WaitForMultipleObjects([]windows.Handle{ev, p.stop}, false, wait)
 	if werr == nil && which == windows.WAIT_OBJECT_0 {

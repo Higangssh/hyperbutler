@@ -108,6 +108,9 @@ func (c *pipeClient) Close() error {
 // Fd is the pipe handle, for checkPipeOwner.
 func (c *pipeClient) Fd() uintptr { return uintptr(c.inst.h) }
 
+// The deadlines apply to the next Read or Write, which samples them when it starts: set
+// them before the operation, from the goroutine that does it (Client.Do does, under its
+// lock). They do not wake an operation already waiting; Close does.
 func (c *pipeClient) SetDeadline(t time.Time) error {
 	c.inst.readDeadline, c.inst.writeDeadline = t, t
 	return nil
