@@ -1,14 +1,18 @@
 package engine
 
 import (
+	"encoding/binary"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"runtime"
 	"strings"
+	"unsafe"
 
 	"golang.org/x/sys/windows"
 
 	"github.com/Higangssh/hyperbutler/internal/broker"
+	"github.com/Higangssh/hyperbutler/internal/imageset"
 )
 
 // DataDirError is a data directory the broker service would refuse (ADR 0004 rule 2),
@@ -34,10 +38,21 @@ func (e *DataDirError) Unwrap() error { return e.Err }
 // path in it (icacls "<dir>\data.vhdx") could act on whatever another user renames or
 // links there between the check and the run. FixBrokerDataDir works through handles.
 const (
-	fixAccess = "hyperbutler doctor --fix limits the folder and its data disk to you, SYSTEM and Administrators (stop hyperbutler first)"
+	fixAccess = "hyperbutler doctor --fix limits the folder and everything in it to you, SYSTEM and Administrators (stop hyperbutler first)"
 	fixOwner  = "an administrator makes you the owner of the folder (its Properties, Security, Advanced, Owner), then hyperbutler doctor --fix does the rest; or use a new folder: hyperbutler delete, then hyperbutler start --data <a folder that does not exist yet>"
 	fixOther  = "use a folder on a local NTFS drive that is not a link: hyperbutler delete, then hyperbutler start --data <a folder that does not exist yet>"
+	fixRoot   = "a drive's root cannot be the data folder: hyperbutler delete, then hyperbutler start --data <a folder on that drive>"
 	fixDisk   = "hyperbutler delete removes the data disk (and the images and containers in it); the next start makes a new one"
+	fixEntry  = "move or delete it yourself, then hyperbutler doctor --fix again; or use a new folder: hyperbutler delete, then hyperbutler start --data <a folder that does not exist yet>"
+)
+
+// maxFixEntries bounds the folder walk: a data folder holds a handful of files.
+const maxFixEntries = 10000
+
+const (
+	fileListDirectory  = 0x0001
+	fileTraverse       = 0x0020
+	fileReadAttributes = 0x0080
 )
 
 // openDirForFix opens dir as a directory handle, not through a reparse point, with what
@@ -47,7 +62,6 @@ func openDirForFix(dir string, fix bool) (windows.Handle, error) {
 	if err != nil {
 		return 0, err
 	}
-	const fileListDirectory, fileTraverse, fileReadAttributes = 0x0001, 0x0020, 0x0080
 	access := uint32(fileListDirectory | fileTraverse | fileReadAttributes | windows.READ_CONTROL | windows.SYNCHRONIZE)
 	if fix {
 		access |= windows.WRITE_DAC
@@ -64,16 +78,22 @@ func CheckBrokerDataDir(dir string) error {
 }
 
 // FixBrokerDataDir fixes what CheckBrokerDataDir finds, where this user may: a folder of
-// theirs that lets others in gets a protected DACL for them, SYSTEM and Administrators,
-// and a data disk of theirs gets the same (both set on handles, not through paths). It works through
-// a handle to the folder opened without following a reparse point (a link put in its
-// place is refused, not followed) and opens the disk relative to it, as the service
-// does. It returns what CheckBrokerDataDir returns afterwards.
+// theirs that lets others in, and everything in it, get a protected DACL for them,
+// SYSTEM and Administrators. It works only through handles: the folder is opened without
+// following a reparse point and must be the folder dir names (no link on the way), and
+// every entry below it is opened relative to its parent's handle, never through a link.
+// It first checks every entry (a plain directory, or a plain file with one link, owned by
+// the user, none a reparse point, none in use by a VM) and changes nothing unless all
+// pass; then it sets the DACLs on those same handles, which rewrites nothing else. It
+// returns what CheckBrokerDataDir returns afterwards.
 func FixBrokerDataDir(dir string) error {
 	return checkBrokerDataDir(dir, true)
 }
 
 func checkBrokerDataDir(dir string, fix bool) error {
+	if v := filepath.VolumeName(dir); v == "" || strings.EqualFold(filepath.Clean(dir+`\`), v+`\`) {
+		return &DataDirError{Dir: dir, Reason: "a drive's root, or not an absolute path", Fix: fixRoot}
+	}
 	tu, err := windows.GetCurrentProcessToken().GetTokenUser()
 	if err != nil {
 		return err
@@ -84,63 +104,232 @@ func checkBrokerDataDir(dir string, fix bool) error {
 		return fmt.Errorf("engine: open the data directory %s: %w", dir, err)
 	}
 	defer func() { _ = windows.CloseHandle(h) }()
+	if fix {
+		// A junction put in place of a folder on the way leads elsewhere; the handle
+		// must be the folder dir names.
+		if final, err := imageset.FinalPathOf(h); err != nil || !samePathName(final, dir) {
+			return &DataDirError{Dir: dir, Reason: fmt.Sprintf("it opens as %q, through a link", final), Fix: fixOther, Err: err}
+		}
+	}
 
+	var problem *DataDirError
 	if err := broker.ValidateDataDir(h, sid); err != nil {
 		reason := strings.TrimPrefix(err.Error(), "broker: data location: ")
-		switch {
-		case !aclReason(reason):
+		if !aclReason(reason) {
 			fx := fixOther
 			if strings.HasPrefix(reason, "owner is not the caller") {
 				fx = fixOwner
 			}
 			return &DataDirError{Dir: dir, Reason: reason, Fix: fx, Err: err}
-		case !fix:
-			return &DataDirError{Dir: dir, Reason: reason, Fix: fixAccess, Fixable: true, Err: err}
 		}
-		// The handle is the folder ValidateDataDir found ours and not a link; only its
-		// DACL was wrong.
-		sd, derr := windows.SecurityDescriptorFromString(privateSDDL(tu.User.Sid))
-		if derr != nil {
-			return derr
-		}
-		// SetKernelObjectSecurity, not SetSecurityInfo: the latter also rewrites the
-		// inherited ACEs of everything in the folder, and an entry there may be a hard
-		// link to a file outside it. The data disk is reset on its own below, after the
-		// checks that it is no link.
-		err := windows.SetKernelObjectSecurity(h, windows.DACL_SECURITY_INFORMATION|windows.PROTECTED_DACL_SECURITY_INFORMATION, sd)
-		runtime.KeepAlive(sd)
-		if err != nil {
-			return fmt.Errorf("engine: limit the access of %s: %w", dir, err)
-		}
-		if err := broker.ValidateDataDir(h, sid); err != nil {
-			return &DataDirError{Dir: dir, Reason: strings.TrimPrefix(err.Error(), "broker: data location: "), Fix: fixOther, Err: err}
+		problem = &DataDirError{Dir: dir, Reason: reason, Fix: fixAccess, Fixable: true, Err: err}
+	} else if dp := checkDataDisk(h, sid); dp != nil {
+		problem = &DataDirError{Dir: dir, Reason: "its data disk " + dp.reason, Fix: fixDisk, Err: dp.err}
+		if aclReason(dp.reason) {
+			problem.Fix, problem.Fixable = fixAccess, true
 		}
 	}
+	if problem == nil || !fix || !problem.Fixable {
+		if problem == nil {
+			return nil
+		}
+		return problem
+	}
 
-	err = broker.CheckDataDisk(h, sid)
+	// Fix: check every entry, holding each open, then set the DACLs on those handles.
+	entries, ferr := collectEntries(h, tu.User.Sid)
+	defer func() {
+		for _, e := range entries {
+			_ = windows.CloseHandle(e.h)
+		}
+	}()
+	if ferr != nil {
+		return &DataDirError{Dir: dir, Reason: ferr.Error(), Fix: fixEntry, Err: ferr}
+	}
+	if err := setPrivate(h, tu.User.Sid, true); err != nil {
+		return fmt.Errorf("engine: limit the access of %s: %w", dir, err)
+	}
+	for _, e := range entries {
+		if err := setPrivate(e.h, tu.User.Sid, e.dir); err != nil {
+			return fmt.Errorf("engine: limit the access of %s: %w", filepath.Join(dir, e.name), err)
+		}
+	}
+	return checkBrokerDataDir(dir, false)
+}
+
+// diskProblem is a data disk refusal: the rule's reason, and the error.
+type diskProblem struct {
+	reason string
+	err    error
+}
+
+// checkDataDisk runs the service's data disk check below h; nil when it passes, there is
+// no disk, or the disk cannot be opened (as while a VM runs: the service says that).
+func checkDataDisk(h windows.Handle, sid string) *diskProblem {
+	err := broker.CheckDataDisk(h, sid)
 	if err == nil || isNotFound(err) {
 		return nil
 	}
 	reason := strings.TrimPrefix(err.Error(), broker.ErrDiskRejected.Error()+": ")
 	reason = strings.TrimPrefix(reason, broker.DataDiskName+" ")
 	if !diskRuleReason(reason) {
-		// Not the disk rule (it could not be opened, as while the VM runs): the service
-		// says that itself.
 		return nil
 	}
-	if !aclReason(reason) {
-		return &DataDirError{Dir: dir, Reason: "its data disk " + reason, Fix: fixDisk, Err: err}
+	return &diskProblem{reason, err}
+}
+
+// entry is one checked file or directory below the data folder, held open.
+type entry struct {
+	h    windows.Handle
+	name string // relative to the data folder
+	dir  bool
+}
+
+// collectEntries opens every entry below the directory handle h, relative to its
+// parent's handle, and checks each; on the first that fails it returns what it opened
+// so far and an error naming the entry.
+func collectEntries(h windows.Handle, me *windows.SID) ([]entry, error) {
+	var out []entry
+	var walk func(parent windows.Handle, rel string) error
+	walk = func(parent windows.Handle, rel string) error {
+		names, err := dirNames(parent)
+		if err != nil {
+			return fmt.Errorf("cannot list %s: %w", relOrDot(rel), err)
+		}
+		for _, n := range names {
+			if len(out) >= maxFixEntries {
+				return fmt.Errorf("more than %d entries", maxFixEntries)
+			}
+			name := filepath.Join(rel, n)
+			eh, err := broker.OpenEntry(parent, n, fileListDirectory|fileTraverse|fileReadAttributes|windows.READ_CONTROL|windows.WRITE_DAC|windows.SYNCHRONIZE)
+			if err != nil {
+				return fmt.Errorf("cannot open %s (in use, or not yours): %w", name, err)
+			}
+			var bi windows.ByHandleFileInformation
+			if err := windows.GetFileInformationByHandle(eh, &bi); err != nil {
+				_ = windows.CloseHandle(eh)
+				return fmt.Errorf("cannot read %s: %w", name, err)
+			}
+			isDir := bi.FileAttributes&windows.FILE_ATTRIBUTE_DIRECTORY != 0
+			out = append(out, entry{h: eh, name: name, dir: isDir})
+			switch {
+			case bi.FileAttributes&windows.FILE_ATTRIBUTE_REPARSE_POINT != 0:
+				return fmt.Errorf("%s is a link (a junction or symbolic link)", name)
+			case !isDir && bi.NumberOfLinks != 1:
+				return fmt.Errorf("%s has %d names (a hard link)", name, bi.NumberOfLinks)
+			}
+			sd, err := windows.GetSecurityInfo(eh, windows.SE_FILE_OBJECT, windows.OWNER_SECURITY_INFORMATION|windows.DACL_SECURITY_INFORMATION)
+			if err != nil {
+				return fmt.Errorf("cannot read the security of %s: %w", name, err)
+			}
+			if o, _, err := sd.Owner(); err != nil || o == nil || !o.Equals(me) {
+				return fmt.Errorf("%s is not yours", name)
+			}
+			if hasVMAccount(sd) {
+				return fmt.Errorf("%s is in use by a VM (stop hyperbutler first)", name)
+			}
+			if isDir {
+				if err := walk(eh, name); err != nil {
+					return err
+				}
+			}
+		}
+		return nil
 	}
-	if !fix {
-		return &DataDirError{Dir: dir, Reason: "its data disk " + reason, Fix: fixAccess, Fixable: true, Err: err}
+	return out, walk(h, "")
+}
+
+func relOrDot(rel string) string {
+	if rel == "" {
+		return "the folder"
 	}
-	if err := broker.ResetDataDisk(h, sid); err != nil {
-		return &DataDirError{Dir: dir, Reason: "its data disk: " + err.Error(), Fix: fixDisk, Err: err}
+	return rel
+}
+
+// dirNames lists the names in the directory handle h (not . and ..).
+func dirNames(h windows.Handle) ([]string, error) {
+	var names []string
+	buf := make([]byte, 64<<10)
+	class := uint32(windows.FileFullDirectoryRestartInfo)
+	for {
+		err := windows.GetFileInformationByHandleEx(h, class, &buf[0], uint32(len(buf)))
+		if errors.Is(err, windows.ERROR_NO_MORE_FILES) {
+			return names, nil
+		}
+		if err != nil {
+			return nil, err
+		}
+		class = windows.FileFullDirectoryInfo
+		// FILE_FULL_DIR_INFO: NextEntryOffset at 0, FileNameLength at 60, FileName at 68.
+		for off := 0; ; {
+			if off+68 > len(buf) {
+				return nil, errors.New("bad directory information")
+			}
+			next := int(binary.LittleEndian.Uint32(buf[off:]))
+			nlen := int(binary.LittleEndian.Uint32(buf[off+60:]))
+			if off+68+nlen > len(buf) || nlen%2 != 0 {
+				return nil, errors.New("bad directory information")
+			}
+			u := make([]uint16, nlen/2)
+			for i := range u {
+				u[i] = binary.LittleEndian.Uint16(buf[off+68+2*i:])
+			}
+			if n := windows.UTF16ToString(u); n != "." && n != ".." {
+				names = append(names, n)
+			}
+			if next == 0 {
+				break
+			}
+			off += next
+		}
 	}
-	if err := broker.CheckDataDisk(h, sid); err != nil && !isNotFound(err) {
-		return &DataDirError{Dir: dir, Reason: "its data disk: " + err.Error(), Fix: fixDisk, Err: err}
+}
+
+// hasVMAccount reports whether sd's DACL has an ACE for a virtual machine account
+// (S-1-5-83-...), which HCS adds to a disk a VM uses.
+func hasVMAccount(sd *windows.SECURITY_DESCRIPTOR) bool {
+	dacl, _, err := sd.DACL()
+	if err != nil || dacl == nil {
+		return false
 	}
-	return nil
+	for i := uint32(0); i < uint32(dacl.AceCount); i++ {
+		var ace *windows.ACCESS_ALLOWED_ACE
+		if windows.GetAce(dacl, i, &ace) != nil {
+			continue
+		}
+		if strings.HasPrefix((*windows.SID)(unsafe.Pointer(&ace.SidStart)).String(), "S-1-5-83-") {
+			return true
+		}
+	}
+	return false
+}
+
+// setPrivate gives the object h a protected DACL of full control for sid, SYSTEM and
+// Administrators (inherited by what a directory holds), with SetKernelObjectSecurity:
+// unlike SetSecurityInfo it rewrites nothing below h, where an entry may be a hard link
+// to a file outside (each entry is set on its own handle).
+func setPrivate(h windows.Handle, sid *windows.SID, dir bool) error {
+	inherit := ""
+	if dir {
+		inherit = "OICI"
+	}
+	sd, err := windows.SecurityDescriptorFromString(fmt.Sprintf("D:P(A;%[1]s;FA;;;%[2]s)(A;%[1]s;FA;;;SY)(A;%[1]s;FA;;;BA)", inherit, sid))
+	if err != nil {
+		return err
+	}
+	err = windows.SetKernelObjectSecurity(h, windows.DACL_SECURITY_INFORMATION|windows.PROTECTED_DACL_SECURITY_INFORMATION, sd)
+	runtime.KeepAlive(sd)
+	return err
+}
+
+// samePathName reports whether final, a handle's final path (\\?\C:\...), names dir.
+func samePathName(final, dir string) bool {
+	final = strings.TrimPrefix(final, `\\?\`)
+	abs, err := filepath.Abs(dir)
+	if err != nil {
+		return false
+	}
+	return strings.EqualFold(filepath.Clean(final), filepath.Clean(abs))
 }
 
 // aclReason reports whether a check's reason is about the DACL alone, which the fix
@@ -154,12 +343,6 @@ func aclReason(reason string) bool {
 func isNotFound(err error) bool {
 	var st windows.NTStatus
 	return errors.As(err, &st) && (st == windows.STATUS_OBJECT_NAME_NOT_FOUND || st == windows.STATUS_OBJECT_PATH_NOT_FOUND)
-}
-
-// privateSDDL is the DACL hyperbutler gives the data directory: full control for sid,
-// SYSTEM and Administrators, inherited by what is in it.
-func privateSDDL(sid *windows.SID) string {
-	return "D:P(A;OICI;FA;;;" + sid.String() + ")(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)"
 }
 
 // diskRuleReason reports whether reason is one of checkDiskInfo's.

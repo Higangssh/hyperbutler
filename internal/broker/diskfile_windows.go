@@ -59,39 +59,6 @@ func CheckDataDisk(dir windows.Handle, sid string) error {
 	return d.Close()
 }
 
-// ResetDataDisk gives the data disk below the open data directory dir a protected DACL
-// of full control for sid, SYSTEM and Administrators, dropping every other ACE: the
-// engine's fix for a disk the service refuses for its DACL. It opens the disk as the
-// service does (relative to dir, not through a reparse point), changes it only if it is
-// a plain local file with one link owned by sid, so it never acts on another file
-// through a link, and sets the DACL on the handle (no path is resolved again).
-func ResetDataDisk(dir windows.Handle, sid string) error {
-	caller, err := windows.StringToSid(sid)
-	if err != nil {
-		return err
-	}
-	h, err := openRelative(dir, DataDiskName)
-	if err != nil {
-		return fmt.Errorf("open %s: %w", DataDiskName, err)
-	}
-	defer func() { _ = windows.CloseHandle(h) }()
-	info, err := readDiskInfo(h)
-	if err != nil {
-		return fmt.Errorf("%s: %w", DataDiskName, err)
-	}
-	info.sd = nil // the DACL is what is being fixed
-	if err := checkDiskInfo(info, caller); err != nil {
-		return fmt.Errorf("%s %w", DataDiskName, err)
-	}
-	sd, err := windows.SecurityDescriptorFromString("D:P(A;;FA;;;" + sid + ")(A;;FA;;;SY)(A;;FA;;;BA)")
-	if err != nil {
-		return err
-	}
-	err = windows.SetKernelObjectSecurity(h, windows.DACL_SECURITY_INFORMATION|windows.PROTECTED_DACL_SECURITY_INFORMATION, sd)
-	runtime.KeepAlive(sd)
-	return err
-}
-
 // openDataDisk opens name below the directory handle dir with OBJ_DONT_REPARSE and
 // FILE_OPEN_REPARSE_POINT, as a non-directory file, and checks it with checkDiskInfo
 // for the caller sid. The handle shares read and write (HCS opens the disk for both)
@@ -128,6 +95,19 @@ func openDataDisk(dir windows.Handle, name, sid string) (_ *diskFile, err error)
 }
 
 func openRelative(dir windows.Handle, name string) (windows.Handle, error) {
+	return openEntry(dir, name, diskFileAccess, windows.FILE_NON_DIRECTORY_FILE)
+}
+
+// OpenEntry opens name, a plain name below the directory handle dir, as the broker
+// opens the data disk: by the handle and the name only, never through a reparse point
+// (OBJ_DONT_REPARSE, and the reparse point itself if name is one), a file or a
+// directory, with access; it shares read and write, not delete. The engine's data
+// folder fix opens every entry of the folder with it.
+func OpenEntry(dir windows.Handle, name string, access uint32) (windows.Handle, error) {
+	return openEntry(dir, name, access, 0)
+}
+
+func openEntry(dir windows.Handle, name string, access, opts uint32) (windows.Handle, error) {
 	if name == "" || strings.ContainsAny(name, `\/:`) || name == "." || name == ".." {
 		return 0, errors.New("not a plain file name")
 	}
@@ -148,10 +128,10 @@ func openRelative(dir windows.Handle, name string) (windows.Handle, error) {
 		h    windows.Handle
 		iosb windows.IO_STATUS_BLOCK
 	)
-	err = windows.NtCreateFile(&h, diskFileAccess, &oa, &iosb, nil, 0,
+	err = windows.NtCreateFile(&h, access, &oa, &iosb, nil, 0,
 		windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE,
 		windows.FILE_OPEN,
-		windows.FILE_NON_DIRECTORY_FILE|windows.FILE_OPEN_REPARSE_POINT|windows.FILE_SYNCHRONOUS_IO_NONALERT,
+		opts|windows.FILE_OPEN_REPARSE_POINT|windows.FILE_SYNCHRONOUS_IO_NONALERT,
 		0, 0)
 	runtime.KeepAlive(us)
 	runtime.KeepAlive(&qos)

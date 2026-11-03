@@ -1167,6 +1167,25 @@ A fifth review (of c8065ae and 5fed362) ended the printed commands:
   is closed on every path.
 - **Info.** The new log line holds the SID and the fixed reason, nothing more.
 
+A sixth review (of f8386d2) found, all fixed:
+
+- **High. Not rewriting what is in the folder left its other files open:** `disk.json`
+  kept an inherited grant to Everyone, and another user who sets its `metadataBytes`
+  high makes the next start see a blank disk, which the guest formats. **Fixed:** the
+  fix walks the folder through handles (each entry opened relative to its parent's
+  handle, `OBJ_DONT_REPARSE`, never through a link), checks every entry first (a plain
+  directory, or a plain file with one link, owned by the user, no reparse point, no VM
+  account's ACE, at most 10,000), changes nothing unless all pass (it names the one that
+  fails), then sets each entry's DACL on its own handle.
+- **Medium. A junction put in place of an ancestor** led the fix to another folder of
+  the user's. **Fixed:** the folder's handle must have the final path the data
+  directory names.
+- **Medium. The drive-root guard was lost** with the commands. **Restored:** a drive's
+  root gets words only, never a fix.
+- **Low.** `doctor --fix` said "needs no fix" for a folder it could not open, and now
+  says what it could not do; it refuses an entry a VM uses (its disk has a VM account's
+  ACE) rather than removing that ACE.
+
 ### Virtual account spike (M5, first try, 2026-11-03)
 
 The installed service (v0.1.0-preview.3) was switched to `NT SERVICE\hyperbutler-broker`

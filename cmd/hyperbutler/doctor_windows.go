@@ -403,8 +403,16 @@ func fixDataDir(in *install, w io.Writer) {
 		return
 	}
 	before := engine.CheckBrokerDataDir(dir)
-	if _, ok := engine.IsDataDirError(before); !ok {
+	de, ok := engine.IsDataDirError(before)
+	switch {
+	case before == nil:
 		_, _ = fmt.Fprintf(w, "doctor --fix: %s needs no fix\n", dir)
+		return
+	case !ok:
+		_, _ = fmt.Fprintf(w, "doctor --fix: %v\n", before)
+		return
+	case !de.Fixable:
+		_, _ = fmt.Fprintf(w, "doctor --fix: cannot fix %s: %s; %s\n", dir, de.Reason, de.Fix)
 		return
 	}
 	if err := engine.FixBrokerDataDir(dir); err != nil {

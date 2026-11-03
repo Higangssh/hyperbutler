@@ -145,3 +145,81 @@ func TestFixBrokerDataDir(t *testing.T) {
 		t.Error("the junction's target changed")
 	}
 }
+
+// TestFixBrokerDataDirEntries: the fix covers every entry of the folder (disk.json and a
+// logs subfolder too, which kept a grant to Everyone otherwise); a folder reached through
+// a junction an ancestor was swapped for is refused, its target unchanged; a drive's
+// root is never fixed.
+func TestFixBrokerDataDirEntries(t *testing.T) {
+	base := filepath.Join(t.TempDir(), "b")
+	if err := MkdirPrivate(base); err != nil {
+		t.Fatal(err)
+	}
+	run := func(args ...string) {
+		t.Helper()
+		if out, err := exec.Command(args[0], args[1:]...).CombinedOutput(); err != nil {
+			t.Fatalf("%q: %v: %s", args, err, out)
+		}
+	}
+	aclOf := func(p string) string {
+		t.Helper()
+		out, err := exec.Command("icacls", p).CombinedOutput()
+		if err != nil {
+			t.Fatalf("icacls %s: %v: %s", p, err, out)
+		}
+		return strings.ReplaceAll(string(out), p, "")
+	}
+	open := filepath.Join(base, "open")
+	if err := os.Mkdir(open, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	run("icacls", open, "/grant", "*S-1-1-0:(OI)(CI)F")
+	dir := filepath.Join(open, "data")
+	if err := os.MkdirAll(filepath.Join(dir, "logs"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range []string{"data.vhdx", "disk.json", filepath.Join("logs", "engine.log")} {
+		if err := os.WriteFile(filepath.Join(dir, f), []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := FixBrokerDataDir(dir); err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range []string{"", "data.vhdx", "disk.json", "logs", filepath.Join("logs", "engine.log")} {
+		if acl := aclOf(filepath.Join(dir, f)); strings.Contains(acl, "Everyone") {
+			t.Errorf("%q keeps Everyone: %s", f, acl)
+		}
+	}
+
+	// ancestor: check gp\data, then gp is renamed and a junction of its name points at a
+	// folder of the user's with its own data folder, shared with Users on purpose.
+	gp := filepath.Join(base, "gp")
+	if err := os.MkdirAll(filepath.Join(gp, "data"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	run("icacls", gp, "/grant", "*S-1-1-0:(OI)(CI)R")
+	victim := filepath.Join(t.TempDir(), "victim")
+	if err := os.MkdirAll(filepath.Join(victim, "data"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	run("icacls", filepath.Join(victim, "data"), "/grant", "*S-1-5-32-545:(OI)(CI)F")
+	before := aclOf(filepath.Join(victim, "data"))
+	if err := os.Rename(gp, gp+".old"); err != nil {
+		t.Fatal(err)
+	}
+	run("cmd", "/c", "mklink", "/J", gp, victim)
+	if err := FixBrokerDataDir(filepath.Join(gp, "data")); err == nil {
+		t.Fatal("a folder reached through a swapped ancestor was fixed")
+	}
+	if aclOf(filepath.Join(victim, "data")) != before {
+		t.Error("the junction's target changed")
+	}
+
+	for _, root := range []string{`C:\`, `C:`} {
+		de, ok := IsDataDirError(FixBrokerDataDir(root))
+		if !ok || de.Fixable || !strings.Contains(de.Fix, "drive's root") {
+			t.Errorf("%s: %+v", root, de)
+		}
+	}
+}
