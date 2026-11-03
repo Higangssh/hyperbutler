@@ -258,6 +258,10 @@ soak runs separately and its result goes here.
   2026-11-01, main at 0012298 with a local A2b image: median 313.9 MiB (329 MB; engine 19.1,
   vmmem 289.3, vmwp 5.5 MiB), PASS. The engine's working set rose from 7.3 to 19.8 MiB over
   the window (+21.7 MiB/h); the 24 h soak must show whether that levels off.
+  2026-11-03, v0.1.0-preview.2 from its MSI, through the broker service, `bench/mem-idle`
+  counting the broker: median **360.8 MiB (378 MB)**, PASS (engine 20.1, vmmem 296.5,
+  vmwp 5.4, broker service 38.8 MiB). The broker is a third of the margin left; why a
+  service with seven requests holds 38.8 MiB is open.
 - [ ] REQ-START-001 is re-measured with the release image (20 runs, warm), and the first
   start after a host reboot is reported separately. 2026-11-01, same build and image:
   median 1.48 s, p95 1.49 s over 20 runs (1 warm-up discarded), stop median 1.28 s, PASS.
