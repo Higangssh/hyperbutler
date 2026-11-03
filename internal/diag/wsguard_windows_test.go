@@ -156,3 +156,16 @@ func FuzzParseDataSection(f *testing.F) {
 		}
 	})
 }
+
+func TestTrimAndReadStart(t *testing.T) {
+	s, trimmed := TrimAndReadStart()
+	if !trimmed {
+		t.Fatal("the working set was not emptied")
+	}
+	if s.Commit == 0 || s.Private == 0 || s.Private > s.Commit {
+		t.Fatalf("bad reading %+v", s)
+	}
+	if dataSectionReader() != nil && s.Data == 0 {
+		t.Fatalf("no data section reading %+v", s)
+	}
+}

@@ -28,7 +28,7 @@ documents.
 
 | Area | Result | Target | Met? |
 |---|---|---|---|
-| Start, `hyperbutler start` → `docker info` (`bench/start`, 2026-11-01) | median **1.48 s**, p95 1.49 s, stop 1.28 s (n = 20 after one warm-up, warm host cache, existing disk, no other VM running). Earlier (cli-engine): first start with a new data disk 1.97 s | ≤ 8 s median, p95 ≤ 12 s | Yes, also the 1.0 target. The first start after a host reboot is not measured yet |
+| Start, `hyperbutler start` → `docker info` (`bench/start`, 2026-11-03, v0.1.0-preview.2 through the broker service) | median **1.94 s**, p95 1.96 s, stop 1.66 s; 2026-11-01 in process, without the broker: 1.48 s (n = 20 after one warm-up, warm host cache, existing disk, no other VM running). Earlier (cli-engine): first start with a new data disk 1.97 s | ≤ 8 s median, p95 ≤ 12 s | Yes, also the 1.0 target. The first start after a host reboot is not measured yet |
 | `hyperbutler stop` | median 1.25 s, orderly guest shutdown every time | none | – |
 | Image pull over the internet, *spike*: `hyperbutler-dev`, 1 GiB / 2 vCPU guest ([guest-networking](research/guest-networking.md)) | `alpine` 2.7–3.1 s, `ubuntu:24.04` 3.5–3.7 s, `nginx` 4.7–5.3 s, about the same as the host | none | – |
 | Container networking throughput, *spike*: `hyperbutler-dev`, 2 GiB / 2 vCPU guest (`bench/net-perf`, [ADR 0006](adr/0006-guest-networking.md#gate-results-2026-10-31), 2026-10-31) | from a host server into a container **10.2 Gbit/s** (was 2.7), container to host 8.3 (3.3), `-p` 7.5 down / 11.6 up (3.2 / 4.5); 6000 connections/s (failed before); engine 0.11–0.20 cores per Gbit/s, private working set 46–55 MB under load. Small round trips p50/p99 187/392 µs | ADR 0006: ≥ 50% of raw hvsock guest to host | Yes on 5 of 6 boots (49–92%, median 69%; raw hvsock varies 8–22 Gbit/s by boot). ADR 0006 accepted; the LAN-registry gate is deferred to the release checklist (no second machine) |
@@ -46,7 +46,7 @@ What is missing for v0.1.0 ([docs/release.md](release.md) lists every gate):
 - the MSI and its broker service on a clean PC (install, upgrade from preview.1, repair and
   uninstall ran on one machine);
 - a real sleep and resume (S3 / Modern Standby), tested in unit tests only;
-- start time re-measured with the release build and the broker (idle memory: done);
+- the first start after a host reboot, with the broker (idle memory and warm start: done);
 - `bench/noadmin`, `bench/net-vpn` and `bench/coexist`;
 - REQ-MEM-002 (12 GB guest), the host-disk-full test with the `hyperbutler` CLI, and the
   deferred commit under host memory pressure;

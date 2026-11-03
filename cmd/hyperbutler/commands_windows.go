@@ -246,7 +246,7 @@ func cmdStart(args []string, stdout, stderr io.Writer) error {
 		if !*noContext && in.settings.ContextManaged() {
 			in.selectContext(st.Pipe, stdout, stderr)
 		}
-		in.startNotes(st, stdout, stderr)
+		in.startNotes(st, nil, true, stdout, stderr)
 		return nil
 	}
 
@@ -280,6 +280,10 @@ func cmdStart(args []string, stdout, stderr io.Writer) error {
 	}
 
 	firstStart := !diskExists(in.l)
+	var lastFS *engine.GuestFSState
+	if !firstStart { // a new data disk is empty, whatever an old state.json says
+		lastFS = in.lastGuestFS()
+	}
 	in.noteCrash(stderr)
 	if err := in.createDataDir(); err != nil {
 		return err
@@ -309,7 +313,10 @@ func cmdStart(args []string, stdout, stderr io.Writer) error {
 		in.selectContext(st.Pipe, stdout, stderr)
 	}
 	checkDockerCLI(findDockerCLI(), stdout, stderr)
-	in.startNotes(st, stdout, stderr)
+	// Wait for the new VM's report only when there is nothing to go on for a disk that
+	// has data: no report of the last run (it failed, or stopped before its first one,
+	// or another data folder). A new disk is empty.
+	in.startNotes(st, lastFS, lastFS == nil && !firstStart, stdout, stderr)
 	if firstStart && !in.settings.Autostart {
 		_, _ = fmt.Fprintln(stdout, autostartTip)
 	}

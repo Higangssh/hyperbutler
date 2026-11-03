@@ -139,6 +139,32 @@ type guardOS struct {
 	data func() (uint64, bool)
 }
 
+// GuardStart is the guard's view of the process when it starts: the private working
+// set, the commit and the resident bytes of the executable's data section (0 when it
+// cannot be read), for the log.
+type GuardStart struct{ Private, Commit, Data uint64 }
+
+// TrimAndReadStart empties this process's working set once and then reads what the
+// guard will start from. A process that may have been read from outside before its
+// guard starts (a Windows service the antivirus scans as it is created) calls it just
+// before StartWorkingSetGuard: the guard's partial rule compares the data section with
+// its level at start, so a buffer an early scan made resident would otherwise count as
+// the cold level, and the rule could never fire. Pages the process uses fault back. It
+// reports whether the trim ran.
+func TrimAndReadStart() (GuardStart, bool) {
+	trimmed := emptyWorkingSet()
+	var s GuardStart
+	if p, c, ok := processMemory(); ok {
+		s.Private, s.Commit = p, c
+	}
+	if data := dataSectionReader(); data != nil {
+		if d, ok := data(); ok {
+			s.Data = d
+		}
+	}
+	return s, trimmed
+}
+
 // StartWorkingSetGuard starts the guard. trimmed, if not nil, is called after each trim
 // with the rule that fired ("full" or "partial") and the private working set and commit
 // before it. Stop must be called.

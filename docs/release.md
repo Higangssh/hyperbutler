@@ -260,12 +260,29 @@ soak runs separately and its result goes here.
   the window (+21.7 MiB/h); the 24 h soak must show whether that levels off.
   2026-11-03, v0.1.0-preview.2 from its MSI, through the broker service, `bench/mem-idle`
   counting the broker: median **360.8 MiB (378 MB)**, PASS (engine 20.1, vmmem 296.5,
-  vmwp 5.4, broker service 38.8 MiB). The broker is a third of the margin left; why a
-  service with seven requests holds 38.8 MiB is open.
+  vmwp 5.4, broker service 38.8 MiB). The broker is a third of the margin left. The same
+  broker binary in the foreground holds 3.5 MiB (5 MiB with a VM): as a service its
+  untouched 32 MiB FIPS buffer had become resident, the outside-read signature the
+  engine's working-set guard already handles. Changed: the service empties its working
+  set once at start (a scan as it is created would otherwise set the guard's cold level)
+  and then runs that guard; it logs the guard's starting readings to the Application
+  event log. To verify with the release candidate: the broker's private working set at
+  idle, and any "working set emptied" events.
 - [ ] REQ-START-001 is re-measured with the release image (20 runs, warm), and the first
   start after a host reboot is reported separately. 2026-11-01, same build and image:
   median 1.48 s, p95 1.49 s over 20 runs (1 warm-up discarded), stop median 1.28 s, PASS.
   Not a first start after a reboot (host up 48 h).
+  2026-11-03, v0.1.0-preview.2 from its MSI, through the broker service: median **1.94 s**,
+  p95 1.96 s over 20 runs (1 warm-up discarded), stop median 1.66 s, PASS. The broker adds
+  about 0.46 s to the start and 0.38 s to the stop against the in-process start, with
+  almost no spread (1.93 to 1.96 s). Explained the same day: not the broker (a
+  foreground broker and the service gave the same 1.86 s), but `start` waiting for the
+  new VM's first guest file-system report for the REQ-DISK-009 warning, about 0.42 s on
+  every start (hyperbutlerd's report at connect predates the guard's first budget and is
+  not published; the next comes a second later). Fixed: a fresh start judges the warning
+  from the previous run's last report of the same data disk, which cannot change while
+  no VM runs; with no such report for an existing disk it still waits. Re-measure with
+  the release candidate.
 
 **ADR 0006 (guest networking)**
 - [ ] Every row of the ADR 0006 acceptance gate reads "Yes" ("Gate results"), or ADR 0006

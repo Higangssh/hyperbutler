@@ -191,6 +191,19 @@ func startService(f serviceFlags, log serviceLog) (_ broker.ServiceInstance, err
 		return nil, err
 	}
 	cleanup = append(cleanup, func() { _ = dbg.Close() })
+	// REQ-MEM-001 counts the broker too. An outside read of the whole process (as seen
+	// on the engine, most likely the antivirus) makes the Go runtime's untouched 32 MiB
+	// FIPS buffer resident: the service measured 39 MiB of private working set against
+	// 3.5 MiB for the same binary in the foreground (2026-11-03). The engine's guard
+	// undoes that. A scan as the service is created may come before the guard: empty
+	// the working set once first, so the guard starts from the cold level.
+	cold, trimmed := diag.TrimAndReadStart()
+	guard := diag.StartWorkingSetGuard(func(rule string, private, commit uint64) {
+		log.Infof("working set emptied after an unexplained rise (likely an outside memory read): rule %s, private working set %d, private bytes %d", rule, private, commit)
+	})
+	cleanup = append(cleanup, guard.Stop)
+	log.Infof("working-set guard started (partial rule %v; trimmed first %v: private working set %d, private bytes %d, data section %d)",
+		guard.PartialRule(), trimmed, cold.Private, cold.Commit, cold.Data)
 
 	var backend broker.Backend = broker.NewFakeBackend()
 	var sweep func() int
