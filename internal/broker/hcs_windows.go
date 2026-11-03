@@ -14,10 +14,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/Higangssh/hyperbutler/internal/guid"
 	"golang.org/x/sys/windows"
 
 	"github.com/Higangssh/hyperbutler/guest/image"
+	"github.com/Higangssh/hyperbutler/internal/guid"
 	"github.com/Higangssh/hyperbutler/internal/imageset"
 	"github.com/Higangssh/hyperbutler/internal/vm"
 	"github.com/Higangssh/hyperbutler/internal/vmsecret"

@@ -13,9 +13,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Higangssh/hyperbutler/internal/guid"
-
 	"github.com/Higangssh/hyperbutler/internal/guestctl"
+	"github.com/Higangssh/hyperbutler/internal/guid"
 	"github.com/Higangssh/hyperbutler/internal/spaceguard"
 	"github.com/Higangssh/hyperbutler/internal/vm"
 )

@@ -10,8 +10,9 @@ import (
 	"time"
 	"unsafe"
 
-	"github.com/Higangssh/hyperbutler/internal/guid"
 	"golang.org/x/sys/windows"
+
+	"github.com/Higangssh/hyperbutler/internal/guid"
 )
 
 var (

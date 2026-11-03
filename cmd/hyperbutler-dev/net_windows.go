@@ -15,10 +15,10 @@ import (
 	"time"
 	"unsafe"
 
-	"github.com/Higangssh/hyperbutler/internal/guid"
 	"golang.org/x/sys/windows"
 
 	"github.com/Higangssh/hyperbutler/internal/engine"
+	"github.com/Higangssh/hyperbutler/internal/guid"
 	"github.com/Higangssh/hyperbutler/internal/netstack"
 	"github.com/Higangssh/hyperbutler/internal/transport"
 	"github.com/Higangssh/hyperbutler/internal/vm"

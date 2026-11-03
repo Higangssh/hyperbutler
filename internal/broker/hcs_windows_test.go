@@ -15,10 +15,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Higangssh/hyperbutler/internal/guid"
 	"golang.org/x/sys/windows"
 
 	"github.com/Higangssh/hyperbutler/guest/image"
+	"github.com/Higangssh/hyperbutler/internal/guid"
 	"github.com/Higangssh/hyperbutler/internal/vm"
 	"github.com/Higangssh/hyperbutler/internal/vmsecret"
 	"github.com/Higangssh/hyperbutler/internal/vmtemplate"

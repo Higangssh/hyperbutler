@@ -7,7 +7,6 @@ import (
 	"net"
 
 	"github.com/Higangssh/hyperbutler/internal/guid"
-
 	"github.com/Higangssh/hyperbutler/internal/transport"
 	"github.com/Higangssh/hyperbutler/internal/vmsecret"
 )

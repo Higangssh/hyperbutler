@@ -8,7 +8,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/Higangssh/hyperbutler/internal/transport"
 	"net"
 	"net/http"
 	"os"
@@ -19,6 +18,8 @@ import (
 
 	"github.com/Microsoft/go-winio"
 	"golang.org/x/sys/windows"
+
+	"github.com/Higangssh/hyperbutler/internal/transport"
 )
 
 var pipeSeq atomic.Int64

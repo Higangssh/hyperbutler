@@ -8,8 +8,9 @@ import (
 	"strings"
 	"unsafe"
 
-	"github.com/Higangssh/hyperbutler/internal/guid"
 	"golang.org/x/sys/windows"
+
+	"github.com/Higangssh/hyperbutler/internal/guid"
 )
 
 // AccountsOnFile returns the VM accounts (AccountPrefix...) that path's DACL names.

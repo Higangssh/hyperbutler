@@ -16,10 +16,9 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/Higangssh/hyperbutler/internal/guid"
-
 	"github.com/Higangssh/hyperbutler/internal/broker"
 	"github.com/Higangssh/hyperbutler/internal/dockerenv"
+	"github.com/Higangssh/hyperbutler/internal/guid"
 	"github.com/Higangssh/hyperbutler/internal/netstack"
 	"github.com/Higangssh/hyperbutler/internal/transport"
 )

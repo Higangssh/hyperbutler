@@ -2,7 +2,6 @@ package engine
 
 import (
 	"github.com/Higangssh/hyperbutler/internal/guid"
-
 	"github.com/Higangssh/hyperbutler/internal/vm"
 )
 

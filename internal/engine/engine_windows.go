@@ -15,10 +15,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Higangssh/hyperbutler/internal/guid"
 	"golang.org/x/sys/windows"
 
 	"github.com/Higangssh/hyperbutler/internal/guestctl"
+	"github.com/Higangssh/hyperbutler/internal/guid"
 	"github.com/Higangssh/hyperbutler/internal/imageset"
 	"github.com/Higangssh/hyperbutler/internal/netstack"
 	"github.com/Higangssh/hyperbutler/internal/spaceguard"

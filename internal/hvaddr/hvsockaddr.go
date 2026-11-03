@@ -7,7 +7,6 @@ import (
 	"strings"
 
 	"github.com/Higangssh/hyperbutler/internal/guid"
-
 	"github.com/Higangssh/hyperbutler/internal/vmsecret"
 )
 

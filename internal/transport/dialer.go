@@ -2,7 +2,6 @@ package transport
 
 import (
 	"context"
-
 	"net"
 )
 
