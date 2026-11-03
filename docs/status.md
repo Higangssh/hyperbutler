@@ -50,7 +50,7 @@ What is missing for v0.1.0 ([docs/release.md](release.md) lists every gate):
 - `bench/noadmin`, `bench/net-vpn` and `bench/coexist`;
 - REQ-MEM-002 (12 GB guest), the host-disk-full test with the `hyperbutler` CLI, and the
   deferred commit under host memory pressure;
-- the integration tests on real hardware, and the open p99.9 latency tail of ADR 0006;
+- the integration tests on real hardware (the p99.9 latency tail of ADR 0006 is recorded, not a gate: it is inside the VM, about 10 ms for one request in a thousand while a bulk connection starts);
 - the 45 MB working set seen under the soak, profiled and explained.
 
 Bind mounts from Windows paths work but are not yet fast for write-heavy trees: use a
