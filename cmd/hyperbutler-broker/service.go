@@ -202,14 +202,20 @@ func startService(f serviceFlags, log serviceLog) (_ broker.ServiceInstance, err
 		}
 		// The state directory's DACL admits the service account only. Those of runs that
 		// ended without a stop (a crash, the stop limit) go first.
-		if base, ok := systemTempDir(); ok {
-			// Only there: users cannot write to it. The fallback (%TEMP%) lets them
-			// make a folder of that name and swap it for a junction mid-check.
-			removeStaleStateDirs(base, self.User.Sid, log.Infof)
+		// As SYSTEM, in SystemTemp; as a service account (ADR 0004 option C, the M5
+		// spike), which may not write there, in its own %TEMP%.
+		base := os.TempDir()
+		if self.User.Sid.IsWellKnown(windows.WinLocalSystemSid) {
+			if d, ok := systemTempDir(); ok {
+				base = d
+				// Only there: users cannot write to it. The fallback (%TEMP%) lets
+				// them make a folder of that name and swap it for a junction mid-check.
+				removeStaleStateDirs(base, self.User.Sid, log.Infof)
+			}
 		}
-		state, err := privateDir(serviceTempDir(), self.User.Sid.String())
+		state, err := privateDir(base, self.User.Sid.String())
 		if err != nil {
-			return nil, fmt.Errorf("create the state directory in %s as %s: %w", serviceTempDir(), self.User.Sid, err)
+			return nil, fmt.Errorf("create the state directory in %s as %s: %w", base, self.User.Sid, err)
 		}
 		cleanup = append(cleanup, func() { _ = os.RemoveAll(state) })
 		hb, err := broker.NewHCSBackend(broker.HCSConfig{StateDir: state, AllowUnpinned: f.allowUnpinned, Logf: log.Infof})
@@ -237,16 +243,8 @@ func startService(f serviceFlags, log serviceLog) (_ broker.ServiceInstance, err
 	return s, nil
 }
 
-// serviceTempDir is %SystemRoot%\SystemTemp, which only SYSTEM and Administrators may
-// use, where Windows has it; otherwise the temporary directory.
-func serviceTempDir() string {
-	if d, ok := systemTempDir(); ok {
-		return d
-	}
-	return os.TempDir()
-}
-
-// systemTempDir is %SystemRoot%\SystemTemp, if it exists (Windows 11 has it).
+// systemTempDir is %SystemRoot%\SystemTemp, which only SYSTEM may use, if it exists
+// (Windows 11 has it).
 func systemTempDir() (string, bool) {
 	if win, err := windows.GetWindowsDirectory(); err == nil {
 		d := filepath.Join(win, "SystemTemp")
