@@ -1044,7 +1044,8 @@ lease; the sweep; the MSI's conditions. Its findings:
    the engine's next status request: the lease's connection ended, and the VM with it.
    **Fixed:** the connection that holds the lease reads without a deadline (the client's
    exit closes the pipe and ends it); other connections keep the limit.
-   `TestLeaseOutlivesIdleTimeout`. Not yet tried with a real sleep.
+   `TestLeaseOutlivesIdleTimeout`. The client's side, found open by the second review
+   (its item 6), is fixed too. Not yet tried with a real sleep.
 2. **Medium. A data folder made before the broker was refused with no fix.** A folder
    from developer mode, or `--data` on a drive whose root lets every user change it,
    inherits other accounts' access (on this machine even `%TEMP%` inherits a security
@@ -1105,9 +1106,35 @@ A second review of those fixes (the same day) found no way past the requirement,
    `%SystemRoot%\SystemTemp`.
 5. **Test gap.** `TestPipeLeaseReadAndClose`: on a real pipe the lease outlives
    `IdleTimeout` and `Close` still ends its read and the VM.
-6. **Info, open.** The client side still ends the lease if the host sleeps while a
-   status request waits for its reply (its I/O deadline expires on wake): a window of
-   milliseconds every 10 s. To be tried with a real sleep before the soak.
+6. **Info.** The client side still ended the lease if the host slept while a status
+   request waited for its reply (its I/O deadline expired on wake, and any error closed
+   the connection): a window of milliseconds every 10 s. **Fixed** in
+   `broker.Client.Do`, two ways. A request's timeout (15 s, a start's 3 min) counts the
+   host's awake time, read from `QueryUnbiasedInterruptTime`, which stops in a sleep
+   (Go's monotonic clock and so the pipe's deadlines do not): a wait whose deadline
+   passed with less than that of awake time gone by is made again, for the time left,
+   on the same reply. And a reply that does not come in time ends nothing: `Do` returns
+   `ErrNoReply`, keeps a partly read frame, and the next request reads the late reply
+   first (checking it answers the request owed), so the stream stays in step and the
+   lease stays. Only an error that leaves the stream out of step ends the connection
+   and wraps `ErrLost`: the pipe closed or broken (a broker that exits closes it), a
+   failed or timed-out write, a malformed reply or one to another verb, `Close`. A
+   write waits, and so could meet a sleep, only if the broker stopped reading: the
+   request is one small frame, sent one at a time, which the pipe's buffer takes at
+   once. The engine's lease ends on `ErrLost` only. A broker that hangs without
+   exiting now keeps the lease (each poll logs `ErrNoReply`) where it used to end it
+   after 15 s; while its last answer was `ErrNoReply` the lease's `ShutDown` and
+   `Terminate` send nothing (each would first wait a full timeout for the late reply)
+   and the engine's stop closes the lease, which ends the VM, after at most the 15 s of
+   the poll in progress. `TestClientRewaitsAfterSleep`,
+   `TestClientLateReplyKeepsConnection`, `TestClientResumesCutFrame`,
+   `TestClientAwakeBudget`, `TestClientStartTimeout`, `TestClientWriteFailureEnds`,
+   `TestClientEndsOnLostConnection`, `TestClientEndsOnPipeClosed`,
+   `TestClientRewaitsOnPipe` (a real overlapped read whose deadline had passed when it
+   began), `TestBrokerLeaseSurvivesNoReply`. Still to be tried with a real sleep (S3
+   and Modern Standby) before the soak: whether the unbiased interrupt time stops in
+   Modern Standby is not verified here, and if it does not, a sleep shows as a late
+   reply, which keeps the lease anyway.
 
 A third review (of 7ea09fc):
 

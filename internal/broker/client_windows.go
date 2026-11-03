@@ -3,13 +3,17 @@
 package broker
 
 import (
+	"bytes"
 	"context"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
 	"net"
+	"os"
 	"sync"
 	"time"
+	"unsafe"
 
 	"golang.org/x/sys/windows"
 
@@ -19,13 +23,34 @@ import (
 
 // Client is one connection to the broker. Its requests are serialized; it is safe for
 // concurrent use. The connection that starts the VM is the VM's lease: closing it
-// terminates the VM (Implementation decision 6).
+// terminates the VM (Implementation decision 6), and so does any error that leaves the
+// stream out of step; a reply that is only late (ErrNoReply) ends nothing.
 type Client struct {
-	mu   sync.Mutex
-	c    net.Conn
+	mu sync.Mutex
+	c  net.Conn
+	// in holds the reply frame being read, have bytes of it so far: they are kept when
+	// the wait for the rest times out.
+	in   [proto.MaxFrameSize]byte
+	have int
 	buf  [proto.MaxFrameSize]byte
-	dead error
+	// owed is the request whose reply a timeout left unread; the next request reads
+	// that reply first, so the stream stays in step.
+	owed  proto.Op
+	owing bool
+	dead  error
+	// awake is the host's awake time: awakeTime, or a fake in tests.
+	awake func() time.Duration
 }
+
+// ErrLost is what every error that ended a Client's connection wraps: the broker
+// closed it or exited, Close was called, a write failed, or a reply broke the protocol.
+// The connection's lease, and its VM, end with it.
+var ErrLost = errors.New("broker: connection lost")
+
+// ErrNoReply is what Do returns when the broker sent no reply within the request's
+// timeout of the host's awake time. The connection stays usable and keeps its lease:
+// the next request reads the late reply first. It wraps os.ErrDeadlineExceeded.
+var ErrNoReply = fmt.Errorf("broker: no reply in time: %w", os.ErrDeadlineExceeded)
 
 // ReplyError is an error reply from the broker.
 type ReplyError struct {
@@ -52,12 +77,43 @@ func IsCode(err error, code proto.Code) bool {
 // program then holds the name (rule 5); the client sends it nothing.
 var ErrUntrustedPipe = errors.New("not the broker's pipe")
 
-// clientIOTimeout bounds one request; a start waits longer (the broker's own
-// RequestTimeout is 2 minutes).
+// clientIOTimeout bounds one request's wait for its reply, in the host's awake time; a
+// start waits longer (the broker's own RequestTimeout is 2 minutes).
 const (
 	clientIOTimeout    = 15 * time.Second
 	clientStartTimeout = 3 * time.Minute
 )
+
+// minRewait is the least awake time left of a request's timeout for which a wait that a
+// host's sleep cut short is made again; with less left the request ends with ErrNoReply.
+const minRewait = time.Second
+
+var procQueryUnbiasedInterruptTime = windows.NewLazySystemDLL("kernel32.dll").NewProc("QueryUnbiasedInterruptTime")
+
+// processStart is where awakeTime's fallback counts from.
+var processStart = time.Now()
+
+// unbiasedWorks is whether QueryUnbiasedInterruptTime answered its first call. It is
+// decided once, so the clock awakeTime reads never changes under a wait.
+var unbiasedWorks = sync.OnceValue(func() bool {
+	var t uint64
+	r, _, _ := procQueryUnbiasedInterruptTime.Call(uintptr(unsafe.Pointer(&t)))
+	return r != 0
+})
+
+// awakeTime is how long the host has been awake: Windows's unbiased interrupt time,
+// which stops while the host sleeps or hibernates. Go's monotonic clock runs on (it
+// reads the interrupt time), which is why a deadline set before a sleep has passed when
+// the host wakes. If the call does not work the monotonic clock stands in, and a sleep
+// then counts as awake time.
+func awakeTime() time.Duration {
+	if !unbiasedWorks() {
+		return time.Since(processStart)
+	}
+	var t uint64 // 100 ns units
+	_, _, _ = procQueryUnbiasedInterruptTime.Call(uintptr(unsafe.Pointer(&t)))
+	return time.Duration(t) * 100 //nolint:gosec // G115: 2^63 ns is 292 years of uptime
+}
 
 // Dial connects to this user's own endpoint of the broker whose shared endpoint is
 // shared (ADR 0004 rule 5): it asks the shared endpoint to open it, checks that the
@@ -177,13 +233,18 @@ func (c *Client) Close() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.dead == nil {
-		c.dead = net.ErrClosed
+		c.dead = fmt.Errorf("%w: %w", ErrLost, net.ErrClosed)
 	}
 	return err
 }
 
-// Do sends req and returns the success reply, or a *ReplyError. A transport error ends
-// the connection: every later call fails with it.
+// Do sends req and returns the success reply, or a *ReplyError. An error that leaves the
+// stream out of step (the pipe closed or broken, a write that failed or timed out, a
+// malformed or unexpected reply) ends the connection: it wraps ErrLost, and every later
+// call fails with it. A reply that does not come within the request's timeout is
+// ErrNoReply and ends nothing. The timeout counts the host's awake time, so a host's
+// sleep of any length while a request waits neither ends the connection nor uses up
+// the request's time.
 func (c *Client) Do(req proto.Request) (proto.Reply, error) {
 	b, err := proto.EncodeRequest(req)
 	if err != nil {
@@ -198,33 +259,104 @@ func (c *Client) Do(req proto.Request) (proto.Reply, error) {
 	if c.dead != nil {
 		return proto.Reply{}, c.dead
 	}
-	fail := func(err error) (proto.Reply, error) {
-		c.dead = fmt.Errorf("broker: connection lost: %w", err)
-		_ = c.c.Close()
-		return proto.Reply{}, c.dead
-	}
-	_ = c.c.SetDeadline(time.Now().Add(timeout))
-	if _, err := c.c.Write(b); err != nil {
-		return fail(err)
-	}
-	f, err := proto.ReadFrame(c.c, &c.buf)
-	if err != nil {
-		if errors.Is(err, io.EOF) {
-			err = io.ErrUnexpectedEOF
+	if c.owing {
+		// The reply an earlier request gave up on; this request's time covers it.
+		if _, err := c.await(c.owed, timeout); err != nil {
+			return proto.Reply{}, err
 		}
-		return fail(err)
 	}
-	r, err := proto.DecodeReply(f)
+	// A write that timed out may have sent part of the request, so it ends the
+	// connection like any other failed write. The request is one frame, which the
+	// pipe's buffer takes at once (the broker reads each request before it answers it,
+	// and this client sends one at a time): a write waits, and so can meet a host's
+	// sleep, only when the broker has stopped reading.
+	_ = c.c.SetWriteDeadline(time.Now().Add(timeout))
+	if _, err := c.c.Write(b); err != nil {
+		return c.fail(err)
+	}
+	c.owed, c.owing = req.Op, true
+	r, err := c.await(req.Op, timeout)
 	if err != nil {
-		return fail(err)
+		return proto.Reply{}, err
 	}
 	if r.IsError() {
 		return proto.Reply{}, &ReplyError{Code: r.Code, Message: r.Message}
 	}
-	if r.Type != proto.ReplyFlag|uint8(req.Op) {
-		return fail(fmt.Errorf("reply type 0x%02x to %s", r.Type, req.Op))
+	return r, nil
+}
+
+// fail ends the connection with err.
+func (c *Client) fail(err error) (proto.Reply, error) {
+	c.dead = fmt.Errorf("%w: %w", ErrLost, err)
+	_ = c.c.Close()
+	return proto.Reply{}, c.dead
+}
+
+// await reads the reply to op, the request owed. A read deadline is on a clock that
+// runs while the host sleeps, so one that passes when less than timeout of awake time
+// has gone by since the wait began was cut short by a sleep: the wait is made again,
+// for the awake time left, on the same reply. When the awake time is used up the reply
+// stays owed and await returns ErrNoReply.
+func (c *Client) await(op proto.Op, timeout time.Duration) (proto.Reply, error) {
+	awake := c.awake
+	if awake == nil {
+		awake = awakeTime
+	}
+	began := awake()
+	left := timeout
+	var f []byte
+	for {
+		_ = c.c.SetReadDeadline(time.Now().Add(left))
+		var err error
+		f, err = c.readFrame()
+		if err == nil {
+			break
+		}
+		if !errors.Is(err, os.ErrDeadlineExceeded) {
+			if errors.Is(err, io.EOF) {
+				err = io.ErrUnexpectedEOF
+			}
+			return c.fail(err)
+		}
+		if left = timeout - (awake() - began); left < minRewait {
+			return proto.Reply{}, fmt.Errorf("%w to %s", ErrNoReply, op)
+		}
+	}
+	c.owing = false
+	r, err := proto.DecodeReply(f)
+	if err != nil {
+		return c.fail(err)
+	}
+	if !r.IsError() && r.Type != proto.ReplyFlag|uint8(op) {
+		return c.fail(fmt.Errorf("reply type 0x%02x to %s", r.Type, op))
 	}
 	return r, nil
+}
+
+// readFrame reads one frame, going on with one a timeout cut: what it read so far is
+// kept in c.in, so the stream stays in step. It reads no further than the frame's end.
+func (c *Client) readFrame() ([]byte, error) {
+	for {
+		need := 2
+		if c.have >= 2 {
+			need += int(binary.BigEndian.Uint16(c.in[:2]))
+			if need > len(c.in) {
+				return nil, proto.ErrFrameTooLarge
+			}
+			if c.have == need {
+				break
+			}
+		}
+		n, err := c.c.Read(c.in[c.have:need])
+		c.have += n
+		if err != nil {
+			return nil, err
+		}
+	}
+	n := c.have
+	c.have = 0
+	// ReadFrame checks the frame's length as the broker's own reads do.
+	return proto.ReadFrame(bytes.NewReader(c.in[:n]), &c.buf)
 }
 
 // Version returns the broker's protocol and broker versions.

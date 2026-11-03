@@ -20,8 +20,10 @@ import (
 )
 
 // brokerPoll is how often the broker provider asks for the VM's status: it notices a
-// VM that stopped on its own. The broker sets no idle limit on the lease's connection
-// (a host's sleep would end it), so the poll is not what keeps the lease.
+// VM that stopped on its own. It is not what keeps the lease: the broker sets no idle
+// limit on the lease's connection, and the client neither ends it on a late reply
+// (broker.ErrNoReply) nor counts a host's sleep against a request's timeout, so a
+// sleep during a poll ends nothing. Only the connection's end (broker.ErrLost) does.
 const brokerPoll = 10 * time.Second
 
 // brokerShutdownPoll replaces brokerPoll once a shutdown was asked for, so the engine
@@ -203,6 +205,8 @@ type brokerLease struct {
 	goneOnce sync.Once
 	// lost is set before gone closes when the connection, not the VM, ended.
 	lost atomic.Bool
+	// silent is set while the broker's last answer was none in time (broker.ErrNoReply).
+	silent atomic.Bool
 	// soon asks watch to poll every brokerShutdownPoll from now on.
 	soon     chan struct{}
 	soonOnce sync.Once
@@ -220,6 +224,28 @@ func (l *brokerLease) ExpectGone() { l.soonOnce.Do(func() { close(l.soon) }) }
 
 // LostBroker reports whether the lease ended because the connection to the broker did.
 func (l *brokerLease) LostBroker() bool { return l.lost.Load() }
+
+// note records whether the broker answered a request: err is its result.
+func (l *brokerLease) note(err error) error {
+	switch {
+	case errors.Is(err, broker.ErrNoReply):
+		l.silent.Store(true)
+	case err == nil, isReplyError(err):
+		l.silent.Store(false)
+	}
+	return err
+}
+
+func isReplyError(err error) bool {
+	var re *broker.ReplyError
+	return errors.As(err, &re)
+}
+
+// errBrokerSilent is what ShutDown and Terminate return, sending nothing, while the
+// broker does not answer: the request would wait for the late reply first, so each would
+// take a full timeout and reach the broker no sooner. The caller closes the lease, which
+// ends the VM as Terminate would.
+var errBrokerSilent = fmt.Errorf("engine: the HCS access broker does not answer; closing the lease ends the VM: %w", broker.ErrNoReply)
 
 // watch polls the status until the VM is stopped or the connection is lost.
 func (l *brokerLease) watch(every time.Duration) {
@@ -240,14 +266,16 @@ func (l *brokerLease) watch(every time.Duration) {
 		case <-t.C:
 		}
 		r, err := l.c.Status()
-		switch {
-		case err != nil && !isReplyError(err):
+		switch l.note(err); {
+		case errors.Is(err, broker.ErrLost):
 			// The connection is gone, and with it the lease: the broker terminates the VM.
 			l.log.Warn("lost the connection to the broker", "err", err)
 			l.lost.Store(true)
 			l.markGone()
 			return
 		case err != nil:
+			// An error reply, or no reply in time (broker.ErrNoReply): the connection
+			// and the lease stay, and the next poll reads the late reply first.
 			l.log.Warn("broker status", "err", err)
 		case r.State == proto.StateStopped:
 			l.markGone()
@@ -256,14 +284,9 @@ func (l *brokerLease) watch(every time.Duration) {
 	}
 }
 
-func isReplyError(err error) bool {
-	var re *broker.ReplyError
-	return errors.As(err, &re)
-}
-
 func (l *brokerLease) State() (string, error) {
 	r, err := l.c.Status()
-	if err != nil {
+	if l.note(err) != nil {
 		return "", err
 	}
 	switch r.State {
@@ -278,18 +301,26 @@ func (l *brokerLease) State() (string, error) {
 
 func (l *brokerLease) Pause() error {
 	_, err := l.c.Pause(false)
-	return err
+	return l.note(err)
 }
 
 func (l *brokerLease) Resume() error {
 	_, err := l.c.Pause(true)
-	return err
+	return l.note(err)
 }
 
-func (l *brokerLease) ShutDown() error { return l.c.Stop(false) }
+func (l *brokerLease) ShutDown() error {
+	if l.silent.Load() {
+		return errBrokerSilent
+	}
+	return l.note(l.c.Stop(false))
+}
 
 func (l *brokerLease) Terminate() error {
-	err := l.c.Stop(true)
+	if l.silent.Load() {
+		return errBrokerSilent
+	}
+	err := l.note(l.c.Stop(true))
 	if err == nil || broker.IsCode(err, proto.CodeNotRunning) {
 		l.markGone()
 		return nil

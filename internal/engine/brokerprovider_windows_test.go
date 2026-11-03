@@ -194,7 +194,7 @@ func TestBrokerLeaseGone(t *testing.T) {
 
 	c = &fakeBrokerClient{state: proto.StateRunning}
 	l = bootFake(t, c)
-	c.set(proto.StateRunning, errors.New("pipe broken"))
+	c.set(proto.StateRunning, fmt.Errorf("%w: pipe broken", broker.ErrLost))
 	waitGone(t, l)
 	if !l.(*brokerLease).LostBroker() {
 		t.Error("a lost connection was not reported as a lost broker")
@@ -212,6 +212,80 @@ func TestBrokerLeaseGone(t *testing.T) {
 	default:
 	}
 	l.Close()
+}
+
+// A status poll that got no reply in time, as when the host slept while it waited
+// (ADR 0004, the M6 review's finding 1), keeps the lease: only the connection's end
+// ends it, and a VM that stopped is still noticed after the timeouts.
+func TestBrokerLeaseSurvivesNoReply(t *testing.T) {
+	c := &fakeBrokerClient{state: proto.StateRunning}
+	l := bootFake(t, c)
+	defer l.Close()
+	c.set(proto.StateRunning, fmt.Errorf("%w to status", broker.ErrNoReply))
+	waitPolls(t, c, 5)
+	select {
+	case <-l.Gone():
+		t.Fatal("a late status reply ended the lease")
+	default:
+	}
+	// While the broker does not answer, a shutdown or terminate sends nothing (each
+	// would wait a full timeout for the late reply first); the caller closes the lease.
+	if err := l.ShutDown(); !errors.Is(err, broker.ErrNoReply) {
+		t.Fatalf("shutdown while the broker is silent: %v", err)
+	}
+	if err := l.Terminate(); !errors.Is(err, broker.ErrNoReply) {
+		t.Fatalf("terminate while the broker is silent: %v", err)
+	}
+	c.mu.Lock()
+	sent := len(c.stops)
+	c.mu.Unlock()
+	if sent != 0 {
+		t.Fatalf("%d stops sent to a silent broker", sent)
+	}
+	// Once it answers again they are sent.
+	c.set(proto.StateRunning, nil)
+	waitPolls(t, c, 2)
+	if err := l.ShutDown(); err != nil {
+		t.Fatalf("shutdown once the broker answers: %v", err)
+	}
+	c.set(proto.StateStopped, nil)
+	waitGone(t, l)
+	if l.(*brokerLease).LostBroker() {
+		t.Error("a VM that stopped after late replies was taken for a lost broker")
+	}
+
+	// Any other error that is not the connection's end keeps it too.
+	c2 := &fakeBrokerClient{state: proto.StateRunning}
+	l2 := bootFake(t, c2)
+	defer l2.Close()
+	c2.set(proto.StateRunning, errors.New("broker: some request error"))
+	waitPolls(t, c2, 5)
+	select {
+	case <-l2.Gone():
+		t.Fatal("an error that is not ErrLost ended the lease")
+	default:
+	}
+}
+
+// waitPolls waits until the lease has polled c n more times.
+func waitPolls(t *testing.T, c *fakeBrokerClient, n int) {
+	t.Helper()
+	c.mu.Lock()
+	want := c.statusN + n
+	c.mu.Unlock()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		c.mu.Lock()
+		got := c.statusN
+		c.mu.Unlock()
+		if got >= want {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("%d polls, want %d", got, want)
+		}
+		time.Sleep(time.Millisecond)
+	}
 }
 
 // A broker that starts a VM but gives no secret is refused: the guest would serve
