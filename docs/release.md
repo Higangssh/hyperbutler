@@ -178,7 +178,9 @@ soak runs separately and its result goes here.
     `private_bytes_adj` +0.07 MiB against 4.69 MiB: **pass**.
 - [ ] The 45 MB working set seen under the soak workload is profiled and explained
   (ADR 0003, Consequences) before any memory budget is claimed.
-- [ ] `go test -race ./...` and the goleak meta-test pass on Windows and Linux (CI).
+- [x] `go test -race ./...` and the goleak meta-test pass on Windows and Linux (CI).
+  2026-11-03, v0.1.0-rc.1: CI on 9ae259c, d54b020 and a12c89a green: `go test -race ./...`
+  on Windows (every TestMain runs goleak), `./guest/... ./internal/leaktest/...` on Linux.
 
 **ADR 0002 (HCS backend)**
 - [ ] **Host disk full:** the free-space guard test (`docs/research/disk-reclaim.md`,
@@ -233,16 +235,27 @@ soak runs separately and its result goes here.
     mismatches on LAN pulls (2026-11-01)"). The 30 clean cycles above are after the fix.
 
 **ADR 0005 (guest image)**
-- [ ] The image comes from the release run's guest-image job in strict mode, so every
+- [x] The image comes from the release run's guest-image job in strict mode, so every
   input is a signed Alpine package. Since 2026-10-31 the engine is Alpine's
   `docker-engine`, `containerd`, `runc` and `tini-static` (ADR 0005, "Docker Engine from
   Alpine"), and CI runs strict on every PR, so this holds unless that job was skipped.
-- [ ] Moby, containerd and runc LICENSE and NOTICE files are in `THIRD-PARTY/guest/`
+  2026-11-03, v0.1.0-rc.1: the release run 41620846473 built it with `strict: true` /
+  `HYPERBUTLER_STRICT: 1`.
+- [x] Moby, containerd and runc LICENSE and NOTICE files are in `THIRD-PARTY/guest/`
   (Apache-2.0 §4(a) and (d)): `guest/docker/moby-<ver>/`, `guest/containerd/...`,
   `guest/runc/...`. `fetch-sources.sh` takes them from the upstream tarballs.
-- [ ] The Alpine `docker`, `containerd` and `runc` packages in the lock are not behind an
+  2026-11-03, v0.1.0-rc.1: the zip has `THIRD-PARTY/guest/docker/moby-29.9.2`,
+  `docker/cli-29.9.2`, `containerd/containerd-2.3.7` and `runc/runc-1.4.3`, each with
+  LICENSE and NOTICE.
+- [x] The Alpine `docker`, `containerd` and `runc` packages in the lock are not behind an
   upstream security release by more than 7 days (ADR 0005, revisit rule). Bump the lock
   if they are; move to building from source if Alpine has not caught up.
+  2026-11-03, v0.1.0-rc.1: checked against upstream releases and advisories:
+  moby/docker-cli 29.9.2 (latest), containerd 2.3.7 (fixes the 2026-10-13 advisories),
+  runc 1.4.3 (no advisory since 2026-06-13, fixed in 1.4.3) are current; Alpine v3.24
+  ships exactly these. Not in this rule but found with it: linux-virt 6.18.59 is one point
+  release behind 6.18.60 (2026-10-30, in v3.24); Alpine drops superseded kernels from the
+  mirrors (6.18.58 went that way), so bump it before the tag.
 - [ ] `hyperbutler.exe` checks the guest image files against hashes embedded at build time
   (Decision 4): `hyperbutler version --json` of the released binary says
   `"imagePinned": true` with the `image.json` SHA-256 from the guest-image job, and a
@@ -250,11 +263,15 @@ soak runs separately and its result goes here.
   (`internal/engine/imagepin.go`); `package.ps1` fails when the pin is missing.
 
 **Bundled clients (`dist/clients.lock`)**
-- [ ] `docker-cli` follows the guest's Docker Engine version and `docker-compose` is the
+- [x] `docker-cli` follows the guest's Docker Engine version and `docker-compose` is the
   current release, neither behind an upstream security release by more than 7 days.
-- [ ] `clients\docker.exe version` and `docker compose version` from the zip print the
+  2026-11-03, v0.1.0-rc.1: docker-cli 29.9.2 = the guest engine; compose v5.7.0 is the
+  latest (2026-11-02).
+- [x] `clients\docker.exe version` and `docker compose version` from the zip print the
   pinned versions, against the release candidate.
-- [ ] REQ-MEM-001: idle memory ≤ 400 MB (`bench/mem-idle`) against the release candidate.
+  2026-11-03, v0.1.0-rc.1: `Docker version 29.9.2, build a82e528`, `Docker Compose version
+  v5.7.0` from the zip.
+- [x] REQ-MEM-001: idle memory ≤ 400 MB (`bench/mem-idle`) against the release candidate.
   2026-11-01, main at 0012298 with a local A2b image: median 313.9 MiB (329 MB; engine 19.1,
   vmmem 289.3, vmwp 5.5 MiB), PASS. The engine's working set rose from 7.3 to 19.8 MiB over
   the window (+21.7 MiB/h); the 24 h soak must show whether that levels off.
@@ -325,8 +342,9 @@ soak runs separately and its result goes here.
     accepts both since. **noadmin: met.**
 
 **Requirements**
-- [ ] REQ-UX-002: the zip is ≤ 150 MB (`package.ps1` enforces it). Record the size in the
+- [x] REQ-UX-002: the zip is ≤ 150 MB (`package.ps1` enforces it). Record the size in the
   table above.
+  2026-11-03, v0.1.0-rc.1: zip 120,645,009 bytes (115 MiB), MSI 125,600,284 bytes.
 - [ ] REQ-UX-010: `bench/uninstall` passes with the released `hyperbutler.exe` and image,
   against a test installation (it sets its own HYPERBUTLER_HOME, data directory, pipe and
   DOCKER_CONFIG under `%TEMP%\hb-dev\uninstall`):
@@ -349,34 +367,54 @@ soak runs separately and its result goes here.
 - [ ] REQ-UX-005: `bench/no-telemetry` passes against the release candidate (default
   5 minute idle, fresh `-home`), and `internal/notelemetry` is green in CI. 2026-11-01:
   PASS on two runs, nothing seen outside the bench's own pull.
-- [ ] REQ-UX-004: no feature needs an account (review of the release's changes; the
+- [x] REQ-UX-004: no feature needs an account (review of the release's changes; the
   2026-11-01 review is in [requirements.md](requirements.md)).
+  2026-11-03, v0.1.0-rc.1: reviewed the changes since 2026-11-01 (broker service, MSI,
+  MCP, start notes): nothing signs in anywhere; the only login-related code is doctor's
+  check of docker's own credential helpers.
 - [ ] REQ-PLAT-005 (from the second release on): upgrading from every release since the
   last minor keeps images, volumes and containers.
-- [ ] The README "Current status" table matches the measured numbers for this release.
+- [x] The README "Current status" table matches the measured numbers for this release.
   Nothing in the README claims a target that is not met.
+  2026-11-03, v0.1.0-rc.1: README and status.md carry the rc.1 numbers (319 MiB idle, 1.44
+  s start).
 
 ### 2. GPL and license obligations
 
 The guest image contains GPL-2.0 code (Linux, BusyBox, e2fsprogs, iptables, libnftnl) and LGPL
 code (libblkid, parts of e2fsprogs, libseccomp, libmnl). hyperbutler distributes it, so hyperbutler owes the source.
 
-- [ ] `hyperbutler-<tag>-guest-sources.tar` is attached to the same release as the zip. GPLv2
+- [x] `hyperbutler-<tag>-guest-sources.tar` is attached to the same release as the zip. GPLv2
   §3 lets us meet the source duty by "equivalent access to copy the source code from the
   same place"; that is why the bundle is a release asset and not a link to Alpine's
   servers. Never delete it while the zip is offered.
-- [ ] The bundle holds, for every package in `MANIFEST.tsv`, the aports directory at the
+  2026-11-03, v0.1.0-rc.1: attached to the draft, 232,192,000 bytes, SHA-256 matches
+  SHA256SUMS.
+- [x] The bundle holds, for every package in `MANIFEST.tsv`, the aports directory at the
   commit in the package's signed `.PKGINFO` (APKBUILD, patches, the kernel config) and
   every upstream archive it names. Spot-check: the kernel tarball for the `linux-virt`
   version, the BusyBox tarball, e2fsprogs, util-linux, iptables and libseccomp.
-- [ ] `SOURCE-OFFER.txt` names the bundle with the right SHA-256 and URL.
-- [ ] `THIRD-PARTY/README.txt` lists every Go module and guest package, and each one has
+  2026-11-03, v0.1.0-rc.1: 396 entries; MANIFEST.tsv present; spot-checked the aports
+  directory and upstream archive for linux-lts (APKBUILD, linux-6.18.tar.xz),
+  busybox-1.37.0, e2fsprogs-1.47.4, util-linux-2.42.3, iptables-1.8.13 and
+  libseccomp-2.6.1.
+- [x] `SOURCE-OFFER.txt` names the bundle with the right SHA-256 and URL.
+  2026-11-03, v0.1.0-rc.1: names `hyperbutler-v0.1.0-rc.1-guest-sources.tar`, sha256
+  5deb0f70…, the release URL; matches SHA256SUMS.
+- [x] `THIRD-PARTY/README.txt` lists every Go module and guest package, and each one has
   its license text. `package.ps1` fails on a Go module without one; `fetch-sources.sh`
   fails on a guest origin without one unless `dist/licenses/<origin>/` supplies it.
-- [ ] `NOTICE` is current: new Go modules, new guest packages.
-- [ ] No GPL code is linked into `hyperbutler.exe` (the SBOM lists its modules).
-- [ ] "Docker" is used only descriptively ("Docker Engine (Moby)"), with the trademark
+  2026-11-03, v0.1.0-rc.1: lists the 16 Go modules of hyperbutler.exe, the docker CLI and
+  compose modules, WebView2Loader and 15 guest origins, each with its license files.
+- [x] `NOTICE` is current: new Go modules, new guest packages.
+  2026-11-03, v0.1.0-rc.1: every module `go version -m hyperbutler.exe` prints is in NOTICE.
+- [x] No GPL code is linked into `hyperbutler.exe` (the SBOM lists its modules).
+  2026-11-03, v0.1.0-rc.1: no GPL/LGPL/AGPL license text among the license files of the
+  modules linked into hyperbutler.exe, the broker (golang.org/x/sys only) or the clients.
+- [x] "Docker" is used only descriptively ("Docker Engine (Moby)"), with the trademark
   note in the README.
+  2026-11-03, v0.1.0-rc.1: README uses "Docker" for the API, CLI and Docker Desktop only,
+  with the trademark note.
 
 ### 3. Cut the release
 
