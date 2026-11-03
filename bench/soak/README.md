@@ -28,7 +28,10 @@ or the VM, grows over time.
   working set when it rises to its commit, `internal/diag.WorkingSetGuard`, and logs
   `working set emptied`; such a trim shows as a drop in the private working set, so read
   a trend in it next to the private bytes, which a trim does not change); from the engine's
-  `internal/diag` endpoint its goroutine count and Go heap in use. The CSV also records,
+  `internal/diag` endpoint its goroutine count and Go heap in use. When the HCS access broker
+  service (`hyperbutler-broker.exe`, ADR 0004) runs, its private bytes and handle count
+  are sampled and judged too (`-broker-abs`, `-broker-rel`; handles with the engine's
+  limits), and the run fails if the service stops or restarts. The CSV also records,
   unjudged, heap alloc, idle, released, stacks, Go `Sys`, the GC count, and any other VM
   or engine running on the host at the time (`foreign`).
 - **Profiles.** With `-profile-dir`, heap, allocs and goroutine profiles and a stats

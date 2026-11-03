@@ -133,7 +133,7 @@ func TestJudgeCSV(t *testing.T) {
 	if err := judgeCSV(&out, strings.NewReader(oldCSV(reuse, scavenged)), c); err != nil {
 		t.Fatalf("scavenger reuse failed: %v\n%s", err, out.String())
 	}
-	if !strings.Contains(out.String(), "[vmwp_ws_private]") || !strings.Contains(out.String(), "vmwp_ws_private   skipped") {
+	if !strings.Contains(out.String(), "[vmwp_ws_private broker_private_bytes broker_handles]") || !strings.Contains(out.String(), "vmwp_ws_private   skipped") {
 		t.Fatalf("empty column not reported as skipped:\n%s", out.String())
 	}
 	out.Reset()

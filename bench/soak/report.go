@@ -9,7 +9,8 @@ import (
 
 // metrics are the CSV columns after t_seconds, in order.
 var metrics = []string{"ws_private", "private_bytes", "ws_private_adj", "private_bytes_adj",
-	"handles", "threads", "goroutines", "heap_inuse", "vmmem_ws_private", "vmwp_ws_private"}
+	"handles", "threads", "goroutines", "heap_inuse", "vmmem_ws_private", "vmwp_ws_private",
+	"broker_private_bytes", "broker_handles"}
 
 // adjusted maps each scavenger-adjusted metric to the raw metric it replaces in the
 // verdict. On Windows the Go scavenger decommits the pages it returns to the OS

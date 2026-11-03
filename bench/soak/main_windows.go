@@ -93,6 +93,8 @@ func parseFlags() (*config, error) {
 	vmRel := fs.Float64("vmmem-rel", 0.10, "vmmem private working set: allowed growth as a fraction of its median")
 	wpAbs := fs.Int64("vmwp-abs", 8<<20, "vmwp private working set: allowed growth in bytes over the window")
 	wpRel := fs.Float64("vmwp-rel", 0.10, "vmwp private working set: allowed growth as a fraction of its median")
+	brAbs := fs.Int64("broker-abs", 4<<20, "broker service private bytes: allowed growth in bytes over the window")
+	brRel := fs.Float64("broker-rel", 0.10, "broker service private bytes: allowed growth as a fraction of its median")
 	fs.StringVar(&c.judge, "judge", "", "re-judge the run recorded in this CSV (-out) with -warmup, -min-window, -bucket and the limits, instead of running one")
 	if err := fs.Parse(os.Args[1:]); err != nil {
 		return nil, err
@@ -109,6 +111,10 @@ func parseFlags() (*config, error) {
 		"heap_inuse":        {Abs: float64(*heapAbs), Rel: *heapRel},
 		"vmmem_ws_private":  {Abs: float64(*vmAbs), Rel: *vmRel},
 		"vmwp_ws_private":   {Abs: float64(*wpAbs), Rel: *wpRel},
+		// The broker service (ADR 0004) holds a lease per running VM: one connection,
+		// its handles and a few goroutines, so it must stay as flat as the engine.
+		"broker_private_bytes": {Abs: float64(*brAbs), Rel: *brRel},
+		"broker_handles":       {Abs: *hAbs, Rel: *hRel},
 	}
 	if c.judge != "" {
 		if c.bucket <= 0 || c.warmup < 0 || c.minWindow < 0 {
@@ -177,6 +183,24 @@ func parseFlags() (*config, error) {
 // target is what the soak samples.
 type target struct {
 	engine, vmmem, vmwp uint32
+	broker              uint32 // the HCS access broker service, 0 when none runs
+}
+
+// findBroker returns the PID of the one running broker service, or 0 when none runs
+// (the zip, or developer mode).
+func findBroker() (uint32, error) {
+	ps, err := hostmon.Snapshot()
+	if err != nil {
+		return 0, err
+	}
+	switch pids := hostmon.ByName(ps, hostmon.BrokerName); len(pids) {
+	case 0:
+		return 0, nil
+	case 1:
+		return pids[0], nil
+	default:
+		return 0, fmt.Errorf("%d %s processes run; expected one service", len(pids), hostmon.BrokerName)
+	}
 }
 
 func logf(format string, a ...any) {
@@ -290,6 +314,14 @@ func run() (err error) {
 		return err
 	}
 
+	if tg.broker, err = findBroker(); err != nil {
+		return err
+	}
+	if tg.broker == 0 {
+		fmt.Println("soak: no broker service runs; its metrics are not sampled")
+		c.optedOut["broker_private_bytes"], c.optedOut["broker_handles"] = true, true
+	}
+
 	// Pin the PIDs so they cannot be reused by another process mid-run. vmmem and vmwp
 	// are protected; if they cannot be opened, their disappearance from the counters
 	// still ends the run.
@@ -342,6 +374,7 @@ func run() (err error) {
 		_ = csvw.Write(append(append([]string{"t_seconds"}, metrics...), extraColumns...))
 	}
 
+	fmt.Printf("soak: broker service PID %d\n", tg.broker)
 	fmt.Printf("soak: engine PID %d, vmmem PID %d, vmwp PID %d, diag %q, bind mounts %q, port %d, %s (warm-up %s), sample every %s\n",
 		tg.engine, tg.vmmem, tg.vmwp, c.diagPipe, c.shareDir, c.port, c.duration, c.warmup, c.interval)
 
@@ -359,7 +392,7 @@ func run() (err error) {
 	var fatal error
 	start := time.Now()
 	pids := []uint32{tg.engine}
-	for _, p := range []uint32{tg.vmmem, tg.vmwp} {
+	for _, p := range []uint32{tg.vmmem, tg.vmwp, tg.broker} {
 		if p != 0 {
 			pids = append(pids, p)
 		}
@@ -412,6 +445,15 @@ sampling:
 					break sampling
 				}
 				row[v.name] = float64(vs.WorkingSetPriv)
+			}
+			if tg.broker != 0 {
+				bs, ok := s[tg.broker]
+				if !ok {
+					fatal = fmt.Errorf("broker service PID %d is gone after %s: it stopped or restarted", tg.broker, time.Since(start).Round(time.Second))
+					break sampling
+				}
+				row["broker_private_bytes"] = float64(bs.PrivateBytes)
+				row["broker_handles"] = float64(bs.HandleCount)
 			}
 		}
 		if dc != nil && runCtx.Err() == nil {
