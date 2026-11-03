@@ -188,7 +188,9 @@ func run(o options) error {
 // privateDir creates a directory with a random name in base, with a protected DACL for
 // sid only, for the backend's own files.
 func privateDir(base, sid string) (string, error) {
-	sd, err := windows.SecurityDescriptorFromString("D:P(A;OICI;FA;;;" + sid + ")")
+	// The owner is set too: an elevated token's default owner is Administrators,
+	// and removeStaleStateDirs removes only folders the account owns.
+	sd, err := windows.SecurityDescriptorFromString("O:" + sid + "D:P(A;OICI;FA;;;" + sid + ")")
 	if err != nil {
 		return "", err
 	}

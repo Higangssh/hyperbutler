@@ -23,6 +23,7 @@ func TestFixBrokerDataDir(t *testing.T) {
 	if err := MkdirPrivate(parent); err != nil {
 		t.Fatal(err)
 	}
+	ownTree(t, parent)
 	if err := CheckBrokerDataDir(parent); err != nil {
 		t.Fatalf("a folder hyperbutler made: %v", err)
 	}
@@ -65,6 +66,7 @@ func TestFixBrokerDataDir(t *testing.T) {
 	icacls(writeDisk(explicit), "/grant", "*S-1-1-0:F")
 	diskOnly := mkdir(filepath.Join(parent, "diskonly"))
 	disk := writeDisk(diskOnly)
+	ownTree(t, diskOnly)
 	if err := CheckBrokerDataDir(diskOnly); err != nil {
 		t.Fatalf("a folder and disk of the user's: %v", err)
 	}
@@ -83,6 +85,7 @@ func TestFixBrokerDataDir(t *testing.T) {
 		{diskOnly, "its data disk DACL grants access to another account"},
 		{conditional, "DACL has an ACE of type"},
 	} {
+		ownTree(t, c.dir)
 		cerr := CheckBrokerDataDir(c.dir)
 		de, ok := IsDataDirError(cerr)
 		if !ok {
@@ -91,9 +94,11 @@ func TestFixBrokerDataDir(t *testing.T) {
 		if !de.Fixable || !strings.HasPrefix(de.Reason, c.reason) || !strings.Contains(de.Fix, "doctor --fix") || strings.Contains(de.Fix, "icacls") {
 			t.Fatalf("%s: refusal %+v", c.dir, de)
 		}
+		ownTree(t, c.dir)
 		if err := FixBrokerDataDir(c.dir); err != nil {
 			t.Fatalf("%s: fix: %v", c.dir, err)
 		}
+		ownTree(t, c.dir)
 		if err := CheckBrokerDataDir(c.dir); err != nil {
 			t.Fatalf("%s after the fix: %v", c.dir, err)
 		}
@@ -102,18 +107,19 @@ func TestFixBrokerDataDir(t *testing.T) {
 		t.Errorf("the disk after the fix: %s", acl)
 	}
 
-	// hardlinked: the disk is a second name of a file outside; nothing acts on it.
-	hardlinked := mkdir(filepath.Join(gp, "hardlinked"))
+	// linkedDisk: the disk is a second name of a file outside; nothing acts on it.
+	linkedDisk := mkdir(filepath.Join(gp, "linkedDisk"))
 	other := filepath.Join(t.TempDir(), "other.bin")
 	if err := os.WriteFile(other, nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	icacls(other, "/grant", "*S-1-1-0:R")
 	before := aclOf(other)
-	if out, err := exec.Command("cmd", "/c", "mklink", "/H", filepath.Join(hardlinked, "data.vhdx"), other).CombinedOutput(); err != nil {
+	if out, err := exec.Command("cmd", "/c", "mklink", "/H", filepath.Join(linkedDisk, "data.vhdx"), other).CombinedOutput(); err != nil {
 		t.Fatalf("mklink /H: %v: %s", err, out)
 	}
-	if err := FixBrokerDataDir(hardlinked); err == nil {
+	ownTree(t, linkedDisk)
+	if err := FixBrokerDataDir(linkedDisk); err == nil {
 		t.Fatal("a hard-linked disk was fixed")
 	} else if de, ok := IsDataDirError(err); !ok || !strings.Contains(de.Fix, "hyperbutler delete") {
 		t.Fatalf("a hard-linked disk: %v", err)
@@ -125,6 +131,7 @@ func TestFixBrokerDataDir(t *testing.T) {
 	// swapped: after the check, the folder is renamed and a junction of its name points
 	// at another folder of the user's with a disk; the fix refuses it.
 	swapped := mkdir(filepath.Join(gp, "swapped"))
+	ownTree(t, swapped)
 	if _, ok := IsDataDirError(CheckBrokerDataDir(swapped)); !ok {
 		t.Fatal("the folder to swap passed")
 	}
@@ -186,6 +193,7 @@ func TestFixBrokerDataDirEntries(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	ownTree(t, dir)
 	if err := FixBrokerDataDir(dir); err != nil {
 		t.Fatal(err)
 	}
@@ -250,6 +258,7 @@ func TestFixBrokerDataDirHeldOpen(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	ownTree(t, dir)
 	if de, ok := IsDataDirError(FixBrokerDataDir(dir)); !ok || !strings.Contains(de.Reason, "open to write") {
 		t.Fatalf("an entry held open to write: %+v", de)
 	}
@@ -262,9 +271,11 @@ func TestFixBrokerDataDirHeldOpen(t *testing.T) {
 			short = windows.UTF16ToString(buf[:n])
 		}
 	}
+	ownTree(t, short)
 	if err := FixBrokerDataDir(short); err != nil {
 		t.Fatalf("fix by %s: %v", short, err)
 	}
+	ownTree(t, dir)
 	if err := CheckBrokerDataDir(dir); err != nil {
 		t.Fatal(err)
 	}
@@ -313,5 +324,24 @@ func TestReadPrivateFileShapes(t *testing.T) {
 	}
 	if _, err := readPrivateFile(p); err == nil || !strings.Contains(err.Error(), "hard link") {
 		t.Fatalf("hard link: %v", err)
+	}
+}
+
+// ownTree makes this user the owner of root and everything below it: what hyperbutler
+// itself does (MkdirPrivate, ownByUser), where an elevated shell (as on CI) would
+// otherwise leave the entries the test makes owned by Administrators.
+func ownTree(t *testing.T, root string) {
+	t.Helper()
+	err := filepath.WalkDir(root, func(p string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.Type()&(os.ModeSymlink|os.ModeIrregular) != 0 {
+			return filepath.SkipDir
+		}
+		return ownByUser(p)
+	})
+	if err != nil {
+		t.Fatal(err)
 	}
 }

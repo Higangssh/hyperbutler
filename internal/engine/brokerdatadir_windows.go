@@ -317,10 +317,11 @@ func relOrDot(rel string) string {
 func dirNames(h windows.Handle) ([]string, error) {
 	var names []string
 	// 8-byte aligned, as the kernel writes FILE_FULL_DIR_INFO with 64-bit fields.
-	buf := unsafe.Slice((*byte)(unsafe.Pointer(&make([]uint64, 8<<10)[0])), 64<<10)
+	const size = 64 << 10
+	buf := unsafe.Slice((*byte)(unsafe.Pointer(&make([]uint64, size/8)[0])), size)
 	class := uint32(windows.FileFullDirectoryRestartInfo)
 	for {
-		err := windows.GetFileInformationByHandleEx(h, class, &buf[0], uint32(len(buf)))
+		err := windows.GetFileInformationByHandleEx(h, class, &buf[0], size)
 		if errors.Is(err, windows.ERROR_NO_MORE_FILES) {
 			return names, nil
 		}
@@ -415,7 +416,7 @@ func samePathName(final, dir string) bool {
 	}
 	if u, err := windows.UTF16PtrFromString(abs); err == nil {
 		buf := make([]uint16, windows.MAX_LONG_PATH)
-		if n, err := windows.GetLongPathName(u, &buf[0], uint32(len(buf))); err == nil && n > 0 && int(n) < len(buf) {
+		if n, err := windows.GetLongPathName(u, &buf[0], windows.MAX_LONG_PATH); err == nil && n > 0 && int(n) < len(buf) {
 			abs = windows.UTF16ToString(buf[:n])
 		}
 	}
