@@ -42,7 +42,7 @@ Shipped next to hyperbutler.exe for the window (hyperbutler gui, ADR 0008):
   of github.com/jchv/go-webview2 (used only by the spike in spike/gui) is linked into
   hyperbutler.exe.
 
-The user-mode guest network (internal/netstack, ADR 0006) links these into hyperbutler-dev:
+The user-mode guest network (internal/netstack, ADR 0006) links these into hyperbutler.exe:
 
 - github.com/containers/gvisor-tap-vsock v0.9.0
   https://github.com/containers/gvisor-tap-vsock
@@ -72,9 +72,34 @@ The user-mode guest network (internal/netstack, ADR 0006) links these into hyper
   https://github.com/google/btree
   Apache License 2.0, Copyright Google Inc. Imported by gVisor.
 
-- golang.org/x/exp v0.0.0-20231110203233-9a3e6036ecaa and golang.org/x/time v0.12.0
+- golang.org/x/exp v0.0.0-20231110203233-9a3e6036ecaa and golang.org/x/time v0.15.0
   https://cs.opensource.google/go/x/exp, https://cs.opensource.google/go/x/time
   BSD 3-Clause License, Copyright 2009 The Go Authors. Imported by gVisor.
+
+The MCP server (hyperbutler mcp, internal/mcpserver) links these into hyperbutler.exe:
+
+- github.com/modelcontextprotocol/go-sdk v1.8.0
+  https://github.com/modelcontextprotocol/go-sdk
+  Apache License 2.0 and MIT License (the project is moving from MIT to Apache-2.0),
+  Copyright (c) 2024-2025 Model Context Protocol a Series of LF Projects, LLC.
+
+- github.com/google/jsonschema-go v0.4.3
+  https://github.com/google/jsonschema-go
+  MIT License, Copyright (c) 2025 JSON Schema Go Project Authors. Imported by the MCP SDK.
+
+- github.com/segmentio/encoding v0.5.4 and github.com/segmentio/asm v1.1.3
+  https://github.com/segmentio/encoding, https://github.com/segmentio/asm
+  MIT License, Copyright (c) 2019 Segment.io, Inc. and (c) 2021 Segment. Imported by the
+  MCP SDK.
+
+- github.com/yosida95/uritemplate/v3 v3.0.2
+  https://github.com/yosida95/uritemplate
+  BSD 3-Clause License, Copyright (C) 2016, Kohei YOSHIDA. Imported by the MCP SDK.
+
+- golang.org/x/oauth2 v0.35.0 and golang.org/x/sync v0.23.0
+  https://cs.opensource.google/go/x/oauth2, https://cs.opensource.google/go/x/sync
+  BSD 3-Clause License, Copyright 2009 The Go Authors. Imported by the MCP SDK; hyperbutler
+  makes no OAuth requests (the server speaks over stdio only).
 
 Third-party Go modules used only by tests (never linked into a shipped binary):
 

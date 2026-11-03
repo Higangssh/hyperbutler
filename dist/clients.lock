@@ -18,4 +18,4 @@
 # docker-engine 29.9.2). Take the h1: hash from `go mod download -json <module@version>`
 # (its Sum) and the commit and time from https://proxy.golang.org/<module>/@v/<version>.info.
 docker-cli     github.com/docker/cli@v29.9.2+incompatible h1:trup/vUxx5uUo2t+87Cd9AmITR+DvKUe4H2tTtZN8FY= a82e528901260c8df6073311379eac65f92db204 2026-10-20T11:24:07Z
-docker-compose github.com/docker/compose/v5@v5.6.1        h1:Ddp7wM/MXZQ3w1+sDuEEZXn3HcLv7QM4epFaouu4vds= 6cbc19a3fd59e305fb814dca4d854a4fb67d2941 2026-10-21T07:20:42Z
+docker-compose github.com/docker/compose/v5@v5.7.0        h1:nRBxm4HkCFo8Bgb49o6xdhnJ0nl1eGb1H0FAb/ExldE= 5bceecf985347fcf6dd23029ce440b502a0d4301 2026-11-02T14:41:36Z

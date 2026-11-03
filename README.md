@@ -23,15 +23,15 @@ directly through the Windows Host Compute Service (the API WSL 2 uses), runs doc
 and lets the stock `docker` CLI and Docker Compose talk to it. No WSL, no Docker Desktop.
 
 > [!NOTE]
-> **Preview.** v0.1.0-preview.2 works end to end on Windows 11 Home. v0.1.0 waits on a
-> 24-hour soak test and an install test on a clean machine ([status](docs/status.md)).
-> Not for production yet.
+> **Preview.** v0.1.0-preview.2 works end to end on Windows 11 Home. v0.1.0 waits on its
+> release gates, among them a 24-hour soak, an install on a clean PC and a real sleep test;
+> [status](docs/status.md) lists all of them. Not for production yet.
 
 ## Highlights
 
 - **No WSL.** The VM runs on Hyper-V's Host Compute Service. WSL can stay off, and its updates
   never touch hyperbutler.
-- **Light.** 322 MiB of memory at idle, a 116 MB download, 179 MB installed.
+- **Light.** 322 MiB of memory at idle, a 120 MB download, 197 MB installed.
 - **Disk space comes back by itself.** Delete images and the data disk shrinks. No
   compaction, no admin step.
 - **Fast bind mounts from `C:\`.** Its own file server reads 2000 small files in 0.4 s
@@ -52,8 +52,8 @@ script, one engine at a time ([method and raw data](docs/compare-docker-desktop.
 | | hyperbutler | Docker Desktop 4.97 (WSL 2) |
 |---|---|---|
 | Needs WSL | **no** | yes |
-| Download | **116 MB** | 592 MB (+351 MB WSL) |
-| Installed size | **179 MB** | about 6.7 GB |
+| Download | **120 MB** | 592 MB (+351 MB WSL) |
+| Installed size | **197 MB** | about 6.7 GB |
 | Start until a container runs | **2.5 s** | 5.6 s |
 | Idle memory, VM running | **322 MiB** | 1.7–2.7 GB |
 | Disk 5 min after deleting ~5 GB of images | **1.5 GiB**, given back automatically | 6.8 GiB, kept |

@@ -43,6 +43,8 @@ release here.
 | (dry run) | 79.7 MB | prototype A2a image, snapshot |
 | (dry run, 2026-10-31) | 84.9 MB | A2b image with the Alpine engine, snapshot (89,026,173 bytes; 113.1 MB unpacked) |
 | (dry run, 2026-11-01) | 106.7 MB | A2b image (local build, 88 MiB system disk) plus the docker CLI 29.9.2 and compose v5.6.1 built from source (30.4 and 30.0 MB), snapshot (111,857,104 bytes; 173.7 MB unpacked). Docker's prebuilt `docker.exe` would have been 44.9 MB |
+| v0.1.0-preview.1 | 116.4 MB | release run (116,415,311 bytes; MSI 121,729,372 bytes) |
+| v0.1.0-preview.2 | 120.3 MB | release run, with `hyperbutler-broker.exe` (120,298,176 bytes; 196.7 MB unpacked; MSI 125,358,540 bytes) |
 
 The release is x64 only. Docker publishes no Windows arm64 docker CLI; since it is built
 from source here, an arm64 release would only need `GOARCH=arm64`, but the guest image is
