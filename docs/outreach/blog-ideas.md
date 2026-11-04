@@ -228,6 +228,17 @@ surprising. Numbers are from the maintainer's Windows 11 Home laptop unless note
   package script, and a reminder that Windows Installer compares four numbers, not what
   you meant ([install.md](../install.md#run-of-2026-11-03)).
 
+- **The handle leak that wasn't.** The 24 h soak failed on the broker's handle count:
+  +44 at 13.5 h, and after that about two more every few engine start/stop cycles. A
+  per-type handle count of the SYSTEM service showed only Thread and Event handles
+  growing, and every extra Thread handle pointed at a live thread. The Windows RPC
+  runtime keeps a duplicate thread handle and an event for each OS thread that makes its
+  first RPC call (HCS is RPC to vmcompute underneath), until that thread exits. Go
+  never retires its OS threads. So the count follows the highest number of threads the
+  broker has ever needed at once, and it stopped at 461 after 93 cycles. Neither half
+  leaks on its own, but together they look exactly like a leak
+  ([release.md](../release.md#1-release-gates-from-the-adrs)).
+
 ## Still to measure before writing
 
 - Side by side with Docker Desktop on WSL2 on the same machine (9P baselines need WSL).
