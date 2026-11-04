@@ -54,6 +54,15 @@
     <Property Id="ARPURLINFOABOUT" Value="https://github.com/Higangssh/hyperbutler" />
     <Property Id="ARPHELPLINK" Value="https://github.com/Higangssh/hyperbutler#quick-start" />
     <Property Id="ARPNOMODIFY" Value="1" />
+    <!-- No Restart Manager. It found the running broker service at InstallValidate and
+         asked the user to close "hyperbutler broker" on every upgrade, although the old
+         product's removal stops the service before its files go (HbBrokerUninstall). The
+         property is read from each package's own tables, so the removal of a product built
+         without it (v0.1.0-rc.2 and earlier) still asks once. Without Restart Manager a
+         repair that rewrites the running broker's file (msiexec /fa) replaces it at the
+         next restart instead (3010), and an open hyperbutler window gets Windows
+         Installer's own files-in-use dialog (docs/install.md). -->
+    <Property Id="MSIRESTARTMANAGERCONTROL" Value="Disable" />
 
     <!-- The choices on the Setup options page; also settable on the command line.
          ADDHYPERVADMIN=1 (command line only, developer mode) adds the installing user to

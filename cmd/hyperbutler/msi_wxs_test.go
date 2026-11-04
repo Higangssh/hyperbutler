@@ -174,3 +174,41 @@ func TestMSISequence(t *testing.T) {
 		}
 	}
 }
+
+// TestMSINoRestartManager: an upgrade must not ask the user to close the broker service,
+// which Restart Manager finds running at InstallValidate (the old product's removal stops
+// it before its files go).
+func TestMSINoRestartManager(t *testing.T) {
+	f, err := os.Open(filepath.Join("..", "..", "dist", "msi", "hyperbutler.wxs"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	d := xml.NewDecoder(f)
+	for {
+		tok, err := d.Token()
+		if errors.Is(err, io.EOF) {
+			break
+		} else if err != nil {
+			t.Fatal(err)
+		}
+		if el, ok := tok.(xml.StartElement); ok && el.Name.Local == "Property" {
+			var id, value string
+			for _, a := range el.Attr {
+				switch a.Name.Local {
+				case "Id":
+					id = a.Value
+				case "Value":
+					value = a.Value
+				}
+			}
+			if id == "MSIRESTARTMANAGERCONTROL" {
+				if value != "Disable" {
+					t.Errorf("MSIRESTARTMANAGERCONTROL is %q, want Disable", value)
+				}
+				return
+			}
+		}
+	}
+	t.Error("hyperbutler.wxs does not set MSIRESTARTMANAGERCONTROL")
+}

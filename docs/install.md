@@ -51,6 +51,13 @@ minute. Then it stops and removes the broker service (an upgrade installs the ne
 after the new files), which ends the VMs of other users signed in at the same time
 (they see HB-VM-004 and start again).
 
+The installer does not use Windows' Restart Manager, so an upgrade does not ask you to
+close "hyperbutler broker" (`MSIRESTARTMANAGERCONTROL`, 2026-11-04). The old product's
+own tables decide that for its removal, so **upgrading from v0.1.0-rc.2 or earlier asks
+once**: keep "Automatically close applications" and choose OK. Close the hyperbutler
+window before an upgrade or uninstall; if it is open, Windows Installer lists it and asks
+you to close it.
+
 ## Silent installs
 
 ```
@@ -66,7 +73,10 @@ that runs as SYSTEM it adds no one. `ENABLEVMP=0` leaves Virtual Machine Platfor
 `UPDATECHECK=""` turns the daily update check off for every user of the machine (a user
 can still turn it on with `hyperbutler config set updateCheck true`).
 Without `/norestart`, a silent install that turned Virtual Machine Platform on restarts
-Windows by itself; with it, msiexec exits with 3010 (restart needed).
+Windows by itself; with it, msiexec exits with 3010 (restart needed). The same holds for a
+silent upgrade or uninstall while the hyperbutler window is open, and for a repair that
+rewrites every file (`msiexec /fa`) while the broker runs: the file in use is replaced at
+the next restart. Always pass `/norestart`.
 
 ## Privacy
 
@@ -184,11 +194,16 @@ mkdir $log -Force
    `sc.exe stop hyperbutler-broker`, `sc.exe delete hyperbutler-broker`; repair
    (`msiexec /fa $m /l*v $log\repair.log`): registered again and running. A second repair
    with it running: the log's `WixQuietExec64:` line says "hyperbutler-broker is installed
-   and running" (the step leaves it alone). Its PID still changes: `/fa` rewrites every
-   file, the running `hyperbutler-broker.exe` too, so Restart Manager stops the service
-   for the copy and starts it again ("RESTART MANAGER: Previously shut down applications
-   have been restarted"), as any repair that rewrites the file does; running VMs end with
-   it (HB-VM-004).
+   and running" (the step leaves it alone). `/fa` rewrites every file, the running
+   `hyperbutler-broker.exe` too. Until 2026-11-04 Restart Manager stopped the service for
+   the copy and started it again (its PID changed, running VMs ended). Since Restart
+   Manager is off, add `/norestart`: the repair exits with 3010 and the new file replaces
+   the running one at the next restart; the PID does not change.
+   Upgrade without the dialog (2026-11-04): from a product built with
+   `MSIRESTARTMANAGERCONTROL`, upgrade to another such build (a new product code) with
+   `/qb`: no "applications should be closed" dialog, the log has no `RESTART MANAGER:
+   Session opened` and no `Error = 1607` lookup, the broker's PID changes, and msiexec
+   exits with 0.
 7. **A standard user's repair does not touch the group:** elevated, give the record an
    account to remove: `& "C:\Program Files\hyperbutler\hyperbutler.exe" setup
    hyperv-admins add --sid <hbtest's SID>` (`wmic useraccount where name='hbtest' get
@@ -256,7 +271,7 @@ CLI with its own `HYPERBUTLER_HOME`:
 | 2 start | Passed: answered after 1.6 s, `hello-world` ran, `logs` shows the broker line, doctor `broker` ok (v0.1.0-preview.2, protocol 1), stop 1.6 s. |
 | 3 stopped service | Passed: "starting the broker service...", then booted through it. |
 | 5 disabled | Passed (as the user, not `hbtest`): the start failed in 48 ms with the message above, no HCS of its own; doctor `broker` FAIL (disabled); the repair left it DISABLED with that `LastResult` and the same SDDL. |
-| 6 repair | Passed: the deleted service came back, running. The repair with it running restarted it (Restart Manager, above), the step itself left it alone. |
+| 6 repair | Passed: the deleted service came back, running. The repair with it running restarted it (Restart Manager, above; off since 2026-11-04), the step itself left it alone. |
 | 9 same MSI | A maintenance run (above); the same-version upgrade is step 1. |
 | 10 test MSI | Passed: refused with the test-build message, exit 1603. |
 | 11 upgrade rollback | Passed: "hyperbutler" (the same product code) and its service RUNNING from Program Files afterwards, and `hyperbutler start` works. |
@@ -288,6 +303,20 @@ Both fixes checked the same day with a build of fd482ea (`-Version v0.1.0-previe
 hyperv-admins remove: ok" with the upgrade's time, `HbStopEngine` "hyperbutler is not
 running." for both products, the service reinstalled and RUNNING, one product, and step 2
 again (1.6 s, `hello-world`, doctor `broker` ok at v0.1.0-preview.3).
+
+### Run of 2026-11-04: the Restart Manager dialog
+
+Upgrading v0.1.0-rc.1 to rc.2 with `/qb` stopped for 20 minutes on "The following
+applications should be closed before continuing the install: hyperbutler broker". Restart
+Manager found the running service at InstallValidate. A first fix also ran `setup broker
+uninstall` as a deferred action before `RemoveExistingProducts`. That cannot work:
+Windows Installer runs the old product's whole removal inside `RemoveExistingProducts`,
+before any deferred action of the new one, and the log ended in "Error 2613:
+RemoveExistingProducts action sequenced incorrectly" (rolled back). So only
+`MSIRESTARTMANAGERCONTROL=Disable` went in. Build of the rc.2 stage with it:
+official rc.2 → it asked once (the old product's removal, `Error = 1607` lookup), exit 0.
+It → another build of it (new product code): no dialog, no Restart Manager session, the
+broker 55380 → 44720 RUNNING, exit 0 in 66 s.
 
 ## Test on a real machine (2026-11-02)
 
