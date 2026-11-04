@@ -151,7 +151,7 @@ soak runs separately and its result goes here.
 ### 1. Release gates from the ADRs
 
 **ADR 0003 (implementation language: leak guardrails)**
-- [ ] The **24 h soak** (`bench/soak`) passed on self-hosted Hyper-V hardware against the
+- [x] The **24 h soak** (`bench/soak`) passed on self-hosted Hyper-V hardware against the
   release candidate, with the diag endpoint on: no positive trend in private working set,
   handles, threads or goroutines. Attach the report. Since 2026-11-01 the engine's
   private working set and private bytes are judged with `heap_released` added back
@@ -176,6 +176,26 @@ soak runs separately and its result goes here.
     **FAIL on the raw private working set** (+3.6 MiB against an allowed 2.0 MiB), the
     rest passed. Re-judged from the CSV: `ws_private_adj` +0.54 MiB against 2.25 MiB,
     `private_bytes_adj` +0.07 MiB against 4.69 MiB: **pass**.
+  - **24 h run**, 2026-11-03 20:25 to 2026-11-04 20:25 KST, installed v0.1.0-rc.1 (MSI),
+    1 h warm-up (23 h window), bind mounts and a published port: 261338 docker commands,
+    0 failed. The soak tool reported **FAIL on two metrics**; both are explained below and
+    the maintainer accepted the run for v0.1.0 on 2026-11-04. Every other metric passed:
+    `ws_private_adj` -0.66 MiB, `private_bytes_adj` +0.08 MiB, engine handles, threads
+    and goroutines +0, vmmem +5.7 MiB against 64 MiB, vmwp and broker private bytes flat.
+    - `heap_inuse`: fitted growth +3.2 MiB against an allowed 1.7 MiB. Hourly samples
+      swing between 11 and 23 MiB with no trend, and private bytes (adjusted) stayed at
+      97.2 MiB from hour 3 to the end, so the Go heap is reused, not leaked.
+    - `broker_handles`: +53.8 against an allowed 20. The count was flat at 400 except a
+      +44 step at 13.5 h, when a second engine used the broker at the same time.
+      Afterwards, 93 start/stop cycles of a second, isolated engine took the broker from
+      439 to 461, and it stayed at 461 for the last 13. A per-type handle count showed only
+      Thread (+3) and Event (+5) handles growing. The Windows RPC runtime (rpcrt4, used by
+      the HCS client) keeps one thread handle and one or two events for each OS thread that
+      makes its first RPC call, until that thread exits. Go never retires its OS threads.
+      300 broker sessions in-process added no handles beyond one new Go thread. The cost is
+      one-time per thread and bounded by the size of the thread pool (about 50 handles), so
+      this is not a per-session leak. Follow-up: judge the broker's handles by the slope
+      after the last concurrency change, or make every HCS call on one fixed thread.
 - [ ] The 45 MB working set seen under the soak workload is profiled and explained
   (ADR 0003, Consequences) before any memory budget is claimed.
 - [x] `go test -race ./...` and the goleak meta-test pass on Windows and Linux (CI).
