@@ -4,6 +4,7 @@ package broker
 
 import (
 	"context"
+	"encoding/binary"
 	"errors"
 	"os"
 	"path/filepath"
@@ -21,7 +22,7 @@ func (f *hcsFixture) withSandbox(t *testing.T, slot uint8) (imageDir, disk strin
 	imageDir = writeBrokerImage(t)
 	f.be.imageDirs[sandboxImage] = imageDir
 	disk = filepath.Join(filepath.Dir(f.disk), SessionDiskName(slot))
-	if err := os.WriteFile(disk, []byte("vhdx"), 0o600); err != nil {
+	if err := os.WriteFile(disk, testVHDX(false, false), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	me, err := windows.StringToSid(f.sid)
@@ -180,5 +181,41 @@ func TestHCSBackendSessionImageNotShared(t *testing.T) {
 	}
 	if got, _ := vm.AccountsOnFile(filepath.Join(f.image, "system.vhd")); len(got) != 1 {
 		t.Fatalf("accounts on the system disk after the refused session: %v", got)
+	}
+}
+
+// The owner rewrites the disk into a differencing disk after the broker checked it and
+// before HCS opens it by path: the check after the start finds it and ends the VM.
+func TestHCSBackendDiskRewrittenBeforeOpen(t *testing.T) {
+	f := newHCSFixture(t, true)
+	f.api.onCreate = func(cfg *vm.Config) {
+		b, err := os.ReadFile(f.disk)
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		meta := 320 << 10
+		binary.LittleEndian.PutUint32(b[meta+4100:], vhdxHasParent)
+		w, err := os.OpenFile(f.disk, os.O_WRONLY, 0)
+		if err != nil {
+			t.Errorf("the owner could not open the disk to write while the broker held it: %v", err)
+			return
+		}
+		defer w.Close()
+		if _, err := w.WriteAt(b[meta+4100:meta+4104], int64(meta+4100)); err != nil {
+			t.Error(err)
+		}
+	}
+	_, err := f.be.Start(context.Background(), f.spec())
+	if !errors.Is(err, ErrDiskRejected) || !strings.Contains(err.Error(), "after the VM opened it") {
+		t.Fatalf("start with a disk rewritten before HCS opened it: %v", err)
+	}
+	for _, s := range f.api.systems {
+		if !s.terminated {
+			t.Fatal("the VM was left running")
+		}
+	}
+	if st, _ := f.be.Status(context.Background(), VMKey{Owner: f.sid}); st.Running {
+		t.Fatal("status reports a VM")
 	}
 }

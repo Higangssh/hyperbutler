@@ -575,6 +575,14 @@ func (b *HCSBackend) Start(ctx context.Context, spec VMSpec) (VMStatus, error) {
 		_ = v.sys.Terminate()
 		return VMStatus{}, fmt.Errorf("broker: %s has runtime id %s, its access was granted for %s", v.name, got, rid)
 	}
+	// The owner can rewrite the disk between the check in openDataDisk and HCS opening
+	// it by path. Now the VM holds it and nobody can: check again, and end a VM that
+	// opened a differencing disk before the guest gets to mount it (ADR 0004,
+	// "Differencing data disks").
+	if err := v.disk.recheck(); err != nil {
+		_ = v.sys.Terminate()
+		return VMStatus{}, fmt.Errorf("%w: %s %w (after the VM opened it)", ErrDiskRejected, diskName(spec.Slot), err)
+	}
 	ok = true
 	s.vm = v
 	b.track(v.name, true)

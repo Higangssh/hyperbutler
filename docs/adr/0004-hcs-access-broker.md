@@ -1315,3 +1315,47 @@ question HCS answers (does it accept the account through the group) is still not
 reached. Decided by the owner (2026-11-03): the service stays SYSTEM for v0.1.0
 (Implementation decision 1); option C, with the user-file opens done as the caller, is
 work for after v0.1.0, as a hardening of the same design (users see no difference).
+
+### Differencing data disks (2026-11-05)
+
+The data disk was checked by its metadata only (owner, DACL, link count, reparse point,
+local volume), never by its contents. A caller could therefore hand the broker a
+`data.vhdx` that is a differencing VHDX: HCS opens the parent the child names, as the VM
+worker, so the guest could read a disk the caller cannot (one the Virtual Machines group
+may read, such as an image folder the installer opened to it, or a share reached as the
+computer account). Found by the review of ADR 0009's slots, which add disks; it was
+there since the first broker.
+
+Fixed: after the metadata checks, the broker reads the disk through the handle it holds
+(the contents HCS will open) and requires a VHDX (the `vhdxfile` identifier, a region
+table whose signature and CRC-32C hold, a metadata table with File Parameters) whose File
+Parameters do not set HasParent and whose metadata has no Parent Locator; anything else
+is "data disk rejected" with a caller-safe reason (`checkVHDX`, `internal/broker/vhdx.go`).
+Tests: synthetic VHDX files (plain, HasParent, a locator, either or both region tables
+damaged, truncated, a VHD, no parameters), disks Windows itself creates (the engine's
+sparse VHDX and a plain one pass, a differencing child of the plain one is refused), and
+`FuzzCheckVHDX` (a differencing disk patched anywhere outside its HasParent bit and
+locator GUID is never accepted).
+
+The review of that fix (2026-11-05) found two ways around a check of the contents alone,
+both answered:
+
+- **The owner rewrites the disk after the check.** The broker holds the disk sharing
+  write (HCS opens it again by path to write), and the owner of a file can always open
+  it, so between the check and HCS's open the owner could set HasParent. Reproduced in a
+  test. Answered: the check runs again through the held handle right after HCS started
+  the VM, when the VM worker holds the disk without sharing write and nobody can change
+  it; a differencing disk then ends the VM, before the guest mounts its data disk
+  (`TestHCSBackendDiskRewrittenBeforeOpen`). HCS still opens the named parent in that
+  moment; closing that too needs the disk out of the owner's reach while the VM starts
+  (owner and DACL changed by the broker, as option C's user-file work would allow), which
+  is left for that hardening.
+- **A pending log rewrites the metadata on open.** The opener replays a VHDX's log
+  before it reads the metadata, so a benign-looking disk could become a differencing one.
+  Answered: the current header (the valid one with the higher sequence number) must have
+  no log (LogGuid zero), and both region tables must be valid and name the same metadata
+  region. Disks the engine creates pass, and so does one whose VM was terminated (HCS
+  closes the log): a run that killed the engine mid-write started again with its images.
+  Open: a disk left with a log by a power loss is refused as "not closed cleanly" until
+  something replays its log as the user (opening it once with `OpenVirtualDisk`); the
+  engine does not do that yet.

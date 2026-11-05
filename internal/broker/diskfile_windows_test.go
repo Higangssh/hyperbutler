@@ -30,7 +30,7 @@ func dataDirHandle(t *testing.T, dir string) windows.Handle {
 func writeDisk(t *testing.T, dir string) string {
 	t.Helper()
 	p := filepath.Join(dir, DataDiskName)
-	if err := os.WriteFile(p, []byte("vhdx"), 0o600); err != nil {
+	if err := os.WriteFile(p, testVHDX(false, false), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	me, err := windows.StringToSid(currentSID(t))
