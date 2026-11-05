@@ -215,6 +215,31 @@ gets fuzz tests on the new messages and an adversarial review before it merges.
 3. `dev` mode with the preset and the questions; the GUI's sandbox page.
 4. Host-side secret injection, snapshots, Docker inside a session.
 
+### Spike results (2026-11-05)
+
+Phase 1, first part: two VMs of one user at once, booted straight through HCS by
+`hyperbutler-dev run` (the maintainer's account is in Hyper-V Administrators; the broker
+was not involved), with the v0.1.0 guest image, on the reference laptop.
+
+| Run | dockerd answers `/_ping` |
+|---|---|
+| one VM | 798 ms, again 777 ms |
+| two VMs started together | 803 ms and 742 ms |
+
+| Two idle VMs, user-mode network, 2 GiB, own 16 GiB data disk | 30 s | 90 s | 150 s |
+|---|---|---|---|
+| `vmmem`, first VM | 213 MiB | 220 MiB | 226 MiB |
+| `vmmem`, second VM | 228 MiB | 228 MiB | 224 MiB |
+| dev engine process, each | 15–17 MiB | 16–17 MiB | 18 MiB |
+
+- A second VM per user needs nothing new from HCS: separate VM IDs, hvsock services and
+  data disks are enough, and starting two at once does not slow either.
+- An idle session costs about 240 MiB with dockerd running in it; the sandbox image has no
+  dockerd, so this is an upper bound until that image exists. Four sessions and the Docker
+  VM would idle near 1.2 GiB.
+- Killing the dev process ended its VM (the HCS handle is closed on exit and the VM is
+  created to terminate on it): no `vmmem` remained.
+
 ## Adversarial review
 
 The first draft was reviewed on 2026-11-05. Each finding and its answer:
