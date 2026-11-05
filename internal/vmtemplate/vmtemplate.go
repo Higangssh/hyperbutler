@@ -282,8 +282,9 @@ func Build(s *Spec) (*vm.Config, error) {
 		svcs = append(svcs, svc)
 	}
 	if s.Share {
-		// The guest connects to the host on this service; only this user may listen on it.
-		svcs = append(svcs, vm.Service{ID: hvaddr.VsockServiceID(SharePort), BindSDDL: sddl})
+		// The host connects to the guest's share relay on this service (so the connections
+		// get a listener's VMBus rings, ADR 0007); only this user may connect to it.
+		svcs = append(svcs, vm.Service{ID: hvaddr.VsockServiceID(SharePort), ConnectSDDL: sddl})
 		cmdline += fmt.Sprintf(" hyperbutler.share=%d", SharePort)
 	}
 	cmdline += s.Dev.ExtraCmdLine

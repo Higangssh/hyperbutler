@@ -373,9 +373,7 @@ func Run(ctx context.Context, cfg Config) (err error) {
 	step("runtime id %s", vmid)
 	var rewrite transport.CreateRewriter
 	if shares != nil {
-		if err := shares.listen(vmid, info.Secret); err != nil {
-			return err
-		}
+		shares.connect(vmid, info.Secret)
 		rewrite = shares.rewriteCreate
 	}
 

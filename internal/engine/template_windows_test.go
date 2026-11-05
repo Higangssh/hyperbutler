@@ -77,7 +77,7 @@ func legacyConfig(t *testing.T, in legacyInput, sddl string) *vm.Config {
 	var shareSvcs []vm.Service
 	var shareArgs string
 	if in.share {
-		shareSvcs = []vm.Service{{ID: transport.VsockServiceID(SharePort), BindSDDL: sddl}}
+		shareSvcs = []vm.Service{{ID: transport.VsockServiceID(SharePort), ConnectSDDL: sddl}} // the host dials the relay
 		shareArgs = fmt.Sprintf(" hyperbutler.share=%d", SharePort)
 	}
 	// M3 added the VM secret (ADR 0004 rule 6) after the hash table sizes.

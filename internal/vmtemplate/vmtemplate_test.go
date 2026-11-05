@@ -214,8 +214,9 @@ func TestSecretAndDescriptors(t *testing.T) {
 			}
 		})
 	}
-	// Plain (guest-dials-host) network and the share: the host may only listen there,
-	// and only as the owner.
+	// Plain (guest-dials-host) network: the host may only listen there, and only as the
+	// owner. The share is the other way round: the host dials the guest's relay (for its
+	// VMBus rings, ADR 0007), so the owner may only connect.
 	s := *golden["initramfs-plain-net"]
 	s.Share = true
 	c, err := Build(&s)
@@ -223,9 +224,14 @@ func TestSecretAndDescriptors(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, svc := range c.Services {
-		if svc.ID == transport.VsockServiceID(NetPort) || svc.ID == transport.VsockServiceID(SharePort) {
+		switch svc.ID {
+		case transport.VsockServiceID(NetPort):
 			if svc.ConnectSDDL != "" || svc.BindSDDL != userOnly {
 				t.Errorf("guest-initiated service %s: connect %q, bind %q", svc.ID, svc.ConnectSDDL, svc.BindSDDL)
+			}
+		case transport.VsockServiceID(SharePort):
+			if svc.ConnectSDDL != userOnly || svc.BindSDDL != "" {
+				t.Errorf("share service %s: connect %q, bind %q", svc.ID, svc.ConnectSDDL, svc.BindSDDL)
 			}
 		}
 	}

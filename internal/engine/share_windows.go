@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"net/url"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/Higangssh/hyperbutler/internal/guid"
@@ -48,11 +49,14 @@ type shareService struct {
 
 	// grace and debounce are pruneGrace and pruneDebounce (tests shorten them).
 	grace, debounce time.Duration
+	// neverWarn is how long run waits for a first session before it warns (tests
+	// shorten it).
+	neverWarn time.Duration
 	// silent logs connections the guest closed without a byte (a refused secret).
 	silent silentGuests
 
 	mu     sync.Mutex
-	ln     net.Listener
+	cancel context.CancelFunc // ends run's dialing
 	conns  map[net.Conn]struct{}
 	closed bool
 	wg     sync.WaitGroup
@@ -76,91 +80,170 @@ func setupShares(sc ShareConfig, log *slog.Logger) (s *shareService) {
 		log:   log,
 		conns: map[net.Conn]struct{}{},
 
-		grace: pruneGrace, debounce: pruneDebounce,
+		grace: pruneGrace, debounce: pruneDebounce, neverWarn: shareNeverWarn,
 	}
 	return s
 }
 
-// listen starts accepting the guest relay's connections on the VM's hvsock address.
-// Each begins with secret, the VM's (ADR 0004 rule 6), which the guest checks before it
-// mounts: a listener of another user on a wildcard VM id cannot send it.
-func (s *shareService) listen(vmid guid.GUID, secret vmsecret.Secret) error {
-	ln, err := winipc.ListenHvsock(winipc.HvsockAddr{VMID: vmid, ServiceID: s.svc})
-	if err != nil {
-		return fmt.Errorf("listen hvsock %s: %w", s.svc, err)
-	}
-	s.serve(ln, secret)
-	return nil
+// shareQueues is how many connections the engine opens to the guest's share relay,
+// which mounts once it has that many (hyperbutlerd -share-queues, 4 by default).
+const shareQueues = 4
+
+// connect keeps the guest relay's connections open on the VM's hvsock address. Each
+// begins with secret, the VM's (ADR 0004 rule 6), which the guest checks before it
+// mounts; the VM's share service admits connections from the owner only.
+//
+// The host dials, as for the network link: Linux hv_sock gives the connections a guest
+// listener accepts VMBus rings sized from net.core.[rw]mem_default (the relay asks for
+// hv_sock's 256 KiB maximum), against 24 KiB per direction for a connection the guest
+// dials, round which every 1 MiB write went 43 times (ADR 0006, ADR 0007).
+func (s *shareService) connect(vmid guid.GUID, secret vmsecret.Secret) {
+	d := &winipc.HvsockDialer{}
+	addr := winipc.HvsockAddr{VMID: vmid, ServiceID: s.svc}
+	s.run(func(ctx context.Context) (net.Conn, error) {
+		// A connect to a port nobody listens on yet stays pending for about 30 s; bound
+		// each attempt, as dialGuest does, so the relay's listener is found soon after
+		// it appears.
+		actx, cancel := context.WithTimeout(ctx, shareDialTimeout)
+		defer cancel()
+		return d.Dial(actx, addr)
+	}, secret)
 }
 
-// serve accepts on ln until close and, for each connection, sends secret and then runs
-// share.Server.Serve. The secret goes first, before the guest's HELLO: the guest reads
-// it before it writes anything.
-func (s *shareService) serve(ln net.Listener, secret vmsecret.Secret) {
+// shareDialTimeout bounds one connect to the guest's relay.
+const shareDialTimeout = 250 * time.Millisecond
+
+// run dials shareQueues connections with dial, sends secret on each and serves it with
+// share.Server.Serve, and when they have all ended (the guest's relay session ended, or
+// it refused them) dials again, until close. The secret goes first, before the guest's
+// HELLO: the guest reads it before it writes anything.
+func (s *shareService) run(dial func(context.Context) (net.Conn, error), secret vmsecret.Secret) {
+	ctx, cancel := context.WithCancel(context.Background())
 	s.mu.Lock()
 	if s.closed {
 		s.mu.Unlock()
-		_ = ln.Close()
+		cancel()
 		return
 	}
-	s.ln = ln
+	s.cancel = cancel
 	s.wg.Add(1)
 	s.mu.Unlock()
 	go func() {
 		defer s.wg.Done()
-		var backoff time.Duration
-		for {
-			c, err := ln.Accept()
-			if err != nil {
-				s.mu.Lock()
-				closed := s.closed
-				s.mu.Unlock()
-				if closed || errors.Is(err, net.ErrClosed) {
-					return
-				}
-				// A failed accept (a guest connection reset while pending) must not end
-				// bind mounts for the rest of the run: the relay redials.
-				backoff = nextAcceptBackoff(backoff)
-				s.log.Warn("guest share accept failed; retrying", "err", err, "backoff", backoff)
-				time.Sleep(backoff)
-				continue
+		sleep := func(d time.Duration) bool {
+			t := time.NewTimer(d)
+			defer t.Stop()
+			select {
+			case <-t.C:
+				return true
+			case <-ctx.Done():
+				return false
 			}
-			backoff = 0
-			s.mu.Lock()
-			if s.closed {
-				s.mu.Unlock()
-				_ = c.Close()
+		}
+		start := time.Now()
+		var dialBackoff, sessionBackoff time.Duration
+		var everSpoke, warned bool
+		// notYet warns once when the relay has never started a session long after the
+		// engine began dialing: a guest image without the listening relay (older than
+		// the engine) or with bind mounts off. Until then a failure is debug only.
+		notYet := func(err error) {
+			if everSpoke || warned || time.Since(start) < s.neverWarn {
+				s.log.Debug("guest share relay not reachable yet", "err", err)
 				return
 			}
-			s.conns[c] = struct{}{}
-			s.wg.Add(1)
-			s.mu.Unlock()
-			go func() {
-				defer s.wg.Done()
-				gc := &guestConn{Conn: c}
-				err := transport.SendSecret(c, secret)
-				sent := err == nil
-				if sent {
-					err = s.srv.Serve(gc)
+			warned = true
+			s.log.Warn("the guest's share relay has not connected; bind mounts of Windows paths will fail (is the guest image older than the engine?)",
+				"after", time.Since(start).Round(time.Second), "err", err)
+		}
+		for ctx.Err() == nil {
+			var session sync.WaitGroup
+			var spoke atomic.Bool
+			for n := 0; n < shareQueues && ctx.Err() == nil; {
+				c, err := dial(ctx)
+				if err != nil {
+					if ctx.Err() != nil {
+						break
+					}
+					// The guest is still booting, or its relay is between sessions.
+					notYet(err)
+					dialBackoff = nextAcceptBackoff(dialBackoff)
+					if !sleep(dialBackoff) {
+						break
+					}
+					continue
 				}
-				s.mu.Lock()
-				delete(s.conns, c)
-				closed := s.closed
-				s.mu.Unlock()
-				_ = c.Close()
-				switch {
-				case closed || errors.Is(err, net.ErrClosed):
-				case !sent:
-					s.log.Warn("guest share connection refused", "err", err)
-				case !gc.spoke.Load():
-					// Before the HELLO: Serve reports a clean EOF as nil.
-					s.silent.log(s.log, "guest share connection ended before the guest's HELLO", err)
-				case err != nil:
-					s.log.Warn("guest share connection ended", "err", err)
+				dialBackoff = 0
+				if !s.track(c) {
+					break
 				}
-			}()
+				n++
+				session.Add(1)
+				go func() {
+					defer session.Done()
+					if s.serveConn(c, secret) {
+						spoke.Store(true)
+					}
+				}()
+			}
+			session.Wait()
+			// A session in which the guest spoke resets the wait; one it refused or
+			// dropped at once (an image that does not take the secret, or wants another
+			// number of connections) backs off up to shareMaxBackoff, as the relay did
+			// when it dialed.
+			if spoke.Load() {
+				everSpoke, sessionBackoff = true, 0
+			} else {
+				notYet(errors.New("the guest closed every connection before its HELLO"))
+			}
+			sessionBackoff = min(max(2*sessionBackoff, shareDialTimeout), shareMaxBackoff)
+			if !sleep(sessionBackoff) {
+				return
+			}
 		}
 	}()
+}
+
+// shareMaxBackoff bounds the wait between sessions the guest refused.
+const shareMaxBackoff = 5 * time.Second
+
+// track registers c for close, or closes it and reports false when the service is
+// closed.
+func (s *shareService) track(c net.Conn) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		_ = c.Close()
+		return false
+	}
+	s.conns[c] = struct{}{}
+	return true
+}
+
+// serveConn sends secret on c and serves it until it ends. It reports whether the guest
+// spoke (sent its HELLO).
+func (s *shareService) serveConn(c net.Conn, secret vmsecret.Secret) bool {
+	gc := &guestConn{Conn: c}
+	err := transport.SendSecret(c, secret)
+	sent := err == nil
+	if sent {
+		err = s.srv.Serve(gc)
+	}
+	s.mu.Lock()
+	delete(s.conns, c)
+	closed := s.closed
+	s.mu.Unlock()
+	_ = c.Close()
+	switch {
+	case closed || errors.Is(err, net.ErrClosed):
+	case !sent:
+		s.log.Warn("guest share connection refused", "err", err)
+	case !gc.spoke.Load():
+		// Before the HELLO: Serve reports a clean EOF as nil.
+		s.silent.log(s.log, "guest share connection ended before the guest's HELLO", err)
+	case err != nil:
+		s.log.Warn("guest share connection ended", "err", err)
+	}
+	return gc.spoke.Load()
 }
 
 // rewriteCreate is the proxy's container create rewriter.
@@ -182,8 +265,8 @@ func (s *shareService) rewriteCreate(body []byte) ([]byte, error) {
 func (s *shareService) close() {
 	s.mu.Lock()
 	s.closed = true
-	if s.ln != nil {
-		_ = s.ln.Close()
+	if s.cancel != nil {
+		s.cancel()
 	}
 	for c := range s.conns {
 		_ = c.Close()
@@ -329,3 +412,7 @@ func (s *shareService) prune(ctx context.Context, client *http.Client) error {
 	}
 	return nil
 }
+
+// shareNeverWarn is how long the engine dials without a session before it warns that
+// the guest's relay never connected.
+const shareNeverWarn = 30 * time.Second

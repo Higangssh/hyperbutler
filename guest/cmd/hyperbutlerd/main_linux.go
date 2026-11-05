@@ -118,7 +118,7 @@ func main() {
 	flag.StringVar(&o.dropCaches, "drop-caches", "/proc/sys/vm/drop_caches", "drop_caches path")
 	flag.UintVar(&o.sharePort, "share-port", 0, "AF_VSOCK port of the host's bind-mount share server (0 = no shares)")
 	flag.StringVar(&o.shareMount, "share-mount", "/mnt/hyperbutler", "where the host's shares are mounted")
-	flag.IntVar(&o.shareQueues, "share-queues", 4, "connections to the share server (1 to 8)")
+	flag.IntVar(&o.shareQueues, "share-queues", 4, "connections to take from the share server before mounting (1 to 8); the engine opens 4 (internal/engine shareQueues), so keep them equal")
 	flag.StringVar(&o.daemonConfig, "daemon-config", "", "install the host's daemon.json at this path and restart dockerd on request (the init must support it; empty = off)")
 	flag.StringVar(&o.dockerdBin, "dockerd", "/usr/bin/dockerd", "dockerd, for --validate")
 	flag.StringVar(&o.dockerdEnv, "dockerd-env", "", "with -daemon-config: install the host's dockerd environment (proxies, CA certificates) as KEY=VALUE lines at this path (the init must support it; empty = off)")
