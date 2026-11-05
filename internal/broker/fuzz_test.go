@@ -50,8 +50,8 @@ func fuzzReq(r proto.Request) []byte {
 
 // fuzzModel is what the server must reply to one request, given that DuplicateHandle
 // always fails (so no data location is ever set and no VM ever starts). It tracks the
-// per-user CPU and memory settings the way resize changes them.
-type fuzzModel struct{ cpus, mem uint32 }
+// per-slot CPU and memory settings the way resize changes them.
+type fuzzModel struct{ cpus, mem [proto.MaxSlot + 1]uint32 }
 
 func (m *fuzzModel) check(t *testing.T, req proto.Request, rep proto.Reply) {
 	t.Helper()
@@ -63,7 +63,7 @@ func (m *fuzzModel) check(t *testing.T, req proto.Request, rep proto.Reply) {
 	}
 	status := func() {
 		t.Helper()
-		want := proto.Reply{Type: proto.ReplyFlag | uint8(req.Op), State: proto.StateStopped, CPUs: m.cpus, MemoryMB: m.mem}
+		want := proto.Reply{Type: proto.ReplyFlag | uint8(req.Op), State: proto.StateStopped, CPUs: m.cpus[req.Slot], MemoryMB: m.mem[req.Slot]}
 		if rep != want {
 			t.Fatalf("%v: reply %+v, want %+v", req.Op, rep, want)
 		}
@@ -85,7 +85,7 @@ func (m *fuzzModel) check(t *testing.T, req proto.Request, rep proto.Reply) {
 	case proto.OpOpenEndpoint:
 		wantErr(proto.CodeWrongEndpoint)
 	case proto.OpResize:
-		cpus, mem := m.cpus, m.mem
+		cpus, mem := m.cpus[req.Slot], m.mem[req.Slot]
 		if req.CPUs != 0 {
 			cpus = req.CPUs
 		}
@@ -96,7 +96,7 @@ func (m *fuzzModel) check(t *testing.T, req proto.Request, rep proto.Reply) {
 			wantErr(proto.CodeOutOfRange)
 			return
 		}
-		m.cpus, m.mem = cpus, mem
+		m.cpus[req.Slot], m.mem[req.Slot] = cpus, mem
 		status()
 	default:
 		t.Fatalf("unexpected op %v", req.Op)
@@ -176,6 +176,13 @@ func FuzzServeConn(f *testing.F) {
 	f.Add(cat(version, open, open, status, start, stop, setDL, resize, pause))
 	f.Add(cat(open, []byte{0, 5, 1, byte(proto.OpOpenEndpoint), 18, 1, 'x'})) // a field on open-endpoint
 	f.Add(cat(open, []byte{0, 2, 1, 0x88}))                                   // the open reply as a request
+	// Sandbox session slots (ADR 0009).
+	slotStatus := fuzzReq(proto.Request{Op: proto.OpStatus, Slot: 1})
+	slotResize := fuzzReq(proto.Request{Op: proto.OpResize, Slot: proto.MaxSlot, MemoryMB: 2048})
+	slotStart := fuzzReq(proto.Request{Op: proto.OpStart, Slot: 2})
+	f.Add(cat(slotStatus, slotResize, status, slotStart, fuzzReq(proto.Request{Op: proto.OpStop, Slot: 3}), resize, slotStatus))
+	f.Add(cat(status, []byte{0, 5, 1, byte(proto.OpStatus), 20, 1, 5}))                           // slot 5
+	f.Add(cat(status, []byte{0, 7, 1, byte(proto.OpStart), 12, 1, proto.FeatureShare, 20, 1, 1})) // share in a session
 
 	f.Fuzz(func(t *testing.T, in []byte) {
 		for _, owner := range []string{fuzzSID, ""} {
@@ -274,7 +281,7 @@ parse:
 	if len(replies) != want {
 		t.Fatalf("input %x: %d replies, want %d (%d requests, bad end %v)", in, len(replies), want, len(reqs), endsBad)
 	}
-	m := fuzzModel{cpus: 2, mem: 2048}
+	m := fuzzModel{cpus: [proto.MaxSlot + 1]uint32{2, 2, 2, 2, 2}, mem: [proto.MaxSlot + 1]uint32{2048, 1024, 1024, 1024, 1024}}
 	for i, req := range reqs {
 		if owner == "" {
 			checkShared(t, req, replies[i])

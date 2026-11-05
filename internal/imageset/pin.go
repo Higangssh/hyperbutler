@@ -23,10 +23,20 @@ import (
 // the whole set. The same flag pins hyperbutler.exe and hyperbutler-broker.exe.
 var pinnedManifest string
 
+// pinnedSandboxManifest is the same for the agent sandbox image (ADR 0009), linked in
+// with -X ...imageset.pinnedSandboxManifest=<sha256>. A build without it boots no
+// sandbox session unless it is a development build that allows unpinned images.
+var pinnedSandboxManifest string
+
 // Pin returns the image.json SHA-256 this build was linked with, and whether it has
 // one. A build without a pin accepts any image whose files match its own manifest.
 func Pin() (sum string, pinned bool) {
 	return pinnedManifest, pinnedManifest != ""
+}
+
+// SandboxPin is Pin for the sandbox image.
+func SandboxPin() (sum string, pinned bool) {
+	return pinnedSandboxManifest, pinnedSandboxManifest != ""
 }
 
 // CheckPin checks the manifest bytes b, read from path, against pin. An empty pin

@@ -272,19 +272,19 @@ func TestHCSBackendStart(t *testing.T) {
 	if st2, err := f.be.Start(ctx, f.spec()); err != nil || st2 != st || len(f.api.created) != 1 {
 		t.Fatalf("second start: %+v, %v (%d created)", st2, err, len(f.api.created))
 	}
-	if err := f.be.Pause(ctx, f.sid, false); err != nil {
+	if err := f.be.Pause(ctx, VMKey{Owner: f.sid}, false); err != nil {
 		t.Fatal(err)
 	}
-	if st, _ := f.be.Status(ctx, f.sid); !st.Paused {
+	if st, _ := f.be.Status(ctx, VMKey{Owner: f.sid}); !st.Paused {
 		t.Fatalf("after pause: %+v", st)
 	}
-	if err := f.be.Pause(ctx, f.sid, true); err != nil {
+	if err := f.be.Pause(ctx, VMKey{Owner: f.sid}, true); err != nil {
 		t.Fatal(err)
 	}
-	if err := f.be.Stop(ctx, f.sid, false); err == nil {
+	if err := f.be.Stop(ctx, VMKey{Owner: f.sid}, false); err == nil {
 		t.Fatal("an orderly stop through HCS succeeded on a guest without the integration service")
 	}
-	if err := f.be.Stop(ctx, f.sid, true); err != nil {
+	if err := f.be.Stop(ctx, VMKey{Owner: f.sid}, true); err != nil {
 		t.Fatal(err)
 	}
 	if !f.api.systems[name].terminated || !f.api.systems[name].closed {
@@ -296,7 +296,7 @@ func TestHCSBackendStart(t *testing.T) {
 	if got, _ := vm.AccountsOnFile(filepath.Join(f.image, "system.vhd")); len(got) != 0 {
 		t.Fatalf("accounts left on the system disk: %v", got)
 	}
-	if err := f.be.Stop(ctx, f.sid, true); !errors.Is(err, ErrNotRunning) {
+	if err := f.be.Stop(ctx, VMKey{Owner: f.sid}, true); !errors.Is(err, ErrNotRunning) {
 		t.Fatalf("second stop: %v", err)
 	}
 	if err := os.Rename(f.disk, f.disk+".moved"); err != nil {
@@ -314,13 +314,13 @@ func TestHCSBackendStoppedOnItsOwn(t *testing.T) {
 	for _, s := range f.api.systems {
 		_ = s.set("Stopped")
 	}
-	if st, err := f.be.Status(ctx, f.sid); err != nil || st.Running {
+	if st, err := f.be.Status(ctx, VMKey{Owner: f.sid}); err != nil || st.Running {
 		t.Fatalf("status %+v, %v", st, err)
 	}
 	if got, _ := vm.AccountsOnFile(f.disk); len(got) != 0 {
 		t.Fatalf("accounts left: %v", got)
 	}
-	if err := f.be.Pause(ctx, f.sid, false); !errors.Is(err, ErrNotRunning) {
+	if err := f.be.Pause(ctx, VMKey{Owner: f.sid}, false); !errors.Is(err, ErrNotRunning) {
 		t.Fatalf("pause: %v", err)
 	}
 }
@@ -432,13 +432,13 @@ func TestHCSBackendOwnersIndependent(t *testing.T) {
 		t.Fatal("the start never reached Create")
 	}
 	t0 := time.Now()
-	if st, err := f.be.Status(context.Background(), sidB); err != nil || st.Running {
+	if st, err := f.be.Status(context.Background(), VMKey{Owner: sidB}); err != nil || st.Running {
 		t.Fatalf("status of another owner: %+v, %v", st, err)
 	}
-	if err := f.be.Stop(context.Background(), sidB, true); !errors.Is(err, ErrNotRunning) {
+	if err := f.be.Stop(context.Background(), VMKey{Owner: sidB}, true); !errors.Is(err, ErrNotRunning) {
 		t.Fatalf("stop of another owner: %v", err)
 	}
-	if err := f.be.Pause(context.Background(), sidB, false); !errors.Is(err, ErrNotRunning) {
+	if err := f.be.Pause(context.Background(), VMKey{Owner: sidB}, false); !errors.Is(err, ErrNotRunning) {
 		t.Fatalf("pause of another owner: %v", err)
 	}
 	if d := time.Since(t0); d > time.Second {
@@ -503,7 +503,7 @@ func TestHCSBackendDiskOpenBounded(t *testing.T) {
 		t.Fatal("a VM was created")
 	}
 	// The owner is not stuck.
-	if st, err := f.be.Status(context.Background(), f.sid); err != nil || st.Running {
+	if st, err := f.be.Status(context.Background(), VMKey{Owner: f.sid}); err != nil || st.Running {
 		t.Fatalf("status: %+v, %v", st, err)
 	}
 }
@@ -557,13 +557,13 @@ func TestHCSBackendSharedSystemDisk(t *testing.T) {
 	if len(got) != 2 || !contains(got, accounts[f.sid]) || !contains(got, accounts[sidB]) {
 		t.Fatalf("system disk accounts %v, want %v (stale %s removed)", got, accounts, stale)
 	}
-	if err := f.be.Stop(ctx, f.sid, true); err != nil {
+	if err := f.be.Stop(ctx, VMKey{Owner: f.sid}, true); err != nil {
 		t.Fatal(err)
 	}
 	if got, _ := vm.AccountsOnFile(system); len(got) != 1 || got[0] != accounts[sidB] {
 		t.Fatalf("after A's stop: %v, want only B's %s", got, accounts[sidB])
 	}
-	if err := f.be.Stop(ctx, sidB, true); err != nil {
+	if err := f.be.Stop(ctx, VMKey{Owner: sidB}, true); err != nil {
 		t.Fatal(err)
 	}
 	if got, _ := vm.AccountsOnFile(system); len(got) != 0 {
@@ -601,7 +601,7 @@ func TestHCSBackendImageHeld(t *testing.T) {
 	if _, err := f.be.Start(ctx, f.spec()); err != nil {
 		t.Fatal(err)
 	}
-	if err := f.be.Stop(ctx, f.sid, true); err != nil {
+	if err := f.be.Stop(ctx, VMKey{Owner: f.sid}, true); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(f.image, "vmlinuz-virt"), []byte("other"), 0o600); err == nil {

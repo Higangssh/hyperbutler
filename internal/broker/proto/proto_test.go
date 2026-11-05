@@ -327,6 +327,58 @@ func TestStartRejectsInvalid(t *testing.T) {
 	}
 }
 
+func TestSlot(t *testing.T) {
+	for _, r := range []Request{
+		{Op: OpStart, Slot: 1},
+		{Op: OpStart, Slot: MaxSlot, Features: FeatureNet | FeatureBlankDisk, NetAddr: [4]byte{10, 0, 0, 0}, NetPrefix: 24, NetMTU: 1500, NetFlags: NetOffload},
+		{Op: OpStop, Slot: 2},
+		{Op: OpStop, Slot: 2, Force: true},
+		{Op: OpStatus, Slot: 3},
+		{Op: OpResize, Slot: 4, CPUs: 1},
+		{Op: OpPause, Slot: 1, Resume: true},
+	} {
+		b, err := EncodeRequest(r)
+		if err != nil {
+			t.Fatalf("encode %+v: %v", r, err)
+		}
+		if got, err := DecodeRequest(b); err != nil || got != r {
+			t.Fatalf("round trip %+v: %+v, %v", r, got, err)
+		}
+	}
+	for name, r := range map[string]Request{
+		"slot too high":           {Op: OpStatus, Slot: MaxSlot + 1},
+		"slot on version":         {Op: OpVersion, Slot: 1},
+		"slot on data location":   {Op: OpSetDataLocation, Handle: 4, Slot: 1},
+		"slot on open endpoint":   {Op: OpOpenEndpoint, Slot: 1},
+		"share in a session":      {Op: OpStart, Slot: 1, Features: FeatureShare},
+		"daemon cfg in a session": {Op: OpStart, Slot: 1, Features: FeatureDaemonConfig},
+		"host gateway in a session": {Op: OpStart, Slot: 1, Features: FeatureNet, NetAddr: [4]byte{10, 0, 0, 0},
+			NetPrefix: 24, NetMTU: 1500, NetFlags: NetHostGateway},
+	} {
+		if _, err := EncodeRequest(r); !errors.Is(err, ErrInvalid) {
+			t.Errorf("%s: EncodeRequest(%+v) = %v, want ErrInvalid", name, r, err)
+		}
+	}
+	for name, in := range map[string][]byte{
+		"zero slot encoded":   frame(Version, uint8(OpStatus), tagSlot, 1, 0),
+		"slot 5":              frame(Version, uint8(OpStatus), tagSlot, 1, MaxSlot+1),
+		"slot as u16":         frame(Version, uint8(OpStatus), tagSlot, 2, 1, 0),
+		"slot on version":     frame(Version, uint8(OpVersion), tagSlot, 1, 1),
+		"slot before resume":  frame(Version, uint8(OpPause), tagSlot, 1, 1, tagResume, 1, 1),
+		"share with a slot":   frame(Version, uint8(OpStart), tagFeatures, 1, FeatureShare, tagSlot, 1, 1),
+		"slot in a reply":     frame(Version, ReplyFlag|uint8(OpStop), tagSlot, 1, 1),
+		"slot on data handle": frame(Version, uint8(OpSetDataLocation), append([]byte{tagHandle, 8}, 4, 0, 0, 0, 0, 0, 0, 0, tagSlot, 1, 1)...),
+	} {
+		if r, err := DecodeRequest(in); !errors.Is(err, ErrInvalid) {
+			t.Errorf("%s: DecodeRequest(%x) = %+v, %v; want ErrInvalid", name, in, r, err)
+		}
+	}
+	// A frame without the slot tag, as every client before ADR 0009 sends, is slot 0.
+	if r, err := DecodeRequest(frame(Version, uint8(OpStatus))); err != nil || r.Slot != 0 {
+		t.Fatalf("status without a slot: %+v, %v", r, err)
+	}
+}
+
 func TestDecodeDoesNotAllocateMuch(t *testing.T) {
 	b, _ := EncodeRequest(Request{Op: OpResize, CPUs: 2, MemoryMB: 4096})
 	n := testing.AllocsPerRun(100, func() { _, _ = DecodeRequest(b) })

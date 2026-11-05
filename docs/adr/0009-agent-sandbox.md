@@ -199,13 +199,35 @@ stack (egress 3) with three modes, `dev` the default.
 
 ### Broker changes
 
-The broker stays the only HCS caller and keeps every ADR 0004 rule. New typed requests
-start, stop and list a user's sandbox sessions by a small slot number. Each session VM has
-its own VM secret and is tagged with owner and slot; leases, status and sweeps are per
-slot; the per-user connection limit grows to cover the sessions. The image is the sandbox
-image next to the broker, checked against its own compiled-in pin; the session disk is
-created and opened by handle below the user's data location. Like every broker change, it
-gets fuzz tests on the new messages and an adversarial review before it merges.
+The broker stays the only HCS caller and keeps every ADR 0004 rule. The VM verbs (start,
+stop, status, resize, pause) take an optional slot: none is the Docker VM, as every
+older client sends, and 1 to 4 a sandbox session. Each session VM has its own VM secret,
+lease, size and disk (`session-N.vhdx`, opened by handle below the user's data location
+with the same checks as `data.vhdx`); one connection may hold several leases, and closing
+it terminates all of them. A session boots only the image in `sandbox-image` next to the
+broker, checked against its own compiled-in pin, so a broker built without that pin boots
+no session. The decoder and the backend both refuse the file server, dockerd's
+configuration and the host gateway for a session. A start or resize that would take one
+user's running VMs past a total memory cap is refused. Like every broker change, it gets
+fuzz tests on the new messages and an adversarial review before it merges.
+
+The slot change was reviewed on 2026-11-05 (no high findings). Answered: the service
+sets the total memory cap to 75% of physical memory (between the Docker VM's 2 GiB
+default and the 16 GiB per-VM maximum), and the server refuses a cap below a default VM;
+a sandbox image whose system disk is the Docker image's own file is refused, since each
+image's access bookkeeping would revoke the other's VM; the slot is checked before any
+backend state is made, and the server bounds it again before indexing. Open:
+
+- Release builds carry no sandbox pin until the sandbox image exists, so a release broker
+  boots no session (fail closed); `dist/package.ps1` gains the pin with the image.
+- A data disk is checked by its metadata only (owner, ACL, links, reparse), not its
+  contents, so a differencing VHDX whose parent the user cannot read but VMs can (a file
+  readable by the Virtual Machines group, or a share reached as the computer account)
+  might be read by the guest. This predates the sessions, which add disks; it is fixed on
+  its own, by refusing a data disk whose VHDX metadata says it has a parent.
+- A forced stop that fails leaves the slot without a lease while its VM runs, until the
+  sweep or a broker restart (as before); and retiring idle endpoints asks the backend
+  about five slots under the endpoints' lock. Both are accepted for now.
 
 ### Phases
 

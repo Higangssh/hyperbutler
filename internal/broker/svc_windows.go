@@ -136,7 +136,7 @@ func StartService(cfg ServiceConfig) (_ *Serving, err error) {
 	if cfg.Infof == nil {
 		cfg.Infof = func(string, ...any) {}
 	}
-	srv, err := New(Config{Backend: cfg.Backend, Version: cfg.Version, Logf: cfg.Warnf})
+	srv, err := New(Config{Backend: cfg.Backend, Version: cfg.Version, Logf: cfg.Warnf, MaxTotalMemoryMB: totalMemoryCap(cfg.Infof)})
 	if err != nil {
 		return nil, err
 	}

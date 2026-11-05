@@ -38,6 +38,11 @@ func fuzzRequestSeeds() [][]byte {
 		{Op: OpResize, CPUs: MaxCPUs, MemoryMB: MaxMemoryMB},
 		{Op: OpSetDataLocation, Handle: 0x1a4},
 		{Op: OpSetDataLocation, Handle: MaxHandle},
+		{Op: OpStart, Slot: 1, Features: FeatureNet | FeatureBlankDisk, NetAddr: [4]byte{192, 168, 127, 0}, NetPrefix: 24, NetMTU: 1500},
+		{Op: OpStatus, Slot: MaxSlot},
+		{Op: OpStop, Slot: 2, Force: true},
+		{Op: OpPause, Slot: 3, Resume: true},
+		{Op: OpResize, Slot: 1, MemoryMB: 1024},
 	} {
 		b, err := EncodeRequest(r)
 		if err != nil {
