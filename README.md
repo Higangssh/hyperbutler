@@ -134,20 +134,18 @@ flowchart TB
     direction LR
     tools["<b>Your tools</b><br/>docker CLI<br/>Compose · SDKs"]
     engine["<b>hyperbutler engine</b><br/>Docker API relay<br/>user-mode network: NAT, DNS, ports<br/>file server for bind mounts<br/>disk-space guard · status · window"]
+    broker["<b>hyperbutler broker</b> · 🔒 SYSTEM<br/>the only part that calls HCS<br/>7 typed requests · fixed VM template"]
     tools -- "named pipe" --> engine
-  end
-  subgraph SVC["🔒 Windows service · SYSTEM"]
-    broker["<b>hyperbutler broker</b><br/>the only part that calls HCS<br/>7 typed requests<br/>fixed VM template"]
+    engine -- "start · stop · status" --> broker
   end
   subgraph VM["🐧 Linux VM on Hyper-V · no WSL"]
-    direction TB
+    direction LR
     agent["<b>hyperbutlerd</b> guest agent<br/>admits only the VM's secret"]
     dockerd["<b>dockerd + containerd</b><br/>read-only system disk, hash-pinned<br/>sparse data disk that gives space back"]
     agent --> dockerd
   end
   engine <== "Hyper-V sockets · API, network, files" ==> agent
-  engine -- "start · stop · status" --> broker
-  broker -- "HCS" --> VM
+  broker -- "HCS" --> agent
 
   classDef eng fill:#0b2a4a,stroke:#3d9bff,color:#e8f1ff
   classDef brk fill:#3a2a06,stroke:#f5b83d,color:#fff4dc
