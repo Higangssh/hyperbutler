@@ -53,5 +53,5 @@ func memoryCap(physMB uint64, infof func(string, ...any)) uint32 {
 	c = max(c, floor)
 	c = min(c, ceiling)
 	infof("broker: one user's VMs are capped at %d MB together (%d MB physical)", c, physMB)
-	return uint32(c) //nolint:gosec // G115: c <= ceiling
+	return uint32(c)
 }

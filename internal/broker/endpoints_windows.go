@@ -208,7 +208,7 @@ func (e *Endpoints) retireIdleLocked() {
 func (e *Endpoints) anyRunning(sid string) bool {
 	for slot := 0; slot <= proto.MaxSlot; slot++ {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		st, err := e.srv.cfg.Backend.Status(ctx, VMKey{Owner: sid, Slot: uint8(slot)}) //nolint:gosec // G115: slot <= proto.MaxSlot
+		st, err := e.srv.cfg.Backend.Status(ctx, VMKey{Owner: sid, Slot: uint8(slot)})
 		cancel()
 		if err != nil || st.Running {
 			return true

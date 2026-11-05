@@ -540,7 +540,7 @@ func (s *Server) release(sid string, own *lease) {
 		}
 		u.vms[i].lease = nil
 		ctx, cancel := context.WithTimeout(context.Background(), s.cfg.RequestTimeout)
-		err := s.cfg.Backend.Stop(ctx, VMKey{Owner: sid, Slot: uint8(i)}, true) //nolint:gosec // G115: i < len(u.vms) = proto.MaxSlot+1
+		err := s.cfg.Backend.Stop(ctx, VMKey{Owner: sid, Slot: uint8(i)}, true)
 		cancel()
 		if err != nil && !errors.Is(err, ErrNotRunning) {
 			s.cfg.Logf("broker: terminate the VM of a closed lease (slot %d): %v", i, err)
@@ -553,10 +553,10 @@ func (s *Server) release(sid string, own *lease) {
 func (s *Server) runningMemory(ctx context.Context, sid string, u *userState, skip uint8) (uint64, error) {
 	var sum uint64
 	for i := range u.vms {
-		if uint8(i) == skip { //nolint:gosec // G115: i < len(u.vms) = proto.MaxSlot+1
+		if uint8(i) == skip {
 			continue
 		}
-		st, err := s.cfg.Backend.Status(ctx, VMKey{Owner: sid, Slot: uint8(i)}) //nolint:gosec // G115: as above
+		st, err := s.cfg.Backend.Status(ctx, VMKey{Owner: sid, Slot: uint8(i)})
 		if err != nil {
 			return 0, err
 		}

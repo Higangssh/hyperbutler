@@ -371,9 +371,13 @@ func (b *HCSBackend) image(which int) (*sharedImage, error) {
 	// two manifests naming one disk): starting one VM would revoke the other's access.
 	if other := b.imgs[numImages-1-which]; other != nil {
 		same, err := sameFile(h, windows.Handle(other.set.SystemFile().Fd()))
-		if err != nil || same {
+		if err != nil {
 			_ = set.Close()
-			return nil, fmt.Errorf("%w: the %s's system disk is also the other image's (%v)", ErrImageRejected, what, err)
+			return nil, fmt.Errorf("%w: compare the %s's system disk with the other image's: %w", ErrImageRejected, what, err)
+		}
+		if same {
+			_ = set.Close()
+			return nil, fmt.Errorf("%w: the %s's system disk is also the other image's", ErrImageRejected, what)
 		}
 	}
 	if sd, err := windows.GetSecurityInfo(h, windows.SE_FILE_OBJECT, windows.DACL_SECURITY_INFORMATION); err == nil && vm.VMGroupCanReadSD(sd) {
