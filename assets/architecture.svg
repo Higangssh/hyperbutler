@@ -1,0 +1,91 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 680 720" width="680" height="720" role="img" aria-labelledby="t d">
+  <title id="t">How hyperbutler works</title>
+  <desc id="d">Your docker tools talk to the hyperbutler engine over a named pipe. The engine asks the broker service, the only part that calls HCS, to start and stop a Linux VM on Hyper-V, and reaches the guest agent and dockerd over Hyper-V sockets. No WSL.</desc>
+  <defs>
+    <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0 0L10 5L0 10z" fill="#9fb0c8"/>
+    </marker>
+    <marker id="ab" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0 0L10 5L0 10z" fill="#5fa8ff"/>
+    </marker>
+    <marker id="ay" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0 0L10 5L0 10z" fill="#f5b83d"/>
+    </marker>
+  </defs>
+  <style>
+    text { font-family: "Segoe UI", system-ui, -apple-system, "Helvetica Neue", Arial, sans-serif; fill: #dfe7f2; }
+    .zone { font-size: 15px; font-weight: 600; fill: #9fb0c8; letter-spacing: .02em; }
+    .zsub { font-size: 13px; fill: #7d8da5; }
+    .h { font-size: 17px; font-weight: 700; fill: #ffffff; }
+    .b { font-size: 14px; fill: #c9d4e3; }
+    .l { font-size: 13px; fill: #9fb0c8; }
+    .lb { font-size: 13px; fill: #8fc2ff; }
+    .ly { font-size: 13px; fill: #f5c869; }
+  </style>
+
+  <rect x="0" y="0" width="680" height="720" rx="18" fill="#0d131c"/>
+
+  <!-- Windows, your account -->
+  <rect x="16" y="16" width="648" height="262" rx="14" fill="#121a26" stroke="#2a3a52"/>
+  <text class="zone" x="36" y="44">WINDOWS</text>
+  <text class="zsub" x="118" y="44">your account, no admin rights</text>
+
+  <rect x="36" y="64" width="232" height="104" rx="10" fill="#18212f" stroke="#3a4a62"/>
+  <text class="h" x="56" y="96">Your tools</text>
+  <text class="b" x="56" y="122">docker CLI, Compose</text>
+  <text class="b" x="56" y="144">SDKs, IDEs, Testcontainers</text>
+
+  <rect x="352" y="64" width="292" height="196" rx="10" fill="#0b2a4a" stroke="#3d9bff" stroke-width="1.5"/>
+  <text class="h" x="372" y="96">hyperbutler engine</text>
+  <text class="b" x="372" y="124">Docker API relay</text>
+  <text class="b" x="372" y="148">user-mode network: NAT, DNS, ports</text>
+  <text class="b" x="372" y="172">file server for bind mounts</text>
+  <text class="b" x="372" y="196">disk-space guard</text>
+  <text class="b" x="372" y="220">status, window, MCP for AI tools</text>
+  <text class="l" x="372" y="246">hyperbutler.exe, runs as you</text>
+
+  <path d="M268 116 H346" stroke="#9fb0c8" stroke-width="2" fill="none" marker-end="url(#a)"/>
+  <text class="l" x="276" y="106">named pipe</text>
+
+  <!-- Windows service, SYSTEM -->
+  <rect x="16" y="300" width="648" height="138" rx="14" fill="#1a1608" stroke="#5a4a1e"/>
+  <text class="zone" x="36" y="328" style="fill:#d9b25a">WINDOWS SERVICE</text>
+  <text class="zsub" x="196" y="328" style="fill:#a8925a">SYSTEM</text>
+
+  <rect x="36" y="342" width="300" height="82" rx="10" fill="#3a2a06" stroke="#f5b83d" stroke-width="1.5"/>
+  <text class="h" x="56" y="370">hyperbutler broker</text>
+  <text class="b" x="56" y="394" style="fill:#f3e2bd">the only part that calls HCS</text>
+  <text class="b" x="56" y="414" style="fill:#f3e2bd">7 typed requests, fixed VM template</text>
+
+  <path d="M392 260 V350 Q392 362 380 362 H344" stroke="#f5b83d" stroke-width="2" fill="none" marker-end="url(#ay)"/>
+  <text class="ly" x="402" y="300">start, stop, status</text>
+
+  <!-- Linux VM -->
+  <rect x="16" y="474" width="648" height="230" rx="14" fill="#0f1d1a" stroke="#265246"/>
+  <text class="zone" x="36" y="502" style="fill:#7fcfb6">LINUX VM ON HYPER-V</text>
+  <text class="zsub" x="232" y="502" style="fill:#6aa794">no WSL</text>
+
+  <rect x="36" y="520" width="300" height="168" rx="10" fill="#18212f" stroke="#3a4a62"/>
+  <text class="h" x="56" y="552">dockerd + containerd</text>
+  <text class="b" x="56" y="580">Docker's own engine</text>
+  <text class="b" x="56" y="604">read-only system disk,</text>
+  <text class="b" x="56" y="624">hash-pinned</text>
+  <text class="b" x="56" y="648">sparse data disk that</text>
+  <text class="b" x="56" y="668">gives space back</text>
+
+  <rect x="400" y="520" width="244" height="104" rx="10" fill="#18212f" stroke="#3a4a62"/>
+  <text class="h" x="420" y="552">hyperbutlerd</text>
+  <text class="b" x="420" y="578">guest agent</text>
+  <text class="b" x="420" y="602">admits only the VM's secret</text>
+
+  <path d="M400 572 H342" stroke="#9fb0c8" stroke-width="2" fill="none" marker-end="url(#a)"/>
+
+  <!-- broker to VM: HCS -->
+  <path d="M186 424 V468" stroke="#f5b83d" stroke-width="2" fill="none" marker-end="url(#ay)"/>
+  <text class="ly" x="196" y="452">HCS</text>
+
+  <!-- engine to agent: Hyper-V sockets -->
+  <path d="M600 266 V514" stroke="#5fa8ff" stroke-width="2.5" fill="none" marker-start="url(#ab)" marker-end="url(#ab)"/>
+  <text class="lb" x="588" y="392" text-anchor="end">Hyper-V sockets</text>
+  <text class="lb" x="588" y="412" text-anchor="end">API, network, files</text>
+</svg>

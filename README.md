@@ -23,8 +23,9 @@ directly through the Windows Host Compute Service (the API WSL 2 uses), runs doc
 and lets the stock `docker` CLI and Docker Compose talk to it. No WSL, no Docker Desktop.
 
 > [!NOTE]
-> **v0.1.0, the first release.** It passed a 24-hour soak (261,338 docker commands, none
-> failed) and works end to end on Windows 11 Home. Some release tests have not run yet,
+> **v0.1.1.** v0.1.0, the first release, passed a 24-hour soak (261,338 docker commands,
+> none failed); v0.1.1 made bind mounts from `C:\` about twice as fast. It works end to end
+> on Windows 11 Home. Some release tests have not run yet,
 > among them an install on a clean PC and a real sleep test; [status](docs/status.md) and
 > the [release checklist](docs/release.md) list them. Early software: try it, report what
 > breaks.
@@ -128,32 +129,9 @@ fix it (`--fix` repairs what it may); `hyperbutler diagnose` packs a redacted re
 
 ## How it works
 
-```mermaid
-flowchart TB
-  subgraph WIN["🪟 Windows · your account, no admin rights"]
-    direction LR
-    tools["<b>Your tools</b><br/>docker CLI<br/>Compose · SDKs"]
-    engine["<b>hyperbutler engine</b><br/>Docker API relay<br/>user-mode network: NAT, DNS, ports<br/>file server for bind mounts<br/>disk-space guard · status · window"]
-    broker["<b>hyperbutler broker</b> · 🔒 SYSTEM<br/>the only part that calls HCS<br/>7 typed requests · fixed VM template"]
-    tools -- "named pipe" --> engine
-    engine -- "start · stop · status" --> broker
-  end
-  subgraph VM["🐧 Linux VM on Hyper-V · no WSL"]
-    direction LR
-    agent["<b>hyperbutlerd</b> guest agent<br/>admits only the VM's secret"]
-    dockerd["<b>dockerd + containerd</b><br/>read-only system disk, hash-pinned<br/>sparse data disk that gives space back"]
-    agent --> dockerd
-  end
-  engine <== "Hyper-V sockets · API, network, files" ==> agent
-  broker -- "HCS" --> agent
-
-  classDef eng fill:#0b2a4a,stroke:#3d9bff,color:#e8f1ff
-  classDef brk fill:#3a2a06,stroke:#f5b83d,color:#fff4dc
-  classDef box fill:#141b26,stroke:#5b6b82,color:#e8edf5
-  class engine eng
-  class broker brk
-  class tools,agent,dockerd box
-```
+<p align="center">
+  <img alt="Your docker tools talk to the hyperbutler engine over a named pipe. The engine asks the broker service, the only part that calls HCS, to start and stop a Linux VM on Hyper-V, and reaches the guest agent and dockerd over Hyper-V sockets. No WSL." src="assets/architecture.svg" width="680">
+</p>
 
 - **Engine** (`hyperbutler.exe`), runs as you: relays the Docker API, runs the VM's network in
   user mode, serves bind mounts, and keeps the host disk from filling.
