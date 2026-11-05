@@ -22,7 +22,7 @@ func shareTestSecret() vmsecret.Secret {
 	return s
 }
 
-// socketpair returns a non-blocking socket, as dialHost has it before the check, and
+// socketpair returns a non-blocking socket, as shareAcceptor.accept has it before the check, and
 // its peer, which plays the share server.
 func socketpair(t *testing.T) (int, *os.File) {
 	t.Helper()

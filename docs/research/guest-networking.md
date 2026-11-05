@@ -349,13 +349,36 @@ transfers. Four things were waiting:
    sends 64 KiB segments with only the pseudo-header checksum (its "host GSO", as its
    `fdbased` endpoint does for a TAP), and the guest's TAP takes them as one packet. The
    bridge MTU no longer matters for bulk TCP.
-2. **Windows sends slowly on an accepted hvsock connection.** With offload, host-to-guest
+2. **Small VMBus rings on the link the guest dialed.** With offload, host-to-guest
    still ran at 2.0-2.6 Gbit/s. The host's writes of about 600 KB took 1.0-1.5 ms each,
    while the guest's reader waited for data 95% of the time. Splitting the directions over
    two connections changed nothing. A connection the **host dialed** took the same
    writes in about 50 µs. Fix: in offload mode netfwd listens, and the host dials it
    (`Stack.ServeOffload`). Guest-to-host also doubled on the dialed connection (ul
    3.9 to 7.7 Gbit/s, in the same experiment).
+   We first wrote that Windows sends slowly on a connection it accepted. The cause is in
+   the guest: Linux hv_sock (`net/vmw_vsock/hyperv_transport.c`, `hvs_open_connection`)
+   sizes a connection's VMBus rings from the guest socket's buffer sizes, clamped to
+   24-256 KiB. A connecting socket is reset to 24 KiB per direction (`hvs_sock_init`); a
+   listening socket keeps `net.core.[rw]mem_default`, 212992 bytes. So the guest-dialed
+   link had 24 KiB rings, and each 600 KB write went round the ring about 25 times.
+   Splitting the directions kept 24 KiB per connection, and guest-to-host doubled with the
+   flip because its ring grew too. A reader on Reddit pointed at the rings; the run below
+   confirmed it.
+
+   *Ring size (2026-11-05).* Same laptop, `hyperbutler-dev -bench-bytes 512MiB`, v0.1.0
+   image, 2 GiB / 2 vCPU, the host dialing as shipped; only the guest's
+   `sysctl.net.core.[rw]mem_default` on the kernel command line changed, which sets the
+   rings of the connections the guest's listeners accept. Medians of 5 rounds, Gbit/s:
+
+   | Rings | raw hvsock guest->host | raw hvsock host->guest | stack guest->host | stack host->guest |
+   |---|---|---|---|---|
+   | default (about 208 KiB) | 20.1 | 28.9 | 9.3 | 13.4 |
+   | 24 KiB (`=12288`, what a guest-dialed link gets) | 4.8 | 4.0 | 4.4 | 5.5 |
+   | 256 KiB (`=262144`, hv_sock's maximum) | 28.4 | 34.3 | 9.2 | 14.8 |
+
+   24 KiB rings alone bring back the old 2-5 Gbit/s. 256 KiB rings speed up raw hvsock
+   but not the stack, which is bound elsewhere (the relay and gVisor, items 3 and 4).
 3. **Loopback Windows sockets with autotuned buffers.** The relay goroutine then spent
    67% of its time waiting in `WSARecv` on the socket to the host-local server. Fix: 1 MiB
    `SO_RCVBUF`/`SO_SNDBUF` on loopback sockets (published ports and explicit host

@@ -149,8 +149,9 @@ func dialLoop(dial func() (*os.File, error), secret vmsecret.Secret) func() *os.
 // accepted, and only with the secret; a peer without it is closed before anything is
 // written to it. Connections are checked concurrently, a bounded number at a time
 // (vmsecret.Gate), so a peer that connects and stalls does not delay the host's link.
-// The host dials because Windows sends slowly on hvsock connections it accepted
-// (ADR 0006).
+// The host dials because hv_sock gives the connections a guest listener accepts VMBus
+// rings sized from net.core.[rw]mem_default (about 208 KiB), against 24 KiB per
+// direction for a connection the guest dials (ADR 0006).
 func acceptLoop(ln int, version byte, secret vmsecret.Secret) func() *os.File {
 	links := make(chan *os.File)
 	gate := &vmsecret.Gate{Secret: secret, MaxPending: 4}

@@ -184,10 +184,12 @@ not exist on Windows. Instead:
     "Integrity"). Every frame then starts with a CRC-32C and a virtio_net_hdr.
     TCP segments of up to 64 KiB cross the link in both directions with a partial
     checksum: the guest's TSO on one side, gVisor's host GSO on the other. The host
-    dials because Windows sends slowly on an accepted hvsock connection (see "Gate
-    results (2026-10-31)"). The host accepts headers of the kinds the guest's TAP
-    produces (no GSO or TCPv4 GSO, `NEEDS_CSUM`, `DATA_VALID`, ECN) and rejects the rest
-    (`frame.ParseVnet`, fuzzed). A frame without GSO must fit the MTU; a GSO frame must
+    dials because Linux hv_sock sizes a connection's VMBus rings from the guest's
+    socket: 24 KiB per direction when the guest dials, `net.core.[rw]mem_default`
+    (about 208 KiB) when the guest listens (see "Gate results (2026-10-31)", and "Ring
+    size (2026-11-05)" in [the research](../research/guest-networking.md)). The host
+    accepts headers of the kinds the guest's TAP produces (no GSO or TCPv4 GSO,
+    `NEEDS_CSUM`, `DATA_VALID`, ECN) and rejects the rest (`frame.ParseVnet`, fuzzed). A frame without GSO must fit the MTU; a GSO frame must
     fit an IPv4 packet. gVisor does not verify checksums on this link
     (`CapabilityRXChecksumOffload`, as before): it terminates every packet and forwards
     none.
@@ -318,8 +320,12 @@ bulk transfers; the stack was waiting, not computing. Four causes, each measured
 own:
 1. Containers' 1500-byte MTU, which put every container connection at a 1460-byte MSS
    over the 9000-byte link. Fixed by segmentation offload: 64 KiB segments both ways.
-2. Slow host writes on the hvsock connection Windows had accepted: about 1 ms per
-   600 KB, against 50 µs on a connection the host dialed. Fixed by having the host dial.
+2. 24 KiB VMBus rings on the hvsock link the guest dialed (Linux hv_sock's size for a
+   connecting socket): host writes took about 1 ms per 600 KB, against 50 µs with the
+   larger rings a guest listener's connections get. Fixed by having the host dial. This
+   was first put down to Windows sending slowly on a connection it accepted; a reader
+   pointed at the rings, and a run on 2026-11-05 confirmed it
+   ([research](../research/guest-networking.md), "Ring size").
 3. Autotuned loopback Windows sockets, on which the relay waited 67% of the time. Fixed
    with 1 MiB buffers on sockets to this host.
 4. 256 KiB TCP windows against an RTT of 1-5 ms under load (queueing in front of the

@@ -8,15 +8,16 @@ import (
 	"time"
 )
 
-// shareRelay keeps the host's bind-mount file system (ADR 0007) mounted: it dials the
-// host's share server (queues connections), mounts it with internal/share/relay, and
-// starts over with a bounded backoff whenever the host is not listening (yet) or the
-// session ends. The loop is portable; share_linux.go supplies the vsock dialer, the
-// relay and the unmount.
+// shareRelay keeps the host's bind-mount file system (ADR 0007) mounted: it takes
+// queues connections from the host's share server, mounts it with internal/share/relay,
+// and starts over with a bounded backoff whenever the host has not connected (yet) or
+// the session ends. The loop is portable; share_linux.go supplies the vsock acceptor
+// (the host dials, for the larger VMBus rings a listener's connections get), the relay
+// and the unmount.
 type shareRelay struct {
 	queues int
 	logf   func(string, ...any)
-	// dial opens one connection to the host's share server.
+	// dial takes one connection from the host's share server.
 	dial func() (io.ReadWriteCloser, error)
 	// start mounts the file system over conns (relay.Start).
 	start func(conns []io.ReadWriteCloser) (relayHandle, error)

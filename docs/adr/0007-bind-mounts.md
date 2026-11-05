@@ -103,7 +103,8 @@ trees.
    init give hyperbutlerd `-share-port 2385 -share-mount /mnt/hyperbutler`, so an image
    started by an older host runs no relay. hyperbutlerd's loop
    (`guest/cmd/hyperbutlerd/share.go`) detaches a dead mount left by an earlier
-   hyperbutlerd, dials four connections (non-blocking connect, 3 s bound), mounts, and
+   hyperbutlerd, takes four connections (dialed, until 2026-11-05, now accepted from the
+   host: see "The host dials the relay"), mounts, and
    starts over after a failure or a session end, with a backoff from 100 ms to 5 s and
    each distinct failure logged once. SIGTERM (the init's shutdown, after dockerd)
    unmounts and exits. `/mnt/hyperbutler` is an empty directory of the read-only system
@@ -384,7 +385,60 @@ trips the kernel waits for. Batching them would need the kernel to stop revalida
 directory after each change; with `default_permissions` it must. Named volumes stay the
 advice for write-heavy trees.
 
+## The host dials the relay (2026-11-05)
+
+The relay dialed the host, so its connections had the 24 KiB VMBus rings Linux hv_sock
+gives a connecting socket (ADR 0006, "Ring size" in
+[the networking research](../research/guest-networking.md)). A 1 MiB FUSE write went
+round such a ring 43 times, which held sequential writes near 270 MB/s. Now the guest
+listens and the engine dials, as for the network link:
+
+- hyperbutlerd listens on vsock port 2385 with `SO_SNDBUFFORCE`/`SO_RCVBUFFORCE` of
+  128 KiB, which hv_sock doubles into its largest rings, 256 KiB. It accepts only the
+  host (CID 2), and only a connection that sends the VM secret first (`vmsecret.Verify`,
+  as the relay checked the host's listener before); anything else is closed having been
+  sent nothing. The relay loop is unchanged: it takes four connections, mounts, and
+  starts over when the session ends; waiting for the host is bounded by 5 s per
+  connection.
+- The engine (`shareService.connect`) dials four connections, each attempt bounded by
+  250 ms (a connect to a port nobody listens on yet stays pending for about 30 s), sends
+  the VM secret on each and serves it, and dials four again once all have ended.
+- The VM's share service now has a connect descriptor for the owner and no bind
+  descriptor: nobody may listen on it on the host, and only the owner may connect.
+
+Same laptop, a `hyperbutler-dev` VM (2 GiB, 2 vCPU), `alpine:3.22` with
+`-v %TEMP%\...:/w`, 256 MiB, three rounds:
+
+| | guest dials (v0.1.0) | host dials |
+|---|---|---|
+| `dd bs=1M conv=fsync` write | 265-282 MB/s | 511-567 MB/s |
+| `dd bs=1M` read, written from Windows (not in the guest's cache) | 499-526 MB/s | 949-1001 MB/s |
+
 ## Adversarial review
+
+### The host dials the relay (2026-11-05)
+
+No high findings. Another host user can neither connect to the relay (the service's
+connect descriptor admits the owner only) nor listen on it (no bind descriptor), and the
+engine dials the VM's own runtime id, so no host listener can stand in for the guest.
+The guest checks the connector as netfwd's offload link does: host CID, then the VM
+secret first. Answered:
+
+- **Redial storm.** A guest that closed every connection at once (it refused the secret,
+  or wanted another number of connections) was redialed every 250 ms forever. Fixed:
+  sessions in which the guest never spoke back off up to 5 s, and one in which it spoke
+  resets the wait. Test: `TestShareServiceBacksOffRefusedSessions`.
+- **A permanent failure was debug only.** An image older than the engine (its relay
+  dials, nobody listens) failed silently on both sides. Fixed: after 30 s without a
+  session the engine warns once. Test: `TestShareServiceWarnsWhenNeverConnected`.
+- **The number of connections** is now the engine's (4), where it was the guest's
+  `-share-queues` (1 to 8, never set by the init). The flag says to keep them equal.
+- A failed `SO_*BUFFORCE` is logged (the rings fall back to about 208 KiB).
+- Open: the guest's wait for the host (up to 5 s) does not watch shutdown, so a stop
+  between sessions waits for it (the init powers off without waiting); an attempt the
+  engine abandons at 250 ms under load is refused by the guest as a peer that sent no
+  secret; the two-account run of ADR 0004 is to be repeated against the guest listener
+  (B connecting to A's VM on 2385, and B listening on it).
 
 ### Opens without OPEN (2026-10-31)
 
