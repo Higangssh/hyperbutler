@@ -1336,3 +1336,26 @@ damaged, truncated, a VHD, no parameters), disks Windows itself creates (the eng
 sparse VHDX and a plain one pass, a differencing child of the plain one is refused), and
 `FuzzCheckVHDX` (a differencing disk patched anywhere outside its HasParent bit and
 locator GUID is never accepted).
+
+The review of that fix (2026-11-05) found two ways around a check of the contents alone,
+both answered:
+
+- **The owner rewrites the disk after the check.** The broker holds the disk sharing
+  write (HCS opens it again by path to write), and the owner of a file can always open
+  it, so between the check and HCS's open the owner could set HasParent. Reproduced in a
+  test. Answered: the check runs again through the held handle right after HCS started
+  the VM, when the VM worker holds the disk without sharing write and nobody can change
+  it; a differencing disk then ends the VM, before the guest mounts its data disk
+  (`TestHCSBackendDiskRewrittenBeforeOpen`). HCS still opens the named parent in that
+  moment; closing that too needs the disk out of the owner's reach while the VM starts
+  (owner and DACL changed by the broker, as option C's user-file work would allow), which
+  is left for that hardening.
+- **A pending log rewrites the metadata on open.** The opener replays a VHDX's log
+  before it reads the metadata, so a benign-looking disk could become a differencing one.
+  Answered: the current header (the valid one with the higher sequence number) must have
+  no log (LogGuid zero), and both region tables must be valid and name the same metadata
+  region. Disks the engine creates pass, and so does one whose VM was terminated (HCS
+  closes the log): a run that killed the engine mid-write started again with its images.
+  Open: a disk left with a log by a power loss is refused as "not closed cleanly" until
+  something replays its log as the user (opening it once with `OpenVirtualDisk`); the
+  engine does not do that yet.

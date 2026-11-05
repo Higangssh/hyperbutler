@@ -408,3 +408,16 @@ func (r handleReader) ReadAt(p []byte, off int64) (int, error) {
 	}
 	return total, nil
 }
+
+// recheck checks the disk's contents again through the held handle (checkVHDX). Run
+// after HCS opened the disk: from then on the VM worker holds it without sharing write,
+// so nobody can change it, and any pending log has been replayed. The check before the
+// start reads contents the owner could still change before HCS opened the file by path.
+func (d *diskFile) recheck() error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.h == 0 {
+		return errors.New("is closed")
+	}
+	return checkVHDX(handleReader{d.h})
+}

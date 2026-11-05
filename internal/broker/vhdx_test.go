@@ -15,6 +15,9 @@ func testVHDX(parent, locator bool) []byte {
 	const meta = 320 << 10
 	b := make([]byte, meta+64<<10)
 	copy(b, vhdxSignature)
+	for i, at := range []int{vhdxHeader1, vhdxHeader2} {
+		setTestHeader(b, at, uint64(i+1), false)
+	}
 	rt := make([]byte, vhdxRegionTableLen)
 	copy(rt, "regi")
 	binary.LittleEndian.PutUint32(rt[8:12], 1)
@@ -45,6 +48,29 @@ func testVHDX(parent, locator bool) []byte {
 	return b
 }
 
+// setTestHeader writes a valid VHDX header with sequence number seq at at, with a
+// nonzero LogGuid if log.
+func setTestHeader(b []byte, at int, seq uint64, log bool) {
+	h := b[at : at+vhdxHeaderLen]
+	clear(h)
+	copy(h, "head")
+	binary.LittleEndian.PutUint64(h[8:16], seq)
+	if log {
+		h[48] = 1
+	}
+	binary.LittleEndian.PutUint16(h[66:68], 1)
+	binary.LittleEndian.PutUint32(h[4:8], crc32.Checksum(h, crc32.MakeTable(crc32.Castagnoli)))
+}
+
+// setTestRegionEntry points region table at's metadata entry at off and refreshes its
+// checksum.
+func setTestRegionEntry(b []byte, at int, off uint64) {
+	rt := b[at : at+vhdxRegionTableLen]
+	binary.LittleEndian.PutUint64(rt[32:40], off)
+	binary.LittleEndian.PutUint32(rt[4:8], 0)
+	binary.LittleEndian.PutUint32(rt[4:8], crc32.Checksum(rt, crc32.MakeTable(crc32.Castagnoli)))
+}
+
 func TestCheckVHDX(t *testing.T) {
 	if err := checkVHDX(bytes.NewReader(testVHDX(false, false))); err != nil {
 		t.Fatalf("a plain VHDX: %v", err)
@@ -58,11 +84,37 @@ func TestCheckVHDX(t *testing.T) {
 			t.Errorf("%s: %v, want a differencing disk", name, err)
 		}
 	}
-	// The second region table is used when the first one is damaged.
-	b := testVHDX(true, false)
-	b[vhdxRegionTable1+20] ^= 1
-	if err := checkVHDX(bytes.NewReader(b)); !errors.Is(err, errDifferencing) {
-		t.Errorf("damaged first table: %v", err)
+	// The current header (the higher sequence number) decides; an older one with a log
+	// does not matter, a current one with a log is refused (the log would be replayed
+	// before the opener reads the metadata).
+	b := testVHDX(false, false)
+	setTestHeader(b, vhdxHeader1, 1, true)
+	setTestHeader(b, vhdxHeader2, 2, false)
+	if err := checkVHDX(bytes.NewReader(b)); err != nil {
+		t.Errorf("an old header with a log: %v", err)
+	}
+	for name, b := range map[string][]byte{
+		"pending log": func() []byte { b := testVHDX(false, false); setTestHeader(b, vhdxHeader2, 9, true); return b }(),
+		"one damaged table": func() []byte {
+			b := testVHDX(false, false)
+			b[vhdxRegionTable1+20] ^= 1
+			return b
+		}(),
+		"tables disagree": func() []byte {
+			b := testVHDX(false, false)
+			setTestRegionEntry(b, vhdxRegionTable2, 256<<10)
+			return b
+		}(),
+		"no valid header": func() []byte {
+			b := testVHDX(false, false)
+			b[vhdxHeader1+20] ^= 1
+			b[vhdxHeader2+20] ^= 1
+			return b
+		}(),
+	} {
+		if err := checkVHDX(bytes.NewReader(b)); err == nil || errors.Is(err, errDifferencing) {
+			t.Errorf("%s: %v, want a refused disk", name, err)
+		}
 	}
 	for name, b := range map[string][]byte{
 		"empty":        nil,

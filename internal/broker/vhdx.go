@@ -45,6 +45,9 @@ func checkVHDX(r io.ReaderAt) error {
 	if _, err := r.ReadAt(sig, 0); err != nil || !bytes.Equal(sig, vhdxSignature) {
 		return errors.New("is not a VHDX file")
 	}
+	if err := vhdxNoPendingLog(r); err != nil {
+		return err
+	}
 	meta, metaLen, err := vhdxMetadataRegionOf(r)
 	if err != nil {
 		return err
@@ -93,35 +96,87 @@ func checkVHDX(r io.ReaderAt) error {
 	return nil
 }
 
-// vhdxMetadataRegionOf finds the metadata region in the first region table whose
-// signature and checksum hold.
-func vhdxMetadataRegionOf(r io.ReaderAt) (offset uint64, length uint32, err error) {
-	buf := make([]byte, vhdxRegionTableLen)
-	for _, at := range []int64{vhdxRegionTable1, vhdxRegionTable2} {
-		if _, err := r.ReadAt(buf, at); err != nil {
+// The two VHDX headers, each 4 KiB with a CRC-32C, and the fields read from them.
+const (
+	vhdxHeader1   = 64 << 10
+	vhdxHeader2   = 128 << 10
+	vhdxHeaderLen = 4 << 10
+)
+
+// vhdxNoPendingLog requires a valid current header (the valid one with the higher
+// sequence number) whose LogGuid is zero. A nonzero LogGuid means a log the opener
+// replays first, which can rewrite the metadata this check reads, so such a disk is
+// refused rather than judged by its contents before replay. A disk the engine created
+// and a VM shut down cleanly has none.
+func vhdxNoPendingLog(r io.ReaderAt) error {
+	var cur []byte
+	var curSeq uint64
+	for _, at := range []int64{vhdxHeader1, vhdxHeader2} {
+		h := make([]byte, vhdxHeaderLen)
+		if _, err := r.ReadAt(h, at); err != nil || !bytes.Equal(h[:4], []byte("head")) {
 			continue
 		}
-		if !bytes.Equal(buf[:4], []byte("regi")) {
+		want := binary.LittleEndian.Uint32(h[4:8])
+		binary.LittleEndian.PutUint32(h[4:8], 0)
+		if crc32.Checksum(h, crc32c) != want {
 			continue
+		}
+		if seq := binary.LittleEndian.Uint64(h[8:16]); cur == nil || seq > curSeq {
+			cur, curSeq = h, seq
+		}
+	}
+	if cur == nil {
+		return errors.New("has no valid VHDX header")
+	}
+	if !bytes.Equal(cur[48:64], make([]byte, 16)) {
+		return errors.New("has a pending VHDX log (it was not closed cleanly)")
+	}
+	return nil
+}
+
+// vhdxMetadataRegionOf finds the metadata region. Both region tables must be valid and
+// name the same metadata region: an opener may use either, so a disk whose copies
+// disagree is refused rather than judged by one of them.
+func vhdxMetadataRegionOf(r io.ReaderAt) (offset uint64, length uint32, err error) {
+	var found [2]struct {
+		off uint64
+		n   uint32
+	}
+	buf := make([]byte, vhdxRegionTableLen)
+	for i, at := range []int64{vhdxRegionTable1, vhdxRegionTable2} {
+		if _, err := r.ReadAt(buf, at); err != nil || !bytes.Equal(buf[:4], []byte("regi")) {
+			return 0, 0, errors.New("has a damaged VHDX region table")
 		}
 		want := binary.LittleEndian.Uint32(buf[4:8])
 		binary.LittleEndian.PutUint32(buf[4:8], 0)
 		if crc32.Checksum(buf, crc32c) != want {
-			continue
+			return 0, 0, errors.New("has a damaged VHDX region table")
 		}
 		count := int(binary.LittleEndian.Uint32(buf[8:12]))
 		if count > vhdxMaxEntries || 16+32*count > len(buf) {
-			continue
+			return 0, 0, errors.New("has a malformed VHDX region table")
 		}
-		for i := 0; i < count; i++ {
-			e := buf[16+32*i : 48+32*i]
+		ok := false
+		for j := 0; j < count; j++ {
+			e := buf[16+32*j : 48+32*j]
 			var id [16]byte
 			copy(id[:], e[:16])
 			if id == vhdxMetadataRegion {
-				return binary.LittleEndian.Uint64(e[16:24]), binary.LittleEndian.Uint32(e[24:28]), nil
+				if ok {
+					return 0, 0, errors.New("names two VHDX metadata regions")
+				}
+				found[i].off, found[i].n, ok = binary.LittleEndian.Uint64(e[16:24]), binary.LittleEndian.Uint32(e[24:28]), true
 			}
 		}
-		return 0, 0, errors.New("has no VHDX metadata region")
+		if !ok {
+			return 0, 0, errors.New("has no VHDX metadata region")
+		}
 	}
-	return 0, 0, fmt.Errorf("has no valid VHDX region table")
+	if found[0] != found[1] {
+		return 0, 0, fmt.Errorf("has VHDX region tables that disagree")
+	}
+	if found[0].off > 1<<50 {
+		return 0, 0, errors.New("has a malformed VHDX metadata region")
+	}
+	return found[0].off, found[0].n, nil
 }

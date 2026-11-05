@@ -35,6 +35,8 @@ type fakeHCS struct {
 	list           []vm.Summary
 	// wrongRID makes created systems report another runtime id than Probe.
 	wrongRID bool
+	// onCreate, if set, runs at Create with the VM document, as HCS opening the disks.
+	onCreate func(cfg *vm.Config)
 }
 
 func newFakeHCS() *fakeHCS {
@@ -51,6 +53,9 @@ func (f *fakeHCS) Create(id string, cfg *vm.Config) (hcsSystem, error) {
 	defer f.mu.Unlock()
 	if _, err := cfg.Document(); err != nil {
 		return nil, err
+	}
+	if f.onCreate != nil {
+		f.onCreate(cfg)
 	}
 	f.created[id] = cfg
 	rid := f.ridFor(id)
