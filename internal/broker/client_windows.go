@@ -168,7 +168,7 @@ func openEndpoint(ctx context.Context, shared string) (proto.Reply, string, erro
 			}
 			select {
 			case <-ctx.Done():
-				return proto.Reply{}, "", err
+				return proto.Reply{}, "", fmt.Errorf("%w (gave up: %w)", err, ctx.Err())
 			case <-time.After(wait):
 			}
 			continue
