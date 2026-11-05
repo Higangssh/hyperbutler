@@ -1,6 +1,7 @@
 package wire
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"syscall"
@@ -104,6 +105,10 @@ func (c *Client) List() ([]Msg, error) {
 	}
 }
 
+// ErrTooLarge: a file over the caller's limit. Like a GuestError, it leaves the client
+// usable: every request got its reply.
+var ErrTooLarge = errors.New("session file is larger than the limit")
+
 // ReadFile reads all of path, refusing more than max bytes. The guest's Size is not
 // trusted: the read stops at max whatever the list said.
 func (c *Client) ReadFile(path string, max int64) ([]byte, error) {
@@ -125,7 +130,7 @@ func (c *Client) ReadFile(path string, max int64) ([]byte, error) {
 		}
 		out = append(out, m.Data...)
 		if int64(len(out)) > max {
-			return nil, fmt.Errorf("session file is larger than %d bytes", max)
+			return nil, fmt.Errorf("%w (%d bytes)", ErrTooLarge, max)
 		}
 		if m.EOF {
 			return out, nil
