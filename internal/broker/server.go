@@ -52,7 +52,10 @@ type processUserPeer interface {
 // state, fixed limits and the typed fields of the start request; nothing in it is a
 // caller-supplied path, command line or document.
 type VMSpec struct {
-	Owner    string // user SID; the backend tags the VM with it (ADR 0004 rule 9)
+	Owner string // user SID; the backend tags the VM with it (ADR 0004 rule 9)
+	// Slot is 0 for the owner's Docker VM and 1..proto.MaxSlot for a sandbox session
+	// (ADR 0009), which boots the sandbox image from a disk of its own.
+	Slot     uint8
 	CPUs     uint32
 	MemoryMB uint32
 	DataDir  *DataDir // validated directory handle; open everything below it by handle
@@ -89,18 +92,28 @@ var (
 	ErrDiskRejected  = errors.New("broker: data disk rejected")
 )
 
-// Backend runs VMs on behalf of the server. Every method is keyed by the owner SID, and
-// an implementation must never let one owner act on another owner's VM.
+// VMKey names one VM: an owner's Docker VM (Slot 0) or one of their sandbox sessions.
+type VMKey struct {
+	Owner string // user SID
+	Slot  uint8
+}
+
+// Key is the VMKey of spec.
+func (spec *VMSpec) Key() VMKey { return VMKey{Owner: spec.Owner, Slot: spec.Slot} }
+
+// Backend runs VMs on behalf of the server. Every method is keyed by owner SID and slot,
+// and an implementation must never let one owner act on another owner's VM, nor one
+// slot's request act on another slot's VM.
 type Backend interface {
-	// Start creates and starts the owner's VM, or returns the status of the one already
-	// running.
+	// Start creates and starts the VM of spec's owner and slot, or returns the status of
+	// the one already running.
 	Start(ctx context.Context, spec VMSpec) (VMStatus, error)
-	Stop(ctx context.Context, owner string, force bool) error
-	Status(ctx context.Context, owner string) (VMStatus, error)
+	Stop(ctx context.Context, key VMKey, force bool) error
+	Status(ctx context.Context, key VMKey) (VMStatus, error)
 	// Resize changes a running VM. A zero value means unchanged.
-	Resize(ctx context.Context, owner string, cpus, memoryMB uint32) error
-	// Pause pauses the owner's running VM, or resumes it.
-	Pause(ctx context.Context, owner string, resume bool) error
+	Resize(ctx context.Context, key VMKey, cpus, memoryMB uint32) error
+	// Pause pauses a running VM, or resumes it.
+	Pause(ctx context.Context, key VMKey, resume bool) error
 }
 
 // Config configures a Server. Zero values take the defaults in New.
@@ -112,6 +125,10 @@ type Config struct {
 	// Resource limits that resize enforces, and the defaults of a new user.
 	MaxCPUs, DefaultCPUs                    uint32
 	MinMemoryMB, MaxMemoryMB, DefaultMemory uint32
+	// SessionCPUs and SessionMemory are a sandbox session's defaults (ADR 0009: smaller
+	// than the Docker VM's), and MaxTotalMemoryMB caps the memory of all of one user's
+	// running VMs together (default MaxMemoryMB), so sessions cannot starve the host.
+	SessionCPUs, SessionMemory, MaxTotalMemoryMB uint32
 
 	// AllowedSIDs, if not empty, is the set of user SIDs that may use this server (a
 	// per-user endpoint has exactly one). The pipe ACL already enforces this; the check
@@ -150,12 +167,18 @@ type Server struct {
 }
 
 type userState struct {
-	mu       sync.Mutex
+	mu      sync.Mutex
+	dataDir *DataDir // shared by the user's Docker VM and sessions
+	vms     [proto.MaxSlot + 1]vmState
+}
+
+// vmState is the broker's state of one slot of a user.
+type vmState struct {
 	cpus     uint32
 	memoryMB uint32
-	dataDir  *DataDir
 	// lease is the connection whose start created the running VM (Implementation
-	// decision 6): when it ends, the VM is terminated.
+	// decision 6): when it ends, the VM is terminated. One connection may hold the
+	// leases of several slots.
 	lease *lease
 }
 
@@ -177,10 +200,15 @@ func New(cfg Config) (*Server, error) {
 	def(&cfg.MinMemoryMB, 512)
 	def(&cfg.MaxMemoryMB, 16<<10)
 	def(&cfg.DefaultMemory, 2048)
-	if cfg.MaxCPUs > proto.MaxCPUs || cfg.DefaultCPUs > cfg.MaxCPUs ||
+	def(&cfg.SessionCPUs, 2)
+	def(&cfg.SessionMemory, 1024)
+	def(&cfg.MaxTotalMemoryMB, cfg.MaxMemoryMB)
+	if cfg.MaxCPUs > proto.MaxCPUs || cfg.DefaultCPUs > cfg.MaxCPUs || cfg.SessionCPUs > cfg.MaxCPUs ||
 		cfg.MinMemoryMB < proto.MinMemoryMB || cfg.MaxMemoryMB > proto.MaxMemoryMB ||
 		cfg.MinMemoryMB > cfg.MaxMemoryMB ||
-		cfg.DefaultMemory < cfg.MinMemoryMB || cfg.DefaultMemory > cfg.MaxMemoryMB {
+		cfg.DefaultMemory < cfg.MinMemoryMB || cfg.DefaultMemory > cfg.MaxMemoryMB ||
+		cfg.SessionMemory < cfg.MinMemoryMB || cfg.SessionMemory > cfg.MaxMemoryMB ||
+		cfg.MaxTotalMemoryMB < max(cfg.DefaultMemory, cfg.SessionMemory) {
 		return nil, errors.New("broker: resource limits out of range")
 	}
 	if cfg.Version == "" {
@@ -255,7 +283,11 @@ func (s *Server) user(sid string) (*userState, bool) {
 	}
 	u, ok := s.users[sid]
 	if !ok {
-		u = &userState{cpus: s.cfg.DefaultCPUs, memoryMB: s.cfg.DefaultMemory}
+		u = &userState{}
+		u.vms[0] = vmState{cpus: s.cfg.DefaultCPUs, memoryMB: s.cfg.DefaultMemory}
+		for i := 1; i < len(u.vms); i++ {
+			u.vms[i] = vmState{cpus: s.cfg.SessionCPUs, memoryMB: s.cfg.SessionMemory}
+		}
 		s.users[sid] = u
 	}
 	return u, true
@@ -473,7 +505,7 @@ func errorReply(code proto.Code, msg string) proto.Reply {
 	return proto.Reply{Type: proto.TypeError, Code: code, Message: msg}
 }
 
-// holds reports whether connection own holds the lease on sid's VM.
+// holds reports whether connection own holds the lease on any of sid's VMs.
 func (s *Server) holds(sid string, own *lease) bool {
 	s.mu.Lock()
 	u := s.users[sid]
@@ -483,11 +515,16 @@ func (s *Server) holds(sid string, own *lease) bool {
 	}
 	u.mu.Lock()
 	defer u.mu.Unlock()
-	return u.lease == own
+	for i := range u.vms {
+		if u.vms[i].lease == own {
+			return true
+		}
+	}
+	return false
 }
 
-// release ends the lease that connection own holds on sid's VM, if it holds one: the VM
-// is terminated (Implementation decision 6, as the engine's exit does in developer mode).
+// release ends every lease that connection own holds on sid's VMs: each such VM is
+// terminated (Implementation decision 6, as the engine's exit does in developer mode).
 func (s *Server) release(sid string, own *lease) {
 	s.mu.Lock()
 	u := s.users[sid]
@@ -497,15 +534,41 @@ func (s *Server) release(sid string, own *lease) {
 	}
 	u.mu.Lock()
 	defer u.mu.Unlock()
-	if u.lease != own {
-		return
+	for i := range u.vms {
+		if u.vms[i].lease != own {
+			continue
+		}
+		u.vms[i].lease = nil
+		ctx, cancel := context.WithTimeout(context.Background(), s.cfg.RequestTimeout)
+		err := s.cfg.Backend.Stop(ctx, VMKey{Owner: sid, Slot: uint8(i)}, true)
+		cancel()
+		if err != nil && !errors.Is(err, ErrNotRunning) {
+			s.cfg.Logf("broker: terminate the VM of a closed lease (slot %d): %v", i, err)
+		}
 	}
-	u.lease = nil
-	ctx, cancel := context.WithTimeout(context.Background(), s.cfg.RequestTimeout)
-	defer cancel()
-	if err := s.cfg.Backend.Stop(ctx, sid, true); err != nil && !errors.Is(err, ErrNotRunning) {
-		s.cfg.Logf("broker: terminate the VM of a closed lease: %v", err)
+}
+
+// runningMemory is the memory of sid's running VMs other than skip, as their backend
+// reports it. u.mu is held.
+func (s *Server) runningMemory(ctx context.Context, sid string, u *userState, skip uint8) (uint64, error) {
+	var sum uint64
+	for i := range u.vms {
+		if uint8(i) == skip {
+			continue
+		}
+		st, err := s.cfg.Backend.Status(ctx, VMKey{Owner: sid, Slot: uint8(i)})
+		if err != nil {
+			return 0, err
+		}
+		if st.Running {
+			m := st.MemoryMB
+			if m == 0 {
+				m = u.vms[i].memoryMB
+			}
+			sum += uint64(m)
+		}
 	}
+	return sum, nil
 }
 
 // handle executes one decoded request for id on the connection own. It always returns a
@@ -526,19 +589,26 @@ func (s *Server) handle(ctx context.Context, id Identity, p Peer, own *lease, re
 	ctx, cancel := context.WithTimeout(ctx, s.cfg.RequestTimeout)
 	defer cancel()
 
+	if int(req.Slot) >= len(u.vms) {
+		// The decoder bounds Slot already; an index panic would end the service.
+		return errorReply(proto.CodeBadRequest, "no such slot")
+	}
+	key := VMKey{Owner: id.SID, Slot: req.Slot}
+	vs := &u.vms[req.Slot]
+
 	switch req.Op {
 	case proto.OpStatus:
-		st, err := s.cfg.Backend.Status(ctx, id.SID)
+		st, err := s.cfg.Backend.Status(ctx, key)
 		if err != nil {
 			return s.internal("status", err)
 		}
-		return s.statusReply(req.Op, u, st)
+		return s.statusReply(req.Op, u, vs, st)
 
 	case proto.OpStart:
 		if u.dataDir == nil {
 			return errorReply(proto.CodeNoDataLocation, "set a data location first")
 		}
-		cpus, mem := u.cpus, u.memoryMB
+		cpus, mem := vs.cpus, vs.memoryMB
 		if req.CPUs != 0 {
 			cpus = req.CPUs
 		}
@@ -548,24 +618,31 @@ func (s *Server) handle(ctx context.Context, id Identity, p Peer, own *lease, re
 		if cpus < 1 || cpus > s.cfg.MaxCPUs || mem < s.cfg.MinMemoryMB || mem > s.cfg.MaxMemoryMB {
 			return errorReply(proto.CodeOutOfRange, "start outside the broker's limits")
 		}
-		st, err := s.cfg.Backend.Status(ctx, id.SID)
+		st, err := s.cfg.Backend.Status(ctx, key)
 		if err != nil {
 			return s.internal("status", err)
 		}
 		if st.Running {
-			// One VM per user, and its lifetime is its lease: a second start on the
+			// One VM per slot, and its lifetime is its lease: a second start on the
 			// same connection reports it, any other connection is refused.
-			if u.lease == own {
-				return s.statusReply(req.Op, u, st)
+			if vs.lease == own {
+				return s.statusReply(req.Op, u, vs, st)
 			}
 			return errorReply(proto.CodeLeaseHeld, "the VM runs under another connection's lease")
+		}
+		others, err := s.runningMemory(ctx, id.SID, u, req.Slot)
+		if err != nil {
+			return s.internal("status", err)
+		}
+		if others+uint64(mem) > uint64(s.cfg.MaxTotalMemoryMB) {
+			return errorReply(proto.CodeOutOfRange, "your running VMs would use more memory than the broker allows")
 		}
 		// The owner can change the directory's ACL after it was accepted, so check it
 		// again on every start.
 		if err := u.dataDir.revalidate(id.SID, s.cfg.validateDataDir); err != nil {
 			return rejectReply(err)
 		}
-		spec := VMSpec{Owner: id.SID, CPUs: cpus, MemoryMB: mem, DataDir: u.dataDir,
+		spec := VMSpec{Owner: id.SID, Slot: req.Slot, CPUs: cpus, MemoryMB: mem, DataDir: u.dataDir,
 			Net: startNet(req), Share: req.Features&proto.FeatureShare != 0,
 			DaemonConfig: req.Features&proto.FeatureDaemonConfig != 0, BlankDisk: req.Features&proto.FeatureBlankDisk != 0}
 		st, err = s.cfg.Backend.Start(ctx, spec)
@@ -579,28 +656,28 @@ func (s *Server) handle(ctx context.Context, id Identity, p Peer, own *lease, re
 		case err != nil:
 			return s.internal("start", err)
 		}
-		u.cpus, u.memoryMB, u.lease = cpus, mem, own
-		return s.statusReply(req.Op, u, st)
+		vs.cpus, vs.memoryMB, vs.lease = cpus, mem, own
+		return s.statusReply(req.Op, u, vs, st)
 
 	case proto.OpPause:
-		err := s.cfg.Backend.Pause(ctx, id.SID, req.Resume)
+		err := s.cfg.Backend.Pause(ctx, key, req.Resume)
 		switch {
 		case errors.Is(err, ErrNotRunning):
 			return errorReply(proto.CodeNotRunning, "VM is not running")
 		case err != nil:
 			return s.internal("pause", err)
 		}
-		st, err := s.cfg.Backend.Status(ctx, id.SID)
+		st, err := s.cfg.Backend.Status(ctx, key)
 		if err != nil {
 			return s.internal("status", err)
 		}
-		return s.statusReply(req.Op, u, st)
+		return s.statusReply(req.Op, u, vs, st)
 
 	case proto.OpStop:
-		err := s.cfg.Backend.Stop(ctx, id.SID, req.Force)
+		err := s.cfg.Backend.Stop(ctx, key, req.Force)
 		switch {
 		case errors.Is(err, ErrNotRunning):
-			u.lease = nil
+			vs.lease = nil
 			return errorReply(proto.CodeNotRunning, "VM is not running")
 		case err != nil:
 			return s.internal("stop", err)
@@ -608,12 +685,12 @@ func (s *Server) handle(ctx context.Context, id Identity, p Peer, own *lease, re
 		if req.Force {
 			// Gone now; an orderly stop keeps the lease until the VM is down, so that the
 			// lease holder's close still terminates one that does not power off.
-			u.lease = nil
+			vs.lease = nil
 		}
 		return proto.Reply{Type: okType(req.Op)}
 
 	case proto.OpResize:
-		cpus, mem := u.cpus, u.memoryMB
+		cpus, mem := vs.cpus, vs.memoryMB
 		if req.CPUs != 0 {
 			cpus = req.CPUs
 		}
@@ -623,32 +700,40 @@ func (s *Server) handle(ctx context.Context, id Identity, p Peer, own *lease, re
 		if cpus < 1 || cpus > s.cfg.MaxCPUs || mem < s.cfg.MinMemoryMB || mem > s.cfg.MaxMemoryMB {
 			return errorReply(proto.CodeOutOfRange, "resize outside the broker's limits")
 		}
-		st, err := s.cfg.Backend.Status(ctx, id.SID)
+		st, err := s.cfg.Backend.Status(ctx, key)
 		if err != nil {
 			return s.internal("status", err)
 		}
 		if st.Running {
-			err := s.cfg.Backend.Resize(ctx, id.SID, req.CPUs, req.MemoryMB)
+			others, err := s.runningMemory(ctx, id.SID, u, req.Slot)
+			if err != nil {
+				return s.internal("status", err)
+			}
+			if others+uint64(mem) > uint64(s.cfg.MaxTotalMemoryMB) {
+				return errorReply(proto.CodeOutOfRange, "your running VMs would use more memory than the broker allows")
+			}
+			err = s.cfg.Backend.Resize(ctx, key, req.CPUs, req.MemoryMB)
 			switch {
 			case errors.Is(err, ErrNotRunning):
 				// Stopped in between; the new values apply at the next start.
 			case err != nil:
 				return s.internal("resize", err)
 			}
-			if st, err = s.cfg.Backend.Status(ctx, id.SID); err != nil {
+			if st, err = s.cfg.Backend.Status(ctx, key); err != nil {
 				return s.internal("status", err)
 			}
 		}
-		u.cpus, u.memoryMB = cpus, mem
-		return s.statusReply(req.Op, u, st)
+		vs.cpus, vs.memoryMB = cpus, mem
+		return s.statusReply(req.Op, u, vs, st)
 
 	case proto.OpSetDataLocation:
-		st, err := s.cfg.Backend.Status(ctx, id.SID)
+		// Every slot's disk lives below the data location.
+		running, err := s.runningMemory(ctx, id.SID, u, noSlot)
 		if err != nil {
 			return s.internal("status", err)
 		}
-		if st.Running {
-			return errorReply(proto.CodeBusy, "stop the VM before moving its data")
+		if running != 0 {
+			return errorReply(proto.CodeBusy, "stop your VMs before moving their data")
 		}
 		dctx, dcancel := context.WithTimeout(ctx, dataDirTimeout)
 		defer dcancel()
@@ -742,12 +827,15 @@ func (s *Server) internal(what string, err error) proto.Reply {
 	return errorReply(proto.CodeInternal, what+" failed")
 }
 
-func (s *Server) statusReply(op proto.Op, u *userState, st VMStatus) proto.Reply {
+// noSlot is a slot number no VM has, for runningMemory to count every slot.
+const noSlot = proto.MaxSlot + 1
+
+func (s *Server) statusReply(op proto.Op, u *userState, vs *vmState, st VMStatus) proto.Reply {
 	r := proto.Reply{
 		Type:            okType(op),
 		State:           proto.StateStopped,
-		CPUs:            u.cpus,
-		MemoryMB:        u.memoryMB,
+		CPUs:            vs.cpus,
+		MemoryMB:        vs.memoryMB,
 		DataLocationSet: u.dataDir != nil,
 	}
 	if st.Running {

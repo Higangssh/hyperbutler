@@ -21,6 +21,11 @@
 //   - VM lifetime: the connection that started the VM is its lease; when it ends, the
 //     VM is terminated (Implementation decision 6). HCSBackend tags VMs with the owner's
 //     SID and sweeps untracked ones (rule 9).
+//   - Slots (ADR 0009): each user has the Docker VM (slot 0) and up to proto.MaxSlot
+//     agent sandbox sessions, each a VM with its own lease, size, secret and disk
+//     (SessionDiskName). A session boots only the sandbox image, against its own pin,
+//     and never gets the file server, dockerd's configuration or the host gateway. The
+//     memory of one user's running VMs together is capped (Config.MaxTotalMemoryMB).
 //   - No caller-controlled host paths: HCSBackend boots only the image next to the broker
 //     executable, checked against the compiled-in pin, takes the data disk by handle
 //     below the data location, and builds the VM document with internal/vmtemplate from

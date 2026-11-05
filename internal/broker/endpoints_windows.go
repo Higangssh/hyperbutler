@@ -194,16 +194,27 @@ func (e *Endpoints) retireIdleLocked() {
 		if busy {
 			continue
 		}
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		st, err := e.srv.cfg.Backend.Status(ctx, sid)
-		cancel()
-		if err != nil || st.Running {
+		if e.anyRunning(sid) {
 			continue
 		}
 		_ = l.Close()
 		delete(e.users, sid)
 		e.srv.cfg.Logf("broker: retired the idle endpoint of %s", sid)
 	}
+}
+
+// anyRunning reports whether sid has a running VM in any slot, or whether that cannot
+// be told (an endpoint is kept rather than retired under a VM).
+func (e *Endpoints) anyRunning(sid string) bool {
+	for slot := 0; slot <= proto.MaxSlot; slot++ {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		st, err := e.srv.cfg.Backend.Status(ctx, VMKey{Owner: sid, Slot: uint8(slot)})
+		cancel()
+		if err != nil || st.Running {
+			return true
+		}
+	}
+	return false
 }
 
 // Serve serves the shared endpoint until Close, then waits for the per-user endpoints'

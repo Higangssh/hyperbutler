@@ -17,6 +17,7 @@ import (
 	"golang.org/x/sys/windows"
 
 	"github.com/Higangssh/hyperbutler/guest/image"
+	"github.com/Higangssh/hyperbutler/internal/broker/proto"
 	"github.com/Higangssh/hyperbutler/internal/guid"
 	"github.com/Higangssh/hyperbutler/internal/imageset"
 	"github.com/Higangssh/hyperbutler/internal/vm"
@@ -35,6 +36,25 @@ const vmNamePrefix = "hyperbutler-broker-"
 // the broker boots an image from (Implementation decision 3).
 const ImageDirName = "image"
 
+// SandboxImageDirName is the agent sandbox image folder next to the broker executable
+// (ADR 0009), the only image a sandbox session boots. It has its own pin
+// (imageset.SandboxPin).
+const SandboxImageDirName = "sandbox-image"
+
+// Which image a VM boots: the Docker VM's (slot 0) or the sandbox image (sessions).
+const (
+	dockerImage = iota
+	sandboxImage
+	numImages
+)
+
+func imageOf(slot uint8) int {
+	if slot == 0 {
+		return dockerImage
+	}
+	return sandboxImage
+}
+
 // hcsSystemFileAccess is the read-only access the system disk is granted, when the installer
 // has not given every VM read access to the image folder (vm.VMGroupCanRead).
 const hcsSystemFileAccess = windows.FILE_GENERIC_READ
@@ -50,14 +70,16 @@ type HCSConfig struct {
 	// Logf receives the backend's events.
 	Logf func(format string, args ...any)
 
-	// imageDir replaces the image folder next to the executable, api the HCS calls,
-	// openDisk openDataDisk, and diskTimeout dataDirTimeout, in tests; consolePipe gives
-	// the integration test the guest's COM1, which the broker otherwise never opens.
-	imageDir    string
-	consolePipe string
-	api         hcsAPI
-	openDisk    func(dir windows.Handle, name, sid string) (*diskFile, error)
-	diskTimeout time.Duration
+	// imageDir and sandboxImageDir replace the image folders next to the executable, api
+	// the HCS calls, openDisk openDataDisk, and diskTimeout dataDirTimeout, in tests;
+	// consolePipe gives the integration test the guest's COM1, which the broker otherwise
+	// never opens.
+	imageDir        string
+	sandboxImageDir string
+	consolePipe     string
+	api             hcsAPI
+	openDisk        func(dir windows.Handle, name, sid string) (*diskFile, error)
+	diskTimeout     time.Duration
 }
 
 // hcsAPI is every HCS call the backend makes; hcsCalls makes them through internal/vm.
@@ -120,23 +142,27 @@ func (hcsCalls) Probe(dir, id string) (guid.GUID, uint32, error) { return vm.Pro
 // The VM's account is given access to the disks by an entry set on open handles
 // (vm.AccountSID of the runtime id it will have), never by path.
 //
-// Each owner's operations are serialized by that owner's own lock; mu guards only the
-// maps, so a start that waits on a slow file system or on HCS holds up no other owner,
-// and no lease release.
+// A sandbox session (slot 1..proto.MaxSlot, ADR 0009) is built the same way, from the
+// sandbox image folder and its own pin, and from its own disk in the data location
+// (SessionDiskName).
+//
+// Each VM's operations are serialized by that VM's own lock; mu guards only the maps, so
+// a start that waits on a slow file system or on HCS holds up no other VM, and no lease
+// release.
 type HCSBackend struct {
-	cfg      HCSConfig
-	imageDir string
-	api      hcsAPI
+	cfg       HCSConfig
+	imageDirs [numImages]string
+	api       hcsAPI
 
 	mu     sync.Mutex
-	owners map[string]*ownerSlot // by owner SID
-	names  map[string]bool       // compute system names of tracked VMs
+	owners map[VMKey]*ownerSlot // by owner SID and slot
+	names  map[string]bool      // compute system names of tracked VMs
 
 	imgMu sync.Mutex
-	img   *sharedImage // nil until the first start opens it
+	imgs  [numImages]*sharedImage // each nil until the first start that boots it
 }
 
-// ownerSlot is one owner's VM, with the lock that serializes that owner's operations.
+// ownerSlot is one VM of an owner, with the lock that serializes its operations.
 type ownerSlot struct {
 	mu sync.Mutex
 	vm *hcsVM
@@ -161,7 +187,8 @@ type hcsVM struct {
 	rid        guid.GUID
 	account    string
 	disk       *diskFile
-	sysGranted bool // the system disk carries an entry for account
+	img        *sharedImage // the image it boots
+	sysGranted bool         // img's system disk carries an entry for account
 	cpus       uint32
 	memoryMB   uint32
 	// secret is unexported, so fmt would print its bytes; Format below keeps an hcsVM
@@ -187,32 +214,37 @@ func NewHCSBackend(cfg HCSConfig) (*HCSBackend, error) {
 	if cfg.diskTimeout <= 0 {
 		cfg.diskTimeout = dataDirTimeout
 	}
-	dir := cfg.imageDir
-	if dir == "" {
+	dirs := [numImages]string{dockerImage: cfg.imageDir, sandboxImage: cfg.sandboxImageDir}
+	if dirs[dockerImage] == "" || dirs[sandboxImage] == "" {
 		exe, err := os.Executable()
 		if err != nil {
 			return nil, err
 		}
-		dir = filepath.Join(filepath.Dir(exe), ImageDirName)
+		if dirs[dockerImage] == "" {
+			dirs[dockerImage] = filepath.Join(filepath.Dir(exe), ImageDirName)
+		}
+		if dirs[sandboxImage] == "" {
+			dirs[sandboxImage] = filepath.Join(filepath.Dir(exe), SandboxImageDirName)
+		}
 	}
 	api := cfg.api
 	if api == nil {
 		api = hcsCalls{}
 	}
-	return &HCSBackend{cfg: cfg, imageDir: dir, api: api, owners: make(map[string]*ownerSlot), names: make(map[string]bool)}, nil
+	return &HCSBackend{cfg: cfg, imageDirs: dirs, api: api, owners: make(map[VMKey]*ownerSlot), names: make(map[string]bool)}, nil
 }
 
 // OwnerTag is the HCS Owner of sid's VMs.
 func OwnerTag(sid string) string { return OwnerTagPrefix + sid }
 
-// slot returns owner's slot, creating it if create is set (nil otherwise).
-func (b *HCSBackend) slot(owner string, create bool) *ownerSlot {
+// slot returns the slot of key, creating it if create is set (nil otherwise).
+func (b *HCSBackend) slot(key VMKey, create bool) *ownerSlot {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	s := b.owners[owner]
+	s := b.owners[key]
 	if s == nil && create {
 		s = &ownerSlot{}
-		b.owners[owner] = s
+		b.owners[key] = s
 	}
 	return s
 }
@@ -268,7 +300,7 @@ func (b *HCSBackend) Sweep(tag string) int {
 // Close terminates every VM the backend runs and closes the image.
 func (b *HCSBackend) Close() error {
 	b.mu.Lock()
-	slots := make(map[string]*ownerSlot, len(b.owners))
+	slots := make(map[VMKey]*ownerSlot, len(b.owners))
 	for o, s := range b.owners {
 		slots[o] = s
 	}
@@ -286,12 +318,15 @@ func (b *HCSBackend) Close() error {
 	}
 	b.imgMu.Lock()
 	defer b.imgMu.Unlock()
-	if img := b.img; img != nil {
+	for i, img := range b.imgs {
+		if img == nil {
+			continue
+		}
 		if img.dacl != 0 {
 			_ = windows.CloseHandle(img.dacl)
 		}
 		_ = img.set.Close()
-		b.img = nil
+		b.imgs[i] = nil
 	}
 	return nil
 }
@@ -302,19 +337,25 @@ func randomHex(n int) string {
 	return hex.EncodeToString(p)
 }
 
-// image opens and verifies the guest image on first use and keeps it. A failure is not
-// kept: the next start tries again.
-func (b *HCSBackend) image() (*sharedImage, error) {
+// image opens and verifies guest image which (dockerImage or sandboxImage) on first use
+// and keeps it. A failure is not kept: the next start tries again. Each image has its own
+// pin: a broker built without the sandbox pin boots no session.
+func (b *HCSBackend) image(which int) (*sharedImage, error) {
 	b.imgMu.Lock()
 	defer b.imgMu.Unlock()
-	if b.img != nil {
-		return b.img, nil
+	if b.imgs[which] != nil {
+		return b.imgs[which], nil
 	}
 	pin, pinned := imageset.Pin()
-	if !pinned && !b.cfg.AllowUnpinned {
-		return nil, fmt.Errorf("%w: this broker carries no image pin (a development build needs -allow-unpinned-image)", ErrImageRejected)
+	what := "image"
+	if which == sandboxImage {
+		pin, pinned = imageset.SandboxPin()
+		what = "sandbox image"
 	}
-	set, err := imageset.Open(filepath.Join(b.imageDir, image.ManifestName), pin)
+	if !pinned && !b.cfg.AllowUnpinned {
+		return nil, fmt.Errorf("%w: this broker carries no %s pin (a development build needs -allow-unpinned-image)", ErrImageRejected, what)
+	}
+	set, err := imageset.Open(filepath.Join(b.imageDirs[which], image.ManifestName), pin)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %w", ErrImageRejected, err)
 	}
@@ -325,6 +366,20 @@ func (b *HCSBackend) image() (*sharedImage, error) {
 	}
 	img := &sharedImage{set: set, accounts: map[string]bool{}}
 	h := windows.Handle(f.Fd())
+	// Each image keeps its own list of the VM accounts on its system disk and removes
+	// the others as stale, so two images must not share that file (a linked folder, or
+	// two manifests naming one disk): starting one VM would revoke the other's access.
+	if other := b.imgs[numImages-1-which]; other != nil {
+		same, err := sameFile(h, windows.Handle(other.set.SystemFile().Fd()))
+		if err != nil {
+			_ = set.Close()
+			return nil, fmt.Errorf("%w: compare the %s's system disk with the other image's: %w", ErrImageRejected, what, err)
+		}
+		if same {
+			_ = set.Close()
+			return nil, fmt.Errorf("%w: the %s's system disk is also the other image's", ErrImageRejected, what)
+		}
+	}
 	if sd, err := windows.GetSecurityInfo(h, windows.SE_FILE_OBJECT, windows.DACL_SECURITY_INFORMATION); err == nil && vm.VMGroupCanReadSD(sd) {
 		img.vmReadable = true
 	} else {
@@ -334,8 +389,21 @@ func (b *HCSBackend) image() (*sharedImage, error) {
 			return nil, fmt.Errorf("%w: the system disk is not readable by VMs and its access cannot be set: %w", ErrImageRejected, err)
 		}
 	}
-	b.img = img
+	b.imgs[which] = img
 	return img, nil
+}
+
+// sameFile reports whether a and b are handles of one file (volume and file index).
+func sameFile(a, b windows.Handle) (bool, error) {
+	var ia, ib windows.ByHandleFileInformation
+	if err := windows.GetFileInformationByHandle(a, &ia); err != nil {
+		return false, err
+	}
+	if err := windows.GetFileInformationByHandle(b, &ib); err != nil {
+		return false, err
+	}
+	return ia.VolumeSerialNumber == ib.VolumeSerialNumber &&
+		ia.FileIndexHigh == ib.FileIndexHigh && ia.FileIndexLow == ib.FileIndexLow, nil
 }
 
 // grantSystem gives v's account read access to the system disk, unless every VM may
@@ -377,7 +445,7 @@ func (img *sharedImage) revokeSystem(v *hcsVM) error {
 // diskTimeout. The open goes through whatever serves the caller's file (an oplock the
 // caller holds on it, a ProjFS or cloud-files provider) and cannot be canceled; as with
 // openDataDirBounded, the abandoned goroutine closes the handle if the call returns.
-func (b *HCSBackend) openDiskBounded(ctx context.Context, dir windows.Handle, sid string) (*diskFile, error) {
+func (b *HCSBackend) openDiskBounded(ctx context.Context, dir windows.Handle, name, sid string) (*diskFile, error) {
 	ctx, cancel := context.WithTimeout(ctx, b.cfg.diskTimeout)
 	defer cancel()
 	type result struct {
@@ -388,7 +456,7 @@ func (b *HCSBackend) openDiskBounded(ctx context.Context, dir windows.Handle, si
 	var mu sync.Mutex
 	abandoned := false
 	go func() {
-		d, err := b.cfg.openDisk(dir, DataDiskName, sid)
+		d, err := b.cfg.openDisk(dir, name, sid)
 		mu.Lock()
 		defer mu.Unlock()
 		if abandoned {
@@ -418,11 +486,14 @@ func (b *HCSBackend) openDiskBounded(ctx context.Context, dir windows.Handle, si
 
 // Start implements Backend.
 func (b *HCSBackend) Start(ctx context.Context, spec VMSpec) (VMStatus, error) {
-	s := b.slot(spec.Owner, true)
+	if spec.Slot > proto.MaxSlot {
+		return VMStatus{}, fmt.Errorf("broker: slot %d", spec.Slot)
+	}
+	s := b.slot(spec.Key(), true)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.vm != nil {
-		if st, err := b.statusLocked(spec.Owner, s); err != nil || st.Running {
+		if st, err := b.statusLocked(spec.Key(), s); err != nil || st.Running {
 			return st, err
 		}
 	}
@@ -432,18 +503,23 @@ func (b *HCSBackend) Start(ctx context.Context, spec VMSpec) (VMStatus, error) {
 	if spec.Net != nil && spec.Net.Port != 0 {
 		return VMStatus{}, errors.New("broker: the network link runs on its fixed port only")
 	}
-	img, err := b.image()
+	// The decoder refuses these for a session already (ADR 0009); the backend does not
+	// rely on it.
+	if spec.Slot != 0 && (spec.Share || spec.DaemonConfig || spec.Net != nil && spec.Net.HostGateway) {
+		return VMStatus{}, errors.New("broker: a sandbox session gets no share, daemon config or host gateway")
+	}
+	img, err := b.image(imageOf(spec.Slot))
 	if err != nil {
 		return VMStatus{}, err
 	}
-	v := &hcsVM{cpus: spec.CPUs, memoryMB: spec.MemoryMB}
+	v := &hcsVM{cpus: spec.CPUs, memoryMB: spec.MemoryMB, img: img}
 	ok := false
 	defer func() {
 		if !ok {
 			b.release(v)
 		}
 	}()
-	if v.disk, err = b.openDiskBounded(ctx, spec.DataDir.Handle(), spec.Owner); err != nil {
+	if v.disk, err = b.openDiskBounded(ctx, spec.DataDir.Handle(), diskName(spec.Slot), spec.Owner); err != nil {
 		return VMStatus{}, err
 	}
 	if err := ctx.Err(); err != nil {
@@ -502,7 +578,7 @@ func (b *HCSBackend) Start(ctx context.Context, spec VMSpec) (VMStatus, error) {
 	ok = true
 	s.vm = v
 	b.track(v.name, true)
-	b.cfg.Logf("broker: started %s for %s (runtime id %s)", v.name, spec.Owner, rid)
+	b.cfg.Logf("broker: started %s for %s, slot %d (runtime id %s)", v.name, spec.Owner, spec.Slot, rid)
 	return v.status(true, false), nil
 }
 
@@ -524,14 +600,9 @@ func (b *HCSBackend) release(v *hcsVM) {
 		_ = v.disk.Close()
 		v.disk = nil
 	}
-	if v.sysGranted && v.account != "" {
-		b.imgMu.Lock()
-		img := b.img
-		b.imgMu.Unlock()
-		if img != nil {
-			if err := img.revokeSystem(v); err != nil {
-				b.cfg.Logf("broker: revoke %s on the system disk: %v", v.account, err)
-			}
+	if v.sysGranted && v.account != "" && v.img != nil {
+		if err := v.img.revokeSystem(v); err != nil {
+			b.cfg.Logf("broker: revoke %s on the system disk: %v", v.account, err)
 		}
 	}
 }
@@ -545,7 +616,7 @@ func (v *hcsVM) status(running, paused bool) VMStatus {
 
 // statusLocked asks HCS for the state of s's VM; a stopped VM is released and
 // forgotten. s.mu is held.
-func (b *HCSBackend) statusLocked(owner string, s *ownerSlot) (VMStatus, error) {
+func (b *HCSBackend) statusLocked(key VMKey, s *ownerSlot) (VMStatus, error) {
 	v := s.vm
 	st, err := v.sys.State()
 	if err != nil {
@@ -553,7 +624,7 @@ func (b *HCSBackend) statusLocked(owner string, s *ownerSlot) (VMStatus, error) 
 	}
 	switch st {
 	case "Stopped":
-		b.cfg.Logf("broker: %s of %s stopped", v.name, owner)
+		b.cfg.Logf("broker: %s of %s (slot %d) stopped", v.name, key.Owner, key.Slot)
 		b.release(v)
 		s.vm = nil
 		return VMStatus{}, nil
@@ -563,9 +634,9 @@ func (b *HCSBackend) statusLocked(owner string, s *ownerSlot) (VMStatus, error) 
 	return v.status(true, false), nil
 }
 
-// locked runs fn with owner's slot locked, or returns ErrNotRunning if owner has no VM.
-func (b *HCSBackend) locked(owner string, fn func(s *ownerSlot) error) error {
-	s := b.slot(owner, false)
+// locked runs fn with the slot of key locked, or returns ErrNotRunning if it has no VM.
+func (b *HCSBackend) locked(key VMKey, fn func(s *ownerSlot) error) error {
+	s := b.slot(key, false)
 	if s == nil {
 		return ErrNotRunning
 	}
@@ -578,11 +649,11 @@ func (b *HCSBackend) locked(owner string, fn func(s *ownerSlot) error) error {
 }
 
 // Status implements Backend.
-func (b *HCSBackend) Status(_ context.Context, owner string) (VMStatus, error) {
+func (b *HCSBackend) Status(_ context.Context, key VMKey) (VMStatus, error) {
 	var st VMStatus
-	err := b.locked(owner, func(s *ownerSlot) error {
+	err := b.locked(key, func(s *ownerSlot) error {
 		var err error
-		st, err = b.statusLocked(owner, s)
+		st, err = b.statusLocked(key, s)
 		return err
 	})
 	if errors.Is(err, ErrNotRunning) {
@@ -593,8 +664,8 @@ func (b *HCSBackend) Status(_ context.Context, owner string) (VMStatus, error) {
 
 // Stop implements Backend. A forced stop terminates the VM; otherwise HCS asks the guest
 // to power off, and a later status finds it stopped.
-func (b *HCSBackend) Stop(_ context.Context, owner string, force bool) error {
-	return b.locked(owner, func(s *ownerSlot) error {
+func (b *HCSBackend) Stop(_ context.Context, key VMKey, force bool) error {
+	return b.locked(key, func(s *ownerSlot) error {
 		v := s.vm
 		if !force {
 			return v.sys.ShutDown()
@@ -608,13 +679,13 @@ func (b *HCSBackend) Stop(_ context.Context, owner string, force bool) error {
 
 // Resize implements Backend. A running VM keeps its size; the new one applies at the
 // next start.
-func (b *HCSBackend) Resize(context.Context, string, uint32, uint32) error {
+func (b *HCSBackend) Resize(context.Context, VMKey, uint32, uint32) error {
 	return errors.New("broker: a running VM cannot be resized; stop it first")
 }
 
 // Pause implements Backend.
-func (b *HCSBackend) Pause(_ context.Context, owner string, resume bool) error {
-	return b.locked(owner, func(s *ownerSlot) error {
+func (b *HCSBackend) Pause(_ context.Context, key VMKey, resume bool) error {
+	return b.locked(key, func(s *ownerSlot) error {
 		if resume {
 			return s.vm.sys.Resume()
 		}

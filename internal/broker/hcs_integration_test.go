@@ -98,23 +98,23 @@ func TestHCSBackendBoots(t *testing.T) {
 		cancel()
 	}
 	if !accepted {
-		st, err := be.Status(ctx, sid)
+		st, err := be.Status(ctx, VMKey{Owner: sid})
 		t.Fatalf("the guest agent did not accept within 60 s (status %+v, %v)", st, err)
 	}
 	t.Logf("the guest agent accepted after %v", time.Since(start))
-	if st, err := be.Status(ctx, sid); err != nil || !st.Running {
+	if st, err := be.Status(ctx, VMKey{Owner: sid}); err != nil || !st.Running {
 		t.Fatalf("the VM did not keep running: %+v, %v", st, err)
 	}
-	if err := be.Pause(ctx, sid, false); err != nil {
+	if err := be.Pause(ctx, VMKey{Owner: sid}, false); err != nil {
 		t.Fatal(err)
 	}
-	if st, _ := be.Status(ctx, sid); !st.Paused {
+	if st, _ := be.Status(ctx, VMKey{Owner: sid}); !st.Paused {
 		t.Fatalf("after pause: %+v", st)
 	}
-	if err := be.Pause(ctx, sid, true); err != nil {
+	if err := be.Pause(ctx, VMKey{Owner: sid}, true); err != nil {
 		t.Fatal(err)
 	}
-	if err := be.Stop(ctx, sid, true); err != nil {
+	if err := be.Stop(ctx, VMKey{Owner: sid}, true); err != nil {
 		t.Fatal(err)
 	}
 	if got, _ := vm.AccountsOnFile(disk); len(got) != 0 {

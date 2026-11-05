@@ -6,7 +6,8 @@
 // endpoint (rule 5, served on the shared endpoint only); a status reply on the owner's
 // own endpoint carries the running VM's secret (rule 6). There is deliberately no
 // field for a path, a command line, a share, an identity, or an HCS document (ADR 0004
-// rules 1, 4 and 7). A start carries the VM's features and network as typed values (an
+// rules 1, 4 and 7). The VM verbs take a slot: none (0) is the caller's Docker VM, 1 to
+// MaxSlot an agent sandbox session (ADR 0009). A start carries the VM's features and network as typed values (an
 // IPv4 subnet, an MTU in a fixed range, flags), which the broker renders itself
 // (Implementation decision 4).
 //
@@ -118,6 +119,8 @@ const (
 	MaxHandle     = 0xFFFFFFFF
 	MaxVersionLen = 64
 	MaxMessageLen = 200
+	// MaxSlot is the highest slot: the number of sandbox sessions one user may have.
+	MaxSlot = 4
 	// MaxPipeNameLen bounds the pipe name of an open-endpoint reply.
 	MaxPipeNameLen = 128
 	// MinMTU and MaxMTU bound the guest link MTU (the network stack's own range).
@@ -197,6 +200,10 @@ func (c Code) valid() bool { return c >= CodeBadRequest && c <= maxCode }
 // zero.
 type Request struct {
 	Op Op
+
+	// OpStart, OpStop, OpStatus, OpResize and OpPause: the VM the verb is for, 0 for the
+	// caller's Docker VM or 1..MaxSlot for a sandbox session (ADR 0009).
+	Slot uint8
 
 	// OpStop.
 	Force bool
@@ -286,7 +293,8 @@ const (
 	tagResume          = 17
 	tagPipeName        = 18
 	tagSecret          = 19
-	maxTag             = tagSecret
+	tagSlot            = 20
+	maxTag             = tagSlot
 )
 
 type kind uint8
@@ -341,12 +349,12 @@ var statusSchema = schema{
 var schemas = map[uint8]*schema{
 	uint8(OpVersion): {},
 	uint8(OpStart): {tagCPUs: optU32, tagMemoryMB: optU32, tagFeatures: optU8,
-		tagNetAddr: optIPv4, tagNetPrefix: optU8, tagNetMTU: optU16, tagNetFlags: optU8},
-	uint8(OpStop):            {tagForce: optBool},
-	uint8(OpStatus):          {},
-	uint8(OpResize):          {tagCPUs: optU32, tagMemoryMB: optU32},
+		tagNetAddr: optIPv4, tagNetPrefix: optU8, tagNetMTU: optU16, tagNetFlags: optU8, tagSlot: optU8},
+	uint8(OpStop):            {tagForce: optBool, tagSlot: optU8},
+	uint8(OpStatus):          {tagSlot: optU8},
+	uint8(OpResize):          {tagCPUs: optU32, tagMemoryMB: optU32, tagSlot: optU8},
 	uint8(OpSetDataLocation): {tagHandle: reqU64},
-	uint8(OpPause):           {tagResume: optBool},
+	uint8(OpPause):           {tagResume: optBool, tagSlot: optU8},
 	uint8(OpOpenEndpoint):    {},
 
 	ReplyFlag | uint8(OpVersion):         {tagProtoVersion: reqU8, tagBrokerVersion: reqVerStr},
@@ -536,6 +544,7 @@ func DecodeRequest(b []byte) (Request, error) {
 		NetMTU:    f.u16(tagNetMTU),
 		NetFlags:  f.u8(tagNetFlags),
 		Resume:    f.num[tagResume] == 1,
+		Slot:      f.u8(tagSlot),
 	}
 	// decodeFrame rejected every optional number encoded with its zero value, so a
 	// zero here (CPUs or MemoryMB unchanged) was omitted, as the canonical form wants.
@@ -585,6 +594,13 @@ func (r *Request) Validate() error {
 	}
 	zero := Request{Op: r.Op}
 	switch r.Op {
+	case OpStart, OpStop, OpStatus, OpResize, OpPause:
+		zero.Slot = r.Slot
+		if r.Slot > MaxSlot {
+			return invalid("%s: slot %d", r.Op, r.Slot)
+		}
+	}
+	switch r.Op {
 	case OpStop:
 		zero.Force = r.Force
 	case OpResize:
@@ -617,6 +633,12 @@ func (r *Request) Validate() error {
 		}
 		if err := r.validateNet(); err != nil {
 			return err
+		}
+		// A sandbox session gets neither the bind-mount file server, nor dockerd's
+		// configuration, nor the host gateway (ADR 0009: the project is copied in, and a
+		// session never reaches the host's loopback).
+		if r.Slot != 0 && (r.Features&(FeatureShare|FeatureDaemonConfig) != 0 || r.NetFlags&NetHostGateway != 0) {
+			return invalid("start: slot %d: share, daemon config and host gateway are for the Docker VM only", r.Slot)
 		}
 	case OpPause:
 		zero.Resume = r.Resume
@@ -792,6 +814,7 @@ func EncodeRequest(r Request) ([]byte, error) {
 	}
 	e.u8(tagNetFlags, r.NetFlags)
 	e.boolean(tagResume, r.Resume)
+	e.u8(tagSlot, r.Slot)
 	return e.finish()
 }
 

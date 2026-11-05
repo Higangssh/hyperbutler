@@ -20,6 +20,18 @@ import (
 // this name, relative to the validated directory handle.
 const DataDiskName = "data.vhdx"
 
+// SessionDiskName is the data disk of sandbox session slot (1..proto.MaxSlot) in the
+// data location (ADR 0009): a disk of its own, never the Docker VM's.
+func SessionDiskName(slot uint8) string { return fmt.Sprintf("session-%d.vhdx", slot) }
+
+// diskName is the data disk of slot: DataDiskName for the Docker VM (slot 0).
+func diskName(slot uint8) string {
+	if slot == 0 {
+		return DataDiskName
+	}
+	return SessionDiskName(slot)
+}
+
 // diskFileAccess is what the broker holds the data disk with: its attributes and
 // security, its DACL, and read access. A handle without data access takes no part in
 // share-mode checks, so without FILE_READ_DATA the missing FILE_SHARE_DELETE would not
