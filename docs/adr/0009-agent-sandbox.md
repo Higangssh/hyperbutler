@@ -240,6 +240,24 @@ was not involved), with the v0.1.0 guest image, on the reference laptop.
 - Killing the dev process ended its VM (the HCS handle is closed on exit and the VM is
   created to terminate on it): no `vmmem` remained.
 
+Second part: agent CLIs on musl and glibc. In one dev VM, `npm i -g` and then `--version`
+and `--help` of each CLI in `node:22-alpine` (musl) and `node:22-bookworm-slim` (glibc):
+
+| CLI | Alpine (musl) | Debian (glibc) |
+|---|---|---|
+| `@openai/codex` 0.166.0 | installs and runs | installs and runs |
+| `@google/gemini-cli` 0.67.0 | installs and runs | installs and runs |
+
+- The agents themselves do not decide the base: both run on either.
+- What they install does. Python wheels on PyPI are built for glibc first (`manylinux`;
+  `musllinux` wheels are fewer), and many npm packages download glibc-only prebuilt
+  binaries (browsers for test runners, native modules). An agent that hits a missing wheel
+  compiles from source or fails, which costs the user time and tokens.
+- So the sandbox image is to be **glibc-based (Debian slim)**, unlike the Docker VM's
+  Alpine image. That adds a second distribution to pin and to cover in the source offer
+  (ADR 0005), which is accepted for compatibility. Only `--version` and `--help` were run;
+  a real task in each agent comes with the sandbox image.
+
 ## Adversarial review
 
 The first draft was reviewed on 2026-11-05. Each finding and its answer:
