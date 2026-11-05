@@ -77,7 +77,7 @@ func Extract(root *os.Root, r io.Reader) (Baseline, error) {
 				return nil, err
 			}
 			d := sha256.New()
-			n, err := io.Copy(io.MultiWriter(f, d), tr)
+			n, err := io.Copy(io.MultiWriter(f, d), tr) //nolint:gosec // G110: the host's own project stream, bounded by what it sends
 			if cerr := f.Close(); err == nil {
 				err = cerr
 			}
@@ -104,7 +104,7 @@ func (b Baseline) Save(name string) error {
 
 // Load reads a baseline Save wrote.
 func Load(name string) (Baseline, error) {
-	j, err := os.ReadFile(name)
+	j, err := os.ReadFile(name) //nolint:gosec // G304: the agent's own baseline file
 	if err != nil {
 		return nil, err
 	}
@@ -173,7 +173,7 @@ func stat(root *os.Root, p string, d fs.DirEntry) (File, bool, error) {
 	if err != nil {
 		return File{}, false, err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	fi, err := f.Stat()
 	if err != nil {
 		return File{}, false, err
@@ -189,7 +189,7 @@ func stat(root *os.Root, p string, d fs.DirEntry) (File, bool, error) {
 }
 
 func entry(k wire.Kind, p string, f File) wire.Msg {
-	m := wire.Msg{Type: wire.TypeEntry, Kind: k, Path: p, Size: uint64(max(f.Size, 0))} //nolint:gosec // G115: not negative
+	m := wire.Msg{Type: wire.TypeEntry, Kind: k, Path: p, Size: uint64(max(f.Size, 0))}
 	if f.Exec {
 		m.Flags |= wire.FlagExec
 	}
@@ -242,9 +242,9 @@ func answer(root *os.Root, base Baseline, req wire.Msg) []wire.Msg {
 		if err != nil {
 			return []wire.Msg{failure(0, err)}
 		}
-		defer f.Close()
+		defer func() { _ = f.Close() }()
 		b := make([]byte, req.Len)
-		n, err := f.ReadAt(b, int64(min(req.Off, 1<<62))) //nolint:gosec // G115: bounded
+		n, err := f.ReadAt(b, int64(min(req.Off, 1<<62)))
 		if err != nil && !errors.Is(err, io.EOF) {
 			return []wire.Msg{failure(0, err)}
 		}

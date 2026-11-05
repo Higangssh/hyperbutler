@@ -58,6 +58,7 @@ guest/cmd/hyperbutlerd/daemoncfg.go net.Dialer 1 dials /run/docker.sock ("unix")
 cmd/hyperbutler/commands_windows.go exec:computed 1 starts the engine: this executable (os.Executable)
 cmd/hyperbutler/dockercli_windows.go exec:computed 1 runs the docker CLI on PATH (third-party code) with only --version, to warn when it is too old
 guest/cmd/hyperbutlerd/main_linux.go exec:computed 1 dockerd --validate on a new daemon.json; dockerd validates and exits
+internal/sandbox/copyin/copyin.go exec:computed 1 git ls-files on PATH, listing the project's files from the index and work tree; fsmonitor off, no remote is contacted
 
 # The update check (REQ-UX-022) is the one request hyperbutler makes of its own, and it is
 # not local: at most once a day `start` and `status` send one HTTPS GET to GitHub's

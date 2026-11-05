@@ -34,13 +34,13 @@ func WriteTar(w io.Writer, dir string, p Plan) (map[string]Copied, error) {
 			sent[e.Path] = Copied{Link: e.Link}
 			continue
 		}
-		f, err := os.Open(filepath.Join(dir, filepath.FromSlash(e.Path)))
+		f, err := os.Open(filepath.Join(dir, filepath.FromSlash(e.Path))) //nolint:gosec // G304: a file of the project the user chose to copy
 		if err != nil {
 			return nil, err
 		}
 		fi, err := f.Stat()
 		if err != nil {
-			f.Close()
+			_ = f.Close()
 			return nil, err
 		}
 		h.Typeflag, h.Size, h.Mode = tar.TypeReg, fi.Size(), 0o644
@@ -48,12 +48,12 @@ func WriteTar(w io.Writer, dir string, p Plan) (map[string]Copied, error) {
 			h.Mode = 0o755
 		}
 		if err := tw.WriteHeader(h); err != nil {
-			f.Close()
+			_ = f.Close()
 			return nil, err
 		}
 		d := sha256.New()
 		n, err := io.Copy(io.MultiWriter(tw, d), io.LimitReader(f, h.Size))
-		f.Close()
+		_ = f.Close()
 		if err != nil {
 			return nil, err
 		}

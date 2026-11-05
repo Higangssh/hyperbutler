@@ -53,7 +53,7 @@ func CheckPath(p string) ([]string, error) {
 	}
 	for _, s := range segs {
 		if err := checkSegment(s); err != nil {
-			return nil, fmt.Errorf("%w: %s: %s", ErrPath, Shorten(p, 120), err)
+			return nil, fmt.Errorf("%w: %s: %w", ErrPath, Shorten(p, 120), err)
 		}
 	}
 	return segs, nil

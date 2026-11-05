@@ -130,7 +130,7 @@ func TestClientReadFile(t *testing.T) {
 	if _, err := stuck.ReadFile("f", 1<<20); !errors.Is(err, ErrFrame) {
 		t.Errorf("empty reads: %v", err)
 	}
-	failing := guest(t, func(Msg) []Msg { return []Msg{{Type: TypeError, Errno: 13, Text: "‮denied"}} })
+	failing := guest(t, func(Msg) []Msg { return []Msg{{Type: TypeError, Errno: 13, Text: string(rune(0x202e)) + "denied"}} })
 	var ge *GuestError
 	if _, err := failing.ReadFile("f", 1); !errors.As(err, &ge) || ge.Errno != 13 || strings.Contains(err.Error(), "denied") {
 		t.Errorf("guest error: %v", err)

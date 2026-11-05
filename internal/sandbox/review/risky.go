@@ -77,7 +77,7 @@ var riskyExt = map[string]Risk{
 // Classify returns why a change to p (a path CheckPath accepted) is listed first, or ""
 // for an ordinary edit. executable is whether the guest file has an execute bit and is
 // new. Changes to a .git file or directory at any depth (a submodule's, or one the agent
-// planted in a subdirectory, which git would honour there) are never applied; Classify
+// planted in a subdirectory, which git would honor there) are never applied; Classify
 // says so rather than the apply step failing on them.
 func Classify(p string, executable bool) Risk {
 	low := strings.ToLower(p)

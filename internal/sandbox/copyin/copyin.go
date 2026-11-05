@@ -202,7 +202,7 @@ func list(dir, git string) ([]string, []Skipped, bool, error) {
 // .git/info/exclude and the global excludes file), without running any configured
 // filter or hook: ls-files reads the index and the work tree only.
 func gitFiles(dir, git string) ([]string, error) {
-	cmd := exec.Command(git, "-c", "core.fsmonitor=false", "-C", dir, "ls-files", "-z", "--cached", "--others", "--exclude-standard", "--deduplicate")
+	cmd := exec.Command(git, "-c", "core.fsmonitor=false", "-C", dir, "ls-files", "-z", "--cached", "--others", "--exclude-standard", "--deduplicate") //nolint:gosec // G204: git (from PATH or the caller) with fixed arguments
 	cmd.Env = append(os.Environ(), "GIT_OPTIONAL_LOCKS=0")
 	out, err := cmd.Output()
 	if err != nil {
@@ -250,11 +250,11 @@ var secretFormats = []struct {
 
 // scanFile returns what secret format the start of the file holds, or "".
 func scanFile(name string) (string, error) {
-	f, err := os.Open(name)
+	f, err := os.Open(name) //nolint:gosec // G304: a file of the project the user chose to copy
 	if err != nil {
 		return "", err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	return Scan(bufio.NewReaderSize(io.LimitReader(f, scanLimit), 64<<10))
 }
 

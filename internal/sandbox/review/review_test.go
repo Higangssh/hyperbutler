@@ -26,7 +26,7 @@ func TestCheckPathRefuses(t *testing.T) {
 		"a.", "a ", " a", "dir./x", "CON", "con.txt", "Nul", "aux.tar.gz", "COM1", "lpt9.log",
 		"COM¹", "CONIN$", "conout$.x", "PRN .txt",
 		"a\x00b", "a\nb", "a\x7f", "\xff", "a\u202eb", "a\u200db", "a\u00a0b", "a\u3000b",
-		"a\uf03ab", "e\u0301", "\u1112\u1161\u11ab", "\u212a", "\uff0e\uff0e", "a\u2215b",
+		"main.go\u3164", "p\u0430ckage.json", "\u03b1bc", "a\uf03ab", "e\u0301", "\u1112\u1161\u11ab", "\u212a", "\uff0e\uff0e", "a\u2215b",
 		strings.Repeat("a", 256), strings.Repeat("a/", MaxDepth) + "a",
 		strings.Repeat(strings.Repeat("b", 200)+"/", 6) + "c",
 	} {

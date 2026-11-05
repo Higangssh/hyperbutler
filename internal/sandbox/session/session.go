@@ -41,7 +41,7 @@ func (s *Session) CopyIn(ctx context.Context, dir string, plan copyin.Plan) (map
 	if err != nil {
 		return nil, fmt.Errorf("session copy port: %w", err)
 	}
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 	stop := context.AfterFunc(ctx, func() { _ = c.Close() })
 	defer stop()
 	sent, err := copyin.WriteTar(c, dir, plan)
@@ -87,7 +87,7 @@ func (s *Session) Review(ctx context.Context, sent map[string]copyin.Copied) ([]
 	if err != nil {
 		return nil, fmt.Errorf("session changes port: %w", err)
 	}
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 	stop := context.AfterFunc(ctx, func() { _ = c.Close() })
 	defer stop()
 	wc := wire.NewClient(c)
@@ -114,7 +114,7 @@ func (s *Session) Review(ctx context.Context, sent map[string]copyin.Copied) ([]
 		case e.Flags&wire.FlagLink != 0:
 			it.Refused = "a symbolic link (to " + review.Shorten(e.Link, 120) + "); links are not applied"
 		case it.Change.Delete:
-		case e.Size > uint64(maxFile): //nolint:gosec // G115: maxFile is positive
+		case e.Size > uint64(maxFile):
 			it.Refused = fmt.Sprintf("larger than %d bytes", maxFile)
 		default:
 			data, err := wc.ReadFile(e.Path, min(maxFile, maxTotal-total))

@@ -205,7 +205,7 @@ func checkFound(h windows.Handle, want string) error {
 	// The normalized name, not FileNameInfo: that one returns the name as opened, short
 	// name and all.
 	buf := make([]uint16, 32768)
-	n, err := windows.GetFinalPathNameByHandle(h, &buf[0], uint32(len(buf)), fileNameNormalized|volumeNameNone)
+	n, err := windows.GetFinalPathNameByHandle(h, &buf[0], uint32(len(buf)), fileNameNormalized|volumeNameNone) //nolint:gosec // G115: 32768
 	if err != nil {
 		return err
 	}
