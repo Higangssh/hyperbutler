@@ -157,11 +157,21 @@ func Dial(ctx context.Context, shared string) (*Client, error) {
 // openEndpoint asks the shared endpoint for this user's own endpoint. A busy broker or
 // a connection the broker dropped (it gives instances back at once to clients over their
 // cap, or silent for too long) is tried again until ctx ends; any other error is final.
+// The broker can drop an instance before the owner check reads it, which then fails
+// with ERROR_PIPE_NOT_CONNECTED: that is a dropped connection too.
 func openEndpoint(ctx context.Context, shared string) (proto.Reply, string, error) {
 	for wait := 50 * time.Millisecond; ; wait = min(2*wait, time.Second) {
 		sc, owner, err := dialPipe(ctx, shared)
 		if err != nil {
-			return proto.Reply{}, "", err
+			if !errors.Is(err, windows.ERROR_PIPE_NOT_CONNECTED) {
+				return proto.Reply{}, "", err
+			}
+			select {
+			case <-ctx.Done():
+				return proto.Reply{}, "", err
+			case <-time.After(wait):
+			}
+			continue
 		}
 		r, err := sc.Do(proto.Request{Op: proto.OpOpenEndpoint})
 		_ = sc.Close()
