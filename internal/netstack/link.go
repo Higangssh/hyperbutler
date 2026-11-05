@@ -211,10 +211,11 @@ func (n *Stack) ServeConn(conn net.Conn) error { return n.serve(conn, linkPlain)
 // guest agree. The engine ships its own guest image, so a mismatch is a broken
 // install, and quietly running without the CRC is what this version exists to stop.
 //
-// The host dials because Windows sends slowly on an accepted hvsock connection: on the
-// same boot, host-to-guest TCP through a link the guest dialed ran at 2.0-2.6 Gbit/s
-// with the host's writes taking 1 ms per 600 KB, and at 7-11 Gbit/s on one the host
-// dialed (ADR 0006, "Throughput").
+// The host dials because Linux hv_sock sizes VMBus rings from the guest socket: 24 KiB
+// per direction when the guest dials, about 208 KiB when it listens. On the same boot,
+// host-to-guest TCP through a link the guest dialed ran at 2.0-2.6 Gbit/s with the
+// host's writes taking 1 ms per 600 KB, and at 7-11 Gbit/s on one the host dialed
+// (ADR 0006, "Throughput").
 func (n *Stack) ServeOffload(conn net.Conn) error { return n.serve(conn, linkVnet) }
 
 // Offloading reports whether the stack's guest link is in offload mode, and whether
