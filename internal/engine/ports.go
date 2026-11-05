@@ -152,16 +152,40 @@ func RewriteLoopbackBindings(body []byte, guestIP netip.Addr) ([]byte, error) {
 	hc, _ := doc["HostConfig"].(map[string]any)
 	pb, _ := hc["PortBindings"].(map[string]any)
 	changed := false
-	for _, v := range pb {
-		list, _ := v.([]any)
+	for key, v := range pb {
+		list, ok := v.([]any)
+		if !ok {
+			continue
+		}
+		seen := map[string]bool{} // fixed host ports already bound to guestIP
+		for _, b := range list {
+			if m, _ := b.(map[string]any); m != nil {
+				if ip, _ := m["HostIp"].(string); ip == guestIP.String() {
+					if port, _ := m["HostPort"].(string); port != "" {
+						seen[port] = true
+					}
+				}
+			}
+		}
+		out := list[:0:0]
 		for _, b := range list {
 			m, _ := b.(map[string]any)
 			ip, _ := m["HostIp"].(string)
 			if a, err := netip.ParseAddr(ip); err == nil && a.Unmap().IsLoopback() {
-				m["HostIp"] = guestIP.String()
 				changed = true
+				m["HostIp"] = guestIP.String()
+				// 127.0.0.1 and ::1 with one host port (a dual-stack Compose file) become
+				// one binding: dockerd refuses the same address and port twice.
+				if port, _ := m["HostPort"].(string); port != "" {
+					if seen[port] {
+						continue
+					}
+					seen[port] = true
+				}
 			}
+			out = append(out, b)
 		}
+		pb[key] = out
 	}
 	if !changed {
 		return body, nil

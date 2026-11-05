@@ -45,7 +45,9 @@ func TestRewriteLoopbackBindings(t *testing.T) {
 			}
 		}
 	}
-	if len(got["80/tcp"]) != 2 || got["80/tcp"][0].HostPort != "8080" {
+	// 127.0.0.1 and ::1 on one host port become one binding: dockerd refuses the same
+	// address and port twice.
+	if len(got["80/tcp"]) != 1 || got["80/tcp"][0].HostPort != "8080" {
 		t.Errorf("80/tcp: %+v", got["80/tcp"])
 	}
 	// Large numbers keep their exact digits (no float64 round trip).
@@ -119,4 +121,28 @@ func FuzzRewriteLoopbackBindings(f *testing.F) {
 			}
 		}
 	})
+}
+
+// Dedupe keeps distinct ports and random ports, and a binding already on the guest's
+// address absorbs a loopback one with the same host port.
+func TestRewriteLoopbackBindingsDedupe(t *testing.T) {
+	in := `{"HostConfig":{"PortBindings":{"80/tcp":[` +
+		`{"HostIp":"127.0.0.1","HostPort":"8080"},{"HostIp":"::1","HostPort":"8080"},` +
+		`{"HostIp":"127.0.0.1","HostPort":"8081"},{"HostIp":"127.0.0.1","HostPort":""},{"HostIp":"::1","HostPort":""}],` +
+		`"81/tcp":[{"HostIp":"192.168.127.2","HostPort":"9090"},{"HostIp":"127.0.0.1","HostPort":"9090"}],` +
+		`"82/tcp":null}}}`
+	out, err := RewriteLoopbackBindings([]byte(in), testGuestIP)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := bindingsOf(t, out)
+	if n := len(got["80/tcp"]); n != 4 {
+		t.Errorf("80/tcp: %d bindings, want 4 (8080, 8081 and two random): %+v", n, got["80/tcp"])
+	}
+	if n := len(got["81/tcp"]); n != 1 {
+		t.Errorf("81/tcp: %+v", got["81/tcp"])
+	}
+	if !strings.Contains(string(out), `"82/tcp":null`) {
+		t.Errorf("a null list changed: %s", out)
+	}
 }
