@@ -50,8 +50,10 @@ import (
 const (
 	Version   = 1
 	HeaderLen = 8
-	// Port is the AF_VSOCK port a session's guest agent listens on.
-	Port = 2390
+	// Port is the AF_VSOCK port a session's guest agent answers List and Read on, and
+	// CopyPort the one it takes the project's tar stream on, once.
+	Port     = 2390
+	CopyPort = 2391
 	// MaxData bounds one read's bytes; MaxBody fits it with its header.
 	MaxData = 1 << 20
 	MaxBody = HeaderLen + 1 + MaxData
