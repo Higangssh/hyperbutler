@@ -52,5 +52,13 @@ Released as v0.1.0 (2026-11-04) without these tests ([docs/release.md](release.m
 - the integration tests on real hardware (the p99.9 latency tail of ADR 0006 is recorded, not a gate: it is inside the VM, about 10 ms for one request in a thousand while a bulk connection starts);
 - the 45 MB working set seen under the soak, profiled and explained.
 
+v0.1.1 (2026-11-05) is a patch release without a new soak: the share file server's change
+of direction (bind mounts about twice as fast, [ADR 0007](adr/0007-bind-mounts.md)), the
+broker's slots for sessions (off until the sandbox image exists,
+[ADR 0009](adr/0009-agent-sandbox.md)) and a retry in the broker client. It was tested from
+the release package, through the engine alone and through a foreground broker: `start`,
+`hello-world`, a bind mount read and write (about 500 and 880 MB/s for 128 MiB), Compose
+with a published port and a bind mount, `stop`. The next soak runs before v0.2.
+
 Bind mounts from Windows paths work but are not yet fast for write-heavy trees: use a
 named volume for `node_modules`.
