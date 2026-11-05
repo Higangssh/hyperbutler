@@ -16,10 +16,11 @@ import (
 	"sync"
 	"time"
 
+	"golang.org/x/sys/unix"
+
 	"github.com/Higangssh/hyperbutler/internal/sandbox/wire"
 	"github.com/Higangssh/hyperbutler/internal/sandbox/workspace"
 	"github.com/Higangssh/hyperbutler/internal/vmsecret"
-	"golang.org/x/sys/unix"
 )
 
 const (
