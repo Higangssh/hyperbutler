@@ -124,7 +124,9 @@ func runDoctor(in *install) DoctorJSON {
 	}
 	add(bc)
 	if viaBroker || bc.Msg == "doctor.broker.stopped" {
-		if c, ok := dataDirCheck(in.l.Data); ok {
+		if c, ok := redirectCheck(in.l.Home, in.l.Data); ok {
+			add(c)
+		} else if c, ok := dataDirCheck(in.l.Data); ok {
 			add(c)
 		}
 	}

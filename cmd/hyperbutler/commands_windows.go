@@ -288,6 +288,15 @@ func cmdStart(args []string, stdout, stderr io.Writer) error {
 	if err := in.createDataDir(); err != nil {
 		return err
 	}
+	if choice.pipe != "" {
+		// The broker service opens the disk itself, outside any packaged app: a folder
+		// Windows redirected for this process is one it cannot use (redirectedDir).
+		for _, d := range []string{in.l.Home, in.l.Data} {
+			if final, ok := redirectedDir(d); ok {
+				return redirectError(d, final)
+			}
+		}
+	}
 
 	cmd, err := spawnEngine(in, engineImage{kernel, initrd, manifest, choice.pipe}, dcfg, choice.note)
 	if err != nil {
