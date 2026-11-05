@@ -125,3 +125,46 @@ type dockerEvent struct {
 		ID string `json:"ID"`
 	} `json:"Actor"`
 }
+
+// maxCreateBody bounds a container create body RewriteLoopbackBindings parses.
+const maxCreateBody = 4 << 20
+
+// RewriteLoopbackBindings rewrites a container create's port bindings to a loopback
+// address (HostIp 127.0.0.1 or ::1, as `-p 127.0.0.1:8080:80` and Compose's
+// "127.0.0.1:8080:80" write them) to guestIP. dockerd runs in the guest, where such a
+// binding is on the guest's own loopback, which the engine cannot reach, so the port was
+// never published. The engine publishes every port on Windows' loopback only, so the
+// guest's address gives what the binding asks for: the port on this PC, not on the LAN.
+// Any other body comes back unchanged.
+func RewriteLoopbackBindings(body []byte, guestIP netip.Addr) ([]byte, error) {
+	if !guestIP.IsValid() || !strings.Contains(string(body), "PortBindings") {
+		return body, nil
+	}
+	if len(body) > maxCreateBody {
+		return nil, errors.New("container create body too large")
+	}
+	dec := json.NewDecoder(strings.NewReader(string(body)))
+	dec.UseNumber()
+	var doc map[string]any
+	if err := dec.Decode(&doc); err != nil {
+		return nil, fmt.Errorf("container create body: %w", err)
+	}
+	hc, _ := doc["HostConfig"].(map[string]any)
+	pb, _ := hc["PortBindings"].(map[string]any)
+	changed := false
+	for _, v := range pb {
+		list, _ := v.([]any)
+		for _, b := range list {
+			m, _ := b.(map[string]any)
+			ip, _ := m["HostIp"].(string)
+			if a, err := netip.ParseAddr(ip); err == nil && a.Unmap().IsLoopback() {
+				m["HostIp"] = guestIP.String()
+				changed = true
+			}
+		}
+	}
+	if !changed {
+		return body, nil
+	}
+	return json.Marshal(doc)
+}

@@ -376,6 +376,20 @@ func Run(ctx context.Context, cfg Config) (err error) {
 		shares.connect(vmid, info.Secret)
 		rewrite = shares.rewriteCreate
 	}
+	if gnet != nil && cfg.Net.AutoPublish {
+		// Ports bound to a loopback address are published like any other, on Windows'
+		// loopback only (RewriteLoopbackBindings).
+		guestIP, mounts := gnet.cfg.GuestIP(), rewrite
+		rewrite = func(body []byte) ([]byte, error) {
+			if mounts != nil {
+				var err error
+				if body, err = mounts(body); err != nil {
+					return nil, err
+				}
+			}
+			return RewriteLoopbackBindings(body, guestIP)
+		}
+	}
 
 	// runCtx ends with ctx or when the VM stops on its own.
 	runCtx, cancelRun := context.WithCancel(ctx)
