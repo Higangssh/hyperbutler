@@ -5,6 +5,7 @@ package broker
 import (
 	"errors"
 	"fmt"
+	"io"
 	"runtime"
 	"strings"
 	"sync"
@@ -97,6 +98,10 @@ func openDataDisk(dir windows.Handle, name, sid string) (_ *diskFile, err error)
 		return nil, fmt.Errorf("%w: %s: %w", ErrDiskRejected, name, err)
 	}
 	if err := checkDiskInfo(info, caller); err != nil {
+		return nil, fmt.Errorf("%w: %s %w", ErrDiskRejected, name, err)
+	}
+	// Read through the handle just checked and held: the contents HCS will open.
+	if err := checkVHDX(handleReader{h}); err != nil {
 		return nil, fmt.Errorf("%w: %s %w", ErrDiskRejected, name, err)
 	}
 	p, err := imageset.FinalPathOf(h)
@@ -377,4 +382,29 @@ func reOpenFile(h windows.Handle, access, share, flags uint32) (windows.Handle, 
 		return 0, err
 	}
 	return windows.Handle(r), nil
+}
+
+// handleReader reads a synchronous file handle at given offsets.
+type handleReader struct{ h windows.Handle }
+
+func (r handleReader) ReadAt(p []byte, off int64) (int, error) {
+	if off < 0 {
+		return 0, errors.New("negative offset")
+	}
+	total := 0
+	for total < len(p) {
+		var o windows.Overlapped
+		at := uint64(off) + uint64(total)
+		o.Offset, o.OffsetHigh = uint32(at), uint32(at>>32) //nolint:gosec // G115: the low and high halves of a 64-bit offset
+		var n uint32
+		err := windows.ReadFile(r.h, p[total:], &n, &o)
+		total += int(n)
+		if errors.Is(err, windows.ERROR_HANDLE_EOF) || err == nil && n == 0 {
+			return total, io.EOF
+		}
+		if err != nil {
+			return total, err
+		}
+	}
+	return total, nil
 }

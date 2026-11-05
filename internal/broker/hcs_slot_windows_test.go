@@ -21,7 +21,7 @@ func (f *hcsFixture) withSandbox(t *testing.T, slot uint8) (imageDir, disk strin
 	imageDir = writeBrokerImage(t)
 	f.be.imageDirs[sandboxImage] = imageDir
 	disk = filepath.Join(filepath.Dir(f.disk), SessionDiskName(slot))
-	if err := os.WriteFile(disk, []byte("vhdx"), 0o600); err != nil {
+	if err := os.WriteFile(disk, testVHDX(false, false), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	me, err := windows.StringToSid(f.sid)

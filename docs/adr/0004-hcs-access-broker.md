@@ -1315,3 +1315,24 @@ question HCS answers (does it accept the account through the group) is still not
 reached. Decided by the owner (2026-11-03): the service stays SYSTEM for v0.1.0
 (Implementation decision 1); option C, with the user-file opens done as the caller, is
 work for after v0.1.0, as a hardening of the same design (users see no difference).
+
+### Differencing data disks (2026-11-05)
+
+The data disk was checked by its metadata only (owner, DACL, link count, reparse point,
+local volume), never by its contents. A caller could therefore hand the broker a
+`data.vhdx` that is a differencing VHDX: HCS opens the parent the child names, as the VM
+worker, so the guest could read a disk the caller cannot (one the Virtual Machines group
+may read, such as an image folder the installer opened to it, or a share reached as the
+computer account). Found by the review of ADR 0009's slots, which add disks; it was
+there since the first broker.
+
+Fixed: after the metadata checks, the broker reads the disk through the handle it holds
+(the contents HCS will open) and requires a VHDX (the `vhdxfile` identifier, a region
+table whose signature and CRC-32C hold, a metadata table with File Parameters) whose File
+Parameters do not set HasParent and whose metadata has no Parent Locator; anything else
+is "data disk rejected" with a caller-safe reason (`checkVHDX`, `internal/broker/vhdx.go`).
+Tests: synthetic VHDX files (plain, HasParent, a locator, either or both region tables
+damaged, truncated, a VHD, no parameters), disks Windows itself creates (the engine's
+sparse VHDX and a plain one pass, a differencing child of the plain one is refused), and
+`FuzzCheckVHDX` (a differencing disk patched anywhere outside its HasParent bit and
+locator GUID is never accepted).
