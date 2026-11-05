@@ -78,13 +78,21 @@ func Select(dir string, o Options) (Plan, error) {
 		include[filepath.ToSlash(p)] = true
 	}
 	var p Plan
-	names, fromGit, err := list(dir, o.Git)
+	names, unread, fromGit, err := list(dir, o.Git)
 	if err != nil {
 		return Plan{}, err
 	}
 	p.FromGit = fromGit
+	p.Skipped = unread
 	for _, rel := range names {
-		if rel == ".git" || strings.HasPrefix(rel, ".git/") || strings.Contains(rel, "/.git/") || strings.HasSuffix(rel, "/.git") {
+		// git reads names from the index, which a repository that came as an archive
+		// may have crafted: a name must stay below dir.
+		if rel == "" || path.Clean(rel) != rel || path.IsAbs(rel) || rel == ".." || strings.HasPrefix(rel, "../") ||
+			strings.ContainsAny(rel, `\:`) {
+			p.Skipped = append(p.Skipped, Skipped{rel, "a name outside the project"})
+			continue
+		}
+		if inGitDir(rel) {
 			continue // history comes in as a bundle
 		}
 		full := filepath.Join(dir, filepath.FromSlash(rel))
@@ -105,9 +113,17 @@ func Select(dir string, o Options) (Plan, error) {
 			}
 			p.Files = append(p.Files, Entry{Path: rel, Link: filepath.ToSlash(t)})
 			continue
-		case m&fs.ModeIrregular != 0:
-			p.Skipped = append(p.Skipped, Skipped{rel, "a junction or other reparse point (not followed)"})
+		case m&fs.ModeIrregular != 0 && isLink(full):
+			p.Skipped = append(p.Skipped, Skipped{rel, "a junction or other link (not followed)"})
 			continue
+		case m&fs.ModeIrregular != 0:
+			// Another reparse point: a cloud file placeholder (OneDrive), a deduplicated
+			// file. It reads as the file it stands for.
+			fi, err = os.Stat(full)
+			if err != nil || !fi.Mode().IsRegular() {
+				p.Skipped = append(p.Skipped, Skipped{rel, "unreadable reparse point"})
+				continue
+			}
 		case !m.IsRegular():
 			continue // a directory (a submodule's), a device
 		}
@@ -135,28 +151,39 @@ func Select(dir string, o Options) (Plan, error) {
 }
 
 // list returns the project's files, from git when dir is a work tree.
-func list(dir, git string) ([]string, bool, error) {
+// In a work tree without git it fails rather than walking: a walk would take the files
+// .gitignore keeps out, where secrets and build output usually are.
+func list(dir, git string) ([]string, []Skipped, bool, error) {
 	if _, err := os.Lstat(filepath.Join(dir, ".git")); err == nil {
 		if git == "" {
 			git, _ = exec.LookPath("git")
 		}
-		if git != "" {
-			names, err := gitFiles(dir, git)
-			if err == nil {
-				return names, true, nil
-			}
-			return nil, false, fmt.Errorf("list the files git tracks: %w", err)
+		if git == "" {
+			return nil, nil, false, errors.New("this is a git work tree and git is not installed: without it the files .gitignore keeps out cannot be told apart")
 		}
+		names, err := gitFiles(dir, git)
+		if err != nil {
+			return nil, nil, false, fmt.Errorf("list the files git tracks: %w", err)
+		}
+		return names, nil, true, nil
 	}
 	var names []string
+	var unread []Skipped
 	err := filepath.WalkDir(dir, func(p string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
 		rel, _ := filepath.Rel(dir, p)
 		rel = filepath.ToSlash(rel)
+		if err != nil {
+			if p == dir {
+				return err
+			}
+			unread = append(unread, Skipped{rel, "unreadable: " + err.Error()})
+			if d != nil && d.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
 		if d.IsDir() {
-			if d.Name() == ".git" {
+			if strings.EqualFold(d.Name(), ".git") {
 				return filepath.SkipDir
 			}
 			return nil
@@ -168,7 +195,7 @@ func list(dir, git string) ([]string, bool, error) {
 		return nil
 	})
 	sort.Strings(names)
-	return names, false, err
+	return names, unread, false, err
 }
 
 // gitFiles lists tracked files and untracked files git does not ignore (.gitignore,
@@ -260,4 +287,15 @@ func Scan(r io.Reader) (string, error) {
 			return "", err
 		}
 	}
+}
+
+// inGitDir reports whether rel is a .git file or directory, or below one, at any depth
+// and in any case.
+func inGitDir(rel string) bool {
+	for _, seg := range strings.Split(rel, "/") {
+		if strings.EqualFold(seg, ".git") {
+			return true
+		}
+	}
+	return false
 }

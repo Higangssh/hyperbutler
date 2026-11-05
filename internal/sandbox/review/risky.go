@@ -20,6 +20,7 @@ const (
 	RiskHooks    Risk = "commit hooks"
 	RiskExec     Risk = "executable or shortcut"
 	RiskSecret   Risk = "looks like a secret"
+	RiskAgent    Risk = "instructions or settings for the next coding agent"
 	RiskGitInner Risk = "inside .git (never applied)"
 )
 
@@ -43,6 +44,11 @@ var riskyNames = map[string]Risk{
 	".nvmrc": RiskEnv, ".python-version": RiskEnv, ".ruby-version": RiskEnv,
 	"rust-toolchain": RiskEnv, "rust-toolchain.toml": RiskEnv, "mise.toml": RiskEnv,
 	".pre-commit-config.yaml": RiskHooks, "lefthook.yml": RiskHooks,
+	"desktop.ini": RiskExec, "autorun.inf": RiskExec,
+	"dockerfile": RiskBuild, "containerfile": RiskBuild, "compose.yaml": RiskBuild, "compose.yml": RiskBuild,
+	"docker-compose.yml": RiskBuild, "docker-compose.yaml": RiskBuild, ".dockerignore": RiskBuild,
+	"agents.md": RiskAgent, ".cursorrules": RiskAgent, ".windsurfrules": RiskAgent,
+	"copilot-instructions.md": RiskAgent,
 }
 
 // riskyDirs are directories (compared without case) whose every file is listed first.
@@ -50,6 +56,7 @@ var riskyDirs = map[string]Risk{
 	".github/workflows": RiskCI, ".circleci": RiskCI, ".buildkite": RiskCI,
 	".vscode": RiskEditor, ".idea": RiskEditor, ".devcontainer": RiskEditor,
 	".husky": RiskHooks, ".githooks": RiskHooks, ".cargo": RiskPackage,
+	".cursor": RiskAgent, ".codex": RiskAgent, ".gemini": RiskAgent, ".continue": RiskAgent,
 }
 
 // riskyExt are extensions that run when opened from Explorer, or tell a tool where to
@@ -59,21 +66,28 @@ var riskyExt = map[string]Risk{
 	".ps1": RiskExec, ".psm1": RiskExec, ".vbs": RiskExec, ".lnk": RiskExec,
 	".url": RiskExec, ".scr": RiskExec, ".msi": RiskExec, ".hta": RiskExec, ".cpl": RiskExec,
 	".jar": RiskExec, ".reg": RiskExec, ".appref-ms": RiskExec, ".library-ms": RiskExec,
+	".scf": RiskExec, ".settingcontent-ms": RiskExec, ".wsf": RiskExec, ".wsh": RiskExec,
+	".jse": RiskExec, ".vbe": RiskExec, ".psd1": RiskExec, ".msc": RiskExec, ".pif": RiskExec,
+	".iso": RiskExec, ".img": RiskExec, ".vhd": RiskExec, ".vhdx": RiskExec, ".chm": RiskExec,
+	".diagcab": RiskExec, ".search-ms": RiskExec, ".searchconnector-ms": RiskExec,
 	".code-workspace": RiskEditor, ".sln": RiskBuild, ".csproj": RiskBuild,
 	".vcxproj": RiskBuild, ".props": RiskBuild, ".targets": RiskBuild,
 }
 
 // Classify returns why a change to p (a path CheckPath accepted) is listed first, or ""
 // for an ordinary edit. executable is whether the guest file has an execute bit and is
-// new. Changes under .git are never applied; Classify says so rather than the apply step
-// failing on them.
+// new. Changes to a .git file or directory at any depth (a submodule's, or one the agent
+// planted in a subdirectory, which git would honour there) are never applied; Classify
+// says so rather than the apply step failing on them.
 func Classify(p string, executable bool) Risk {
 	low := strings.ToLower(p)
-	if low == ".git" || strings.HasPrefix(low, ".git/") {
-		return RiskGitInner
+	for _, seg := range strings.Split(low, "/") {
+		if seg == ".git" {
+			return RiskGitInner
+		}
 	}
 	for dir, r := range riskyDirs {
-		if strings.HasPrefix(low, dir+"/") {
+		if strings.HasPrefix(low, dir+"/") || strings.Contains(low, "/"+dir+"/") {
 			return r
 		}
 	}

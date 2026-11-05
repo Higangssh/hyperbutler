@@ -163,3 +163,26 @@ func TestApplyHeldOpen(t *testing.T) {
 		t.Error("replaced a file another program holds open for writing")
 	}
 }
+
+func TestApplyFailureLeavesNoDirs(t *testing.T) {
+	root := t.TempDir()
+	write(t, filepath.Join(root, "made", "x.txt"), "x") // made/ exists, by/ does not
+	out, err := Apply(root, []Change{
+		{Path: "made/by/failed/change.txt", Data: []byte("x"), Base: sum("was there")},
+		{Path: "new/deep/a.txt", Data: []byte("a")},
+		{Path: "NEW/deep/b.txt", Data: []byte("b")},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, o := range out {
+		if o.Err == nil {
+			t.Errorf("%s applied", o.Path)
+		}
+	}
+	for _, d := range []string{"made/by", "new", "NEW"} {
+		if _, err := os.Stat(filepath.Join(root, d)); !os.IsNotExist(err) {
+			t.Errorf("%s left behind: %v", d, err)
+		}
+	}
+}

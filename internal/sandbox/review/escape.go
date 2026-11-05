@@ -38,7 +38,7 @@ func shownAsIs(r rune) bool {
 	if r < utf8.RuneSelf {
 		return r >= 0x20 && r < 0x7f
 	}
-	if unicode.In(r, unicode.Cc, unicode.Cf, unicode.Co, unicode.Cs, unicode.Zl, unicode.Zp, unicode.Zs) {
+	if unicode.In(r, unicode.Cc, unicode.Cf, unicode.Co, unicode.Cs, unicode.Zl, unicode.Zp, unicode.Zs, unicode.Other_Default_Ignorable_Code_Point) {
 		return false
 	}
 	return unicode.IsGraphic(r)

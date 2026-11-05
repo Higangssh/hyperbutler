@@ -280,6 +280,41 @@ and `--help` of each CLI in `node:22-alpine` (musl) and `node:22-bookworm-slim` 
   (ADR 0005), which is accepted for compatibility. Only `--version` and `--help` were run;
   a real task in each agent comes with the sandbox image.
 
+### Phase 2 progress (2026-11-05)
+
+The parts that need no session VM are in, each with unit tests and, where it parses
+guest input, a fuzz target:
+
+| Package | What it does |
+|---|---|
+| `internal/sandbox/review` | the path grammar (`CheckPath`), escaping for display (`Escape`, `Shorten`), the list of changes shown first (`Classify`), secret file names |
+| `internal/sandbox/copyin` | the file list (git's, or a walk), secrets kept out by name and by token format, the tar stream with the hash of each file sent |
+| `internal/sandbox/wire` | the list and read protocol on vsock 2390 (copy on 2391): bounded, canonical decoding, a client that never trusts the guest's sizes |
+| `internal/sandbox/workspace` | the guest side: unpack through an `os.Root`, the baseline, the change list; portable, so tested on Windows |
+| `internal/sandbox/session` | the engine side: copy in, read each change once into the review, refuse what cannot be applied |
+| `internal/sandbox/apply` | writes reviewed bytes relative to the project's handle, one name at a time, no links, the normalized name checked (8.3 and case), host edits kept as conflicts, temporary file renamed over the target |
+| `guest/cmd/sbxd` | the session's guest agent: host CID and VM secret first, copy once, then serve the change list |
+
+A test runs the whole cycle without a VM: copy in, an agent's edits, list and read
+through the wire client, apply; a file the user edited meanwhile stays as a conflict,
+and `.git` and `.env` never cross. Still to come in this phase: the sandbox image
+(Debian slim, with `sbxd`), the engine's session manager and `hyperbutler sandbox`
+commands, a terminal for the agent, the diff view, the git bundle for commits, and the
+`open` and `locked` egress modes.
+
+Reviewed on 2026-11-05. Fixed: a `.git` at any depth (a planted `sub/.git` would run
+code at the next `git status`) is never applied and never copied; a work tree with no
+git installed is refused instead of walked (the walk took ignored files); invisible
+letters (U+3164) and Latin mixed with Cyrillic, Greek and similar scripts in one part of
+a name are refused; the risky lists match at any depth and cover `desktop.ini`, `.scf`,
+script and disk-image extensions, container build files and coding agents' instruction
+and settings files; a failed change leaves no directories behind; two spellings of one
+directory in a set are a collision; cloud file placeholders are copied, only links
+skipped; names from git's index are checked to stay below the project. Open: a
+temporary file survives a crash before its rename; volumes without POSIX rename (FAT,
+older SMB) fail with a raw status; `Apply` itself is not yet fuzzed against a directory
+(REQ-SBX-003 asks for it).
+
 ## Adversarial review
 
 The first draft was reviewed on 2026-11-05. Each finding and its answer:

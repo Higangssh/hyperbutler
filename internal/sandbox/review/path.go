@@ -77,6 +77,22 @@ func checkSegment(s string) error {
 			return fmt.Errorf("character %s is not allowed in a path", Escape(string(r)))
 		}
 	}
+	// Letters of scripts that hold look-alikes of Latin ones, beside Latin letters in
+	// the same part of a name (Cyrillic а in "pаckage.json"), would read as another
+	// file. Parts are split at dots, so "файл.txt" is fine.
+	for _, part := range strings.Split(s, ".") {
+		latin, other := false, rune(0)
+		for _, r := range part {
+			if r < utf8.RuneSelf && unicode.IsLetter(r) {
+				latin = true
+			} else if unicode.In(r, unicode.Cyrillic, unicode.Greek, unicode.Armenian, unicode.Cherokee, unicode.Coptic) {
+				other = r
+			}
+		}
+		if latin && other != 0 {
+			return fmt.Errorf("letter %U mixes with Latin letters", other)
+		}
+	}
 	if isDeviceName(s) {
 		return fmt.Errorf("%s is a Windows device name", Escape(s))
 	}
@@ -108,6 +124,8 @@ func allowedRune(r rune) bool {
 		return false // CJK compatibility ideographs
 	case r == 0x2126 || r == 0x212a || r == 0x212b:
 		return false // Ohm, Kelvin and Angstrom signs
+	case unicode.Is(unicode.Other_Default_Ignorable_Code_Point, r):
+		return false // letters that render as nothing (U+3164 Hangul filler)
 	case r >= 0xff00 && r <= 0xffef:
 		return false // fullwidth and halfwidth forms: look-alikes of ASCII
 	}

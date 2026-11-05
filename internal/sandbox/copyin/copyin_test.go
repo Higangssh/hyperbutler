@@ -120,3 +120,32 @@ func FuzzScan(f *testing.F) {
 		_, _ = Scan(strings.NewReader(string(b)))
 	})
 }
+
+func TestSelectGitMissing(t *testing.T) {
+	root := fixture(t)
+	if err := os.Mkdir(filepath.Join(root, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Select(root, Options{Git: filepath.Join(t.TempDir(), "no-git.exe")}); err == nil {
+		t.Fatal("a work tree was copied without git")
+	}
+}
+
+func TestSelectSkipsJunction(t *testing.T) {
+	root := t.TempDir()
+	outside := t.TempDir()
+	put(t, outside, "secret.txt", "outside")
+	put(t, root, "a.txt", "a")
+	if err := exec.Command("cmd", "/c", "mklink", "/J", filepath.Join(root, "j"), outside).Run(); err != nil {
+		t.Skipf("mklink /J: %v", err)
+	}
+	p, err := Select(root, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range p.Files {
+		if strings.HasPrefix(f.Path, "j") {
+			t.Errorf("%s copied through a junction", f.Path)
+		}
+	}
+}

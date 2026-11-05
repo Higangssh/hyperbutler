@@ -96,6 +96,24 @@ func plan(changes []Change) ([][]string, []error, error) {
 			}
 		}
 	}
+	// Two spellings of one directory (Dir/a and dir/b) would land in the same directory
+	// in a case-insensitive one, under the first spelling: both are refused.
+	spelled := map[string]string{}
+	owner := map[string][]int{}
+	for i, s := range segs {
+		for n := 1; s != nil && n < len(s); n++ {
+			dir := joinSegs(s[:n])
+			k := review.FoldKey(dir)
+			if prev, ok := spelled[k]; ok && prev != dir {
+				errs[i] = ErrCollision
+				for _, j := range owner[k] {
+					errs[j] = ErrCollision
+				}
+			}
+			spelled[k] = dir
+			owner[k] = append(owner[k], i)
+		}
+	}
 	return segs, errs, nil
 }
 
