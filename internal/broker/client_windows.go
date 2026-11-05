@@ -389,16 +389,34 @@ func (c *Client) Start(req proto.Request) (proto.Reply, error) {
 	return c.Do(req)
 }
 
-// Status returns the caller's VM's status.
-func (c *Client) Status() (proto.Reply, error) { return c.Do(proto.Request{Op: proto.OpStatus}) }
+// Status returns the caller's Docker VM's status.
+func (c *Client) Status() (proto.Reply, error) { return c.StatusSlot(0) }
 
-// Pause pauses the caller's VM, or resumes it.
-func (c *Client) Pause(resume bool) (proto.Reply, error) {
-	return c.Do(proto.Request{Op: proto.OpPause, Resume: resume})
+// StatusSlot returns the status of the caller's VM in slot: 0 is the Docker VM, 1 to
+// proto.MaxSlot a sandbox session (ADR 0009).
+func (c *Client) StatusSlot(slot uint8) (proto.Reply, error) {
+	return c.Do(proto.Request{Op: proto.OpStatus, Slot: slot})
 }
 
-// Stop stops the caller's VM: at once with force, else through HCS's shutdown request.
-func (c *Client) Stop(force bool) error {
-	_, err := c.Do(proto.Request{Op: proto.OpStop, Force: force})
+// Pause pauses the caller's Docker VM, or resumes it.
+func (c *Client) Pause(resume bool) (proto.Reply, error) { return c.PauseSlot(0, resume) }
+
+// PauseSlot pauses the caller's VM in slot, or resumes it.
+func (c *Client) PauseSlot(slot uint8, resume bool) (proto.Reply, error) {
+	return c.Do(proto.Request{Op: proto.OpPause, Resume: resume, Slot: slot})
+}
+
+// Stop stops the caller's Docker VM: at once with force, else through HCS's shutdown
+// request.
+func (c *Client) Stop(force bool) error { return c.StopSlot(0, force) }
+
+// StopSlot stops the caller's VM in slot, as Stop does.
+func (c *Client) StopSlot(slot uint8, force bool) error {
+	_, err := c.Do(proto.Request{Op: proto.OpStop, Force: force, Slot: slot})
 	return err
+}
+
+// Resize changes the CPUs and memory of the caller's VM in slot.
+func (c *Client) Resize(slot uint8, cpus, memoryMB uint32) (proto.Reply, error) {
+	return c.Do(proto.Request{Op: proto.OpResize, Slot: slot, CPUs: cpus, MemoryMB: memoryMB})
 }
