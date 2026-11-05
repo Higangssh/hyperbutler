@@ -153,8 +153,8 @@ func FuzzCheckVHDX(f *testing.F) {
 		copy(b[at:], patch)
 		err := checkVHDX(bytes.NewReader(b))
 		meta := int64(320 << 10)
-		intact := !(at < meta+4104 && at+int64(len(patch)) > meta+4100) && // HasParent flags
-			!(at < meta+80 && at+int64(len(patch)) > meta+64) // the locator's GUID
+		intact := (at >= meta+4104 || at+int64(len(patch)) <= meta+4100) && // HasParent flags
+			(at >= meta+80 || at+int64(len(patch)) <= meta+64) // the locator's GUID
 		if err == nil && intact {
 			t.Fatalf("a differencing disk patched at %d with %x was accepted", at, patch)
 		}

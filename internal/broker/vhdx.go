@@ -57,7 +57,7 @@ func checkVHDX(r io.ReaderAt) error {
 	}
 	n := min(int64(metaLen), vhdxMetaTableLen)
 	tab := make([]byte, n)
-	if _, err := r.ReadAt(tab, int64(meta)); err != nil {
+	if _, err := r.ReadAt(tab, meta); err != nil {
 		return errors.New("has an unreadable VHDX metadata table")
 	}
 	if !bytes.Equal(tab[:8], []byte("metadata")) {
@@ -81,7 +81,7 @@ func checkVHDX(r io.ReaderAt) error {
 				return errors.New("has malformed VHDX file parameters")
 			}
 			var fp [8]byte
-			if _, err := r.ReadAt(fp[:], int64(meta)+int64(off)); err != nil {
+			if _, err := r.ReadAt(fp[:], meta+int64(off)); err != nil {
 				return errors.New("has unreadable VHDX file parameters")
 			}
 			if binary.LittleEndian.Uint32(fp[4:8])&vhdxHasParent != 0 {
@@ -137,7 +137,7 @@ func vhdxNoPendingLog(r io.ReaderAt) error {
 // vhdxMetadataRegionOf finds the metadata region. Both region tables must be valid and
 // name the same metadata region: an opener may use either, so a disk whose copies
 // disagree is refused rather than judged by one of them.
-func vhdxMetadataRegionOf(r io.ReaderAt) (offset uint64, length uint32, err error) {
+func vhdxMetadataRegionOf(r io.ReaderAt) (offset int64, length uint32, err error) {
 	var found [2]struct {
 		off uint64
 		n   uint32
@@ -178,5 +178,5 @@ func vhdxMetadataRegionOf(r io.ReaderAt) (offset uint64, length uint32, err erro
 	if found[0].off > 1<<50 {
 		return 0, 0, errors.New("has a malformed VHDX metadata region")
 	}
-	return found[0].off, found[0].n, nil
+	return int64(found[0].off), found[0].n, nil //nolint:gosec // G115: at most 1<<50, checked above
 }
