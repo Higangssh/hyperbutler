@@ -1,0 +1,224 @@
+#!/bin/sh
+# hyperbutler sandbox session init (ADR 0009). /sbin/init on the sandbox system disk execs
+# tini as PID 1 (it reaps the orphans an agent's processes leave and forwards signals),
+# and tini runs this script.
+#
+# It runs from the read-only erofs system disk (Debian slim), which the Docker image's
+# stage 1 (guest/prototype/initramfs-init) mounted and switch_rooted into. Everything
+# writable is a mount: /run, /tmp and /dev/shm are tmpfs; the session's data disk holds
+# /workspace, /home, /usr/local and /var/lib/hyperbutler. /etc/resolv.conf links to
+# /run/resolv.conf.
+#
+# Mounts the API file systems, loads the Hyper-V or virtio drivers, brings up the network
+# (netfwd, as in the Docker VM), mounts the data disk (formatting it only if it is blank),
+# and starts sbxd as the agent user. Every step prints "hyperbutler-t <uptime> <step>" on
+# the console.
+#
+# Shutdown: SIGTERM or SIGUSR2 (busybox poweroff, which the kernel runs when the host asks
+# through the Hyper-V shutdown component) stops sbxd and every agent process, unmounts the
+# data disk and powers off.
+
+PATH=/usr/sbin:/usr/bin:/sbin:/bin
+export PATH
+
+t() { read -r up _ </proc/uptime; echo "hyperbutler-t $up $*" >/dev/console; }
+
+mount -t proc -o nosuid,nodev,noexec proc /proc
+t init-start
+mount -t sysfs -o nosuid,nodev,noexec sysfs /sys
+mount -t devtmpfs -o nosuid,mode=0755 devtmpfs /dev
+mkdir -p /dev/pts /dev/shm
+mount -t devpts -o nosuid,noexec,gid=5,mode=0620,ptmxmode=0666 devpts /dev/pts
+mount -t tmpfs -o nosuid,nodev,mode=1777 shm /dev/shm
+mount -t tmpfs -o nosuid,nodev,mode=0755 run /run
+mount -t tmpfs -o nosuid,nodev,mode=1777 tmp /tmp
+mount -t cgroup2 -o nsdelegate cgroup2 /sys/fs/cgroup
+ln -sf /proc/self/fd /dev/fd
+ln -sf /proc/self/fd/0 /dev/stdin
+ln -sf /proc/self/fd/1 /dev/stdout
+ln -sf /proc/self/fd/2 /dev/stderr
+echo sandbox >/proc/sys/kernel/hostname
+echo 1 >/proc/sys/kernel/dmesg_restrict
+t mounts-done
+
+if [ -d /sys/bus/vmbus ]; then
+	modprobe -a hv_storvsc sd_mod hv_sock hv_balloon hv_utils
+else
+	modprobe -a virtio_rng virtio_net virtio_blk virtio_balloon vmw_vsock_virtio_transport
+fi
+t modules-done
+
+ip link set lo up
+ADDR=10.0.2.15/24
+GW=10.0.2.2
+DNS=10.0.2.3
+NET=
+MTU=1500
+NETVNET=
+NETCRC=
+DATA=
+NEWDISK=
+for arg in $(cat /proc/cmdline); do
+	case "$arg" in
+	hyperbutler.ip=*) ADDR=${arg#hyperbutler.ip=} ;;
+	hyperbutler.gw=*) GW=${arg#hyperbutler.gw=} ;;
+	hyperbutler.dns=*) DNS=${arg#hyperbutler.dns=} ;;
+	hyperbutler.net=*) NET=${arg#hyperbutler.net=} ;;
+	hyperbutler.mtu=*) MTU=${arg#hyperbutler.mtu=} ;;
+	hyperbutler.netvnet=1) NETVNET=-vnet ;;
+	hyperbutler.netcrc=0) NETCRC="-crc 0" ;;
+	hyperbutler.netcrc=strict) NETCRC="-crc strict" ;;
+	hyperbutler.data=*) DATA=${arg#hyperbutler.data=} ;;
+	hyperbutler.newdisk=1) NEWDISK=1 ;;
+	esac
+done
+echo madvise >/sys/kernel/mm/transparent_hugepage/enabled
+if [ -n "$NET" ] && [ -d /sys/bus/vmbus ]; then
+	modprobe tun
+	(while :; do
+		# shellcheck disable=SC2086
+		netfwd -port "$NET" -dev eth0 -mtu "$MTU" $NETVNET $NETCRC >/dev/console 2>&1
+		t "netfwd-exit $?"
+		sleep 1
+	done) &
+	i=0
+	while [ ! -e /sys/class/net/eth0 ] && [ $i -lt 250 ]; do
+		sleep 0.02
+		i=$((i + 1))
+	done
+	ip link set eth0 mtu "$MTU"
+	echo 16384 >/proc/sys/net/core/netdev_max_backlog
+fi
+if ip link show eth0 >/dev/null 2>&1; then
+	ip link set eth0 up
+	ip addr add "$ADDR" dev eth0
+	ip route add default via "$GW"
+	echo "nameserver $DNS" >/run/resolv.conf
+fi
+t net-done
+
+# lun:N is the SCSI disk at LUN N of the (single) controller; a bare name (sda, vdb) is
+# used as is. The same rule as in stage 1 and the Docker VM's init.
+resolve_disk() {
+	case "$1" in
+	lun:*)
+		lun=${1#lun:}
+		case "$lun" in "" | *[!0-9]*) return 1 ;; esac
+		for d in /sys/block/sd*; do
+			[ -e "$d/device" ] || continue
+			addr=$(basename "$(readlink "$d/device")")
+			case "$addr" in
+			*:0:0:"$lun") echo "/dev/${d##*/}"; return 0 ;;
+			esac
+		done
+		return 1
+		;;
+	*[!a-z0-9]* | "") return 1 ;;
+	*) [ -b "/dev/$1" ] && echo "/dev/$1" ;;
+	esac
+}
+
+# The session's data disk is formatted only when it is blank, by the Docker VM's rule:
+# the host says it was never written, the first MiB reads as zeros and blkid finds no
+# file system. Anything else that is not a clean ext4 is refused, never reformatted.
+data_disk() {
+	modprobe ext4
+	i=0
+	while ! dev=$(resolve_disk "$DATA") && [ $i -lt 500 ]; do
+		sleep 0.01
+		i=$((i + 1))
+	done
+	if [ -z "$dev" ] || [ ! -b "$dev" ]; then
+		t "data-missing $DATA"
+		return 1
+	fi
+	blank=
+	if [ -n "$NEWDISK" ] && dd if="$dev" of=/tmp/data-head bs=65536 count=16 2>/dev/null &&
+		[ "$(wc -c </tmp/data-head)" -eq 1048576 ] &&
+		[ "$(tr -d '\000' </tmp/data-head | wc -c)" -eq 0 ] &&
+		[ -z "$(blkid "$dev" 2>/dev/null)" ]; then
+		blank=1
+	fi
+	rm -f /tmp/data-head
+	if [ -n "$blank" ]; then
+		t data-mkfs
+		if ! mke2fs -q -F -t ext4 -m 0 -L hyperbutler-sbx -J size=64 \
+			-E nodiscard,lazy_itable_init=1,lazy_journal_init=1 "$dev" >/dev/console 2>&1; then
+			t data-mkfs-failed
+			return 1
+		fi
+	else
+		e2fsck -p "$dev" >/dev/console 2>&1
+		rc=$?
+		if [ $rc -ge 4 ]; then
+			t "data-fsck-failed $rc"
+			return 1
+		fi
+	fi
+	if ! mount -t ext4 -o noatime,noinit_itable,nodev,nosuid "$dev" /data; then
+		t data-mount-failed
+		return 1
+	fi
+	t data-mounted
+}
+if [ -n "$DATA" ]; then
+	if ! data_disk; then
+		echo "hyperbutler: the session disk could not be used; see the lines above" >/dev/console
+		sleep 1
+		busybox poweroff -f
+	fi
+else
+	mount -t tmpfs -o nosuid,nodev,mode=0755 data /data
+fi
+
+# The agent user (uid 1000, in the image's /etc/passwd) owns everything the session keeps.
+# sbxd runs as that user too: the VM is the boundary, and the host trusts nothing it
+# reads from here (ADR 0009, "Bringing changes out").
+for d in workspace home usr-local state; do
+	[ -d "/data/$d" ] || mkdir -m 0755 "/data/$d"
+done
+[ -d /data/home/agent ] || { mkdir -m 0750 /data/home/agent && cp -a /etc/skel/. /data/home/agent/; }
+chown 1000:1000 /data/workspace /data/usr-local /data/state
+chown -R 1000:1000 /data/home/agent
+mount --bind /data/workspace /workspace
+mount --bind /data/home /home
+mount --bind /data/usr-local /usr/local
+mount --bind /data/state /var/lib/hyperbutler
+t session-disk-ready
+
+stop_session() {
+	t shutdown-requested
+	STOPPING=1
+	[ -n "$SBXD_LOOP" ] && kill "$SBXD_LOOP" 2>/dev/null
+}
+STOPPING=
+trap stop_session TERM USR2 INT
+
+if [ -d /sys/bus/vmbus ]; then
+	(while [ -z "$STOPPING" ]; do
+		setpriv --reuid=1000 --regid=1000 --init-groups --inh-caps=-all --bounding-set=-all \
+			--no-new-privs env -i HOME=/home/agent PATH=/usr/local/bin:/usr/bin:/bin sbxd >/dev/console 2>&1
+		t "sbxd-exit $?"
+		sleep 1
+	done) &
+	SBXD_LOOP=$!
+	t sbxd-started
+fi
+
+while [ -z "$STOPPING" ]; do
+	wait
+	[ -z "$STOPPING" ] && sleep 1
+done
+
+# Every process of the agent user goes, then the disk.
+pkill -TERM -u 1000 2>/dev/null
+sleep 1
+pkill -KILL -u 1000 2>/dev/null
+pkill -KILL sbxd 2>/dev/null
+sync
+for m in /var/lib/hyperbutler /usr/local /home /workspace /data; do
+	umount "$m" 2>/dev/null || mount -o remount,ro "$m" 2>/dev/null
+done
+t data-unmounted
+sync
+busybox poweroff -f

@@ -62,6 +62,10 @@ const (
 	// ControlPort is the guest control channel's (guestctl.ControlPort, which a test
 	// holds equal: guestctl dials, and the broker may not link it).
 	ControlPort = 2380
+	// SandboxPort and SandboxCopyPort are a sandbox session's (ADR 0009): sbxd's change
+	// list and its copy-in (wire.Port and wire.CopyPort, which a test holds equal).
+	SandboxPort     = 2390
+	SandboxCopyPort = 2391
 )
 
 // Network limits, the ones netstack enforces (netstack.Config.Validate and
@@ -186,6 +190,10 @@ type Spec struct {
 	Share bool
 	// DaemonConfig tells the guest's init to wait for daemon.json on the control channel.
 	DaemonConfig bool
+	// Sandbox makes the VM a sandbox session (ADR 0009): its services are sbxd's two
+	// ports instead of the Docker API and the control channel, and it gets no share,
+	// daemon.json or host gateway.
+	Sandbox bool
 	// ConsolePipe, if set, is the named pipe HCS serves COM1 on (developer mode only;
 	// ADR 0004 Implementation decision 7).
 	ConsolePipe string
@@ -226,8 +234,8 @@ const hashCapMB = 4096
 //
 // The kernel command line is the base, the hash table sizes, the secret, the network, the share,
 // the developer additions, daemon.json, then the disks. The data disk is LUN 0 and the
-// system disk follows it. The services are the Docker API, the guest control channel,
-// the network link and the share, in that order.
+// system disk follows it. The services are the Docker API and the guest control channel
+// (sbxd's two ports for a sandbox session), the network link and the share, in that order.
 func Build(s *Spec) (*vm.Config, error) {
 	sddl, err := vm.UserOnlySDDL(s.UserSID)
 	if err != nil {
@@ -258,6 +266,15 @@ func Build(s *Spec) (*vm.Config, error) {
 	svcs := []vm.Service{
 		{ID: hvaddr.VsockServiceID(DockerPort), ConnectSDDL: sddl},
 		{ID: hvaddr.VsockServiceID(ControlPort), ConnectSDDL: sddl},
+	}
+	if s.Sandbox {
+		if s.Share || s.DaemonConfig || s.Net != nil && s.Net.HostGateway {
+			return nil, errors.New("vmtemplate: a sandbox session gets no share, daemon config or host gateway")
+		}
+		svcs = []vm.Service{
+			{ID: hvaddr.VsockServiceID(SandboxPort), ConnectSDDL: sddl},
+			{ID: hvaddr.VsockServiceID(SandboxCopyPort), ConnectSDDL: sddl},
+		}
 	}
 	if n := s.Net; n != nil {
 		if err := n.Validate(); err != nil {

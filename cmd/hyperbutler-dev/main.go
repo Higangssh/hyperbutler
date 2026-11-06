@@ -3,6 +3,8 @@
 //
 //	hyperbutler-dev run [flags]       boot the guest through HCS and serve the Docker API on
 //	                             \\.\pipe\docker_engine_hyperbutler until Ctrl+C
+//	hyperbutler-dev sandbox [flags]   boot the agent sandbox image, copy a project in through
+//	                             sbxd and list the session's changes (ADR 0009)
 //	hyperbutler-dev mkimage [flags]   write a `docker load` tar of a scratch image holding
 //	                             one static busybox, without any network access
 //
@@ -24,6 +26,8 @@ func main() {
 	switch os.Args[1] {
 	case "run":
 		err = runCmd(os.Args[2:])
+	case "sandbox":
+		err = sandboxCmd(os.Args[2:])
 	case "mkimage":
 		err = mkimageCmd(os.Args[2:])
 	default:
@@ -36,6 +40,6 @@ func main() {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: hyperbutler-dev run|mkimage [flags]   (development harness, see -h of each)")
+	fmt.Fprintln(os.Stderr, "usage: hyperbutler-dev run|sandbox|mkimage [flags]   (development harness, see -h of each)")
 	os.Exit(2)
 }

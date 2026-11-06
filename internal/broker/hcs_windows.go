@@ -549,6 +549,7 @@ func (b *HCSBackend) Start(ctx context.Context, spec VMSpec) (VMStatus, error) {
 		Kernel: img.set.Kernel, Initrd: img.set.Initrd, System: img.set.System,
 		Data: v.disk.Path(), BlankData: spec.BlankDisk,
 		Net: spec.Net, Share: spec.Share, DaemonConfig: spec.DaemonConfig,
+		Sandbox:     spec.Slot != 0,
 		ConsolePipe: b.cfg.consolePipe,
 	})
 	if err != nil {

@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/Higangssh/hyperbutler/internal/guestctl"
+	"github.com/Higangssh/hyperbutler/internal/sandbox/wire"
 	"github.com/Higangssh/hyperbutler/internal/transport"
 	"github.com/Higangssh/hyperbutler/internal/vm"
 	"github.com/Higangssh/hyperbutler/internal/vmsecret"
@@ -255,5 +256,49 @@ func TestHashTableArgs(t *testing.T) {
 func TestControlPort(t *testing.T) {
 	if ControlPort != guestctl.ControlPort {
 		t.Fatalf("ControlPort %d, guestctl.ControlPort %d", ControlPort, guestctl.ControlPort)
+	}
+	if SandboxPort != wire.Port || SandboxCopyPort != wire.CopyPort {
+		t.Fatalf("sandbox ports %d and %d, wire %d and %d", SandboxPort, SandboxCopyPort, wire.Port, wire.CopyPort)
+	}
+}
+
+// TestBuildSandbox: a session VM offers sbxd's ports and nothing of the Docker VM's.
+func TestBuildSandbox(t *testing.T) {
+	s := *golden["release"]
+	s.Share, s.DaemonConfig, s.Sandbox = false, false, true
+	n := *s.Net
+	n.HostGateway = false
+	s.Net = &n
+	c, err := Build(&s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]bool{}
+	for _, svc := range c.Services {
+		got[svc.ID.String()] = true
+	}
+	for _, p := range []uint32{SandboxPort, SandboxCopyPort, NetPort} {
+		if !got[transport.VsockServiceID(p).String()] {
+			t.Errorf("no service for port %d", p)
+		}
+	}
+	for _, p := range []uint32{DockerPort, ControlPort, SharePort} {
+		if got[transport.VsockServiceID(p).String()] {
+			t.Errorf("a session offers port %d", p)
+		}
+	}
+	if len(c.Services) != 3 {
+		t.Errorf("%d services", len(c.Services))
+	}
+	for name, mut := range map[string]func(*Spec){
+		"share":        func(s *Spec) { s.Share = true },
+		"daemon":       func(s *Spec) { s.DaemonConfig = true },
+		"host gateway": func(s *Spec) { n := *s.Net; n.HostGateway = true; s.Net = &n },
+	} {
+		bad := s
+		mut(&bad)
+		if _, err := Build(&bad); err == nil {
+			t.Errorf("%s: a session was built with it", name)
+		}
 	}
 }

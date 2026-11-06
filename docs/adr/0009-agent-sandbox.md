@@ -297,10 +297,46 @@ guest input, a fuzz target:
 
 A test runs the whole cycle without a VM: copy in, an agent's edits, list and read
 through the wire client, apply; a file the user edited meanwhile stays as a conflict,
-and `.git` and `.env` never cross. Still to come in this phase: the sandbox image
-(Debian slim, with `sbxd`), the engine's session manager and `hyperbutler sandbox`
-commands, a terminal for the agent, the diff view, the git bundle for commits, and the
-`open` and `locked` egress modes.
+and `.git` and `.env` never cross. Still to come in this phase: the engine's session
+manager and `hyperbutler sandbox` commands, a terminal for the agent, the diff view, the
+git bundle for commits, and the `open` and `locked` egress modes.
+
+### The sandbox image (2026-11-06)
+
+`guest/sandbox/build.ps1` builds it on Windows without WSL, as the Docker image is built:
+
+- The system disk is Debian 13 (trixie) from `mmdebstrap`, in the digest-pinned
+  `debian:trixie-slim` container that `guest/sandbox/debian.lock` names, on any Docker
+  Engine. The lock pins a snapshot.debian.org timestamp: apt reads the indexes from the
+  snapshot only and checks their signatures against the container's keyring, so the
+  lock decides every version and hash. The packages themselves come from Debian's own
+  mirrors (fast) and from the snapshot only when the mirrors no longer carry a file
+  (the snapshot is slow and answers 503 under load); apt checks each against the
+  snapshot's indexes either way. `sandbox-packages.tsv` lists what went in, for the
+  source offer.
+- The kernel and the stage-1 initramfs are the Docker image's: the build checks that the
+  kernel's version names the kernel modules it copies in, and writes its own
+  `image.json`, so the sandbox image has its own pin (`imageset.SandboxPin`).
+- `/sbin/init` runs tini as PID 1 (it reaps what an agent's processes leave behind) and
+  `guest/sandbox/init`, which mounts the session disk (formatted only when blank, by the
+  Docker VM's rule) for `/workspace`, `/home`, `/usr/local` and `/var/lib/hyperbutler`,
+  and starts `sbxd` as the agent user (uid 1000, no capabilities, no new privileges).
+  `npm i -g` writes to `/usr/local` on the session disk; the root stays read-only.
+- A session VM's hvsock table holds sbxd's two ports and the network link only
+  (`vmtemplate.Spec.Sandbox`, which the broker sets for slots 1 to 4): not the Docker API
+  or the control channel, which the first broker change still offered to a session.
+- `hyperbutler-dev sandbox -image … -project DIR` boots the image in its own process,
+  copies the project in and prints the review, until the session manager exists.
+
+First image (snapshot 20261105T000000Z): 565 packages, an 814 MiB tree in a 368 MiB
+system disk (lz4hc), built in about 4.5 minutes on the reference laptop. Booted through
+HCS with no data disk, the init reaches `sbxd` 0.17 s after stage 1 starts, and this
+repository (1,049 files, 7.8 MB, `.env` files kept out) is copied in 1.24 s after the VM
+starts. Fixed on the way: a session's dial waited out hvsock's 30 s connect timeout when
+it came before sbxd listened (each attempt now gets one second); trixie's essential set
+has no `mount`; Debian's kmod needs `depmod`'s binary indexes. The build now checks that
+every command the init runs is in the tree. Changes made inside the session wait for
+the agent's terminal.
 
 Reviewed on 2026-11-05. Fixed: a `.git` at any depth (a planted `sub/.git` would run
 code at the next `git status`) is never applied and never copied; a work tree with no

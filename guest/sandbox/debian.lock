@@ -1,0 +1,22 @@
+# Pinned inputs for the sandbox image's system disk (ADR 0009): Debian 13 (trixie), glibc.
+#
+# builder   the container the system tree is built in, by digest. Its debian-archive-keyring
+#           is the trust anchor: apt checks the snapshot's InRelease signatures against
+#           it, and every package against the signed indexes. The packages come over plain
+#           HTTP for that reason (the image has no CA certificates yet); a tampered file
+#           fails the hash check. The files come from deb.debian.org and security.debian.org
+#           first, the snapshot only for what they no longer carry (build-rootfs.sh).
+# snapshot  the snapshot.debian.org timestamp of the debian and debian-security archives.
+#           A snapshot never changes, so the same timestamp gives the same package
+#           versions; build-rootfs.sh writes them to sandbox-packages.tsv.
+# packages  installed on top of Debian's essential set, without recommends: what agents
+#           and the builds they run expect (ADR 0009, "Sessions and disks"), and what
+#           the session init needs (tini, busybox for poweroff, kmod, iproute2, e2fsprogs,
+#           mount).
+#
+# Bump the snapshot to pick up Debian's security updates; bump the builder with it.
+builder   debian:trixie-slim@sha256:a72b4433de1cf7d6bae0c4cee74d0547f58601a643b3375f070c51600d63b6b2
+snapshot  20261105T000000Z
+suite     trixie
+packages  bash,busybox,ca-certificates,curl,e2fsprogs,file,git,iproute2,kmod,less,mount,openssh-client,patch,procps,tini,unzip,xz-utils
+packages  build-essential,nodejs,npm,python3,python3-pip,python3-venv,ripgrep
