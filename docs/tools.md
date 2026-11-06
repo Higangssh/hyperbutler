@@ -98,8 +98,9 @@ in a confusing way. Back to the default: `hyperbutler config unset pipe`, then
 
 The two engines keep separate data disks; nothing is shared or migrated automatically.
 With both running, one command copies images and volumes; the manual steps below it are
-the fallback. Containers are not moved: create them again in hyperbutler from their
-compose files (`docker compose up`) or `docker run` lines.
+the fallback. Containers are not moved yet: create them again in hyperbutler from their
+compose files (`docker compose up`) or `docker run` lines. Recreating the ones Compose does
+not own is planned (REQ-UX-024).
 
 ### `hyperbutler import --from-desktop`
 

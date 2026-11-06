@@ -69,6 +69,7 @@ For each scenario:
 | S3.6 | Compose plugin and credential helper (`credsStore: desktop`) | done (2026-11-01) | REQ-UX-019 |
 | S3.7 | Moving images and volumes from Docker Desktop | done (docs, 2026-11-01; `import --from-desktop` for 0.2, run against a stand-in, not Desktop) | REQ-UX-021, REQ-UX-023 |
 | S3.8 | WSL 2–based Docker Desktop and hyperbutler's VM at the same time | unknown, needs a bench | REQ-PLAT-004 |
+| S3.9 | Moving containers made with `docker run`, not Compose, from Docker Desktop | open (asked by a user, 2026-11-06; OrbStack does it on macOS, Podman and Rancher Desktop do not) | REQ-UX-024 (new) |
 | S4.1 | PowerShell, cmd, Git Bash | small | REQ-API-001 |
 | S4.2 | VS Code Docker extension and Dev Containers | unknown, likely none | REQ-API-002 |
 | S4.3 | Testcontainers, Docker SDKs | docs done (2026-11-01); `bench/compat-tools` open | REQ-API-002, REQ-API-003 |
