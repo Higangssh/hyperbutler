@@ -463,7 +463,7 @@ Never move a published tag.
 `dist/package.ps1 -Snapshot` builds the same zip from a local image
 (`guest/prototype/build.ps1`). It marks the zip as a snapshot that must not be
 redistributed (no source bundle, no image provenance), and relaxes the clean-tree and
-version checks. The size limit still applies. See CONTRIBUTING.md.
+version checks. The size limit still applies. See [development.md](development.md#packaging).
 
 ## Adversarial review
 

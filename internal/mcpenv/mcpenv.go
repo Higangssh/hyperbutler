@@ -13,7 +13,7 @@
 // that sorts after the SDK's would run the SDK's init first and bring the panic back.
 // The subprocess tests catch that: TestMalformedMCPGODEBUG in cmd/hyperbutler (Windows)
 // and TestMalformedMCPGODEBUGSubprocess in internal/mcpserver (every platform) start
-// their test binary again with MCPGODEBUG=x and fail if it panics. See CONTRIBUTING.md.
+// their test binary again with MCPGODEBUG=x and fail if it panics. See docs/development.md.
 package mcpenv
 
 import (
