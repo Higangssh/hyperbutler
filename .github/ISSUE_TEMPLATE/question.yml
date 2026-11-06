@@ -1,0 +1,14 @@
+name: Question
+description: Ask how something works, or whether what you see is a bug
+labels: [question]
+body:
+  - type: textarea
+    id: question
+    attributes:
+      label: What would you like to know?
+    validations:
+      required: true
+  - type: input
+    id: windows
+    attributes:
+      label: Windows edition and build (winver), if it matters

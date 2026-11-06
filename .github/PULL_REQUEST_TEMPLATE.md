@@ -18,6 +18,6 @@ Requirements: <!-- REQ-... -->
 
 ## Checklist
 
-- [ ] Commits follow Conventional Commits and are signed off (`-s`)
+- [ ] Commits follow the `area: summary` style in CONTRIBUTING.md and are signed off (`-s`)
 - [ ] Docs/ADR updated if behavior or design changed
 - [ ] New dependencies have a compatible license and a stated reason
