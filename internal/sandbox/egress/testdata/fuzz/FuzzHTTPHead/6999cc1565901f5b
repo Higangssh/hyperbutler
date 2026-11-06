@@ -1,0 +1,2 @@
+go test fuzz v1
+[]byte("T /x HTTP/1.0\r\nhost:a.aepexlmD :80\r\nAccept: */*\r\n\r\n")

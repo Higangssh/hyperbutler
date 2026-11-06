@@ -48,6 +48,25 @@ type dnsHandler struct {
 	hostGateway func() (netip.Addr, bool)
 	// onQuery, if set, is told the name and type of every query that is looked up.
 	onQuery func(name, typ string)
+	// egress, if set, decides which questions reach res and filters the addresses that
+	// come back (Config.Egress).
+	egress Egress
+}
+
+// filterAnswer gives the addresses of a successful lookup to egress, if there is one.
+// Addresses in the guest subnet are not offered, so they cannot be pinned: resolve never
+// answers with them.
+func (h *dnsHandler) filterAnswer(host string, ips []netip.Addr) []netip.Addr {
+	if h.egress == nil {
+		return ips
+	}
+	out := make([]netip.Addr, 0, len(ips))
+	for _, ip := range ips {
+		if ip = ip.Unmap(); !h.subnet.Contains(ip) {
+			out = append(out, ip)
+		}
+	}
+	return h.egress.Answer(host, out)
 }
 
 // local answers the names this forwarder owns: HostGatewayNames and the reverse names
@@ -188,6 +207,20 @@ func (h *dnsHandler) resolve(ctx context.Context, m *dns.Msg, q dns.Question) {
 		return
 	}
 	host := strings.TrimSuffix(name, ".")
+	if h.egress != nil {
+		// One spelling for the hook and the resolver: the case of a query name would
+		// otherwise carry bits to the allowed name's name server.
+		host = strings.ToLower(host)
+		if !h.egress.AllowQuery(host, q.Qtype) {
+			switch q.Qtype {
+			case dns.TypeA, dns.TypeAAAA, dns.TypeCNAME:
+				m.Rcode = dns.RcodeNameError
+			default:
+				m.Rcode = dns.RcodeRefused
+			}
+			return
+		}
+	}
 	hdr := func(t uint16) dns.RR_Header {
 		return dns.RR_Header{Name: name, Rrtype: t, Class: dns.ClassINET, Ttl: answerTTL}
 	}
@@ -201,6 +234,9 @@ func (h *dnsHandler) resolve(ctx context.Context, m *dns.Msg, q dns.Question) {
 	case dns.TypeA:
 		var ips []netip.Addr
 		ips, err = h.res.LookupNetIP(ctx, "ip4", host)
+		if err == nil {
+			ips = h.filterAnswer(host, ips)
+		}
 		for _, ip := range ips {
 			// DNS rebinding: a name from outside that points into the guest subnet
 			// would let a page or a file a container fetches steer it at the host
@@ -214,7 +250,11 @@ func (h *dnsHandler) resolve(ctx context.Context, m *dns.Msg, q dns.Question) {
 	case dns.TypeAAAA:
 		// The stack is IPv4 only. Answer NODATA if the name exists, so clients do not
 		// wait for AAAA or try addresses they cannot reach.
-		_, err = h.res.LookupNetIP(ctx, "ip4", host)
+		var ips []netip.Addr
+		ips, err = h.res.LookupNetIP(ctx, "ip4", host)
+		if err == nil {
+			h.filterAnswer(host, ips)
+		}
 	case dns.TypeCNAME:
 		var c string
 		c, err = h.res.LookupCNAME(ctx, host)

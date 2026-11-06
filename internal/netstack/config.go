@@ -73,6 +73,10 @@ type Config struct {
 	// interface, read again at most once per second. Tests replace it.
 	HostAddrs func() ([]netip.Addr, error)
 
+	// Egress, if set, narrows DNS, TCP and UDP further than Policy does (ADR 0009). nil
+	// means none, as for the Docker VM. It must be a nil interface then, not a typed nil.
+	Egress Egress
+
 	// LinkCRC is the per-frame CRC-32C of an offload-mode guest link (ADR 0006,
 	// "Integrity"). The guest must be told the same (hyperbutler.netcrc, see
 	// CRCMode.KernelArg); a guest that expects another link version refuses the link.

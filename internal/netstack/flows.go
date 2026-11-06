@@ -66,9 +66,12 @@ type flowLog struct {
 	seq       uint64
 }
 
+// routeDenied is the Route of a flow the stack refused.
+const routeDenied = "denied"
+
 func routeName(tgt Target, err error) string {
 	if err != nil {
-		return "denied"
+		return routeDenied
 	}
 	switch tgt.Kind {
 	case TargetForward:

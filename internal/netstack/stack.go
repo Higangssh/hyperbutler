@@ -166,7 +166,7 @@ func New(cfg Config, log *slog.Logger) (*Stack, error) {
 		cfg:       cfg,
 		ep:        ep,
 		pol:       pol,
-		dns:       &dnsHandler{res: cfg.Resolver, timeout: cfg.DNSTimeout, subnet: cfg.Subnet, hostGateway: pol.hostGatewayDNS},
+		dns:       &dnsHandler{res: cfg.Resolver, timeout: cfg.DNSTimeout, subnet: cfg.Subnet, hostGateway: pol.hostGatewayDNS, egress: cfg.Egress},
 		hgSem:     make(chan struct{}, cfg.MaxHostGatewayConns),
 		hgUDPSem:  make(chan struct{}, min(maxHostGatewayUDPFlows, cfg.MaxUDPFlows)),
 		log:       log,
@@ -325,7 +325,18 @@ func (n *Stack) handleTCP(r *tcp.ForwarderRequest) {
 	id := r.ID()
 	dst := netip.AddrPortFrom(netipAddr(id.LocalAddress), id.LocalPort)
 	tgt, err := n.pol.Route(dst)
-	n.flows.flow("tcp", dst, routeName(tgt, err))
+	decision := ConnAllow
+	if err == nil && n.cfg.Egress != nil {
+		decision = n.cfg.Egress.Conn(dst)
+		if decision != ConnAllow && decision != ConnInspect {
+			err = ErrEgressDenied
+		}
+	}
+	// An inspected connection's route is known only when it is decided (relayInspected).
+	inspect := err == nil && decision == ConnInspect
+	if !inspect {
+		n.flows.flow("tcp", dst, routeName(tgt, err))
+	}
 	if err != nil {
 		n.st.tcpDenied.Add(1)
 		n.log.Debug("guest tcp denied", "dst", dst, "err", err)
@@ -335,6 +346,9 @@ func (n *Stack) handleTCP(r *tcp.ForwarderRequest) {
 	select {
 	case n.tcpSem <- struct{}{}:
 	default:
+		if inspect {
+			n.flows.flow("tcp", dst, routeDenied)
+		}
 		n.st.tcpRefused.Add(1)
 		r.Complete(true)
 		return
@@ -344,6 +358,9 @@ func (n *Stack) handleTCP(r *tcp.ForwarderRequest) {
 		select {
 		case n.hgSem <- struct{}{}:
 		default:
+			if inspect {
+				n.flows.flow("tcp", dst, routeDenied)
+			}
 			n.st.tcpRefused.Add(1)
 			n.log.Debug("guest tcp refused: host gateway connection limit", "dst", dst)
 			r.Complete(true)
@@ -351,15 +368,12 @@ func (n *Stack) handleTCP(r *tcp.ForwarderRequest) {
 		}
 		defer func() { <-n.hgSem }()
 	}
-
-	ctx, cancel := context.WithTimeout(n.ctx, n.cfg.DialTimeout)
-	var out net.Conn
-	if tgt.Kind == TargetHostGateway {
-		out, err = n.dialHostGateway(ctx, "tcp", tgt.Addr.Port())
-	} else {
-		out, err = n.dialer(tgt.Kind == TargetForward).DialContext(ctx, "tcp", tgt.Addr.String())
+	if inspect {
+		n.relayInspected(r, dst, tgt)
+		return
 	}
-	cancel()
+
+	out, err := n.dialTarget(tgt)
 	if err != nil {
 		n.st.tcpRefused.Add(1)
 		n.log.Debug("guest tcp dial failed", "dst", tgt.Addr, "err", err)
@@ -393,6 +407,113 @@ func (n *Stack) handleTCP(r *tcp.ForwarderRequest) {
 	stop := context.AfterFunc(n.ctx, func() { _ = in.Close(); _ = out.Close() })
 	defer stop()
 	proxy(in, ep, out)
+}
+
+// dialTarget dials where Route said a guest connection goes.
+func (n *Stack) dialTarget(tgt Target) (net.Conn, error) {
+	ctx, cancel := context.WithTimeout(n.ctx, n.cfg.DialTimeout)
+	defer cancel()
+	if tgt.Kind == TargetHostGateway {
+		return n.dialHostGateway(ctx, "tcp", tgt.Addr.Port())
+	}
+	return n.dialer(tgt.Kind == TargetForward).DialContext(ctx, "tcp", tgt.Addr.String())
+}
+
+// relayInspected handles a ConnInspect connection: the guest's handshake completes first,
+// because the guest sends nothing before it, and nothing is dialed until Egress.Inspect
+// has allowed what the guest sent. The guest's bytes then go out unchanged. Route has
+// already passed, and the dial makes the same checks as for any other connection.
+func (n *Stack) relayInspected(r *tcp.ForwarderRequest, dst netip.AddrPort, tgt Target) {
+	var wq waiter.Queue
+	ep, terr := r.CreateEndpoint(&wq)
+	r.Complete(false)
+	if terr != nil {
+		n.flows.flow("tcp", dst, routeDenied)
+		return
+	}
+	in := gonet.NewTCPConn(&wq, ep)
+	defer n.sizeBuffers(ep)()
+	stopIn := context.AfterFunc(n.ctx, func() { _ = in.Close() })
+	defer stopIn()
+	out := n.admitInspected(in, dst, tgt)
+	if out == nil {
+		// A reset, not a close: the guest sees a refusal, and the endpoint does not stay
+		// in TIME-WAIT.
+		ep.SocketOptions().SetLinger(tcpip.LingerOption{Enabled: true})
+		_ = in.Close()
+		return
+	}
+	if tgt.Kind != TargetOut {
+		setLocalBuffers(out)
+	}
+	n.st.tcpActive.Add(1)
+	defer n.st.tcpActive.Add(-1)
+	stopOut := context.AfterFunc(n.ctx, func() { _ = out.Close() })
+	defer stopOut()
+	proxy(in, ep, out)
+}
+
+// admitInspected reads and shows the guest's first bytes to Egress.Inspect, and on allow
+// dials tgt and writes them there. nil means the connection is over; it is counted here.
+func (n *Stack) admitInspected(in *gonet.TCPConn, dst netip.AddrPort, tgt Target) net.Conn {
+	bp := copyBufs.Get().(*[]byte)
+	defer copyBufs.Put(bp)
+	first, ok := n.readInspected(in, dst, (*bp)[:MaxInspectBytes])
+	if !ok {
+		n.flows.flow("tcp", dst, routeDenied)
+		n.st.tcpDenied.Add(1)
+		n.log.Debug("guest tcp denied by inspection", "dst", dst)
+		return nil
+	}
+	n.flows.flow("tcp", dst, routeName(tgt, nil))
+	out, err := n.dialTarget(tgt)
+	if err != nil {
+		n.st.tcpRefused.Add(1)
+		n.log.Debug("guest tcp dial failed", "dst", tgt.Addr, "err", err)
+		return nil
+	}
+	if tgt.Kind == TargetOut && selfConnected(out) {
+		_ = out.Close()
+		n.st.tcpDenied.Add(1)
+		n.log.Debug("guest tcp denied after dial: host address", "dst", tgt.Addr)
+		return nil
+	}
+	// At most MaxInspectBytes into a fresh socket, but the far side need not read them.
+	_ = out.SetWriteDeadline(time.Now().Add(n.cfg.DialTimeout))
+	if _, err := out.Write(first); err != nil {
+		_ = out.Close()
+		n.st.tcpRefused.Add(1)
+		n.log.Debug("guest tcp first bytes failed", "dst", tgt.Addr, "err", err)
+		return nil
+	}
+	_ = out.SetWriteDeadline(time.Time{})
+	return out
+}
+
+// readInspected reads into buf until Egress.Inspect decides. It reports what was read
+// and whether it was allowed. A full buffer, inspectTimeout and the guest closing without
+// a decision all deny.
+func (n *Stack) readInspected(in *gonet.TCPConn, dst netip.AddrPort, buf []byte) ([]byte, bool) {
+	_ = in.SetReadDeadline(time.Now().Add(inspectTimeout))
+	have := 0
+	for have < len(buf) {
+		k, err := in.Read(buf[have:])
+		have += k
+		if k > 0 {
+			switch n.cfg.Egress.Inspect(dst, buf[:have]) {
+			case InspectAllow:
+				_ = in.SetReadDeadline(time.Time{})
+				return buf[:have], true
+			case InspectMore:
+			default:
+				return nil, false
+			}
+		}
+		if err != nil {
+			return nil, false
+		}
+	}
+	return nil, false
 }
 
 // dialer returns a dialer that re-checks the policy on the address actually connected
@@ -523,6 +644,9 @@ func (n *Stack) handleUDP(r *udp.ForwarderRequest) bool {
 	tgt, err := n.pol.Route(dst)
 	if err == nil && (tgt.Kind == TargetForward || tgt.Addr.Port() == 0) {
 		err = ErrBlockedAddress
+	}
+	if err == nil && n.cfg.Egress != nil && !n.cfg.Egress.UDP(dst) {
+		err = ErrEgressDenied
 	}
 	n.flows.flow("udp", dst, routeName(tgt, err))
 	if err != nil {

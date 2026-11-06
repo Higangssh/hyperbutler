@@ -351,6 +351,58 @@ temporary file survives a crash before its rename; volumes without POSIX rename 
 older SMB) fail with a raw status; `Apply` itself is not yet fuzzed against a directory
 (REQ-SBX-003 asks for it).
 
+### Egress as built (2026-11-07)
+
+`internal/sandbox/egress` is a `netstack.Egress` hook on the session's stack; `open` has no
+hook at all, and the Docker VM's network does not change. The hook narrows and never widens:
+an address it allows still goes through the stack's Policy.
+
+Enforced in `dev` and `locked`:
+
+- **DNS**: only A, AAAA and CNAME of a name on the list reach the host's resolver, in lower
+  case. Anything else causes no lookup of any kind: NXDOMAIN for those three types, REFUSED
+  for the others. The guest subnet's reverse names stay local.
+- **Answers**: private, loopback, link-local, CGNAT, ULA and benchmark addresses, and the IPv6
+  forms that embed an IPv4 address, are dropped unless the entry says `lan:`. The rest are
+  pinned to the name for 5 minutes, renewed by each answer and each accepted connection; 4096
+  pins at most, the oldest goes first.
+- **Connections**: an unpinned address is refused on every port, which is what stops IP
+  literals, DNS over TCP, DoT and DoH to outside servers. Nothing is dialed before the
+  decision. On 443 and 80 the handshake with the guest completes first and at most 16 KiB and
+  5 seconds of its first bytes are read: the ClientHello's one server name, or `dev`'s one
+  Host header, must be a name that address is pinned for, and the bytes then go out unchanged.
+  Other ports need an entry that names them, by address only. `host:port` allows that port
+  only, so `github.com` and `github.com:22` are two entries.
+- **Refused hellos and heads**: not TLS, SSLv2, no server name, several, ECH (`0xfe0d`, its
+  drafts and ESNI), any length that does not add up; no Host, several, folded headers, bare
+  LF, absolute-form targets, CONNECT.
+- **UDP** is never forwarded, so QUIC falls back to TCP.
+- **Wildcards** (`*.host`, any depth, not `host` itself, never a whole top-level domain) get
+  64 distinct names per session. The name is counted at the question, because the question is
+  the data channel; past the cap it is blocked and counted.
+- **Blocked log**: 256 entries by name and kind with a count of the rest. Guest-chosen text is
+  printable ASCII with `\xHH` for everything else, and cut to a bounded length.
+
+Known limits:
+
+- Anything inside TLS and anything after the first request on an HTTP connection go unseen: a
+  client can send an allowed server name and another Host inside (domain fronting), and DNS
+  over HTTPS to an allowed name looks like any HTTPS.
+- A connection on a `host:port` port is checked by address only, so it reaches whatever else
+  shares that address.
+- Up to 64 names of a wildcard still reach the host's resolver, about 16 KB of query names per
+  wildcard per session.
+- A ClientHello must not offer ECH. Browsers that send a placeholder ECH extension when they
+  have no real key, as Chromium does, are refused on 443 until a placeholder can be told apart
+  from the real thing. Clients on Go's `crypto/tls` send none unless configured for ECH.
+- Allowed names can upload: `dev` narrows exfiltration, only `locked` defends against it.
+
+The explicit `HTTP_PROXY` proxy of "Egress modes" is not built, because direct connections are
+enforced in the stack and a second policy path adds nothing to them. Tools that require a proxy
+are not served yet. The question about a new domain (REQ-SBX-006) and `bench/sandbox-egress`
+are still to come; the unit tests with a mock resolver cover REQ-SBX-005 up to the host's
+network.
+
 ## Adversarial review
 
 The first draft was reviewed on 2026-11-05. Each finding and its answer:
