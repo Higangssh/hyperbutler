@@ -159,8 +159,8 @@ func cmdImport(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 		status["volume\x00"+vp.Name] = vp.Status
 	}
 	for _, cp := range plan.Containers {
-		status["container\x00"+cp.Name] = cp.Status
-		details[cp.Name] = cp
+		status["container\x00"+cp.ID] = cp.Status
+		details[cp.ID] = cp
 	}
 	for _, it := range res.Items {
 		out.Items = append(out.Items, resultItemJSON(it, status[it.Kind+"\x00"+itemKey(it)], details))
@@ -168,7 +168,7 @@ func cmdImport(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	for _, it := range res.Skipped {
 		st := desktopimport.StatusUnsupported
 		if it.Kind == desktopimport.KindContainer {
-			st = status["container\x00"+it.Name]
+			st = status["container\x00"+it.ID]
 		}
 		out.Skipped = append(out.Skipped, resultItemJSON(it, st, details))
 	}
@@ -192,10 +192,10 @@ func cmdImport(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 }
 
 func itemKey(it desktopimport.ItemResult) string {
-	if it.Kind == desktopimport.KindImage {
-		return it.ID
+	if it.Kind == desktopimport.KindVolume {
+		return it.Name
 	}
-	return it.Name
+	return it.ID
 }
 
 // cancelOnInterrupt cancels on the first Ctrl+C (the import undoes the item in progress,
@@ -270,7 +270,7 @@ func withContainerPlan(j *ImportItemJSON, cp desktopimport.ContainerPlan) {
 func resultItemJSON(it desktopimport.ItemResult, st desktopimport.Status, details map[string]desktopimport.ContainerPlan) ImportItemJSON {
 	j := itemJSON(it, st)
 	if it.Kind == desktopimport.KindContainer {
-		withContainerPlan(&j, details[it.Name])
+		withContainerPlan(&j, details[it.ID]) // by id: a name need not be unique in what a source lists
 	}
 	return j
 }

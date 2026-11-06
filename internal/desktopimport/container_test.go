@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/Higangssh/hyperbutler/internal/desktopimport/source"
+	"github.com/Higangssh/hyperbutler/internal/share"
 )
 
 // addRun adds a container made with docker run to the fake, with an inspect answer as
@@ -282,7 +283,8 @@ func TestContainerNeedsConfirm(t *testing.T) {
 			}},
 		{name: "hostpid", want: "PID namespace", hc: map[string]any{"PidMode": "host"}},
 		{name: "hostipc", want: "IPC namespace", hc: map[string]any{"IpcMode": "host"}},
-		{name: "dev", want: "devices", hc: map[string]any{"Devices": devices}},
+		{name: "dev", want: "/dev/kvm", hc: map[string]any{"Devices": devices}},
+		{name: "allcaps", want: "SYS_ADMIN", hc: map[string]any{"CapAdd": []string{"cap_sys_admin"}}},
 		{name: "seccomp", want: "security options", hc: map[string]any{"SecurityOpt": []string{"seccomp=unconfined"}}},
 		{name: "unc", want: "network path", hc: map[string]any{"Binds": []string{`\\server\share\x:/data`, "/run/desktop/mnt/host/c/keep:/keep"}},
 			check: func(t *testing.T, hc map[string]any) {
@@ -644,6 +646,8 @@ func TestHostPath(t *testing.T) {
 		"/mnt/host/c":                                    `C:\`,
 		"/run/desktop/mnt/host/wsl/Ubuntu":               `\\wsl$\Ubuntu`,
 		"/mnt/wsl/docker-desktop-bind-mounts/Ubuntu/abc": `\\wsl$\Ubuntu\abc`,
+		`/host_mnt/c/Users\..\..\Windows`:                `/host_mnt/c/Users\..\..\Windows`,
+		`/host_mnt/c/Users/.. /x`:                        `/host_mnt/c/Users/.. /x`,
 		"/var/lib/x":                                     "/var/lib/x",
 		"/run/desktop/mnt/host/c/../etc":                 "/run/desktop/mnt/host/c/../etc",
 		"/run/desktop/mnt/host/ab/x":                     "/run/desktop/mnt/host/ab/x",
@@ -687,6 +691,9 @@ func FuzzMapContainer(f *testing.F) {
 		`{"Name":"web","HostConfig":{"PortBindings":{"80/tcp":[{"HostIp":"127.0.0.1","HostPort":"8080"}],"x":[{"HostPort":";"}]},"Devices":[{"PathOnHost":"/dev/x"}],"CapAdd":["ALL"],"SecurityOpt":["seccomp=unconfined"]}}`,
 		`{"Name":"web","HostConfig":{"NetworkMode":"net"},"NetworkSettings":{"Networks":{"net":{"Aliases":["a"],"IPAMConfig":{"IPv4Address":"10.0.0.1"}},"bad/name":{}}},"Mounts":[{"Type":"volume","Destination":"/anon"}]}`,
 		`{"Name":"web","HostConfig":{"RestartPolicy":{"Name":"sometimes"},"Links":["/a:/b"],"LogConfig":{"Type":"x"}}}`,
+		`{"Name":"web","HostConfig":{"SecurityOpt":["seccomp={\"a\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\"}","apparmor=unconfined","systempaths:unconfined","no-new-privileges","label"]}}`,
+		`{"Name":"web","HostConfig":{"CapAdd":["cap_sys_admin","net_admin"],"DeviceRequests":[{"Driver":"nvidia","DeviceIDs":["0"],"Evil":1}],"Binds":["/host_mnt/c/a\\..\\b:/x","C:\\a\\..\\b:/y"]}}`,
+		`{"Name":"web","Config":{"Labels":{"com.docker.compose.project":""}},"HostConfig":{"Privileged":true,"Mounts":[{"Type":"bind","Source":"C:\\a","Target":"/a","BindOptions":{"Propagation":"rshared"}},{"Type":"volume","Target":"/v","VolumeOptions":{"DriverConfig":{"Name":"nfs"}}}]}}`,
 		`[]`, `null`, `{"HostConfig":7}`,
 	} {
 		f.Add([]byte(s))
@@ -710,7 +717,23 @@ func FuzzMapContainer(f *testing.F) {
 				t.Fatalf("unclean text %q", s)
 			}
 		}
-		if m.project != "" || m.unsupported != "" {
+		if m.project != "" {
+			return // never created
+		}
+		// Whatever else it has, every security option's key is shown, however long the
+		// one before it: what is confirmed must be what is created.
+		joined := strings.Join(m.requires, "\n")
+		for _, o := range in.HostConfig.SecurityOpt {
+			if k := securityKey(o); k != "no-new-privileges" && !strings.Contains(joined, k) {
+				t.Fatalf("security option %q is not in %q", k, joined)
+			}
+		}
+		for _, d := range in.HostConfig.Devices {
+			if !strings.Contains(joined, cleanPath(d.PathOnHost)) {
+				t.Fatalf("device %q is not in %q", d.PathOnHost, joined)
+			}
+		}
+		if m.unsupported != "" {
 			return // never created
 		}
 		if _, err := json.Marshal(m.body); err != nil {
@@ -722,6 +745,28 @@ func FuzzMapContainer(f *testing.F) {
 			hc.UsernsMode == "host" || hc.CgroupnsMode == "host" || len(hc.Devices)+len(hc.DeviceCgroupRules)+len(hc.DeviceRequests) > 0) {
 			t.Fatalf("host access without a confirmation: %s", raw)
 		}
+		if !asked {
+			for _, c := range hc.CapAdd {
+				if dangerousCaps[capName(c)] {
+					t.Fatalf("capability %q without a confirmation", c)
+				}
+			}
+			for _, b := range hc.Binds {
+				if src, _, _, err := share.ParseBind(b); err != nil || hasDotDot(src) {
+					t.Fatalf("bind %q without a confirmation", b)
+				}
+			}
+			for _, ms := range hc.Mounts {
+				if ms.Type == "bind" && hasDotDot(ms.Source) {
+					t.Fatalf("mount source %q without a confirmation", ms.Source)
+				}
+			}
+		}
+		for _, ms := range hc.Mounts {
+			if ms.BindOptions != nil || (ms.VolumeOptions != nil && ms.VolumeOptions.DriverConfig != nil) {
+				t.Fatalf("mount options went into the create: %+v", ms)
+			}
+		}
 		for _, n := range append(slices.Clone(m.volumes), m.networks...) {
 			if strings.ContainsAny(n, `/\:`) {
 				t.Fatalf("name %q would leave its path segment", n)
@@ -731,4 +776,317 @@ func FuzzMapContainer(f *testing.F) {
 			t.Fatalf("a source's helper label was carried over: %v", m.body.Labels)
 		}
 	})
+}
+
+func mapped(t *testing.T, raw string) *mappedContainer {
+	t.Helper()
+	in, err := parseInspect([]byte(raw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return mapContainer(in)
+}
+
+// What is confirmed is what is created: nothing of the list or of an item is cut.
+func TestRequiresShowEverything(t *testing.T) {
+	profile := strings.Repeat("x", 5000)
+	in := map[string]any{"Name": "/web", "HostConfig": map[string]any{"SecurityOpt": []string{
+		"seccomp=" + profile, "apparmor=unconfined", "systempaths=unconfined", "label:disable", "no-new-privileges"}}}
+	raw, _ := json.Marshal(in)
+	m := mapped(t, string(raw))
+	text := strings.Join(m.requires, "|")
+	for _, want := range []string{"seccomp=(5000 bytes)", "apparmor=unconfined", "systempaths=unconfined", "label=disable"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("%q is not in %q", want, text)
+		}
+	}
+	if strings.Contains(text, "xxx") || strings.Contains(text, "no-new-privileges") {
+		t.Errorf("shown: %q", text)
+	}
+	if len(m.body.HostConfig.SecurityOpt) != 5 {
+		t.Errorf("the create lost options: %d", len(m.body.HostConfig.SecurityOpt))
+	}
+
+	// More options than any bound, and the sentence after a long source, and a long target.
+	long := strings.Repeat("d", 300)
+	var opts []string
+	for i := range 40 {
+		opts = append(opts, "key"+string(rune('a'+i%26))+string(rune('a'+i/26))+"=1")
+	}
+	raw, _ = json.Marshal(map[string]any{"Name": "/web", "HostConfig": map[string]any{"SecurityOpt": opts, "Binds": []string{
+		`\\server\` + long + `:/a`, `C:\` + long + `:/` + long}}})
+	m = mapped(t, string(raw))
+	text = strings.Join(listed(m.requires), "|")
+	for _, o := range opts {
+		if !strings.Contains(text, o) {
+			t.Errorf("%s is not shown", o)
+		}
+	}
+	if !strings.Contains(text, "created without this mount") || !strings.Contains(text, "Copy the files") || !strings.Contains(text, long) {
+		t.Errorf("the refused bind's sentence was cut: %q", text)
+	}
+	if b := m.binds[0]; !strings.HasSuffix(b, "-> /"+long) || !strings.Contains(b, `C:\`+long) {
+		t.Errorf("the bind was cut: %q", b)
+	}
+}
+
+func TestDevicesAreDecoded(t *testing.T) {
+	m := mapped(t, `{"Name":"/web","HostConfig":{
+		"Devices":[{"PathOnHost":"/dev/kvm","PathInContainer":"/dev/kvm","CgroupPermissions":"rwm","Evil":"x"},{"PathOnHost":"/dev/fuse\u001b[2J"}],
+		"DeviceRequests":[{"Driver":"nvidia","Count":1,"DeviceIDs":["GPU-0"],"Evil":"y"}],
+		"DeviceCgroupRules":["c 1:3 rwm"]}}`)
+	text := strings.Join(m.requires, "|")
+	for _, want := range []string{"/dev/kvm", "/dev/fuse", "nvidia", "GPU-0", "c 1:3 rwm"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("%q is not in %q", want, text)
+		}
+	}
+	if strings.Contains(text, "\x1b") {
+		t.Errorf("unclean %q", text)
+	}
+	b, err := json.Marshal(m.body.HostConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(b), "Evil") || !strings.Contains(string(b), `"PathOnHost":"/dev/kvm"`) || !strings.Contains(string(b), `"DeviceIDs":["GPU-0"]`) {
+		t.Errorf("create %s", b)
+	}
+	if m := mapped(t, `{"Name":"/web","HostConfig":{}}`); len(m.requires) != 0 {
+		t.Errorf("none: %q", m.requires)
+	}
+}
+
+func TestDangerousCapsNeedConfirm(t *testing.T) {
+	p := newPair(t)
+	img := p.src.addImage("myapp:1")
+	for name, caps := range map[string][]string{
+		"all": {"ALL"}, "lower": {"sys_admin"}, "prefix": {"CAP_SYS_MODULE"}, "mixed": {"Cap_Sys_Rawio"}, "ptrace": {"SYS_PTRACE"},
+		"dac": {"DAC_READ_SEARCH"}, "bpf": {"BPF"}, "perf": {"PERFMON"},
+	} {
+		p.src.addRun(name, img, map[string]any{"CapAdd": caps})
+	}
+	p.src.addRun("fine", img, map[string]any{"CapAdd": []string{"NET_ADMIN"}})
+	im := p.open(t)
+	plan := planAll(t, im)
+	res := runPlan(t, im, plan, Selection{AllContainers: true})
+	got := outcomes(res)
+	if got["container:fine"] != OutcomeImported || len(res.Skipped) != 8 || len(p.dst.createdBody) != 1 {
+		t.Fatalf("%v, skipped %+v", got, res.Skipped)
+	}
+	if cp := planned(t, plan, "all"); cp.Status != StatusConfirm || !strings.Contains(cp.Reason, "capability ALL") || !slices.Equal(cp.CapAdd, []string{"ALL"}) {
+		t.Errorf("all: %+v", cp)
+	}
+	if cp := planned(t, plan, "prefix"); !strings.Contains(cp.Reason, "capability SYS_MODULE") {
+		t.Errorf("prefix: %+v", cp)
+	}
+}
+
+// A create that was canceled may still have made the container: it is removed when it is
+// this run's, and otherwise the result says so and its network stays.
+func TestCreateCanceled(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		hook    func(p *pair, c *fContainer)
+		remains bool
+	}{
+		{name: "removed"},
+		{name: "not this run's", remains: true, hook: func(_ *pair, c *fContainer) { delete(c.Labels, source.RunLabel) }},
+		{name: "removal fails", remains: true, hook: func(p *pair, _ *fContainer) {
+			p.dst.failRemove = func(*fContainer) bool { return true }
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p := newPair(t)
+			img := p.src.addImage("myapp:1")
+			p.src.networks["backend"] = map[string]any{"Name": "backend", "Driver": "bridge"}
+			p.src.addRun("web", img, map[string]any{"NetworkMode": "backend"}, func(in map[string]any) {
+				in["NetworkSettings"] = map[string]any{"Networks": map[string]any{"backend": map[string]any{}}}
+			})
+			im := p.open(t)
+			plan := planAll(t, im)
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			p.dst.onCreate = func(c *fContainer) {
+				if tc.hook != nil {
+					tc.hook(p, c)
+				}
+				cancel() // and the handler answers 201
+			}
+			res, err := im.Run(ctx, plan, Selection{Containers: []string{"web"}}, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var it ItemResult
+			for _, x := range res.Items {
+				if x.Kind == KindContainer {
+					it = x
+				}
+			}
+			if it.Outcome != OutcomeCanceled {
+				t.Fatalf("%+v", it)
+			}
+			p.dst.mu.Lock()
+			defer p.dst.mu.Unlock()
+			there := false
+			for _, c := range p.dst.containers {
+				there = there || c.Name == "web"
+			}
+			if there != tc.remains || (p.dst.networks["backend"] != nil) != tc.remains {
+				t.Errorf("container there %v, network %v; want %v", there, p.dst.networks["backend"], tc.remains)
+			}
+			if said := strings.Contains(it.Reason, "may remain"); said != tc.remains || strings.Contains(it.Reason, "nothing of it is left") == tc.remains {
+				t.Errorf("reason %q", it.Reason)
+			}
+		})
+	}
+}
+
+// A failed create dockerd answered also looks: it may have made the container first.
+func TestCreateFailsAfterMaking(t *testing.T) {
+	p := newPair(t)
+	p.src.addRun("web", p.src.addImage("myapp:1"), nil)
+	p.dst.failAfterCreate = "web"
+	stray := p.dst.addContainer("stray", "created", "")
+	im := p.open(t)
+	plan := planAll(t, im)
+	res := runPlan(t, im, plan, Selection{Containers: []string{"web"}})
+	if outcomes(res)["container:web"] != OutcomeFailed || p.dst.containers[stray.ID] == nil {
+		t.Errorf("%+v", res)
+	}
+	for _, c := range p.dst.containers {
+		if c.Name == "web" {
+			t.Errorf("left behind: %+v", c)
+		}
+	}
+}
+
+// An empty project label names no project: the container is checked like any other.
+func TestEmptyComposeLabel(t *testing.T) {
+	p := newPair(t)
+	p.src.addRun("web", p.src.addImage("myapp:1"), map[string]any{"Privileged": true}, func(in map[string]any) {
+		in["Config"].(map[string]any)["Labels"] = map[string]string{composeProjectLabel: ""}
+	})
+	im := p.open(t)
+	plan := planAll(t, im)
+	cp := planned(t, plan, "web")
+	if cp.Status != StatusConfirm || cp.Project != "" || !strings.Contains(cp.Reason, "privileged") {
+		t.Fatalf("plan %+v", cp)
+	}
+	res := runPlan(t, im, plan, Selection{ConfirmContainers: []string{"web"}})
+	if !res.OK() || p.dst.createdBody[0]["HostConfig"].(map[string]any)["Privileged"] != true {
+		t.Errorf("%+v", res)
+	}
+}
+
+// A network to create is shown before the copy, escaped, with the subnet it takes along;
+// an IPAM driver hyperbutler does not have stays behind, and the plan says so.
+func TestNewNetworkIsShown(t *testing.T) {
+	p := newPair(t)
+	img := p.src.addImage("myapp:1")
+	p.src.networks["fixed"] = map[string]any{"Name": "fixed", "Driver": "bridge",
+		"IPAM": map[string]any{"Driver": "evil", "Config": []map[string]string{{"Subnet": "10.9.0.0/24\x1b[2J"}}}}
+	p.src.addRun("web", img, map[string]any{"NetworkMode": "fixed"}, func(in map[string]any) {
+		in["NetworkSettings"] = map[string]any{"Networks": map[string]any{"fixed": map[string]any{"IPAMConfig": map[string]any{"IPv4Address": "10.9.0.5"}}}}
+	})
+	im := p.open(t)
+	plan := planAll(t, im)
+	cp := planned(t, plan, "web")
+	notes := strings.Join(cp.Notes, "|")
+	if !strings.Contains(notes, "network fixed will be created (subnet 10.9.0.0/24") || !strings.Contains(notes, "IPAM driver evil") || strings.Contains(notes, "\x1b") {
+		t.Fatalf("notes %q", notes)
+	}
+	var said []string
+	if _, err := im.Run(context.Background(), plan, Selection{Containers: []string{"web"}}, func(e Event) {
+		if e.Kind == EventNote {
+			said = append(said, e.Message)
+		}
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if text := strings.Join(said, "|"); !strings.Contains(text, "network fixed will be created (subnet 10.9.0.0/24") || strings.Contains(text, "\x1b") {
+		t.Errorf("announced %q", text)
+	}
+	ipam := p.dst.networks["fixed"]["IPAM"].(map[string]any)
+	if ipam["Driver"] != nil || ipam["Config"] == nil {
+		t.Errorf("IPAM %v", ipam)
+	}
+
+	// One hyperbutler has is used as it is: nothing to say.
+	plan = planAll(t, im)
+	if cp := planned(t, plan, "web"); strings.Contains(strings.Join(cp.Notes, "|"), "will be created") {
+		t.Errorf("notes %q", cp.Notes)
+	}
+}
+
+func TestDotDotNeedsConfirm(t *testing.T) {
+	for _, bind := range []string{`/host_mnt/c/Users\..\..\Windows:/x`, `/run/desktop/mnt/host/c/a/../b:/x`, `C:\a\..\b:/x`} {
+		raw, _ := json.Marshal(map[string]any{"Name": "/web", "HostConfig": map[string]any{"Binds": []string{bind}}})
+		m := mapped(t, string(raw))
+		if len(m.requires) != 1 || len(m.body.HostConfig.Binds) != 1 {
+			t.Errorf("%s: requires %q, binds %q", bind, m.requires, m.body.HostConfig.Binds)
+		}
+		if strings.HasPrefix(bind, "/") && !strings.HasPrefix(m.body.HostConfig.Binds[0], "/") {
+			t.Errorf("%s became a Windows path: %q", bind, m.body.HostConfig.Binds)
+		}
+	}
+}
+
+func TestMountOptionsAreNoted(t *testing.T) {
+	m := mapped(t, `{"Name":"/web","HostConfig":{"Mounts":[
+		{"Type":"bind","Source":"C:\\a","Target":"/a","BindOptions":{"Propagation":"rshared"}},
+		{"Type":"bind","Source":"C:\\b","Target":"/b","BindOptions":{"NonRecursive":true}},
+		{"Type":"bind","Source":"C:\\c","Target":"/c","BindOptions":{"CreateMountpoint":true}},
+		{"Type":"bind","Source":"C:\\d","Target":"/d","BindOptions":{}},
+		{"Type":"volume","Source":"pg","Target":"/v","VolumeOptions":{"NoCopy":true,"DriverConfig":{"Name":"nfs","Options":{"o":"addr=x"}}}}]}}`)
+	text := strings.Join(m.notes, "|")
+	for _, want := range []string{"mount at /a", "mount at /b", "mount at /c", "volume driver settings of the mount at /v"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("%q is not in %q", want, text)
+		}
+	}
+	if strings.Contains(text, "mount at /d") {
+		t.Errorf("empty options noted: %q", text)
+	}
+	b, _ := json.Marshal(m.body.HostConfig.Mounts)
+	if strings.Contains(string(b), "BindOptions") || strings.Contains(string(b), "DriverConfig") || !strings.Contains(string(b), `"NoCopy":true`) {
+		t.Errorf("create %s", b)
+	}
+}
+
+// A source that lists one name twice cannot say which a name selects: both are refused.
+func TestDuplicateContainerNames(t *testing.T) {
+	p := newPair(t)
+	img := p.src.addImage("myapp:1")
+	a := p.src.addRun("web", img, nil)
+	b := p.src.addRun("web", img, nil)
+	p.src.addRun("other", img, nil)
+	im := p.open(t)
+	plan := planAll(t, im)
+	n := 0
+	for _, cp := range plan.Containers {
+		if cp.Name == "web" {
+			n++
+			if cp.Status != StatusUnsupported || !strings.Contains(cp.Reason, "more than one") || (cp.ID != a.ID && cp.ID != b.ID) {
+				t.Errorf("%+v", cp)
+			}
+		}
+	}
+	if n != 2 {
+		t.Fatalf("%d in the plan", n)
+	}
+	res := runPlan(t, im, plan, Selection{ConfirmContainers: []string{"web", a.ID}})
+	for _, it := range res.Items {
+		if it.Kind == KindContainer && it.Outcome != OutcomeRefused {
+			t.Errorf("%+v", it)
+		}
+	}
+	res = runPlan(t, im, plan, Selection{AllContainers: true})
+	if len(res.Skipped) != 2 || outcomes(res)["container:other"] != OutcomeImported {
+		t.Errorf("%+v", res)
+	}
+	for _, c := range p.dst.createdBody {
+		if c["Labels"].(map[string]any)[containerFromLabel] == a.ID || c["Labels"].(map[string]any)[containerFromLabel] == b.ID {
+			t.Errorf("created %v", c)
+		}
+	}
 }

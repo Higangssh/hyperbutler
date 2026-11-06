@@ -114,6 +114,8 @@ type ContainerPlan struct {
 
 	spec      *containerSpec
 	confirmed bool // the selection names it in ConfirmContainers
+	// networkNotes are the Notes that say a network will be created.
+	networkNotes []string
 }
 
 // Plan is what Docker Desktop has and how it compares with hyperbutler.

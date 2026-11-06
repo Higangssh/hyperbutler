@@ -161,3 +161,17 @@ func TestContainerPlanJSON(t *testing.T) {
 		t.Errorf("%+v", j)
 	}
 }
+
+// Two containers of one name keep their own details: the JSON goes by id.
+func TestResultItemJSONByID(t *testing.T) {
+	details := map[string]desktopimport.ContainerPlan{"a": {ID: "a", Name: "web", Image: "one:1"}, "b": {ID: "b", Name: "web", Image: "two:2"}}
+	if j := resultItemJSON(desktopimport.ItemResult{Kind: desktopimport.KindContainer, Name: "web", ID: "b"}, desktopimport.StatusUnsupported, details); j.Image != "two:2" {
+		t.Errorf("%+v", j)
+	}
+	if k := itemKey(desktopimport.ItemResult{Kind: desktopimport.KindContainer, Name: "web", ID: "b"}); k != "b" {
+		t.Errorf("key %q", k)
+	}
+	if k := itemKey(desktopimport.ItemResult{Kind: desktopimport.KindVolume, Name: "pg", ID: "x"}); k != "pg" {
+		t.Errorf("key %q", k)
+	}
+}

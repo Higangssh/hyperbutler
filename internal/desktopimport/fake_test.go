@@ -39,9 +39,11 @@ type fakeDocker struct {
 	containers map[string]*fContainer
 	networks   map[string]map[string]any
 
-	created     []fContainer     // every container create, as made
-	createdBody []map[string]any // the create bodies of containers not helpers
-	failCreate  string           // a container create of this name fails
+	created         []fContainer        // every container create, as made
+	createdBody     []map[string]any    // the create bodies of containers not helpers
+	failCreate      string              // a container create of this name fails
+	failAfterCreate string              // a container create of this name makes it, then answers an error
+	onCreate        func(c *fContainer) // under the lock: runs when a container create is done
 
 	// Engine.
 	classic bool   // the classic image store, not containerd's
@@ -502,6 +504,13 @@ func (f *fakeDocker) serve(w http.ResponseWriter, r *http.Request) {
 		}
 		f.containers[c.ID] = c
 		f.created = append(f.created, *c)
+		if f.onCreate != nil {
+			f.onCreate(c)
+		}
+		if f.failAfterCreate != "" && f.failAfterCreate == c.Name {
+			msg(w, 500, "create failed late")
+			return
+		}
 		writeJSON(w, 201, map[string]string{"Id": c.ID})
 	case r.Method == http.MethodGet && len(segs) == 3 && segs[0] == "containers" && segs[2] == "json":
 		f.mu.Lock()
@@ -524,7 +533,7 @@ func (f *fakeDocker) serve(w http.ResponseWriter, r *http.Request) {
 		if c.Started {
 			started = "2026-10-01T00:00:00Z"
 		}
-		writeJSON(w, 200, map[string]any{"Config": map[string]any{"Labels": c.Labels, "Entrypoint": c.Entrypoint}, "State": map[string]any{"Status": c.State, "StartedAt": started}})
+		writeJSON(w, 200, map[string]any{"Id": c.ID, "Config": map[string]any{"Labels": c.Labels, "Entrypoint": c.Entrypoint}, "State": map[string]any{"Status": c.State, "StartedAt": started}})
 	case r.Method == http.MethodGet && len(segs) == 2 && segs[0] == "networks":
 		f.mu.Lock()
 		n := f.networks[segs[1]]

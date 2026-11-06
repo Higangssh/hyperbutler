@@ -62,7 +62,8 @@
 // along; ConfirmContainers selects and confirms by name. Run does containers last: it
 // checks the image and volumes made it, creates a missing network (a bridge only), creates
 // the container and never starts it, and checks it is there in state "created". A
-// failure removes the container and any network the run made for it, and only there.
+// failure removes the container and any network the run made for it, and only there; one
+// it cannot remove, or that lacks the run's label, stays with its network and the result says so.
 //
 // # Docker Desktop is only read
 //

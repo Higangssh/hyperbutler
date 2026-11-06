@@ -3,6 +3,7 @@ package desktopimport
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"maps"
 	"net/http"
@@ -11,9 +12,10 @@ import (
 	"regexp"
 	"slices"
 	"sort"
-	"strconv"
 	"strings"
+	"time"
 
+	"github.com/Higangssh/hyperbutler/internal/desktopimport/source"
 	"github.com/Higangssh/hyperbutler/internal/dockerapi"
 	"github.com/Higangssh/hyperbutler/internal/engine"
 	"github.com/Higangssh/hyperbutler/internal/share"
@@ -38,9 +40,13 @@ const (
 	// maxCreateBody is what hyperbutler's proxy accepts as a container create (it refuses
 	// more, share.maxCreateBody).
 	maxCreateBody = 4 << 20
-	// maxListed bounds a list in a plan's sentence, and maxText each name in it.
-	maxListed = 16
-	maxText   = 200
+	// maxText bounds one name or value in a plan's sentence, and maxPath a path, which a
+	// plan must show whole: the create gets all of it.
+	maxText = 200
+	maxPath = 4096
+	// maxOptValue is how long a security option's value may be and still be shown; a
+	// longer one (an inline seccomp profile) is shown as its size.
+	maxOptValue = 32
 )
 
 // --- docker inspect, the fields used ------------------------------------------------------
@@ -97,10 +103,26 @@ type logConfig struct {
 	Config map[string]string `json:"Config,omitempty"`
 }
 
+// mountDriverConfig is read to say it does not carry over; mapMounts clears it.
+type mountDriverConfig struct {
+	Name    string            `json:"Name,omitempty"`
+	Options map[string]string `json:"Options,omitempty"`
+}
+
 type mountVolumeOptions struct {
-	NoCopy  bool              `json:"NoCopy,omitempty"`
-	Labels  map[string]string `json:"Labels,omitempty"`
-	Subpath string            `json:"Subpath,omitempty"`
+	NoCopy       bool               `json:"NoCopy,omitempty"`
+	Labels       map[string]string  `json:"Labels,omitempty"`
+	Subpath      string             `json:"Subpath,omitempty"`
+	DriverConfig *mountDriverConfig `json:"DriverConfig,omitempty"`
+}
+
+// mountBindOptions is read to say it does not carry over; mapMounts clears it.
+type mountBindOptions struct {
+	Propagation            string `json:"Propagation,omitempty"`
+	NonRecursive           bool   `json:"NonRecursive,omitempty"`
+	CreateMountpoint       bool   `json:"CreateMountpoint,omitempty"`
+	ReadOnlyNonRecursive   bool   `json:"ReadOnlyNonRecursive,omitempty"`
+	ReadOnlyForceRecursive bool   `json:"ReadOnlyForceRecursive,omitempty"`
 }
 
 type mountTmpfsOptions struct {
@@ -114,8 +136,25 @@ type mountSpec struct {
 	Source        string              `json:"Source,omitempty"`
 	Target        string              `json:"Target"`
 	ReadOnly      bool                `json:"ReadOnly,omitempty"`
+	BindOptions   *mountBindOptions   `json:"BindOptions,omitempty"`
 	VolumeOptions *mountVolumeOptions `json:"VolumeOptions,omitempty"`
 	TmpfsOptions  *mountTmpfsOptions  `json:"TmpfsOptions,omitempty"`
+}
+
+// deviceMapping is one --device.
+type deviceMapping struct {
+	PathOnHost        string `json:"PathOnHost"`
+	PathInContainer   string `json:"PathInContainer"`
+	CgroupPermissions string `json:"CgroupPermissions"`
+}
+
+// deviceRequest is one --gpus.
+type deviceRequest struct {
+	Driver       string            `json:"Driver,omitempty"`
+	Count        int64             `json:"Count,omitempty"`
+	DeviceIDs    []string          `json:"DeviceIDs,omitempty"`
+	Capabilities [][]string        `json:"Capabilities,omitempty"`
+	Options      map[string]string `json:"Options,omitempty"`
 }
 
 // hostConfig is both inspect's HostConfig and what a create takes from it.
@@ -160,16 +199,16 @@ type hostConfig struct {
 	CapDrop        []string          `json:"CapDrop,omitempty"`
 
 	// What needs a confirmation (mapContainer) before it goes into a create.
-	Privileged        bool              `json:"Privileged,omitempty"`
-	PidMode           string            `json:"PidMode,omitempty"`
-	IpcMode           string            `json:"IpcMode,omitempty"`
-	UTSMode           string            `json:"UTSMode,omitempty"`
-	UsernsMode        string            `json:"UsernsMode,omitempty"`
-	CgroupnsMode      string            `json:"CgroupnsMode,omitempty"`
-	SecurityOpt       []string          `json:"SecurityOpt,omitempty"`
-	Devices           []json.RawMessage `json:"Devices,omitempty"`
-	DeviceCgroupRules []string          `json:"DeviceCgroupRules,omitempty"`
-	DeviceRequests    []json.RawMessage `json:"DeviceRequests,omitempty"`
+	Privileged        bool            `json:"Privileged,omitempty"`
+	PidMode           string          `json:"PidMode,omitempty"`
+	IpcMode           string          `json:"IpcMode,omitempty"`
+	UTSMode           string          `json:"UTSMode,omitempty"`
+	UsernsMode        string          `json:"UsernsMode,omitempty"`
+	CgroupnsMode      string          `json:"CgroupnsMode,omitempty"`
+	SecurityOpt       []string        `json:"SecurityOpt,omitempty"`
+	Devices           []deviceMapping `json:"Devices,omitempty"`
+	DeviceCgroupRules []string        `json:"DeviceCgroupRules,omitempty"`
+	DeviceRequests    []deviceRequest `json:"DeviceRequests,omitempty"`
 }
 
 type endpointIPAM struct {
@@ -237,6 +276,8 @@ type networkSpec struct {
 	Labels     map[string]string `json:"Labels,omitempty"`
 	Options    map[string]string `json:"Options,omitempty"`
 	IPAM       *networkIPAM      `json:"IPAM,omitempty"`
+
+	notes []string // what the plan says about what does not carry over
 }
 
 type networkIPAM struct {
@@ -300,6 +341,9 @@ var (
 // clean is untrusted text as a plan shows it: one line, no control characters, bounded.
 func clean(s string) string { return dockerapi.Clean(s, maxText) }
 
+// cleanPath is clean for a path.
+func cleanPath(s string) string { return dockerapi.Clean(s, maxPath) }
+
 // mapContainer turns an inspect answer into a create body and what the plan says about
 // it, taking only the fields the create body has. It is a pure function of the answer so
 // it can be fuzzed: the source engine could send anything.
@@ -314,8 +358,9 @@ func mapContainer(in *apiContainerInspect) *mappedContainer {
 		m.rw = *in.SizeRw
 	}
 	labels := in.Config.Labels
-	if project, ok := labels[composeProjectLabel]; ok {
-		m.project, m.projectDir = clean(project), clean(labels[composeWorkingDirLabel])
+	// An empty value names no project, so it is no reason to skip the checks below.
+	if project := labels[composeProjectLabel]; project != "" {
+		m.project, m.projectDir = clean(project), cleanPath(labels[composeWorkingDirLabel])
 		return m
 	}
 	for k := range labels {
@@ -373,6 +418,13 @@ func mapContainer(in *apiContainerInspect) *mappedContainer {
 	if len(hc.CapAdd) > 0 {
 		m.capAdd = listed(slices.Sorted(slices.Values(hc.CapAdd)))
 	}
+	seen := map[string]bool{}
+	for _, c := range slices.Sorted(slices.Values(hc.CapAdd)) {
+		if n := capName(c); dangerousCaps[n] && !seen[n] {
+			seen[n] = true
+			m.requires = append(m.requires, "it adds the capability "+n+" (--cap-add)")
+		}
+	}
 	if m.rw != 0 {
 		what := "may hold files"
 		if m.rw > 0 {
@@ -419,11 +471,22 @@ var desktopHostPrefixes = []string{"/run/desktop/mnt/host/", "/host_mnt/", "/mnt
 // distribution.
 const desktopWSLBinds = "/mnt/wsl/docker-desktop-bind-mounts/"
 
+// hasDotDot reports whether a path has a ".." segment, on either separator. Windows also
+// drops a segment's trailing dots and spaces, so ".. " and "..." count.
+func hasDotDot(p string) bool {
+	for _, seg := range strings.FieldsFunc(p, func(r rune) bool { return r == '/' || r == '\\' }) {
+		if strings.Trim(seg, ". ") == "" && strings.Count(seg, ".") >= 2 {
+			return true
+		}
+	}
+	return false
+}
+
 // hostPath undoes Docker Desktop's view of a Windows path: the source as the user wrote
 // it, so that hyperbutler's own check and proxy read it as such. A path with a ".." stays
 // as it is: it is then only a path inside the VM.
 func hostPath(src string) string {
-	if slices.Contains(strings.Split(src, "/"), "..") {
+	if hasDotDot(src) {
 		return src
 	}
 	if rest, ok := strings.CutPrefix(src, desktopWSLBinds); ok {
@@ -453,12 +516,19 @@ func mapBindSource(src string) (out string, keep bool, why string) {
 	if err := share.CheckBindSource(out); err != nil {
 		// The whole message: it says what to do. hyperbutler's engine would refuse the
 		// source in a create, so a confirmation can only leave the mount out.
-		return "", false, dockerapi.Clean(err.Error(), 1024) + " With a confirmation the container is created without this mount"
+		var ue *share.UnsharableError
+		if errors.As(err, &ue) {
+			ue.Source = cleanPath(ue.Source)
+		}
+		return "", false, dockerapi.CleanText(err.Error(), false) + " With a confirmation the container is created without this mount"
 	}
-	if share.WindowsPath(out) {
-		return out, true, ""
+	switch {
+	case !share.WindowsPath(out):
+		return out, true, "bind source " + cleanPath(out) + " is a folder inside Docker Desktop's VM: hyperbutler's VM has its own, and the content is not copied"
+	case hasDotDot(out):
+		return out, true, "bind source " + cleanPath(out) + " goes through a .., so it may not be the folder it seems"
 	}
-	return out, true, "bind source " + clean(out) + " is a folder inside Docker Desktop's VM: hyperbutler's VM has its own, and the content is not copied"
+	return out, true, ""
 }
 
 // isPathSource tells a path from a volume name in a -v spec.
@@ -500,7 +570,7 @@ func (m *mappedContainer) mapBinds(binds []string, targets map[string]bool) []st
 			s += ":" + opts
 		}
 		out = append(out, s)
-		m.binds = append(m.binds, clean(mapped)+" -> "+clean(target))
+		m.binds = append(m.binds, cleanPath(mapped)+" -> "+cleanPath(target))
 	}
 	return out
 }
@@ -513,6 +583,7 @@ func (m *mappedContainer) mapMounts(mounts []mountSpec, targets map[string]bool)
 			continue
 		}
 		targets[ms.Target] = true
+		m.noteMountOptions(&ms)
 		switch ms.Type {
 		case "volume":
 			if ms.Source != "" { // empty: anonymous, and the create makes a new one
@@ -535,7 +606,7 @@ func (m *mappedContainer) mapMounts(mounts []mountSpec, targets map[string]bool)
 				continue
 			}
 			ms.Source = mapped
-			m.binds = append(m.binds, clean(mapped)+" -> "+clean(ms.Target))
+			m.binds = append(m.binds, cleanPath(mapped)+" -> "+cleanPath(ms.Target))
 		case "tmpfs":
 		default:
 			m.fail("it uses a mount of type " + clean(ms.Type))
@@ -544,6 +615,26 @@ func (m *mappedContainer) mapMounts(mounts []mountSpec, targets map[string]bool)
 		out = append(out, ms)
 	}
 	return out
+}
+
+// noteMountOptions clears a --mount's bind options and volume driver config, which do not
+// carry over, and says so: propagation means something on the VM it was set for, and a
+// volume is a plain local one here.
+func (m *mappedContainer) noteMountOptions(ms *mountSpec) {
+	if b := ms.BindOptions; b != nil {
+		if *b != (mountBindOptions{}) {
+			m.notes = append(m.notes, "the bind options of the mount at "+cleanPath(ms.Target)+" (propagation, recursion, creating the mountpoint) are not carried over")
+		}
+		ms.BindOptions = nil
+	}
+	if v := ms.VolumeOptions; v != nil && v.DriverConfig != nil {
+		if d := v.DriverConfig; (d.Name != "" && d.Name != "local") || len(d.Options) > 0 {
+			m.notes = append(m.notes, "the volume driver settings of the mount at "+cleanPath(ms.Target)+" are not carried over")
+		}
+		c := *v
+		c.DriverConfig = nil
+		ms.VolumeOptions = &c
+	}
 }
 
 func (m *mappedContainer) mapPorts(bindings map[string][]portBinding) {
@@ -588,18 +679,64 @@ func (m *mappedContainer) mapModes(hc *hostConfig) {
 			m.fail("its " + mode.what + " mode " + clean(mode.value) + " is not one hyperbutler knows")
 		}
 	}
-	if len(hc.Devices) > 0 || len(hc.DeviceCgroupRules) > 0 || len(hc.DeviceRequests) > 0 {
-		m.requires = append(m.requires, "it uses host devices (--device, --gpus)")
+	for _, d := range hc.Devices {
+		m.requires = append(m.requires, "it uses the host device "+cleanPath(d.PathOnHost)+" (--device)")
+	}
+	for _, r := range hc.DeviceCgroupRules {
+		m.requires = append(m.requires, "it has the device cgroup rule "+clean(r))
+	}
+	for _, d := range hc.DeviceRequests {
+		m.requires = append(m.requires, fmt.Sprintf("it requests host devices (--gpus) of the driver %s, count %d, ids [%s], with %d options",
+			clean(d.Driver), d.Count, strings.Join(listed(d.DeviceIDs), ", "), len(d.Options)))
 	}
 	var weak []string
 	for _, o := range hc.SecurityOpt {
-		if !strings.HasPrefix(o, "no-new-privileges") {
-			weak = append(weak, clean(o))
+		if securityKey(o) != "no-new-privileges" {
+			weak = append(weak, securityText(o))
 		}
 	}
 	if len(weak) > 0 {
-		m.requires = append(m.requires, "it has the security options "+strings.Join(listed(weak), ", "))
+		m.requires = append(m.requires, "it has the security options "+strings.Join(weak, ", "))
 	}
+}
+
+// dangerousCaps are the capabilities that reach past the container as far as a host
+// namespace does, so they need a confirmation; the others are only shown.
+var dangerousCaps = map[string]bool{
+	"ALL": true, "SYS_ADMIN": true, "SYS_MODULE": true, "SYS_RAWIO": true, "SYS_PTRACE": true,
+	"DAC_READ_SEARCH": true, "BPF": true, "PERFMON": true,
+}
+
+// capName is a capability as dockerd reads it: in any case, with or without CAP_.
+func capName(c string) string {
+	return strings.TrimPrefix(strings.ToUpper(strings.TrimSpace(c)), "CAP_")
+}
+
+// splitSecurityOpt splits a security option: key=value, or key:value in its older form.
+func splitSecurityOpt(o string) (key, value string, has bool) {
+	if i := strings.IndexAny(o, "=:"); i >= 0 {
+		return o[:i], o[i+1:], true
+	}
+	return o, "", false
+}
+
+// securityKey is a security option's key as a plan shows it.
+func securityKey(o string) string {
+	key, _, _ := splitSecurityOpt(o)
+	return dockerapi.Clean(key, 64)
+}
+
+// securityText is a security option as a plan shows it: its key always, its value when
+// short. A seccomp profile can be megabytes inline, and must not hide what follows it.
+func securityText(o string) string {
+	key, value, has := splitSecurityOpt(o)
+	switch {
+	case !has:
+		return securityKey(o)
+	case len(value) > maxOptValue:
+		return fmt.Sprintf("%s=(%d bytes)", securityKey(key), len(value))
+	}
+	return securityKey(key) + "=" + dockerapi.CleanText(value, false)
 }
 
 // mapNetworks fills m.networks and hc.NetworkMode and returns the endpoints of a create.
@@ -655,19 +792,14 @@ func (m *mappedContainer) mapNetworks(in *apiContainerInspect, hc *hostConfig) m
 	return endpoints
 }
 
-// listed bounds a list a plan shows.
+// listed makes a list a plan shows safe to print. It never leaves anything out, of the
+// list or of an item: what is confirmed must be what is created. Each item bounds its own
+// parts when it is made, and dockerapi.BodyMax the whole.
 func listed(s []string) []string {
-	if len(s) <= maxListed {
-		for i := range s {
-			s[i] = clean(s[i])
-		}
-		return s
+	for i := range s {
+		s[i] = dockerapi.CleanText(s[i], false)
 	}
-	out := make([]string, 0, maxListed+1)
-	for _, x := range s[:maxListed] {
-		out = append(out, clean(x))
-	}
-	return append(out, "and "+strconv.Itoa(len(s)-maxListed)+" more")
+	return s
 }
 
 // --- the plan --------------------------------------------------------------------------------
@@ -682,11 +814,13 @@ func (im *Importer) planContainers(ctx context.Context, p *Plan, d dstImages) er
 		return fmt.Errorf("list Docker Desktop's containers: %w", err)
 	}
 	nets := map[string]*apiNetwork{}
+	ids := map[string]bool{}
 	n := 0
 	for _, c := range list {
-		if c.helper() {
+		if c.helper() || ids[c.ID] {
 			continue
 		}
+		ids[c.ID] = true
 		if dockerapi.ValidName("container id", c.ID) != nil {
 			p.Notes = append(p.Notes, fmt.Sprintf("skipped a container with an unexpected id %q", dockerapi.Clean(c.ID, 80)))
 			continue
@@ -704,7 +838,23 @@ func (im *Importer) planContainers(ctx context.Context, p *Plan, d dstImages) er
 		}
 	}
 	sort.SliceStable(p.Containers, func(i, j int) bool { return p.Containers[i].Name < p.Containers[j].Name })
+	refuseDuplicateNames(p)
 	return nil
+}
+
+// refuseDuplicateNames makes both of two containers with one name unsupported. An engine
+// never lists that, but one that does cannot say which of them a name selects.
+func refuseDuplicateNames(p *Plan) {
+	count := map[string]int{}
+	for _, cp := range p.Containers {
+		count[cp.Name]++
+	}
+	for i := range p.Containers {
+		if cp := &p.Containers[i]; count[cp.Name] > 1 {
+			cp.Status, cp.spec, cp.Project, cp.ProjectDir = StatusUnsupported, nil, "", ""
+			cp.Reason = "Docker Desktop lists more than one container of this name"
+		}
+	}
 }
 
 // planContainer plans one container; nil when it went away meanwhile.
@@ -785,6 +935,14 @@ func (im *Importer) planContainer(ctx context.Context, p *Plan, c apiContainer, 
 			return cp, nil
 		}
 		spec.networks = append(spec.networks, *ns)
+		cp.Notes = append(cp.Notes, ns.notes...)
+		switch err := im.dst.JSON(ctx, http.MethodGet, "/networks/"+name, nil, nil, nil); {
+		case dockerapi.IsNotFound(err):
+			say := "network " + name + " will be created" + subnetText(ns)
+			cp.Notes, cp.networkNotes = append(cp.Notes, say), append(cp.networkNotes, say)
+		case err != nil:
+			return nil, fmt.Errorf("look for the network %s in hyperbutler: %w", name, err)
+		}
 	}
 	spec.body.Image = cp.Image
 	cp.spec = spec
@@ -874,10 +1032,34 @@ func (im *Importer) sourceNetwork(ctx context.Context, nets map[string]*apiNetwo
 	if mtu, ok := n.Options["com.docker.network.driver.mtu"]; ok && reShortText.MatchString(mtu) {
 		spec.Options = map[string]string{"com.docker.network.driver.mtu": mtu}
 	}
-	if static {
-		spec.IPAM = n.IPAM
+	if n.IPAM != nil {
+		ipam := *n.IPAM
+		if ipam.Driver != "" && ipam.Driver != "default" {
+			spec.notes = append(spec.notes, "the IPAM driver "+clean(ipam.Driver)+" of network "+name+" is not carried over")
+			ipam.Driver = ""
+		}
+		if static {
+			spec.IPAM = &ipam
+		}
 	}
 	return spec, "", nil
+}
+
+// subnetText is the subnets a new network takes from Docker Desktop, for a plan.
+func subnetText(ns *networkSpec) string {
+	if ns.IPAM == nil {
+		return ""
+	}
+	var subnets []string
+	for _, c := range ns.IPAM.Config {
+		if c.Subnet != "" {
+			subnets = append(subnets, clean(c.Subnet))
+		}
+	}
+	if len(subnets) == 0 {
+		return ""
+	}
+	return " (subnet " + strings.Join(subnets, ", ") + ")"
 }
 
 // creatable reports whether Run creates this planned container.
@@ -952,6 +1134,9 @@ func announceContainers(ctrs []ContainerPlan, progress func(Event)) {
 		if len(cp.Binds) > 0 {
 			progress(Event{Kind: EventNote, Item: KindContainer, Name: cp.Name, Message: "container " + cp.Name + " binds " + strings.Join(cp.Binds, ", ")})
 		}
+		for _, n := range cp.networkNotes {
+			progress(Event{Kind: EventNote, Item: KindContainer, Name: cp.Name, Message: "container " + cp.Name + ": " + n})
+		}
 		for _, r := range cp.Requires {
 			progress(Event{Kind: EventNote, Item: KindContainer, Name: cp.Name, Message: "container " + cp.Name + ", confirmed: " + r})
 		}
@@ -1014,30 +1199,101 @@ func (im *Importer) importContainer(ctx context.Context, st *runState, cp Contai
 	var created struct {
 		ID string `json:"Id"`
 	}
-	err := im.dst.JSON(ctx, http.MethodPost, "/containers/create", url.Values{"name": {cp.Name}}, cp.spec.body, &created)
+	// The run's label tells a container this create made from one that took the name.
+	body := cp.spec.body
+	body.Labels = maps.Clone(body.Labels)
+	if body.Labels == nil {
+		body.Labels = map[string]string{}
+	}
+	body.Labels[source.RunLabel] = st.run.id
+	err := im.dst.JSON(ctx, http.MethodPost, "/containers/create", url.Values{"name": {cp.Name}}, body, &created)
 	switch {
 	case dockerapi.StatusOf(err) == http.StatusConflict:
 		return refuse(clashReason[StatusConflict])
 	case err != nil:
-		return failed(ctx, r, fmt.Errorf("create it in hyperbutler: %w", err))
+		left := im.undoCreate(ctx, st, cp, dockerapi.StatusOf(err) != 0)
+		return failedLeaving(ctx, r, fmt.Errorf("create it in hyperbutler: %w", err), left)
 	}
 	if err := im.verifyCreated(ctx, cp, created.ID); err != nil {
-		if dockerapi.ValidName("container id", created.ID) == nil {
-			if derr := im.deleteDstHelper(ctx, created.ID); derr != nil {
-				im.note("could not remove the container %s the import created in hyperbutler (%v); remove it with: docker --context hyperbutler rm -v %s", cp.Name, derr, cp.Name)
-			}
+		left := ""
+		if dockerapi.ValidName("container id", created.ID) != nil {
+			left = im.undoCreate(ctx, st, cp, true)
+		} else if derr := im.deleteDstHelper(ctx, created.ID); derr != nil {
+			left = st.mayRemain(cp)
 		}
-		return failed(ctx, r, err)
+		return failedLeaving(ctx, r, err, left)
 	}
+	st.keepNetworks(cp)
+	r.Outcome = OutcomeImported
+	r.Reason = "created, not started: stop Docker Desktop's first if it holds its ports, then docker start " + cp.Name
+	// What the run did is no longer news; what stays behind still is.
+	left := slices.DeleteFunc(slices.Clone(cp.Notes), func(n string) bool { return slices.Contains(cp.networkNotes, n) })
+	if len(left) > 0 {
+		r.Reason += "; " + strings.Join(left, "; ")
+	}
+	return r
+}
+
+// undoCreate deals with a create that failed, which need not mean nothing was made: a
+// canceled request can have reached dockerd. It looks the name up on a context that
+// outlives a cancel and removes a container with this run's label. It returns "" when
+// nothing remains, else what to tell the user. answered says dockerd answered the create;
+// otherwise it may still be working on it, so it looks again a little later.
+func (im *Importer) undoCreate(ctx context.Context, st *runState, cp ContainerPlan, answered bool) string {
+	cctx, cancel := cleanupCtx(ctx)
+	defer cancel()
+	var got struct {
+		ID     string `json:"Id"`
+		Config struct {
+			Labels map[string]string `json:"Labels"`
+		} `json:"Config"`
+	}
+	look := func() error { return im.dst.JSON(cctx, http.MethodGet, "/containers/"+cp.Name+"/json", nil, nil, &got) }
+	err := look()
+	if !answered {
+		for _, d := range removeRetries {
+			if !dockerapi.IsNotFound(err) {
+				break
+			}
+			t := time.NewTimer(d)
+			<-t.C
+			err = look()
+		}
+	}
+	switch {
+	case dockerapi.IsNotFound(err):
+		return ""
+	case err != nil, got.Config.Labels[source.RunLabel] != st.run.id, dockerapi.ValidName("container id", got.ID) != nil:
+		return st.mayRemain(cp)
+	}
+	if err := im.deleteDstHelper(ctx, got.ID); err != nil {
+		return st.mayRemain(cp)
+	}
+	return ""
+}
+
+// mayRemain keeps the networks of a container that may still be there, which removing
+// them would break, and says what to do about it.
+func (st *runState) mayRemain(cp ContainerPlan) string {
+	st.keepNetworks(cp)
+	return "a container named " + cp.Name + " may remain in hyperbutler; check it, and remove it if it should not be there: docker --context hyperbutler rm -v " + cp.Name
+}
+
+// keepNetworks marks the networks this run made for cp as in use.
+func (st *runState) keepNetworks(cp ContainerPlan) {
 	for _, n := range cp.spec.networks {
 		if _, ok := st.newNetworks[n.Name]; ok {
 			st.newNetworks[n.Name] = true
 		}
 	}
-	r.Outcome = OutcomeImported
-	r.Reason = "created, not started: stop Docker Desktop's first if it holds its ports, then docker start " + cp.Name
-	if len(cp.Notes) > 0 {
-		r.Reason += "; " + strings.Join(cp.Notes, "; ")
+}
+
+// failedLeaving is failed, for a container: left, when set, replaces its claim that
+// nothing is left.
+func failedLeaving(ctx context.Context, r ItemResult, err error, left string) ItemResult {
+	r = failed(ctx, r, err)
+	if left != "" {
+		r.Reason = strings.TrimSuffix(r.Reason, "nothing of it is left in hyperbutler") + left
 	}
 	return r
 }
@@ -1091,17 +1347,19 @@ func (im *Importer) ensureNetwork(ctx context.Context, st *runState, ns *network
 	case !dockerapi.IsNotFound(err):
 		return fmt.Errorf("hyperbutler's network %s: %w", ns.Name, err)
 	}
-	if err := im.dst.JSON(ctx, http.MethodPost, "/networks/create", nil, ns, nil); err != nil {
-		return fmt.Errorf("create the network %s in hyperbutler: %w", ns.Name, err)
-	}
+	// Recorded first: a canceled create may still have made it.
 	if _, ok := st.newNetworks[ns.Name]; !ok {
 		st.newNetworks[ns.Name] = false
+	}
+	if err := im.dst.JSON(ctx, http.MethodPost, "/networks/create", nil, ns, nil); err != nil {
+		return fmt.Errorf("create the network %s in hyperbutler: %w", ns.Name, err)
 	}
 	return nil
 }
 
 // removeUnusedNetworks removes the networks this run created for containers that then
-// failed, so a failed container leaves nothing behind.
+// failed, so a failed container leaves nothing behind. dockerd would let it remove one a
+// created container names, which is why that container's are marked (mayRemain).
 func (im *Importer) removeUnusedNetworks(ctx context.Context, st *runState) {
 	for _, name := range sortedKeys(st.newNetworks) {
 		if st.newNetworks[name] {
