@@ -193,7 +193,7 @@ func followConsole(ctx context.Context, pipe, path string) error {
 	console := os.NewFile(uintptr(h), pipe)
 	w := io.Discard
 	if path != "" {
-		f, err := os.Create(path)
+		f, err := os.Create(path) //nolint:gosec // G304: the file the developer named with -console-log
 		if err != nil {
 			_ = console.Close()
 			return err
