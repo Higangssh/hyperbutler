@@ -95,7 +95,7 @@ func allowedGET(path string) bool {
 	}
 	segs := strings.Split(strings.TrimPrefix(path, "/"), "/")
 	switch {
-	case len(segs) == 2 && segs[0] == "volumes":
+	case len(segs) == 2 && (segs[0] == "volumes" || segs[0] == "networks"):
 		return segs[1] != ""
 	case len(segs) == 3 && segs[0] == "containers" && (segs[2] == "json" || segs[2] == "archive"):
 		return segs[1] != ""

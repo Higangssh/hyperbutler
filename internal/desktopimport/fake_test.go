@@ -37,8 +37,11 @@ type fakeDocker struct {
 	images     map[string]*fImage
 	volumes    map[string]*fVolume
 	containers map[string]*fContainer
+	networks   map[string]map[string]any
 
-	created []fContainer // every container create, as made
+	created     []fContainer     // every container create, as made
+	createdBody []map[string]any // the create bodies of containers not helpers
+	failCreate  string           // a container create of this name fails
 
 	// Engine.
 	classic bool   // the classic image store, not containerd's
@@ -107,10 +110,12 @@ type fContainer struct {
 	Entrypoint             []string
 	Started                bool
 	Anon                   []string // anonymous volumes its create made
+	// Inspect, when set, is the whole inspect answer.
+	Inspect any
 }
 
 func newFake(t *testing.T, id string) *fakeDocker {
-	f := &fakeDocker{t: t, id: id, images: map[string]*fImage{}, volumes: map[string]*fVolume{}, containers: map[string]*fContainer{}, exportBytes: 3000}
+	f := &fakeDocker{t: t, id: id, images: map[string]*fImage{}, volumes: map[string]*fVolume{}, containers: map[string]*fContainer{}, networks: map[string]map[string]any{}, exportBytes: 3000}
 	f.srv = httptest.NewServer(http.HandlerFunc(f.serve))
 	t.Cleanup(f.srv.Close)
 	return f
@@ -445,19 +450,42 @@ func (f *fakeDocker) serve(w http.ResponseWriter, r *http.Request) {
 			Entrypoint []string
 			Labels     map[string]string
 			HostConfig struct {
+				Binds  []string
 				Mounts []struct {
 					Type, Source, Target string
 					ReadOnly             bool
 				}
 			}
 		}
-		_ = json.NewDecoder(r.Body).Decode(&in)
+		raw, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(raw, &in)
 		f.mu.Lock()
 		defer f.mu.Unlock()
 		img := f.findImage(in.Image)
 		if img == nil {
 			msg(w, 404, "No such image: "+in.Image)
 			return
+		}
+		if f.failCreate != "" && f.failCreate == q.Get("name") {
+			msg(w, 500, "create failed")
+			return
+		}
+		for _, c := range f.containers {
+			if c.Name == q.Get("name") {
+				msg(w, 409, "the name is in use")
+				return
+			}
+		}
+		if in.Labels[source.HelperLabel] != source.HelperLabelValue {
+			var body map[string]any
+			_ = json.Unmarshal(raw, &body)
+			f.createdBody = append(f.createdBody, body)
+		}
+		// As dockerd does: a named volume of a -v that is not there is made, empty.
+		for _, b := range in.HostConfig.Binds {
+			if n, _, _ := strings.Cut(b, ":"); !strings.ContainsAny(n, `/\`) && len(n) > 1 && f.volumes[n] == nil {
+				f.volumes[n] = &fVolume{Name: n, Driver: "local"}
+			}
 		}
 		c := &fContainer{ID: randID(), Name: q.Get("name"), State: "created", Image: in.Image, Labels: in.Labels, Entrypoint: in.Entrypoint}
 		for _, m := range in.HostConfig.Mounts {
@@ -478,9 +506,18 @@ func (f *fakeDocker) serve(w http.ResponseWriter, r *http.Request) {
 	case r.Method == http.MethodGet && len(segs) == 3 && segs[0] == "containers" && segs[2] == "json":
 		f.mu.Lock()
 		c := f.containers[segs[1]]
+		for _, x := range f.containers {
+			if c == nil && x.Name == segs[1] {
+				c = x
+			}
+		}
 		f.mu.Unlock()
 		if c == nil {
 			msg(w, 404, "No such container")
+			return
+		}
+		if c.Inspect != nil {
+			writeJSON(w, 200, c.Inspect)
 			return
 		}
 		started := "0001-01-01T00:00:00Z"
@@ -488,6 +525,27 @@ func (f *fakeDocker) serve(w http.ResponseWriter, r *http.Request) {
 			started = "2026-10-01T00:00:00Z"
 		}
 		writeJSON(w, 200, map[string]any{"Config": map[string]any{"Labels": c.Labels, "Entrypoint": c.Entrypoint}, "State": map[string]any{"Status": c.State, "StartedAt": started}})
+	case r.Method == http.MethodGet && len(segs) == 2 && segs[0] == "networks":
+		f.mu.Lock()
+		n := f.networks[segs[1]]
+		f.mu.Unlock()
+		if n == nil {
+			msg(w, 404, "network not found")
+			return
+		}
+		writeJSON(w, 200, n)
+	case r.Method == http.MethodPost && path == "/networks/create":
+		var in map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&in)
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		f.networks[in["Name"].(string)] = in
+		writeJSON(w, 201, map[string]string{"Id": randID()})
+	case r.Method == http.MethodDelete && len(segs) == 2 && segs[0] == "networks":
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		delete(f.networks, segs[1])
+		w.WriteHeader(http.StatusNoContent)
 	case r.Method == http.MethodGet && len(segs) == 3 && segs[0] == "containers" && segs[2] == "archive":
 		if f.onArchive != nil {
 			f.onArchive(f)

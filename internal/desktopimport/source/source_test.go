@@ -61,14 +61,14 @@ func (r *recorder) list() []string {
 func TestAllowedGET(t *testing.T) {
 	for _, p := range []string{"/_ping", "/info", "/version", "/images/json", "/images/get", "/volumes", "/volumes/pg",
 		"/containers/json", "/containers/abc/json", "/containers/abc/archive", "/system/df", "/images/busybox/json",
-		"/images/ghcr.io/o/app:1/json", "/images/sha256:abc/json"} {
+		"/images/ghcr.io/o/app:1/json", "/images/sha256:abc/json", "/networks/web"} {
 		if !allowedGET(p) {
 			t.Errorf("%s refused", p)
 		}
 	}
 	for _, p := range []string{"/containers/abc/attach/ws", "/containers/abc/logs", "/events", "/exec/abc/json",
 		"/containers/abc/export", "/images/../x/json", "/images//json", "/volumes/", "/containers//json",
-		"/images/a/history", "/session", "/grpc", "/build", "/containers/abc/stats", "/plugins"} {
+		"/images/a/history", "/session", "/grpc", "/build", "/containers/abc/stats", "/plugins", "/networks", "/networks/", "/networks/web/connect"} {
 		if allowedGET(p) {
 			t.Errorf("%s allowed", p)
 		}

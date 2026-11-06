@@ -121,7 +121,7 @@ status, containers, logs and disk use. Starting, stopping and deleting need flag
 and what it may run is fenced in. [docs/mcp.md](docs/mcp.md)
 
 **Moving from Docker Desktop.** `hyperbutler import --from-desktop` copies images and volumes
-over. [docs/tools.md](docs/tools.md)
+over, and creates `docker run` containers again. [docs/tools.md](docs/tools.md)
 
 **When something is wrong.** `hyperbutler doctor` checks every prerequisite and says how to
 fix it (`--fix` repairs what it may); `hyperbutler diagnose` packs a redacted report.

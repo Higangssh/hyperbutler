@@ -24,9 +24,10 @@ import (
 	"github.com/Higangssh/hyperbutler/internal/winipc"
 )
 
-// cmdImport is `hyperbutler import --from-desktop` (REQ-UX-023): copy images and
-// volumes from Docker Desktop's running engine into hyperbutler, through the Docker API
-// of both. The work is internal/desktopimport's; this is its command line.
+// cmdImport is `hyperbutler import --from-desktop` (REQ-UX-023, REQ-UX-024): copy images
+// and volumes from Docker Desktop's running engine into hyperbutler, through the Docker
+// API of both, and create its containers again. The work is internal/desktopimport's;
+// this is its command line.
 func cmdImport(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	fs := newFlagSet("import", stderr)
 	fromDesktop := fs.Bool("from-desktop", false, "import from Docker Desktop's engine (it must be running)")
@@ -34,6 +35,9 @@ func cmdImport(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	allImages := fs.Bool("all-images", false, "import every tagged image")
 	volumes := fs.String("volume", "", "volumes to import, comma-separated")
 	allVolumes := fs.Bool("all-volumes", false, "import every local volume")
+	containers := fs.String("container", "", "containers to create again, not started, comma-separated (names or ids); brings their images and named volumes along")
+	allContainers := fs.Bool("all-containers", false, "create again every container that no Compose project owns and that needs no confirmation")
+	confirmContainers := fs.String("confirm-container", "", "containers to create again although they need a confirmation (host networking, --privileged, a bind source hyperbutler refuses...), comma-separated")
 	overwrite := fs.Bool("overwrite-volumes", false, "replace a hyperbutler volume of the same name whose content differs")
 	allowLive := fs.Bool("allow-live-volumes", false, "copy volumes that running Docker Desktop containers mount (the copy may be inconsistent)")
 	forceSpace := fs.Bool("force-space", false, "start the copy even when it does not look like it fits in the VM's data disk or on the host volume")
@@ -57,12 +61,14 @@ func cmdImport(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	}
 	sel := desktopimport.Selection{
 		Images: splitList(*images), AllImages: *allImages, Volumes: splitList(*volumes), AllVolumes: *allVolumes,
+		Containers: splitList(*containers), AllContainers: *allContainers, ConfirmContainers: splitList(*confirmContainers),
 		OverwriteVolumes: *overwrite, AllowLiveVolumes: *allowLive, ForceSpace: *forceSpace,
 	}
-	picked := len(sel.Images) > 0 || sel.AllImages || len(sel.Volumes) > 0 || sel.AllVolumes
+	picked := len(sel.Images) > 0 || sel.AllImages || len(sel.Volumes) > 0 || sel.AllVolumes ||
+		len(sel.Containers) > 0 || sel.AllContainers || len(sel.ConfirmContainers) > 0
 	interactive := !picked && !*dryRun && !*asJSON && isConsole(stdin)
 	if !picked && !*dryRun && !interactive {
-		return usagef("import: say what to import: --image, --all-images, --volume or --all-volumes (--dry-run lists what there is)")
+		return usagef("import: say what to import: --image, --all-images, --volume, --all-volumes, --container or --all-containers (--dry-run lists what there is)")
 	}
 
 	// Run takes the installation's import lock and checks the free space itself (so a
@@ -96,7 +102,7 @@ func cmdImport(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	defer im.Close()
 
 	pr := newImportProgress(stderr, *asJSON)
-	plan, err := im.Plan(ctx, desktopimport.PlanOptions{CompareVolumes: *dryRun || interactive, Progress: pr.event})
+	plan, err := im.Plan(ctx, desktopimport.PlanOptions{CompareVolumes: *dryRun || interactive, Containers: true, Progress: pr.event})
 	pr.clear()
 	if err != nil {
 		return errors.New(redact.String(err.Error()))
@@ -116,13 +122,16 @@ func cmdImport(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 		for _, vp := range plan.Volumes {
 			out.Items = append(out.Items, volumePlanJSON(vp))
 		}
+		for _, cp := range plan.Containers {
+			out.Items = append(out.Items, containerPlanJSON(cp))
+		}
 		out.OK = true
 		out.Notes = append(out.Notes, plan.Recovery...)
 		if *asJSON {
 			return writeJSON(stdout, out)
 		}
 		writePlan(stdout, plan, false)
-		_, _ = fmt.Fprintln(stdout, "Dry run: nothing was copied. Containers are not moved: create them again in hyperbutler with docker compose up or docker run.")
+		_, _ = fmt.Fprintln(stdout, "Dry run: nothing was copied and no container was created.")
 		return nil
 	}
 	if interactive {
@@ -130,7 +139,7 @@ func cmdImport(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 		if sel, err = askSelection(stdin, stdout, plan, sel); err != nil {
 			return err
 		}
-		if len(sel.Images) == 0 && len(sel.Volumes) == 0 {
+		if len(sel.Images) == 0 && len(sel.Volumes) == 0 && len(sel.Containers) == 0 && len(sel.ConfirmContainers) == 0 {
 			_, _ = fmt.Fprintln(stdout, "Nothing picked; nothing was copied.")
 			return nil
 		}
@@ -142,17 +151,26 @@ func cmdImport(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 		return errors.New(redact.String(err.Error()))
 	}
 	status := map[string]desktopimport.Status{}
+	details := map[string]desktopimport.ContainerPlan{}
 	for _, ip := range plan.Images {
 		status["image\x00"+ip.ID] = ip.Status
 	}
 	for _, vp := range plan.Volumes {
 		status["volume\x00"+vp.Name] = vp.Status
 	}
+	for _, cp := range plan.Containers {
+		status["container\x00"+cp.Name] = cp.Status
+		details[cp.Name] = cp
+	}
 	for _, it := range res.Items {
-		out.Items = append(out.Items, itemJSON(it, status[it.Kind+"\x00"+itemKey(it)]))
+		out.Items = append(out.Items, resultItemJSON(it, status[it.Kind+"\x00"+itemKey(it)], details))
 	}
 	for _, it := range res.Skipped {
-		out.Skipped = append(out.Skipped, itemJSON(it, desktopimport.StatusUnsupported))
+		st := desktopimport.StatusUnsupported
+		if it.Kind == desktopimport.KindContainer {
+			st = status["container\x00"+it.Name]
+		}
+		out.Skipped = append(out.Skipped, resultItemJSON(it, st, details))
 	}
 	out.BytesCopied, out.Canceled, out.OK = res.Bytes, res.Canceled, res.OK()
 	out.SourceCheck = &res.Source
@@ -235,6 +253,28 @@ func itemJSON(it desktopimport.ItemResult, st desktopimport.Status) ImportItemJS
 		Outcome: string(it.Outcome), BytesCopied: it.Bytes, Reason: redact.String(it.Reason), AddedTags: it.AddedTags, Hash: it.Hash}
 }
 
+func containerPlanJSON(cp desktopimport.ContainerPlan) ImportItemJSON {
+	j := ImportItemJSON{Kind: desktopimport.KindContainer, Name: cp.Name, ID: cp.ID, Status: string(cp.Status), Reason: redact.String(cp.Reason)}
+	withContainerPlan(&j, cp)
+	return j
+}
+
+// withContainerPlan adds what the plan knows of a container to its JSON item.
+func withContainerPlan(j *ImportItemJSON, cp desktopimport.ContainerPlan) {
+	j.Image, j.State, j.Project, j.ProjectDir = cp.Image, cp.State, cp.Project, cp.ProjectDir
+	j.Requires, j.CapAdd, j.Binds, j.Ports = cp.Requires, cp.CapAdd, cp.Binds, cp.Ports
+	j.Volumes, j.Networks, j.Notes = cp.Volumes, cp.Networks, cp.Notes
+	j.WritableBytes = &cp.WritableBytes
+}
+
+func resultItemJSON(it desktopimport.ItemResult, st desktopimport.Status, details map[string]desktopimport.ContainerPlan) ImportItemJSON {
+	j := itemJSON(it, st)
+	if it.Kind == desktopimport.KindContainer {
+		withContainerPlan(&j, details[it.Name])
+	}
+	return j
+}
+
 func sizeText(n int64) string {
 	if n < 0 {
 		return "?"
@@ -271,6 +311,10 @@ func statusText(s desktopimport.Status) string {
 		return "same content, different labels"
 	case desktopimport.StatusExists:
 		return "name exists in hyperbutler"
+	case desktopimport.StatusCompose:
+		return "Compose project"
+	case desktopimport.StatusConfirm:
+		return "needs your confirmation"
 	}
 	return "cannot import"
 }
@@ -303,10 +347,82 @@ func writePlan(w io.Writer, p *desktopimport.Plan, numbered bool) {
 		tw.row(cols(i, vp.Name, sizeText(vp.Size), statusText(vp.Status), why)...)
 	}
 	tw.flush()
+	writeContainerPlan(w, p, cols)
 	for _, n := range append(slices.Clone(p.Notes), p.Recovery...) {
 		_, _ = fmt.Fprintln(w, "Note:", redact.String(n))
 	}
 	_, _ = fmt.Fprintln(w)
+}
+
+// offeredContainers are the plan's containers the user can pick: all but those of a
+// Compose project.
+func offeredContainers(p *desktopimport.Plan) []desktopimport.ContainerPlan {
+	var out []desktopimport.ContainerPlan
+	for _, cp := range p.Containers {
+		if cp.Status != desktopimport.StatusCompose {
+			out = append(out, cp)
+		}
+	}
+	return out
+}
+
+// writeContainerPlan prints the containers on offer, what comes with them, and the
+// Compose projects, which it names instead of listing their containers as choices.
+func writeContainerPlan(w io.Writer, p *desktopimport.Plan, cols func(int, ...string) []string) {
+	offered := offeredContainers(p)
+	_, _ = fmt.Fprintf(w, "\nContainers (%d; created in hyperbutler, not started):\n", len(offered))
+	tw := newTable(w, cols(-1, "CONTAINER", "IMAGE", "STATUS", "NOTE")...)
+	for i, cp := range offered {
+		tw.row(cols(i, cp.Name, cp.Image, statusText(cp.Status), containerNote(cp))...)
+	}
+	tw.flush()
+	type project struct {
+		dir   string
+		names []string
+	}
+	projects := map[string]*project{}
+	var order []string
+	for _, cp := range p.Containers {
+		if cp.Status != desktopimport.StatusCompose {
+			continue
+		}
+		pr := projects[cp.Project]
+		if pr == nil {
+			pr = &project{dir: cp.ProjectDir}
+			projects[cp.Project] = pr
+			order = append(order, cp.Project)
+		}
+		pr.names = append(pr.names, cp.Name)
+	}
+	for _, name := range order {
+		pr := projects[name]
+		where := "in its folder"
+		if pr.dir != "" {
+			where = "in " + pr.dir
+		}
+		_, _ = fmt.Fprintf(w, "Compose project %s (%s) is not recreated: run docker compose up %s.\n",
+			string(printable([]byte(name))), strings.Join(pr.names, ", "), string(printable([]byte(where))))
+	}
+}
+
+// containerNote is a planned container's row: why, then what it adds and leaves behind.
+func containerNote(cp desktopimport.ContainerPlan) string {
+	parts := []string{}
+	if cp.Reason != "" {
+		parts = append(parts, cp.Reason)
+	}
+	list := func(what string, s []string) {
+		if len(s) > 0 {
+			parts = append(parts, what+" "+strings.Join(s, ", "))
+		}
+	}
+	list("adds the capabilities", cp.CapAdd)
+	list("binds", cp.Binds)
+	list("publishes", cp.Ports)
+	list("volumes", cp.Volumes)
+	list("networks", cp.Networks)
+	parts = append(parts, cp.Notes...)
+	return string(printable([]byte(redact.String(strings.Join(parts, "; ")))))
 }
 
 func shortImageID(id string) string {
@@ -317,7 +433,8 @@ func shortImageID(id string) string {
 	return id
 }
 
-// askSelection asks which numbered images and volumes to import.
+// askSelection asks which numbered images, volumes and containers to import, and to
+// confirm each picked container that needs it.
 func askSelection(stdin io.Reader, w io.Writer, p *desktopimport.Plan, sel desktopimport.Selection) (desktopimport.Selection, error) {
 	in := bufio.NewReader(stdin)
 	ask := func(what string, n int) ([]int, error) {
@@ -350,6 +467,26 @@ func askSelection(stdin io.Reader, w io.Writer, p *desktopimport.Plan, sel deskt
 	}
 	for _, i := range nums {
 		sel.Volumes = append(sel.Volumes, p.Volumes[i].Name)
+	}
+	offered := offeredContainers(p)
+	nums, err = ask("Containers", len(offered))
+	if err != nil {
+		return sel, err
+	}
+	for _, i := range nums {
+		cp := offered[i]
+		if cp.Status != desktopimport.StatusConfirm {
+			sel.Containers = append(sel.Containers, cp.Name)
+			continue
+		}
+		_, _ = fmt.Fprintf(w, "%s: %s\nCreate it anyway? (y/N): ", cp.Name, string(printable([]byte(strings.Join(cp.Requires, "; ")))))
+		line, err := in.ReadString('\n')
+		if err != nil && line == "" {
+			return sel, fmt.Errorf("import: no answer: %w", err)
+		}
+		if a := strings.ToLower(strings.TrimSpace(line)); a == "y" || a == "yes" {
+			sel.ConfirmContainers = append(sel.ConfirmContainers, cp.Name)
+		}
 	}
 	return sel, nil
 }
@@ -415,7 +552,11 @@ func writeResult(w io.Writer, res *desktopimport.Result, notes []string) {
 	}
 	tw.flush()
 	if len(res.Items) > 0 && counts[desktopimport.OutcomeAlready] == len(res.Items) {
-		_, _ = fmt.Fprintf(w, "Nothing to import: %s and %s already here.\n", countText(already[desktopimport.KindImage], "image"), countText(already[desktopimport.KindVolume], "volume"))
+		ctrs := ""
+		if n := already[desktopimport.KindContainer]; n > 0 {
+			ctrs = ", " + countText(n, "container")
+		}
+		_, _ = fmt.Fprintf(w, "Nothing to import: %s and %s%s already here.\n", countText(already[desktopimport.KindImage], "image"), countText(already[desktopimport.KindVolume], "volume"), ctrs)
 	} else {
 		_, _ = fmt.Fprintf(w, "Imported %d, tagged %d, already here %d, refused %d, failed %d, canceled %d; %s copied.\n",
 			counts[desktopimport.OutcomeImported], counts[desktopimport.OutcomeTagged], counts[desktopimport.OutcomeAlready],
@@ -438,7 +579,15 @@ func writeResult(w io.Writer, res *desktopimport.Result, notes []string) {
 	for _, n := range notes {
 		_, _ = fmt.Fprintln(w, "Note:", string(printable([]byte(n))))
 	}
-	_, _ = fmt.Fprintln(w, "Containers are not moved: create them again in hyperbutler (docker compose up, or your docker run lines).")
+	created := false
+	for _, it := range res.Items {
+		created = created || (it.Kind == desktopimport.KindContainer && it.Outcome == desktopimport.OutcomeImported)
+	}
+	if created {
+		_, _ = fmt.Fprintln(w, "The containers are created, not started: stop Docker Desktop's first if they hold the same ports, then docker start them.")
+	} else {
+		_, _ = fmt.Fprintln(w, "No container was created: --container or --all-containers create them again, and docker compose up does for a Compose project.")
+	}
 }
 
 func countText(n int, what string) string {

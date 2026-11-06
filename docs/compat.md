@@ -141,8 +141,8 @@ uninstall` take the entry out.
   `credsStore` or a `credHelpers` entry names a `docker-credential-<name>` that is not on
   PATH (Docker Desktop's `desktop` after it is uninstalled), with the line to change;
   hyperbutler never edits those keys.
-- Tools that ignore docker contexts, the `docker_engine` opt-in, and moving images and
-  volumes from Docker Desktop: [tools.md](tools.md).
+- Tools that ignore docker contexts, the `docker_engine` opt-in, and moving images,
+  volumes and `docker run` containers from Docker Desktop: [tools.md](tools.md).
 - Both engines share the host's ports. A `docker run -p` on hyperbutler for a port Docker
   Desktop already publishes fails with "Ports are not available", as on Desktop
   ([Published ports](#published-ports)). The reverse (hyperbutler first) depends on

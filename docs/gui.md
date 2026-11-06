@@ -292,6 +292,11 @@ with hyperbutler's pipe as the target, `Plan`, and `Run` with the plan the user 
 `import.run` takes only ids of that plan whose state can be chosen. Docker Desktop not
 running is HB-IMP-003. `--import-from-pipe` (hidden) points it at another engine for
 tests, as `hyperbutler import --from-pipe` does.
+
+Containers (REQ-UX-024) are CLI-only for now: the window plans without
+`PlanOptions.Containers`, so its dialog lists images and volumes as before. Offering them
+needs new page work (the confirmations, a Compose project's folder) and catalog sentences;
+until then `hyperbutler import --from-desktop --container` is the way.
 ## Languages (REQ-UX-013)
 
 Every string is in `internal/gui/i18n/messages/<lang>.json`, keyed, whole sentences with

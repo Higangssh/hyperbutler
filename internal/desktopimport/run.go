@@ -15,7 +15,9 @@ import (
 )
 
 // resolve turns a selection into the plan's items. A name that is not in the plan, or
-// is ambiguous, is an error. Unsupported items picked by --all-* go to skipped.
+// is ambiguous, is an error. Unsupported items picked by --all-* go to skipped. A selected
+// container that will be created brings its image and named volumes along;
+// resolveContainers has the containers themselves.
 func resolve(p *Plan, sel Selection) (imgs []ImagePlan, vols []VolumePlan, skipped []ItemResult, err error) {
 	seenI := map[string]bool{}
 	addImage := func(ip ImagePlan) {
@@ -66,6 +68,23 @@ func resolve(p *Plan, sel Selection) (imgs []ImagePlan, vols []VolumePlan, skipp
 		}
 		addVolume(p.Volumes[i])
 	}
+	ctrs, _, err := resolveContainers(p, sel)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	for _, cp := range ctrs {
+		if !cp.creatable() {
+			continue
+		}
+		if i := slices.IndexFunc(p.Images, func(ip ImagePlan) bool { return ip.ID == cp.ImageID }); i >= 0 && p.Images[i].Status != StatusUnsupported {
+			addImage(p.Images[i])
+		}
+		for _, name := range cp.Volumes {
+			if i := slices.IndexFunc(p.Volumes, func(v VolumePlan) bool { return v.Name == name }); i >= 0 {
+				addVolume(p.Volumes[i])
+			}
+		}
+	}
 	return imgs, vols, skipped, nil
 }
 
@@ -115,6 +134,9 @@ type runState struct {
 	tempTags       []string
 	tempID         string
 	tempErr        error
+	// newNetworks are the networks this run created in hyperbutler, true once a container
+	// was created on it; the others are removed at the end.
+	newNetworks map[string]bool
 }
 
 // Run imports the selected items of plan into hyperbutler, then checks that Docker
@@ -140,7 +162,11 @@ func (im *Importer) Run(ctx context.Context, plan *Plan, sel Selection, progress
 		return nil, err
 	}
 	defer unlock()
-	res := &Result{Skipped: skipped}
+	ctrs, skippedCtrs, err := resolveContainers(plan, sel)
+	if err != nil {
+		return nil, err
+	}
+	res := &Result{Skipped: append(skipped, skippedCtrs...)}
 	space, err := im.Space(plan, sel)
 	if err != nil {
 		return nil, err
@@ -163,7 +189,7 @@ func (im *Importer) Run(ctx context.Context, plan *Plan, sel Selection, progress
 	if err != nil {
 		return nil, err
 	}
-	st := &runState{sel: sel, plan: plan, run: run, complete: complete}
+	st := &runState{sel: sel, plan: plan, run: run, complete: complete, newNetworks: map[string]bool{}}
 
 	im.applyStale(ctx, st, im.findStale(ctx, complete), progress)
 
@@ -190,6 +216,7 @@ func (im *Importer) Run(ctx context.Context, plan *Plan, sel Selection, progress
 		return nil, fmt.Errorf("record Docker Desktop's state before the import: %w", err)
 	}
 
+	announceContainers(ctrs, progress)
 	for _, ip := range imgs {
 		if ctx.Err() != nil {
 			res.add(ItemResult{Kind: KindImage, Name: ip.Name(), ID: ip.ID, Tags: ip.Tags, Size: ip.Size, Outcome: OutcomeCanceled}, progress)
@@ -213,6 +240,15 @@ func (im *Importer) Run(ctx context.Context, plan *Plan, sel Selection, progress
 		}
 		res.add(r, progress)
 	}
+	for _, cp := range ctrs {
+		if ctx.Err() != nil {
+			res.add(ItemResult{Kind: KindContainer, Name: cp.Name, ID: cp.ID, Outcome: OutcomeCanceled}, progress)
+			continue
+		}
+		progress(Event{Kind: EventStart, Item: KindContainer, Name: cp.Name})
+		res.add(im.importContainer(ctx, st, cp, res), progress)
+	}
+	im.removeUnusedNetworks(ctx, st)
 	im.removeTempImage(ctx, st)
 	res.Canceled = ctx.Err() != nil
 

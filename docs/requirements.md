@@ -405,6 +405,15 @@ Status of the 0.2 usage requirements (2026-11-01; checked on one machine, Window
   md5s and containers were identical before and after; after the second review, with a
   `VOLUME` image as the smallest one, a stuck filling helper and a killed overwrite, the
   source's `docker volume ls` was unchanged and no verified or old content was lost.
+- REQ-UX-024: met against a stand-in only (2026-11-07; CLI only, the window's dialog does
+  not offer containers yet, docs/gui.md). `hyperbutler import --from-desktop --container`,
+  `--all-containers` and `--confirm-container` (internal/desktopimport/container.go,
+  docs/tools.md) read `docker inspect` through the read-only client (plus `GET
+  /networks/{name}`) and create the container in hyperbutler, not started, with its image
+  and named volumes brought along and a missing bridge network created first. Unit tests
+  against two fake engines, one fuzz target; not run against Docker Desktop or on the VM.
+  A confirmed container whose bind source hyperbutler refuses is created without that
+  mount, since the engine would refuse the create.
 - REQ-API-003: met (docs/tools.md): `DOCKER_HOST` per shell and per user,
   `~/.testcontainers.properties`, VS Code and JetBrains settings, and `config set pipe
   \\.\pipe\docker_engine` as the opt-in, which warns when Docker Desktop is installed or

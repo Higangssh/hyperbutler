@@ -82,6 +82,52 @@ func checkSharable(src string) error {
 	return &UnsharableError{Source: src, Why: "is a device path", Fix: fixPath}
 }
 
+// CheckBindSource is REQ-FS-006's check of one bind source, as the proxy applies it to a
+// create: it refuses UNC, WSL and device paths, and a drive path on a network drive. The
+// Docker Desktop import asks it before it offers a container, so its plan says what the
+// create would answer. Guest paths and volume names pass.
+func CheckBindSource(src string) error {
+	if err := checkSharable(src); err != nil {
+		return err
+	}
+	if WindowsPath(src) {
+		return checkDriveOf(src)
+	}
+	return nil
+}
+
+// ParseBind splits a docker -v spec into source, target and options, reading its source
+// as RewriteCreate does, whatever it is: a drive path, a UNC or device path, a guest path
+// or a volume name. A spec without an absolute target, or with more parts, is an error.
+func ParseBind(spec string) (src, target, opts string, err error) {
+	if strings.HasPrefix(spec, `\\`) && !WindowsPath(spec) {
+		src = bindSource(spec)
+		if len(src) == len(spec) {
+			return "", "", "", fmt.Errorf("share: bind %q has no target", spec)
+		}
+		target, opts, _ = strings.Cut(spec[len(src)+1:], ":")
+	} else {
+		var win bool
+		src, target, opts, win, err = splitBind(spec)
+		if err != nil {
+			return "", "", "", err
+		}
+		if win {
+			return src, target, opts, nil
+		}
+		var rest string
+		var ok bool
+		if src, rest, ok = strings.Cut(spec, ":"); !ok {
+			return "", "", "", fmt.Errorf("share: bind %q has no target", spec)
+		}
+		target, opts, _ = strings.Cut(rest, ":")
+	}
+	if src == "" || target == "" || target[0] != '/' || strings.Contains(opts, ":") {
+		return "", "", "", fmt.Errorf("share: bind %q: want source:target[:options] with an absolute target", spec)
+	}
+	return src, target, opts, nil
+}
+
 // bindSource is the source part of a -v spec that starts with two backslashes: up to
 // the colon before the guest target ("\\server\share\x:/x:ro" -> "\\server\share\x").
 func bindSource(spec string) string {

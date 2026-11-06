@@ -60,6 +60,10 @@ func TestImportUsage(t *testing.T) {
 	if code := run([]string{"import", "--from-desktop", "--all-images", "x"}, &out, &errb); code != 2 || strings.Contains(errb.String(), "PowerShell") {
 		t.Errorf("no list flag: %d %q", code, errb.String())
 	}
+	errb.Reset()
+	if code := run([]string{"import", "--from-desktop", "--container", "web", "db"}, &out, &errb); code != 2 || !strings.Contains(errb.String(), `"--container=a,b"`) {
+		t.Errorf("container list: %d %q", code, errb.String())
+	}
 }
 
 func TestWriteResult(t *testing.T) {
@@ -76,7 +80,7 @@ func TestWriteResult(t *testing.T) {
 	for _, want := range []string{
 		"Nothing to import: 2 images and 1 volume already here.",
 		"Docker Desktop unchanged: 2 images, 1 volume, 3 containers",
-		"Containers are not moved",
+		"No container was created",
 	} {
 		if !strings.Contains(b.String(), want) {
 			t.Errorf("missing %q in\n%s", want, b.String())
@@ -91,5 +95,69 @@ func TestWriteResult(t *testing.T) {
 		if !strings.Contains(b.String(), want) {
 			t.Errorf("missing %q in\n%s", want, b.String())
 		}
+	}
+}
+
+// The plan shows a container's reason, its capabilities and what stays behind, names a
+// Compose project instead of offering its containers, and asks to confirm what needs it.
+func TestContainerPlanText(t *testing.T) {
+	p := &desktopimport.Plan{Containers: []desktopimport.ContainerPlan{
+		{Name: "web", Image: "myapp:1", Status: desktopimport.StatusNew, CapAdd: []string{"NET_ADMIN"}, WritableBytes: 5,
+			Notes: []string{"its writable layer holds 5 B and is not copied"}, Ports: []string{"8080->80/tcp"}},
+		{Name: "priv", Image: "myapp:1", Status: desktopimport.StatusConfirm, Requires: []string{"it runs privileged"},
+			Reason: "skipped unless confirmed (--confirm-container priv): it runs privileged"},
+		{Name: "no", Image: "myapp:1", Status: desktopimport.StatusConfirm, Requires: []string{"it uses host networking"}},
+		{Name: "shop-web-1", Status: desktopimport.StatusCompose, Project: "shop", ProjectDir: `C:\work\shop`},
+		{Name: "shop-db-1", Status: desktopimport.StatusCompose, Project: "shop", ProjectDir: `C:\work\shop`},
+	}}
+	var b bytes.Buffer
+	writePlan(&b, p, true)
+	for _, want := range []string{
+		"Containers (3; created in hyperbutler, not started)", "adds the capabilities NET_ADMIN", "not copied",
+		"publishes 8080->80/tcp", "needs your confirmation", "--confirm-container priv",
+		`Compose project shop (shop-web-1, shop-db-1) is not recreated: run docker compose up in C:\work\shop.`,
+	} {
+		if !strings.Contains(b.String(), want) {
+			t.Errorf("missing %q in\n%s", want, b.String())
+		}
+	}
+	b.Reset()
+	// No images or volumes to ask about: containers 1-3, yes to the first confirmation.
+	sel, err := askSelection(strings.NewReader("1-3\ny\nn\n"), &b, p, desktopimport.Selection{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(sel.Containers, []string{"web"}) || !slices.Equal(sel.ConfirmContainers, []string{"priv"}) {
+		t.Errorf("selection %+v", sel)
+	}
+	if !strings.Contains(b.String(), "it runs privileged") {
+		t.Errorf("the question does not say why: %s", b.String())
+	}
+}
+
+func TestWriteResultContainers(t *testing.T) {
+	var b bytes.Buffer
+	writeResult(&b, &desktopimport.Result{
+		Items:  []desktopimport.ItemResult{{Kind: "container", Name: "web", Outcome: desktopimport.OutcomeImported, Reason: "created, not started"}},
+		Source: desktopimport.SourceCheck{Unchanged: true},
+	}, nil)
+	if !strings.Contains(b.String(), "created, not started") || !strings.Contains(b.String(), "docker start them") {
+		t.Errorf("%s", b.String())
+	}
+	b.Reset()
+	writeResult(&b, &desktopimport.Result{
+		Items:  []desktopimport.ItemResult{{Kind: "container", Name: "web", Outcome: desktopimport.OutcomeAlready}},
+		Source: desktopimport.SourceCheck{Unchanged: true},
+	}, nil)
+	if !strings.Contains(b.String(), "Nothing to import: 0 images and 0 volumes, 1 container already here.") {
+		t.Errorf("%s", b.String())
+	}
+}
+
+func TestContainerPlanJSON(t *testing.T) {
+	j := containerPlanJSON(desktopimport.ContainerPlan{Name: "web", ID: "abc", Status: desktopimport.StatusConfirm, Image: "myapp:1",
+		WritableBytes: -1, Requires: []string{"r"}, CapAdd: []string{"c"}})
+	if j.Kind != "container" || j.Status != "needs-confirm" || j.Image != "myapp:1" || *j.WritableBytes != -1 || j.Requires[0] != "r" || j.CapAdd[0] != "c" {
+		t.Errorf("%+v", j)
 	}
 }
