@@ -367,6 +367,9 @@ type PlanOptions struct {
 	// the Docker Desktop one, to tell "already" from "conflict". It reads both volumes
 	// whole; without it such a volume is StatusExists.
 	CompareVolumes bool
+	// Containers also reads Docker Desktop's containers (Plan.Containers): one inspect
+	// with sizes per container, and a look at hyperbutler's for each name.
+	Containers bool
 	// Progress, when set, gets EventProgress while volumes are compared.
 	Progress func(Event)
 }
@@ -519,20 +522,31 @@ func (im *Importer) Plan(ctx context.Context, po PlanOptions) (*Plan, error) {
 	if p.HelperImage == "" && len(p.Volumes) > 0 {
 		p.Notes = append(p.Notes, noHelperNote)
 	}
+	if po.Containers {
+		if err := im.planContainers(ctx, p, d); err != nil {
+			return nil, err
+		}
+	}
 	return p, nil
 }
 
 // Select is the plan narrowed to the items sel names, resolved as Run resolves them (a
 // tag as busybox, busybox:latest or docker.io/library/busybox, an id or an id prefix
 // of 12 or more hex digits, a volume name). A name that is not in the plan is an error.
-// AllImages and AllVolumes keep every item of their kind, the unsupported ones too.
+// AllImages, AllVolumes and AllContainers keep every item of their kind, the unsupported
+// ones too. A selected container's image and named volumes are kept with it, as Run brings
+// them along.
 func (p *Plan) Select(sel Selection) (*Plan, error) {
 	imgs, vols, _, err := resolve(p, sel)
 	if err != nil {
 		return nil, err
 	}
 	n := *p
-	n.Images, n.Volumes = nil, nil
+	ctrs, _, err := resolveContainers(p, sel)
+	if err != nil {
+		return nil, err
+	}
+	n.Images, n.Volumes, n.Containers = nil, nil, nil
 	for _, ip := range p.Images {
 		if sel.AllImages || slices.ContainsFunc(imgs, func(x ImagePlan) bool { return x.ID == ip.ID }) {
 			n.Images = append(n.Images, ip)
@@ -541,6 +555,11 @@ func (p *Plan) Select(sel Selection) (*Plan, error) {
 	for _, vp := range p.Volumes {
 		if sel.AllVolumes || slices.ContainsFunc(vols, func(x VolumePlan) bool { return x.Name == vp.Name }) {
 			n.Volumes = append(n.Volumes, vp)
+		}
+	}
+	for _, cp := range p.Containers {
+		if sel.AllContainers || slices.ContainsFunc(ctrs, func(x ContainerPlan) bool { return x.ID == cp.ID }) {
+			n.Containers = append(n.Containers, cp)
 		}
 	}
 	return &n, nil

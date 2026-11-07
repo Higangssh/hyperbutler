@@ -461,12 +461,17 @@ fields are only added; removing or renaming one means a new version.
   `unchanged`, `images`, `volumes`, `containers` (Docker Desktop's counts after the run),
   `hashedVolumes` (volumes whose content hash was compared before and after),
   `differences` and `warnings`. Each item (and each `skipped` one, left out by
-  `--all-images` or `--all-volumes`) has `kind` (`image`, `volume`), `name`, `id`,
+  `--all-images`, `--all-volumes` or `--all-containers`) has `kind` (`image`, `volume`,
+  `container`), `name`, `id`,
   `tags`, `sizeBytes` (-1: unknown), `status` (before the run: `new`, `already`,
-  `partial`, `conflict`, `exists`, `unsupported`), `outcome` (`imported`, `tagged`,
+  `partial`, `conflict`, `exists`, `unsupported`, and for a container `compose` or
+  `needs-confirm`), `outcome` (`imported`, `tagged`,
   `already`, `refused`, `failed`, `canceled`; empty in a dry run), `bytesCopied`,
   `reason`, `missingTags`, `addedTags`, `usedBy` (running Docker Desktop containers that
-  mount the volume) and `hash` (a volume's verified content hash, `sha256:...`).
+  mount the volume) and `hash` (a volume's verified content hash, `sha256:...`). A
+  container (REQ-UX-024, added without a schema change) also has `image`, `state`,
+  `project`, `projectDir`, `requires`, `capAdd`, `binds`, `ports`, `volumes`, `networks`,
+  `writableBytes` (not copied; -1: unknown) and `notes`; never its environment or command.
 
 ## Tests and fuzzing
 

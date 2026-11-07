@@ -139,6 +139,12 @@ so you can delete them.
   images and volumes over from Docker Desktop: [docs/tools.md](tools.md).
 - `hyperbutler import --from-desktop` copies the images and volumes you pick from a running
   Docker Desktop, verifies each copy and leaves Docker Desktop as it was (`--dry-run` lists).
+  `--container NAME` and `--all-containers` also create again the containers made with
+  `docker run`, with their image and volumes, and do not start them: stop Docker Desktop's
+  first if it holds the same ports, then `docker start` the new one. For a Compose project,
+  run `docker compose up` in its folder. What a container wrote outside its volumes is not
+  copied, and one with host access waits for `--confirm-container NAME`. See
+  [docs/tools.md](tools.md#containers-req-ux-024).
 
 ## Published ports and other users
 

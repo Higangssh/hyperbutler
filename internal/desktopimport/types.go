@@ -26,12 +26,19 @@ const (
 	// StatusUnsupported: it cannot be imported (an untagged image, a volume that is not
 	// a plain local one).
 	StatusUnsupported Status = "unsupported"
+	// StatusCompose: a container of a Compose project. It is never recreated: docker
+	// compose up in the project's folder does that.
+	StatusCompose Status = "compose"
+	// StatusConfirm: a container that uses something a copy should not bring along
+	// unasked (ContainerPlan.Requires). It is skipped unless the user confirms it by name.
+	StatusConfirm Status = "needs-confirm"
 )
 
 // Kinds of item.
 const (
-	KindImage  = "image"
-	KindVolume = "volume"
+	KindImage     = "image"
+	KindVolume    = "volume"
+	KindContainer = "container"
 )
 
 // ImagePlan is one image in Docker Desktop.
@@ -73,12 +80,52 @@ type VolumePlan struct {
 	labels map[string]string
 }
 
+// ContainerPlan is one container in Docker Desktop (REQ-UX-024). Nothing of it says what
+// its environment holds: that goes to hyperbutler's create and is never shown.
+type ContainerPlan struct {
+	Name string `json:"name"`
+	ID   string `json:"id"`
+	// Image is the reference the container is created from in hyperbutler; ImageID the
+	// image it runs in Docker Desktop.
+	Image   string `json:"image,omitempty"`
+	ImageID string `json:"imageId,omitempty"`
+	State   string `json:"state,omitempty"` // in Docker Desktop: running, exited, ...
+	Status  Status `json:"status"`
+	Reason  string `json:"reason,omitempty"`
+	// Project and ProjectDir are its Compose project and that project's folder, if known.
+	Project    string `json:"project,omitempty"`
+	ProjectDir string `json:"projectDir,omitempty"`
+	// Requires is what needs the user's confirmation, one sentence each.
+	Requires []string `json:"requires,omitempty"`
+	// CapAdd are the capabilities it adds: shown before the copy, not asked about.
+	CapAdd []string `json:"capAdd,omitempty"`
+	// Binds are the bind mounts it gets in hyperbutler ("C:\src -> /src").
+	Binds []string `json:"binds,omitempty"`
+	Ports []string `json:"ports,omitempty"`
+	// Volumes are its named volumes and Networks its user-defined networks; selecting the
+	// container brings the volumes and its image along.
+	Volumes  []string `json:"volumes,omitempty"`
+	Networks []string `json:"networks,omitempty"`
+	// WritableBytes is the size of its writable layer, which is not copied; -1: unknown.
+	WritableBytes int64 `json:"writableBytes"`
+	// Notes are what the copy leaves behind: the writable layer, anonymous volumes, a
+	// setting that does not carry over.
+	Notes []string `json:"notes,omitempty"`
+
+	spec      *containerSpec
+	confirmed bool // the selection names it in ConfirmContainers
+	// networkNotes are the Notes that say a network will be created.
+	networkNotes []string
+}
+
 // Plan is what Docker Desktop has and how it compares with hyperbutler.
 type Plan struct {
 	Source  Endpoint     `json:"source"`
 	Target  string       `json:"target"`
 	Images  []ImagePlan  `json:"images"`
 	Volumes []VolumePlan `json:"volumes"`
+	// Containers is empty unless PlanOptions.Containers asked for them.
+	Containers []ContainerPlan `json:"containers,omitempty"`
 	// HelperImage is the image in Docker Desktop the volume helper containers would be
 	// created from; empty when there is none (volumes cannot be copied then).
 	HelperImage string   `json:"helperImage,omitempty"`
@@ -96,6 +143,13 @@ type Selection struct {
 	AllImages  bool
 	Volumes    []string
 	AllVolumes bool
+	// Containers are container names (or ids) to create again in hyperbutler, and
+	// AllContainers every one that needs no confirmation. Either brings the container's
+	// image and named volumes along. ConfirmContainers selects the containers it names
+	// and confirms what they require (ContainerPlan.Requires).
+	Containers        []string
+	AllContainers     bool
+	ConfirmContainers []string
 	// OverwriteVolumes replaces a hyperbutler volume of the same name whose content or
 	// labels differ. Docker Desktop's content is first copied into a temporary volume
 	// and verified; only then is hyperbutler's deleted, and the new one filled from the
@@ -122,7 +176,7 @@ const (
 
 // ItemResult is one selected item's outcome.
 type ItemResult struct {
-	Kind string `json:"kind"` // KindImage or KindVolume
+	Kind string `json:"kind"` // KindImage, KindVolume or KindContainer
 	Name string `json:"name"`
 	ID   string `json:"id,omitempty"`
 	// Tags are an image's tags; AddedTags those Run added to an image already there.
@@ -157,7 +211,8 @@ type SourceCheck struct {
 // Result is what Run did.
 type Result struct {
 	Items []ItemResult `json:"items"`
-	// Skipped are items --all-images or --all-volumes left out: unsupported ones.
+	// Skipped are items --all-images, --all-volumes or --all-containers left out:
+	// unsupported ones, and containers of a Compose project or that need a confirmation.
 	Skipped []ItemResult `json:"skipped,omitempty"`
 	Bytes   int64        `json:"bytesCopied"`
 	Source  SourceCheck  `json:"sourceCheck"`
@@ -204,7 +259,7 @@ const (
 // return quickly.
 type Event struct {
 	Kind    EventKind `json:"kind"`
-	Item    string    `json:"item,omitempty"` // KindImage or KindVolume
+	Item    string    `json:"item,omitempty"` // KindImage, KindVolume or KindContainer
 	Name    string    `json:"name,omitempty"`
 	Phase   string    `json:"phase,omitempty"`
 	Bytes   int64     `json:"bytes,omitempty"`

@@ -23,6 +23,10 @@ func TestRegistryRefusesNetworkDrive(t *testing.T) {
 			t.Errorf("%s: %v", src, err)
 		}
 	}
+	var viaExport *UnsharableError
+	if err := CheckBindSource(`\\?\Z:\src`); !errors.As(err, &viaExport) {
+		t.Errorf("CheckBindSource of a network drive: %v", err)
+	}
 	if err := checkLocalDrive(`C:\src`, `C:\src`); err != nil {
 		t.Fatal(err)
 	}

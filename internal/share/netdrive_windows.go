@@ -28,3 +28,8 @@ func checkLocalDrive(winPath, p string) error {
 	}
 	return nil
 }
+
+// checkDriveOf is checkLocalDrive for a drive path that may be behind "\\?\".
+func checkDriveOf(src string) error {
+	return checkLocalDrive(src, strings.TrimPrefix(src, `\\?\`))
+}

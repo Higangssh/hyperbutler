@@ -1,6 +1,7 @@
 // Package desktopimport copies images and volumes from Docker Desktop's engine into
-// hyperbutler's (REQ-UX-023). It is a copy, never a move: Docker Desktop's images,
-// volumes and containers are unchanged and keep working, and every run checks that.
+// hyperbutler's (REQ-UX-023) and creates its containers again there (REQ-UX-024). It is a
+// copy, never a move: Docker Desktop's images, volumes and containers are unchanged and
+// keep working, and every run checks that.
 // `hyperbutler import --from-desktop` is a thin layer over it; a GUI can use it the
 // same way.
 //
@@ -43,6 +44,26 @@
 // and a GUI, gets both. Run does not retry. What is "already imported" is always what
 // hyperbutler has now; imports-complete.json in Home only records verified volumes so
 // that recovery never removes them.
+//
+// # Containers
+//
+// With PlanOptions.Containers, Plan also reads docker inspect of each container, through
+// the same read-only client, and lists it with a ContainerPlan: StatusNew, StatusAlready
+// (an earlier import created it, by its label), StatusConflict (another container has the
+// name, or its image's tag names another image; never overwritten), StatusCompose (the
+// project and folder are named; never recreated), StatusConfirm (ContainerPlan.Requires:
+// a bind source hyperbutler refuses or a folder in Docker Desktop's VM, host networking,
+// host namespaces, devices, --privileged, security options) or StatusUnsupported (it
+// names another container of Docker Desktop's, a network that is not a bridge, an image
+// that has no tag). The inspect answer is untrusted: mapContainer takes only fields the
+// create body has, checked, and is fuzzed.
+//
+// Selection.Containers and AllContainers bring the container's image and named volumes
+// along; ConfirmContainers selects and confirms by name. Run does containers last: it
+// checks the image and volumes made it, creates a missing network (a bridge only), creates
+// the container and never starts it, and checks it is there in state "created". A
+// failure removes the container and any network the run made for it, and only there; one
+// it cannot remove, or that lacks the run's label, stays with its network and the result says so.
 //
 // # Docker Desktop is only read
 //
