@@ -352,7 +352,7 @@ func shutdown(c *vsockConn) error {
 }
 
 var (
-	gitOID    = regexp.MustCompile(`^[0-9a-f]{40}([0-9a-f]{24})?$`)
+	gitOID = regexp.MustCompile(`^[0-9a-f]{40}([0-9a-f]{24})?$`)
 	// The name comes from the host's git, which has judged it; this only keeps it one word.
 	gitBranch = regexp.MustCompile(`^refs/heads/[^\x00-\x20\x7f]{1,240}$`)
 )
