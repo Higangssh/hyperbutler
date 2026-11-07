@@ -25,7 +25,7 @@ const (
 		"It accepts only hyperbutler's own requests, from users signed in at this PC, over a local pipe."
 	ServicePipe = `\\.\pipe\hyperbutler-broker`
 	// ServicePipeInstances is the shared endpoint's instance count: with MaxConnsPerUser
-	// 2, it serves up to 8 users at once.
+	// 3, it serves at least 5 users at once.
 	ServicePipeInstances = maxPipeInstances
 	// EventSource is the Windows Event Log source of the service, registered at install
 	// and removed at uninstall. The service writes its log there and nowhere else.

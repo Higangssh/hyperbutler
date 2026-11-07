@@ -136,7 +136,8 @@ type Config struct {
 	AllowedSIDs []string
 
 	// MaxConnsPerUser caps one user's concurrent identified connections on each endpoint
-	// (default 2), so that one user cannot hold every instance of the shared endpoint.
+	// (default 3: the Docker engine, the sandbox manager and a short-lived tool such as
+	// doctor), so that one user cannot hold every instance of the shared endpoint.
 	MaxConnsPerUser int
 
 	// RequestTimeout bounds each backend call and each data-location check.
@@ -236,7 +237,7 @@ func New(cfg Config) (*Server, error) {
 		cfg.validateDataDir = ValidateDataDir
 	}
 	if cfg.MaxConnsPerUser == 0 {
-		cfg.MaxConnsPerUser = 2
+		cfg.MaxConnsPerUser = 3
 	}
 	return &Server{cfg: cfg, users: make(map[string]*userState), conns: make(map[string]int)}, nil
 }

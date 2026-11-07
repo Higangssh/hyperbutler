@@ -1,4 +1,4 @@
-//go:build windows
+﻿//go:build windows
 
 package engine
 
@@ -399,5 +399,45 @@ func TestBrokerProviderPipe(t *testing.T) {
 	}
 	if _, _, err := (&brokerProvider{pipe: pipe, log: slog.New(slog.DiscardHandler)}).Boot(context.Background(), BootSpec{CPUs: 1, MemoryMB: 1024}); !errors.Is(err, errBrokerNeedsDisk) {
 		t.Fatalf("boot without a data disk: %v", err)
+	}
+}
+
+// TestSharedBrokerConnection: sessions share one connection. Closing a lease stops its VM
+// and leaves the connection to the others; the last one closes it.
+func TestSharedBrokerConnection(t *testing.T) {
+	dials := 0
+	fake := &fakeBrokerClient{}
+	old := dialBroker
+	dialBroker = func(context.Context, string) (brokerClient, error) { dials++; return fake, nil }
+	t.Cleanup(func() { dialBroker = old })
+	b := NewSessionBroker(`\.\pipe\x`, t.TempDir(), slog.New(slog.DiscardHandler))
+	a, err := b.acquire(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	c, err := b.acquire(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dials != 1 {
+		t.Fatalf("%d dials", dials)
+	}
+	if _, err := a.Start(proto.Request{Op: proto.OpStart, Slot: 1}); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.Close(); err != nil { // twice is once
+		t.Fatal(err)
+	}
+	if fake.closed {
+		t.Fatal("the connection closed under another lease")
+	}
+	if err := c.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if !fake.closed {
+		t.Fatal("the last lease left the connection open")
 	}
 }

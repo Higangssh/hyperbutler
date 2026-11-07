@@ -11,11 +11,13 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 
 	"golang.org/x/sys/windows"
 
 	"github.com/Higangssh/hyperbutler/internal/broker"
+	"github.com/Higangssh/hyperbutler/internal/broker/proto"
 	"github.com/Higangssh/hyperbutler/internal/imageset"
 	"github.com/Higangssh/hyperbutler/internal/netstack"
 	"github.com/Higangssh/hyperbutler/internal/transport"
@@ -28,12 +30,12 @@ type SessionConfig struct {
 	Layout Layout
 	// Slot is the broker's slot, 1..proto.MaxSlot; it names the session's disk.
 	Slot uint8
-	// BrokerPipe boots the VM through the HCS access broker. Empty calls HCS from this
-	// process (developer mode), from the image at Manifest.
-	BrokerPipe string
-	Manifest   string
-	CPUs       int
-	MemoryMB   int
+	// Broker boots the VM through the HCS access broker. nil calls HCS from this process
+	// (developer mode), from the image at Manifest.
+	Broker   *SessionBroker
+	Manifest string
+	CPUs     int
+	MemoryMB int
 	// DiskBlank says the session's disk was never written: the guest may format it.
 	DiskBlank bool
 	// Egress decides what the session may reach; nil is the `open` mode.
@@ -41,6 +43,74 @@ type SessionConfig struct {
 	// ConsoleLog receives the guest's serial console in developer mode.
 	ConsoleLog io.Writer
 	Logger     *slog.Logger
+}
+
+// SessionBroker is the one broker connection all of a user's sessions share: the broker
+// counts connections per user, and one connection may hold the leases of several slots
+// (ADR 0009). It is dialed for the first session and closed with the last.
+type SessionBroker struct {
+	p *brokerProvider
+
+	mu   sync.Mutex
+	c    brokerClient
+	refs int
+}
+
+// NewSessionBroker returns the connection of the sessions in dataDir, to the broker on pipe.
+func NewSessionBroker(pipe, dataDir string, log *slog.Logger) *SessionBroker {
+	return &SessionBroker{p: &brokerProvider{pipe: pipe, dataDir: dataDir, log: log}}
+}
+
+func (b *SessionBroker) acquire(ctx context.Context) (brokerClient, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.c == nil {
+		c, err := b.p.connect(ctx)
+		if err != nil {
+			return nil, err
+		}
+		b.c = c
+	}
+	b.refs++
+	return &sharedClient{brokerClient: b.c, b: b}, nil
+}
+
+func (b *SessionBroker) release() error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.refs--; b.refs > 0 || b.c == nil {
+		return nil
+	}
+	c := b.c
+	b.c = nil
+	return c.Close()
+}
+
+// sharedClient is one lease's view of the connection. Closing a lease's own connection is
+// what ends its VM otherwise, so here it stops the VM and lets go of the connection.
+type sharedClient struct {
+	brokerClient
+	b    *SessionBroker
+	slot uint8
+	once sync.Once
+}
+
+// Start remembers the slot its Close must stop.
+func (c *sharedClient) Start(req proto.Request) (proto.Reply, error) {
+	c.slot = req.Slot
+	return c.brokerClient.Start(req)
+}
+
+// Close stops this lease's VM, if it still runs, and releases the connection.
+func (c *sharedClient) Close() error {
+	var err error
+	c.once.Do(func() {
+		if c.slot != 0 {
+			_ = c.brokerClient.StopSlot(c.slot, true)
+		}
+		err = c.b.release()
+	})
+	return err
 }
 
 // SessionVM is a running session's VM and network.
@@ -126,8 +196,8 @@ func BootSession(ctx context.Context, c SessionConfig) (_ *SessionVM, err error)
 	bs := BootSpec{CPUs: c.CPUs, MemoryMB: c.MemoryMB, Net: netSpec, BlankDisk: c.DiskBlank, Slot: c.Slot}
 	var provider VMProvider
 	var img *imageset.Set
-	if c.BrokerPipe != "" {
-		provider = &brokerProvider{pipe: c.BrokerPipe, dataDir: c.Layout.Data, log: log}
+	if c.Broker != nil {
+		provider = &brokerProvider{dataDir: c.Layout.Data, log: log, shared: c.Broker}
 	} else {
 		pin, _ := imageset.SandboxPin() // none in a development build
 		if img, err = imageset.Open(c.Manifest, pin); err != nil {

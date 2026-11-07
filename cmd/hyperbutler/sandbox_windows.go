@@ -277,10 +277,10 @@ func stopSandboxManager(in *install) error {
 // sandboxHost boots sessions for the manager, through the broker when this machine's
 // hyperbutler uses it.
 type sandboxHost struct {
-	l          engine.Layout
-	brokerPipe string
-	manifest   string
-	log        *slog.Logger
+	l        engine.Layout
+	broker   *engine.SessionBroker // nil in developer mode
+	manifest string
+	log      *slog.Logger
 }
 
 func (h *sandboxHost) Boot(ctx context.Context, r manager.BootRequest) (manager.VM, error) {
@@ -290,14 +290,14 @@ func (h *sandboxHost) Boot(ctx context.Context, r manager.BootRequest) (manager.
 	}
 	var console io.Writer
 	var logf *os.File
-	if os.Getenv("HYPERBUTLER_DEBUG") != "" && h.brokerPipe == "" {
+	if os.Getenv("HYPERBUTLER_DEBUG") != "" && h.broker == nil {
 		logf, err = os.Create(filepath.Join(h.l.LogDir(), "sandbox-console-"+r.Name+".log"))
 		if err == nil {
 			console = logf
 		}
 	}
 	v, err := engine.BootSession(ctx, engine.SessionConfig{
-		Layout: h.l, Slot: r.Slot, BrokerPipe: h.brokerPipe, Manifest: h.manifest,
+		Layout: h.l, Slot: r.Slot, Broker: h.broker, Manifest: h.manifest,
 		CPUs: r.CPUs, MemoryMB: r.MemoryMB, DiskBlank: blank, Egress: r.Egress,
 		ConsoleLog: console, Logger: h.log,
 	})
@@ -375,7 +375,11 @@ func runSandboxManager(in *install, args []string) error {
 	if err := engine.MkdirPrivate(in.sandboxDir()); err != nil {
 		return err
 	}
-	m, err := manager.New(&sandboxHost{l: in.l, brokerPipe: choice.pipe, manifest: manifest, log: log}, in.sandboxDir(), log)
+	host := &sandboxHost{l: in.l, manifest: manifest, log: log}
+	if choice.pipe != "" {
+		host.broker = engine.NewSessionBroker(choice.pipe, in.l.Data, log)
+	}
+	m, err := manager.New(host, in.sandboxDir(), log)
 	if err != nil {
 		return err
 	}

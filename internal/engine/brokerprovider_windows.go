@@ -42,6 +42,8 @@ type brokerProvider struct {
 	dataDir string
 	log     *slog.Logger
 	poll    time.Duration
+	// shared, if set, is the connection this VM's lease is on, with other VMs' leases.
+	shared *SessionBroker
 }
 
 // brokerClient is what the provider needs of broker.Client (a fake in tests).
@@ -125,40 +127,19 @@ func (p *brokerProvider) Boot(ctx context.Context, bs BootSpec) (_ Lease, _ Runt
 	if err != nil {
 		return nil, RuntimeInfo{}, err
 	}
-	dctx, cancel := context.WithTimeout(ctx, 10*time.Second)
-	c, err := dialBroker(dctx, p.pipe)
-	cancel()
+	connect := p.connect
+	if p.shared != nil {
+		connect = p.shared.acquire
+	}
+	c, err := connect(ctx)
 	if err != nil {
-		return nil, RuntimeInfo{}, brokerError(fmt.Errorf("engine: cannot reach the HCS access broker on %s: %w", p.pipe, err))
+		return nil, RuntimeInfo{}, err
 	}
 	defer func() {
 		if err != nil {
 			_ = c.Close() // ends the lease: the broker terminates a VM it started
 		}
 	}()
-	pv, bv, err := c.Version()
-	if err != nil {
-		return nil, RuntimeInfo{}, brokerError(fmt.Errorf("engine: the HCS access broker on %s does not tell its version: %w", p.pipe, err))
-	}
-	if pv < proto.Version {
-		return nil, RuntimeInfo{}, codeErr(CodeBrokerOld, fmt.Errorf("engine: the HCS access broker is version %s, protocol %d; this hyperbutler needs protocol %d or later", bv, pv, proto.Version))
-	}
-	p.log.Info("booting through the HCS access broker", "pipe", p.pipe, "brokerVersion", bv, "protocol", pv)
-	h, err := openDirHandle(p.dataDir)
-	if err != nil {
-		return nil, RuntimeInfo{}, fmt.Errorf("engine: open the data directory %s: %w", p.dataDir, err)
-	}
-	err = c.SetDataLocation(h)
-	_ = windows.CloseHandle(h)
-	if err != nil {
-		if broker.IsCode(err, proto.CodeDataLocationRejected) {
-			// The service gives a reason but no fix; the same check run here gives both.
-			if de, ok := IsDataDirError(CheckBrokerDataDir(p.dataDir)); ok {
-				return nil, RuntimeInfo{}, codeErr(CodeBrokerRefused, fmt.Errorf("engine: %w", de))
-			}
-		}
-		return nil, RuntimeInfo{}, brokerError(fmt.Errorf("engine: the broker refused the data directory %s: %w", p.dataDir, err))
-	}
 	r, err := c.Start(req)
 	if err != nil {
 		if broker.IsCode(err, proto.CodeDiskRejected) {
@@ -182,6 +163,45 @@ func (p *brokerProvider) Boot(ctx context.Context, bs BootSpec) (_ Lease, _ Runt
 	l := &brokerLease{c: c, slot: bs.Slot, log: p.log, gone: make(chan struct{}), soon: make(chan struct{}), stop: make(chan struct{}), done: make(chan struct{})}
 	go l.watch(poll)
 	return l, RuntimeInfo{RuntimeID: guid.FromArray(r.VMID), Secret: r.Secret}, nil
+}
+
+// connect dials the broker, checks its protocol and gives it the data location.
+func (p *brokerProvider) connect(ctx context.Context) (_ brokerClient, err error) {
+	dctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	c, err := dialBroker(dctx, p.pipe)
+	cancel()
+	if err != nil {
+		return nil, brokerError(fmt.Errorf("engine: cannot reach the HCS access broker on %s: %w", p.pipe, err))
+	}
+	defer func() {
+		if err != nil {
+			_ = c.Close()
+		}
+	}()
+	pv, bv, err := c.Version()
+	if err != nil {
+		return nil, brokerError(fmt.Errorf("engine: the HCS access broker on %s does not tell its version: %w", p.pipe, err))
+	}
+	if pv < proto.Version {
+		return nil, codeErr(CodeBrokerOld, fmt.Errorf("engine: the HCS access broker is version %s, protocol %d; this hyperbutler needs protocol %d or later", bv, pv, proto.Version))
+	}
+	p.log.Info("booting through the HCS access broker", "pipe", p.pipe, "brokerVersion", bv, "protocol", pv)
+	h, err := openDirHandle(p.dataDir)
+	if err != nil {
+		return nil, fmt.Errorf("engine: open the data directory %s: %w", p.dataDir, err)
+	}
+	err = c.SetDataLocation(h)
+	_ = windows.CloseHandle(h)
+	if err != nil {
+		if broker.IsCode(err, proto.CodeDataLocationRejected) {
+			// The service gives a reason but no fix; the same check run here gives both.
+			if de, ok := IsDataDirError(CheckBrokerDataDir(p.dataDir)); ok {
+				return nil, codeErr(CodeBrokerRefused, fmt.Errorf("engine: %w", de))
+			}
+		}
+		return nil, brokerError(fmt.Errorf("engine: the broker refused the data directory %s: %w", p.dataDir, err))
+	}
+	return c, nil
 }
 
 // openDirHandle opens dir as a directory handle to pass to the broker.
