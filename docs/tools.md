@@ -35,20 +35,39 @@ In cmd: `set DOCKER_HOST=npipe:////./pipe/docker_engine_hyperbutler`. In Git Bas
 `export DOCKER_HOST=npipe:////./pipe/docker_engine_hyperbutler`. While `DOCKER_HOST` is
 set, `docker context use` has no effect in that shell (`hyperbutler start` and `status`
 say so). The Docker SDKs for Go, Python (`docker.from_env()`), Java (docker-java) and
-.NET (Docker.DotNet) all read it.
+.NET (Docker.DotNet) all read it. The Python SDK also follows the selected docker context;
+the Go SDK does not. What ran, with versions and exact errors, is in
+[compat.md](compat.md#client-tools).
 
 ### Testcontainers
 
-Testcontainers for Java, Go, Node and .NET read `~/.testcontainers.properties`
+Testcontainers reads `DOCKER_HOST`, or `~/.testcontainers.properties`
 (`%USERPROFILE%\.testcontainers.properties`) when `DOCKER_HOST` is not set:
 
 ```properties
 docker.host=npipe:////./pipe/docker_engine_hyperbutler
 ```
 
-Its Ryuk container mounts the Docker socket; inside the VM that is dockerd's own
-`/var/run/docker.sock`, so the default works. Testcontainers' compatibility is tracked in
-REQ-API-002 (`bench/compat-tools`), which has not run yet.
+What each language needs (`bench/compat-tools`; Java and .NET have not run):
+
+- **Go:** `DOCKER_HOST` or the file above, and for Ryuk, which otherwise fails with
+  `error while creating mount source path '/pipe/docker_engine_hyperbutler'`:
+
+  ```powershell
+  $env:TESTCONTAINERS_DOCKER_SOCKET_OVERRIDE = "/var/run/docker.sock"
+  ```
+
+- **Node:** the usual spelling does not work, in the variable or the file (`connect
+  UNKNOWN //pipe/docker_engine_hyperbutler`). Use a backslash after the dot, for these
+  tests only, since other tools do not take it:
+
+  ```powershell
+  $env:DOCKER_HOST = "npipe:////.\pipe\docker_engine_hyperbutler"
+  ```
+
+  and in the file, `docker.host=npipe:////.\\pipe\\docker_engine_hyperbutler`.
+- **Python:** `DOCKER_HOST` or the selected docker context. It does not read `docker.host`
+  from the file.
 
 ### VS Code
 
@@ -85,7 +104,9 @@ hyperbutler config set pipe \\.\pipe\docker_engine
 hyperbutler restart
 ```
 
-The docker CLI's `default` context then reaches hyperbutler too. `config set` prints a
+The docker CLI's `default` context then reaches hyperbutler too, and so do the SDKs and
+Testcontainers with nothing set (Testcontainers for Go still needs the Ryuk setting above).
+`config set` prints a
 warning when Docker Desktop is installed (its `Docker Desktop.exe` in
 `%ProgramFiles%\Docker\Docker`) or another engine serves that pipe right now: two engines
 cannot share one pipe, so whichever starts second fails (`hyperbutler start` with

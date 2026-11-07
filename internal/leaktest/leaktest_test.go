@@ -53,6 +53,10 @@ func walkModule(t *testing.T) []srcFile {
 			if path != root && (strings.HasPrefix(name, ".") || name == "testdata" || name == "vendor") {
 				return filepath.SkipDir
 			}
+			// A module of its own (a bench's samples) cannot import this one's leaktest.
+			if _, err := os.Stat(filepath.Join(path, "go.mod")); err == nil && path != root {
+				return filepath.SkipDir
+			}
 			return nil
 		}
 		if !strings.HasSuffix(path, ".go") {

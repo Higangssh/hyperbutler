@@ -1,7 +1,7 @@
 # Docker compatibility notes
 
 Known differences from Docker Desktop and Docker Engine on Linux (REQ-API-001). Only the
-networking, docker CLI and proxy notes exist so far. Everyday situations (the engine
+networking, docker CLI, client tools and proxy notes exist so far. Everyday situations (the engine
 stopped, sign-out and sleep, Docker Desktop running at the same time, other tools, other
 users, upgrades) are walked through in
 [research/usage-scenarios.md](research/usage-scenarios.md).
@@ -198,6 +198,90 @@ image is x86_64 and cannot boot in an ARM64 Hyper-V VM, so ARM64 is not supporte
 Docker publishes no Windows arm64 static CLI; an arm64 release would build `docker.exe`
 from the same pinned source with `GOARCH=arm64` (compose also publishes a
 `windows-aarch64` build).
+
+## Client tools
+
+REQ-API-002, REQ-API-003. Repeat with [`bench/compat-tools`](../bench/compat-tools/README.md).
+Only what ran is here. Each tool ran its own basic sample against an isolated engine on
+`\\.\pipe\hb_compat`, on 2026-11-07: Windows 11 Home 25H2, build 26200.9711; the engine
+built from commit 877731b; the guest image of v0.1.1; dockerd 29.9.2 (API 1.56); the docker
+CLI 29.9.2 of the v0.1.1 zip; Go 1.27.0, Python 3.13.15, Node 26.13.0. Docker Desktop is
+not on this machine, so nothing here compares with it by running it.
+
+| Tool | Version | Result | What it needed |
+|---|---|---|---|
+| Docker SDK for Go (ping, pull, run, logs, remove) | `github.com/moby/moby/client` v0.6.2 | pass | `DOCKER_HOST` |
+| Docker SDK for Python (the same) | `docker` 7.2.0 | pass | `DOCKER_HOST`, or a selected docker context |
+| Testcontainers for Go (nginx, wait strategy, mapped port, Ryuk) | `testcontainers-go` v0.45.0 | pass, but **Ryuk fails by default** | `DOCKER_HOST` and `TESTCONTAINERS_DOCKER_SOCKET_OVERRIDE=/var/run/docker.sock`, or `TESTCONTAINERS_RYUK_DISABLED=true` |
+| Testcontainers for Python (the same) | `testcontainers` 4.15.0 | pass, Ryuk included | `DOCKER_HOST`, or a selected docker context |
+| Testcontainers for Node (the same) | `testcontainers` 12.2.1 | pass, Ryuk included, but **not with the usual `DOCKER_HOST`** | `DOCKER_HOST=npipe:////.\pipe\<name>` with that backslash |
+| Dev Containers CLI, `up` and `exec` of an image, a Windows folder as the workspace | `@devcontainers/cli` 0.90.0 | pass | `DOCKER_HOST` or a selected docker context; `--docker-path` |
+| Dev Containers CLI, a Dockerfile with a feature (`ghcr.io/devcontainers/features/node:1`) | the same | pass | the same; see the legacy builder below |
+| Testcontainers for Java | | not run: no `java` on this machine | |
+| Testcontainers for .NET | | not run: runtimes 8.0.16 and 10.0.10, no SDK | |
+| JetBrains IDEs | | not automated (a GUI) | a Docker connection, [tools.md](tools.md#jetbrains-ides-intellij-goland-pycharm-rider-) |
+| VS Code Docker, Container Tools and Dev Containers extensions | | not automated (a GUI); VS Code 1.143.1 is here, the extensions did not run | [tools.md](tools.md#vs-code) |
+
+In the Dev Containers samples, a file that `postCreateCommand` wrote into the workspace
+reached the Windows folder, and a file from Windows was read through `devcontainer exec`.
+Ryuk "included" means that a container the sample left running was gone, with Ryuk,
+10 to 11 s after the sample's process ended. A Python program that exits cleanly stops
+Ryuk first (the library's own `atexit` hook), so its container stays; the sample ends with
+`os._exit` to see Ryuk at work.
+
+**Testcontainers for Go: the Ryuk mount.** With any pipe, by default:
+
+```
+run nginx: generic container: create container: reaper: new reaper: run container: container start: Error response from daemon: error while creating mount source path '/pipe/hb_compat': mkdir /pipe: read-only file system: could not start container
+```
+
+The library bind-mounts the path of `DOCKER_HOST` into Ryuk, here `//./pipe/hb_compat`,
+which dockerd in the VM takes for a Linux path. It has an exception only for an engine
+whose `OperatingSystem` is `Docker Desktop` (`extractDockerSocketFromClient`,
+`internal/core/docker_host.go`); hyperbutler says `hyperbutler guest (prototype)`. The
+same error comes on `\\.\pipe\docker_engine` (`/pipe/docker_engine`).
+`TESTCONTAINERS_DOCKER_SOCKET_OVERRIDE=/var/run/docker.sock` names the socket in the VM,
+and Ryuk then works.
+
+**Testcontainers for Node: the pipe's name.** With `npipe:////./pipe/hb_compat`, as an
+environment variable or in `~/.testcontainers.properties`:
+
+```
+Container runtime strategy "ConfigurationStrategy" does not work: "Error: connect UNKNOWN //pipe/hb_compat"
+Error: Could not find a working container runtime strategy
+```
+
+The library reads the value with `new URL()`, which removes the `.` from the path, so no
+named pipe can be given in that spelling. It is not about this engine (from the code, not
+run on another). `npipe:////.\pipe\hb_compat` passes through the parser and Windows reads
+it as the same pipe. Other tools do not take that spelling, so set it for the Node tests
+only. In `~/.testcontainers.properties` the backslash is doubled:
+`docker.host=npipe:////.\\pipe\\hb_compat`. With nothing set the library tries
+`\\.\pipe\docker_engine`, and works there.
+
+**The legacy builder.** The docker CLI in the zip has no buildx plugin, so for a feature
+the Dev Containers CLI runs a plain `docker build`, and it works with a warning: `DEPRECATED:
+The legacy builder is deprecated and will be removed in a future release.`
+
+**Without `DOCKER_HOST`.** Whether a setting finds the engine (Ryuk off, so that only this
+is tested). `no` means the tool went to `\\.\pipe\docker_engine` and failed there, as it
+would reach Docker Desktop if that were running.
+
+| Tool | A selected docker context | `docker.host` in `~/.testcontainers.properties` |
+|---|---|---|
+| Docker SDK for Go, `client.FromEnv` | no | |
+| Docker SDK for Python, `docker.from_env()` | **yes** | |
+| Testcontainers for Go | no | yes |
+| Testcontainers for Python | yes | no |
+| Testcontainers for Node | no | only with the backslash spelling above |
+| Dev Containers CLI | yes | |
+
+**The opt-in**, `hyperbutler config set pipe \\.\pipe\docker_engine` and a new start, with
+nothing set in the tool: the docker CLI without a context, both SDKs and Testcontainers for
+Python and Node all reached the engine, the last two with Ryuk on; Testcontainers for Go
+reached it with `TESTCONTAINERS_RYUK_DISABLED=true`, and with Ryuk on failed as above. With no Docker Desktop
+installed and the pipe free, `config set` gave no warning, as it should. The run used
+`stop` and `start`, not `restart`, to stay on its own guest image and backend.
 
 ## Bind sources hyperbutler does not share
 

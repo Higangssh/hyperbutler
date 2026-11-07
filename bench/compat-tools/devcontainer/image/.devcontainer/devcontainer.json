@@ -1,0 +1,5 @@
+{
+  "name": "compat-tools image sample",
+  "image": "mcr.microsoft.com/devcontainers/base:alpine",
+  "postCreateCommand": "echo post-create-ran > /workspaces/${localWorkspaceFolderBasename}/post-create.txt"
+}

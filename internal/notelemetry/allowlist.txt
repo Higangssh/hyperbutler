@@ -60,6 +60,7 @@ cmd/hyperbutler/dockercli_windows.go exec:computed 1 runs the docker CLI on PATH
 guest/cmd/hyperbutlerd/main_linux.go exec:computed 1 dockerd --validate on a new daemon.json; dockerd validates and exits
 cmd/hyperbutler/sandbox_windows.go exec:computed 1 starts the sandbox manager: this executable (os.Executable)
 guest/cmd/sbxd/ctl_linux.go exec:computed 1 runs what the user asks for in a session's terminal, in the session's VM, whose network the host decides
+internal/sandbox/manager/manager.go exec:computed 1 git on PATH with fixed local subcommands on the user's project: rev-parse, config, symbolic-ref, bundle create, log, and fetch from a local bundle file; no remote is contacted
 internal/sandbox/copyin/copyin.go exec:computed 1 git ls-files on PATH, listing the project's files from the index and work tree; fsmonitor off, no remote is contacted
 
 # The update check (REQ-UX-022) is the one request hyperbutler makes of its own, and it is

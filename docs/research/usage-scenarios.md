@@ -71,8 +71,8 @@ For each scenario:
 | S3.8 | WSL 2–based Docker Desktop and hyperbutler's VM at the same time | unknown, needs a bench | REQ-PLAT-004 |
 | S3.9 | Moving containers made with `docker run`, not Compose, from Docker Desktop | done (`import --from-desktop --container`, 2026-11-07, CLI only, tested against a stand-in, not Desktop; asked by a user, 2026-11-06; OrbStack does it on macOS, Podman and Rancher Desktop do not) | REQ-UX-024 |
 | S4.1 | PowerShell, cmd, Git Bash | small | REQ-API-001 |
-| S4.2 | VS Code Docker extension and Dev Containers | unknown, likely none | REQ-API-002 |
-| S4.3 | Testcontainers, Docker SDKs | docs done (2026-11-01); `bench/compat-tools` open | REQ-API-002, REQ-API-003 |
+| S4.2 | VS Code Docker extension and Dev Containers | Dev Containers CLI passes (2026-11-07); the extensions not run | REQ-API-002 |
+| S4.3 | Testcontainers, Docker SDKs | Go, Python, Node pass, two with a setting (2026-11-07, docs/compat.md); Java, .NET not run | REQ-API-002, REQ-API-003 |
 | S4.4 | JetBrains IDEs | unknown | REQ-API-002 |
 | S4.5 | Tools that only know `\\.\pipe\docker_engine` | done (2026-11-01) | REQ-API-003 |
 | S5.1 | A second Windows user on the same PC | fixed (second account not run) | REQ-UX-020 (new) |
@@ -724,11 +724,13 @@ What each kind of client needs to reach hyperbutler:
 | docker CLI (any shell) | yes | yes (wins) | `npipe:////./pipe/docker_engine` | yes *(verified)* |
 | docker compose plugin | yes (through the CLI) | yes | as the CLI | from code; compose untested |
 | VS Code Docker / Container Tools extension | yes: it runs the docker CLI *(docs)* | yes | as the CLI | unknown, likely |
-| VS Code Dev Containers | yes: it runs the docker CLI *(docs)* | yes | as the CLI | unknown, likely |
-| Testcontainers for Go | yes, the current context, in recent versions *(docs)* | yes | `docker_engine` | unknown |
-| Testcontainers for Java, .NET, Node | not known to *(docs, unknown)* | yes; also `docker.host` in `~/.testcontainers.properties` | `docker_engine` | needs `DOCKER_HOST` |
-| Docker SDK for Python (`docker.from_env()`) | no *(well-known)* | yes | `npipe:////./pipe/docker_engine` | needs `DOCKER_HOST` |
-| Docker SDK for Go (`client.FromEnv`) | no *(well-known)* | yes | `npipe:////./pipe/docker_engine` | needs `DOCKER_HOST` |
+| VS Code Dev Containers | yes: the CLI does *(verified with `@devcontainers/cli`)* | yes | as the CLI | the CLI yes *(verified)*; the extension not run |
+| Testcontainers for Go | no *(verified)* | yes; also `docker.host` in `~/.testcontainers.properties` | `docker_engine` | yes, with a setting for Ryuk *(verified, compat.md)* |
+| Testcontainers for Node | no *(verified)* | only with `npipe:////.\pipe\<name>`; the same in `~/.testcontainers.properties` | `docker_engine` | yes, with that spelling *(verified, compat.md)* |
+| Testcontainers for Python | yes *(verified)* | yes; not `docker.host` in `~/.testcontainers.properties` | `docker_engine` | yes *(verified)* |
+| Testcontainers for Java, .NET | not known to *(docs, unknown)* | yes; also `docker.host` in `~/.testcontainers.properties` | `docker_engine` | not run |
+| Docker SDK for Python (`docker.from_env()`) | yes *(verified)* | yes | `npipe:////./pipe/docker_engine` | yes *(verified)* |
+| Docker SDK for Go (`client.FromEnv`) | no *(verified)* | yes | `npipe:////./pipe/docker_engine` | needs `DOCKER_HOST` *(verified)* |
 | JetBrains IDEs (Docker plugin) | unknown | unknown | "Docker for Windows" = `docker_engine` | unknown; a custom engine URL can be entered |
 
 `DOCKER_HOST` for hyperbutler is `npipe:////./pipe/docker_engine_hyperbutler` (four slashes,
@@ -757,12 +759,12 @@ then forward slashes). `hyperbutler status` prints it on the "docker:" line.
 
 ### S4.3 Testcontainers and the Docker SDKs
 
-- **Today** *(from docs)*: SDKs and most Testcontainers ports ignore the context and fall
-  back to `\\.\pipe\docker_engine`. With Docker Desktop running, **they silently use
-  Docker Desktop**. Without it, they fail with "file not found" on that pipe.
-  Testcontainers also starts its Ryuk reaper container, which mounts the Docker socket
-  (inside the guest, dockerd's own `/var/run/docker.sock`; *unknown* whether it works)
-  and connects to a published port on `localhost` (works per REQ-NET-001).
+- **Today** *(verified for the tools in the table)*: the Go SDK and Testcontainers for Go
+  and Node ignore the context and fall back to `\\.\pipe\docker_engine`. With Docker
+  Desktop running, **they silently use Docker Desktop** *(from docs)*. Without it, they
+  fail with "file not found" on that pipe. Testcontainers also starts its Ryuk reaper
+  container, which mounts the Docker socket (inside the guest, dockerd's own
+  `/var/run/docker.sock`) and connects to a published port on `localhost`; both work.
 - **Intended:**
   - The docs give per-tool settings: `$env:DOCKER_HOST =
     "npipe:////./pipe/docker_engine_hyperbutler"` (or set it as a user variable for
@@ -771,14 +773,15 @@ then forward slashes). `hyperbutler status` prints it on the "docker:" line.
   - hyperbutler never sets `DOCKER_HOST` itself: it is user setup, and a global
     `DOCKER_HOST` would break Docker Desktop's context switching.
   - `bench/compat-tools` covers Testcontainers Java, Go and Node, as REQ-API-002 says.
-- **Docs done (2026-11-01):** docs/tools.md (`DOCKER_HOST`, `~/.testcontainers.properties`, VS Code, JetBrains). `bench/compat-tools` is open. REQ-API-002, REQ-API-003.
+- **Docs done (2026-11-01):** docs/tools.md (`DOCKER_HOST`, `~/.testcontainers.properties`, VS Code, JetBrains). `bench/compat-tools` ran on 2026-11-07: Ryuk's socket works by default for Python and Node, and needs a setting for Go (docs/compat.md, "Client tools"). REQ-API-002, REQ-API-003.
 
 ### S4.4 JetBrains IDEs
 
 - **Today:** *unknown*. The Docker plugin's "Docker for Windows" option means
   `\\.\pipe\docker_engine`. Whether it offers the docker contexts, or accepts an
   `npipe://` URL in its TCP field, was not checked.
-- **Intended:** checked in `bench/compat-tools`; the docs then give the steps.
+- **Intended:** a person checks it in an IDE (`bench/compat-tools` cannot drive a GUI);
+  the docs then give the steps.
 - **Gap:** unknown. REQ-API-002.
 
 ### S4.5 Tools that only know `\\.\pipe\docker_engine`

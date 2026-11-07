@@ -35,6 +35,7 @@ var reviewedModules = map[string]string{
 	"github.com/Higangssh/hyperbutler":       "this repository; its own code is scanned by ScanGo",
 	"github.com/containers/gvisor-tap-vsock": "only its tap.LinkEndpoint (the gateway NIC) is used; it dials nothing",
 	"github.com/miekg/dns":                   "DNS message packing for the guest's DNS forwarder; its client (Exchange, Client) is a reported API",
+	"golang.org/x/net":                       "publicsuffix, a static table the sandbox egress entries are checked against; it dials nothing",
 	"golang.org/x/sys":                       "system call wrappers; connect and socket calls are reported by ScanGo",
 	"gvisor.dev/gvisor":                      "the user-mode TCP/IP stack, which has only the guest NIC: it can reach the guest, nothing else",
 	"github.com/google/btree":                "data structure (gvisor)",

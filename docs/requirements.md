@@ -417,8 +417,15 @@ Status of the 0.2 usage requirements (2026-11-01; checked on one machine, Window
 - REQ-API-003: met (docs/tools.md): `DOCKER_HOST` per shell and per user,
   `~/.testcontainers.properties`, VS Code and JetBrains settings, and `config set pipe
   \\.\pipe\docker_engine` as the opt-in, which warns when Docker Desktop is installed or
-  that pipe is served. The IDE steps are from their documentation, not run
-  (REQ-API-002's `bench/compat-tools`).
+  that pipe is served. The IDE steps are from their documentation, not run. The settings
+  and the opt-in ran with the tools below (2026-11-07), which corrected tools.md for
+  Testcontainers for Go and Node.
+- REQ-API-002: partly met (`bench/compat-tools`, 2026-11-07, docs/compat.md, "Client
+  tools"). The Docker SDKs for Go and Python, Testcontainers for Go, Python and Node and
+  the Dev Containers CLI pass their samples against the pipe. Testcontainers for Go needs
+  `TESTCONTAINERS_DOCKER_SOCKET_OVERRIDE` for Ryuk, and for Node a backslash in
+  `DOCKER_HOST`. Open: Testcontainers for Java (no Java on the machine; the sample has not
+  run) and the VS Code extension itself, which cannot be driven from a script.
 - REQ-API-001, build (BuildKit), 2026-11-07: the release did not have it until now. It
   carried no buildx plugin, so `docker build` ran the legacy builder. It now bundles buildx
   v0.38.2 from source (`dist/clients.lock`), which BuildKit features need. Checked by hand
