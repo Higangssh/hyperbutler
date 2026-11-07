@@ -469,7 +469,7 @@ var desktopHostPrefixes = []string{"/run/desktop/mnt/host/", "/host_mnt/", "/mnt
 
 // desktopWSLBinds is where its WSL integration keeps a bind made from inside a
 // distribution.
-const desktopWSLBinds = "/mnt/wsl/docker-desktop-bind-mounts/"
+const desktopWSLBinds = "/mnt/wsl/docker-desktop-bind-mounts/" //nolint:gosec // G101: a path; "bind" read as a credential
 
 // hasDotDot reports whether a path has a ".." segment, on either separator. Windows also
 // drops a segment's trailing dots and spaces, so ".. " and "..." count.
