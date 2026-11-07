@@ -141,7 +141,7 @@ try {
         $Version = (Exec git describe --tags --match 'v[0-9]*' --always --dirty) | Select-Object -First 1
     }
     if ($Version -notmatch '^[A-Za-z0-9._+-]+$') { Fail "bad version: $Version" }
-    if (-not $Snapshot -and $Version -notmatch '^v\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?$') {
+    if (-not $Snapshot -and $Version -notmatch '^v\d+\.\d+\.\d+(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$') {
         Fail "a release version must be a semver tag (vX.Y.Z[-pre]), got $Version"
     }
     # A snapshot never carries a release's name, even with -Version vX.Y.Z.

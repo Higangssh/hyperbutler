@@ -64,7 +64,8 @@ var (
 	pinProductCode = regexp.MustCompile(`^[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{12}$`)
 	// A release tag as dist/package.ps1 accepts it. Pseudo-versions match too, which a
 	// caller with updatecheck.IsDevBuild keeps out.
-	releaseTag = regexp.MustCompile(`^v\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?$`)
+	// Pre-release identifiers as semver has them: dot-separated and none empty, so no "..".
+	releaseTag = regexp.MustCompile(`^v\d+\.\d+\.\d+(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$`)
 )
 
 // ErrNoPin is a build that carries no installer pin: a development build.

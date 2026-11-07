@@ -81,7 +81,7 @@ jobs:
           TAG: ${{ github.ref_name }}
         run: |
           $ErrorActionPreference = 'Stop'
-          if ($env:TAG -notmatch '^v\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?$') { throw "not a release tag: $env:TAG" }
+          if ($env:TAG -notmatch '^v\d+\.\d+\.\d+(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$') { throw "not a release tag: $env:TAG" }
           $head = git rev-parse HEAD
           $tagged = git rev-parse "refs/tags/$env:TAG^{commit}"
           if ($head -ne $tagged) { throw "HEAD $head is not the tagged commit $tagged" }

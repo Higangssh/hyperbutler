@@ -80,6 +80,9 @@ func TestReleaseURL(t *testing.T) {
 		{"v1.2.3+dirty", "x.msi"},
 		{"v1.2.3/../../evil", "x.msi"},
 		{"v1.2.3?a=b", "x.msi"},
+		{"v0.0.0-..", "0.msi"}, // found by FuzzReleaseURL
+		{"v1.2.3-rc.", "x.msi"},
+		{"v1.2.3-.rc", "x.msi"},
 		{"v1.2.3", "../x.msi"},
 		{"v1.2.3", "x.msi?a=b"},
 		{"v1.2.3", "x"},
