@@ -573,7 +573,11 @@ func (m *Manager) gitOut(ctx context.Context, dir string, args ...string) (strin
 	cmd.Stderr = &stderr
 	out, err := cmd.Output()
 	if err != nil {
-		return "", fmt.Errorf("git %s: %w: %s", args[0], err, review.Shorten(strings.TrimSpace(stderr.String()), 1024))
+		sub := args[0]
+		for i := 0; i+1 < len(args) && args[i] == "-c"; i += 2 {
+			sub = args[i+2]
+		}
+		return "", fmt.Errorf("git %s: %w: %s", sub, err, review.Shorten(strings.TrimSpace(stderr.String()), 1024))
 	}
 	return string(out), nil
 }

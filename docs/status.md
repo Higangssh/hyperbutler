@@ -60,5 +60,10 @@ the release package, through the engine alone and through a foreground broker: `
 `hello-world`, a bind mount read and write (about 500 and 880 MB/s for 128 MiB), Compose
 with a published port and a bind mount, `stop`. The next soak runs before v0.2.
 
+Since v0.1.1, on `main` for v0.2 and not released: `hyperbutler sandbox`
+([docs/sandbox.md](sandbox.md), [ADR 0009](adr/0009-agent-sandbox.md)); containers in
+`hyperbutler import` (REQ-UX-024); the bundled buildx plugin, so `docker build` uses BuildKit;
+`bench/compat-tools` ([compat.md](compat.md)). The soak before v0.2 has not run.
+
 Bind mounts from Windows paths work but are not yet fast for write-heavy trees: use a
 named volume for `node_modules`.

@@ -297,9 +297,7 @@ guest input, a fuzz target:
 
 A test runs the whole cycle without a VM: copy in, an agent's edits, list and read
 through the wire client, apply; a file the user edited meanwhile stays as a conflict,
-and `.git` and `.env` never cross. Still to come in this phase: the engine's session
-manager and `hyperbutler sandbox` commands, a terminal for the agent, the diff view, the
-git bundle for commits, and the `open` and `locked` egress modes.
+and `.git` and `.env` never cross. The rest of this phase is in "Sessions as built" below.
 
 ### The sandbox image (2026-11-06)
 
@@ -417,6 +415,57 @@ enforced in the stack and a second policy path adds nothing to them. Tools that 
 are not served yet. The question about a new domain (REQ-SBX-006) and `bench/sandbox-egress`
 are still to come; the unit tests with a mock resolver cover REQ-SBX-005 up to the host's
 network.
+
+### Sessions as built (2026-11-07)
+
+`hyperbutler sandbox` (docs/sandbox.md) is phase 2's sessions, copy-in, `diff`, `apply`, the
+terminal and the bundles, on a real VM. Where it differs from what is written above:
+
+- **The session manager is its own background process, not the engine.** A session needs no
+  Docker VM, either can stop while the other runs, and the engine's memory (REQ-MEM-001) does
+  not carry a review. It starts with the first request, and ends five minutes after the last
+  session stopped. Its pipe admits this user only, and the client checks the pipe's owner
+  before sending anything. VMs in developer mode have their own name prefix, so the engine's
+  clean-up of its own leftovers does not reach them.
+- **One broker connection for all sessions**, with the limit per user raised from two to three
+  (engine, manager, a short-lived tool such as doctor). The broker takes the data location
+  again while a VM runs when it is the same folder, by file ID: the engine and the manager each
+  send it.
+- **A third guest port** (`ctl`, 2392), which is not the review's: terminals on a
+  pseudo-terminal that outlive their connection (Ctrl+] leaves one and the agent goes on), the
+  history in and commits out as bundles, the head commit, and shutdown. HCS refuses a shutdown
+  for this VM (`HRESULT 0x80070032`), so the host asks sbxd, which writes to a pipe the init
+  reads; the agent user can do the same, which ends only its own session.
+- **`dev` ships in this phase, with its preset and without the questions.** Names outside it
+  are blocked and listed (`sandbox blocked`), and `sandbox allow` widens a running session. It
+  stays the default because `locked` with nothing allowed cannot even install an agent. The
+  questions and the GUI page remain phase 3.
+- **`--env NAME` instead of Windows Credential Manager** for now: the value comes from the
+  caller's environment and goes only to that terminal, never a command line.
+- **The generated git config** holds the identity, `core.autocrlf` as the project has it and
+  `core.fileMode=false`, and no remotes: without those two, every file of a Windows checkout
+  looked modified in the session.
+- **`--all` takes only what a diff showed whole.** A change past the review's text limit, or
+  seen only through `--stat`, needs `--path`.
+- **Stopping an unnamed session or removing one refuses** while it holds changes nobody applied
+  or commits nobody fetched; `--discard` overrides.
+- **Not built:** pausing an idle session, snapshots, and the memory share as a setting (the
+  broker's cap at 75% of physical memory applies). A session's own `docker` is phase 4.
+
+Tested on 2026-11-07 on the reference laptop, in real VMs, in developer mode and through a
+foreground broker: the whole cycle; a project with `core.autocrlf` and a non-ASCII branch;
+`dev` and `locked` against the live network (allowed names work; blocked ones fail with no
+lookup at the host resolver, and are listed; an IP literal, the gateway's ports and UDP fail);
+two sessions and the Docker VM at once, started in either order; the memory cap; a stop and
+restart keeping the disk. Not tested: a terminal in an interactive console by hand, the
+installed broker service, and a real agent's whole task.
+
+Reviewed on 2026-11-07. Fixed from it: review text cut silently past its limit while `--all`
+still took the file; a final-newline change that looked empty; a disk left by a failed run
+blocking every later run; a non-ASCII branch failing the run; the manager exiting under a
+request; `attach` after a restart; two records on one disk; a 2 GiB bundle read just to see
+whether commits were waiting. Accepted: terminal output reaches the terminal raw, as over ssh
+(docs/sandbox.md says what that allows).
 
 ## Adversarial review
 
