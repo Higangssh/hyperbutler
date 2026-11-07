@@ -1,6 +1,7 @@
 package review
 
 import (
+	"bytes"
 	"strings"
 	"testing"
 	"unicode"
@@ -36,6 +37,16 @@ func TestTextDiffNewAndGone(t *testing.T) {
 	}
 }
 
+// TestTextDiffFinalNewline: bytes that differ always show as a difference.
+func TestTextDiffFinalNewline(t *testing.T) {
+	for _, c := range [][2]string{{"a\n", "a"}, {"a", "a\n"}} {
+		d := TextDiff([]byte(c[0]), []byte(c[1]))
+		if d.Text == "" || d.Added != 1 || d.Removed != 1 || !strings.Contains(d.Text, "No newline") {
+			t.Errorf("%q to %q: %+v", c[0], c[1], d)
+		}
+	}
+}
+
 func TestTextDiffBinary(t *testing.T) {
 	if d := TextDiff([]byte("a"), []byte("a\x00b")); !d.Binary || d.Text != "" {
 		t.Fatalf("%+v", d)
@@ -57,11 +68,11 @@ func TestTextDiffEscapes(t *testing.T) {
 
 func TestTextDiffBounds(t *testing.T) {
 	long := strings.Repeat("x", maxDiffLine*2)
-	if d := TextDiff(nil, []byte(long)); len(d.Text) > maxDiffLine*5 || !strings.Contains(d.Text, "cut") {
-		t.Fatalf("a long line: %d bytes", len(d.Text))
+	if d := TextDiff(nil, []byte(long)); len(d.Text) > maxDiffLine*5 || !strings.Contains(d.Text, "cut") || !d.Cut {
+		t.Fatalf("a long line: %d bytes, cut %v", len(d.Text), d.Cut)
 	}
 	many := strings.Repeat("l\n", maxDiffLines+1)
-	if d := TextDiff(nil, []byte(many)); !strings.Contains(d.Text, "too long") {
+	if d := TextDiff(nil, []byte(many)); !strings.Contains(d.Text, "too long") || !d.Cut {
 		t.Fatalf("many lines: %.80q", d.Text)
 	}
 }
@@ -77,7 +88,10 @@ func FuzzTextDiff(f *testing.F) {
 				t.Fatalf("control %q in %q", r, d.Text)
 			}
 		}
-		if len(d.Text) > maxDiffText+maxDiffLine*6 {
+		if !d.Binary && !bytes.Equal(a, b) && d.Text == "" {
+			t.Fatalf("%q and %q differ and show nothing", a, b)
+		}
+		if len(d.Text) > maxDiffText+maxDiffLine*6+64 {
 			t.Fatalf("%d bytes of text", len(d.Text))
 		}
 	})

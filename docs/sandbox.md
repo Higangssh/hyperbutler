@@ -48,8 +48,9 @@ hyperbutler sandbox apply work --path src/app.js --path README.md
 hyperbutler sandbox commits work       # the agent's commits, into branch sandbox/work
 ```
 
-`apply` writes exactly the bytes `diff` read and shown; it does not ask the session again,
-so you must run `diff` first. What the review says:
+`apply` writes exactly the bytes `diff` read; it does not ask the session again, so you must
+run `diff` first. `--all` takes only what `diff` showed whole: after `--stat`, or for a change
+too long to show, name the file with `--path`. What the review says:
 
 - **RISK**: a change that can run code or point a tool at a server later: a `Makefile`, a
   CI workflow, a package manifest, editor tasks, a coding agent's settings file, a new
@@ -127,6 +128,9 @@ hyperbutler sandbox rm work       # disk and record gone
 
 A session without `--name` is deleted when you stop it. Both that and `rm` refuse while there
 are changes nobody applied; `--discard` overrides that.
+
+`hyperbutler uninstall` removes every session too; `--keep-data` keeps their disks and records.
+Moving the data folder (`config set data`) is refused while a session's disk is in it.
 
 At most four sessions exist at once, stopped ones included, and the broker refuses a start
 that would take your running VMs past 75% of physical memory. Each session takes 2 GiB by

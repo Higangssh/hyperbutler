@@ -23,6 +23,8 @@ type Diff struct {
 	Added, Removed int
 	Binary         bool
 	Text           string
+	// Cut says Text does not show the whole change: a long line, or too much text.
+	Cut bool
 }
 
 // LooksBinary reports whether b holds a NUL byte near its start, git's own test.
@@ -39,7 +41,7 @@ func TextDiff(old, new []byte) Diff {
 	}
 	a, b := splitLines(old), splitLines(new)
 	if len(a) > maxDiffLines || len(b) > maxDiffLines {
-		return Diff{Added: len(b), Removed: len(a), Text: fmt.Sprintf("(%d lines to %d lines: too long to show)\n", len(a), len(b))}
+		return Diff{Added: len(b), Removed: len(a), Cut: true, Text: fmt.Sprintf("(%d lines to %d lines: too long to show)\n", len(a), len(b))}
 	}
 	start := 0
 	for start < len(a) && start < len(b) && a[start] == b[start] {
@@ -55,15 +57,22 @@ func TextDiff(old, new []byte) Diff {
 	d := Diff{}
 	var sb strings.Builder
 	line := func(prefix byte, s string) {
-		if sb.Len() < maxDiffText {
-			sb.WriteByte(prefix)
-			if len(s) > maxDiffLine {
-				sb.WriteString(Escape(s[:maxDiffLine]))
-				fmt.Fprintf(&sb, " (cut, %d bytes)", len(s))
-			} else {
-				sb.WriteString(Escape(s))
-			}
-			sb.WriteByte('\n')
+		if sb.Len() >= maxDiffText {
+			d.Cut = true
+			return
+		}
+		s, ended := strings.CutSuffix(s, "\n")
+		sb.WriteByte(prefix)
+		if len(s) > maxDiffLine {
+			sb.WriteString(Escape(s[:maxDiffLine]))
+			fmt.Fprintf(&sb, " (cut, %d bytes)", len(s))
+			d.Cut = true
+		} else {
+			sb.WriteString(Escape(s))
+		}
+		sb.WriteByte('\n')
+		if !ended {
+			sb.WriteString("\\ No newline at end of file\n")
 		}
 	}
 	if start == endA && start == endB {
@@ -96,21 +105,20 @@ func TextDiff(old, new []byte) Diff {
 	for _, s := range a[endA:min(endA+diffContext, len(a))] {
 		line(' ', s)
 	}
-	if sb.Len() >= maxDiffText {
+	if d.Cut && sb.Len() >= maxDiffText {
 		sb.WriteString("(the rest of this diff is not shown)\n")
 	}
 	d.Text = sb.String()
 	return d
 }
 
-// splitLines cuts at \n, keeping a final line without one; a \r stays in the line, where
-// Escape shows it.
+// splitLines cuts after each \n, which stays in its line: a file that gains or loses its
+// final newline differs in that line. A \r stays too, where Escape shows it.
 func splitLines(b []byte) []string {
 	if len(b) == 0 {
 		return nil
 	}
-	s := string(b)
-	lines := strings.Split(s, "\n")
+	lines := strings.SplitAfter(string(b), "\n")
 	if lines[len(lines)-1] == "" {
 		lines = lines[:len(lines)-1]
 	}

@@ -33,6 +33,8 @@ const (
 	OpBlocked Op = "blocked"
 	OpTerm    Op = "term"
 	OpPing    Op = "ping"
+	// OpQuit ends the manager and every running session (uninstall).
+	OpQuit Op = "quit"
 )
 
 // Request is one JSON line from the client.
@@ -123,6 +125,8 @@ type DiffItem struct {
 	Removed int    `json:"removed,omitempty"`
 	Binary  bool   `json:"binary,omitempty"`
 	Text    string `json:"text,omitempty"`
+	// Unshown says Text does not hold the whole change, so `apply --all` leaves it out.
+	Unshown bool `json:"unshown,omitempty"`
 	// Conflict says the file changed on this computer since the copy.
 	Conflict bool `json:"conflict,omitempty"`
 }

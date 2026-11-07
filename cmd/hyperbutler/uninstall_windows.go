@@ -166,6 +166,30 @@ func (in *install) planUninstall(keepData, up bool) *uninstallPlan {
 			}
 			addFile(f, "data disk: all images, containers and volumes")
 		}
+		for _, f := range sessionDisks(dl) {
+			if keepData {
+				p.keep(uninstallFile, f, "an agent sandbox session's disk; kept with --keep-data")
+				continue
+			}
+			addFile(f, "an agent sandbox session's disk")
+		}
+	}
+	// A kept disk needs its session's record, which says whose it is and what was copied in.
+	sandboxFiles := sandboxStateFiles(in)
+	if keepData {
+		for _, f := range sandboxFiles {
+			p.keep(uninstallFile, f, "an agent sandbox session's record; kept with --keep-data")
+		}
+	} else {
+		for _, f := range sandboxFiles {
+			addFile(f, "an agent sandbox session's record")
+		}
+		if exists(in.sandboxDir()) {
+			p.add(planned{UninstallItem: UninstallItem{Kind: uninstallDir, Path: in.sandboxDir(), Detail: "empty afterwards"}})
+		}
+	}
+	for _, f := range sandboxLogs(l) {
+		addFile(f, "log")
 	}
 	addFile(updateRecordPath(l), "the last update check")
 	for _, f := range append([]string{l.StatePath(), l.DaemonAppliedPath(), l.CAExtraPath()}, append(append(tmpSiblings(l.StatePath()), tmpSiblings(l.DaemonAppliedPath())...), tmpSiblings(l.CAExtraPath())...)...) {
@@ -606,6 +630,9 @@ func cmdUninstall(args []string, stdin io.Reader, stdout, stderr io.Writer) erro
 		}
 	} else {
 		in.noteCrash(stderr) // revokes a dead engine's data disk access, ends its VM
+	}
+	if err := stopSandboxManager(in); err != nil {
+		return fmt.Errorf("stop the sandbox sessions before uninstall: %w", err)
 	}
 	// Under the engine lock, so no engine starts while the files go.
 	lk, err := engine.Lock(in.l.LockPath(), 10*time.Second)

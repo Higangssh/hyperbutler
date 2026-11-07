@@ -202,6 +202,78 @@ func spawnSandboxManager(in *install) error {
 	return err
 }
 
+// sessionDisks lists the sandbox sessions' disks in l.Data, with what a crash left.
+func sessionDisks(l engine.Layout) []string {
+	var out []string
+	for _, pat := range []string{"session-*.vhdx", "session-*.vhdx.new"} {
+		m, err := filepath.Glob(filepath.Join(l.Data, pat))
+		if err == nil {
+			out = append(out, m...)
+		}
+	}
+	return out
+}
+
+// sandboxStateFiles lists the files of the sandbox folder: records and what a crash left.
+func sandboxStateFiles(in *install) []string {
+	m, err := filepath.Glob(filepath.Join(in.sandboxDir(), "*"))
+	if err != nil {
+		return nil
+	}
+	out := m[:0]
+	for _, p := range m {
+		if fi, err := os.Lstat(p); err == nil && !fi.IsDir() {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+func sandboxLogs(l engine.Layout) []string {
+	var out []string
+	if _, err := os.Lstat(filepath.Join(l.LogDir(), "sandbox.log")); err == nil {
+		out = append(out, filepath.Join(l.LogDir(), "sandbox.log"))
+	}
+	if m, err := filepath.Glob(filepath.Join(l.LogDir(), "sandbox-console-*.log")); err == nil {
+		out = append(out, m...)
+	}
+	return out
+}
+
+// stopSandboxManager ends the manager and every session it runs, if it runs. Their disks
+// and records stay; the caller decides about those.
+func stopSandboxManager(in *install) error {
+	pipe := manager.PipeName(in.l.Tag())
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	c, err := manager.Dial(ctx, pipe)
+	if errors.Is(err, manager.ErrNotRunning) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	_, err = c.Do(&manager.Request{Op: manager.OpQuit}, nil)
+	_ = c.Close()
+	if err != nil {
+		return err
+	}
+	for {
+		c, err := manager.Dial(ctx, pipe)
+		if errors.Is(err, manager.ErrNotRunning) {
+			return nil
+		}
+		if err == nil {
+			_ = c.Close()
+		}
+		select {
+		case <-ctx.Done():
+			return errors.New("the sandbox manager did not end")
+		case <-time.After(100 * time.Millisecond):
+		}
+	}
+}
+
 // sandboxHost boots sessions for the manager, through the broker when this machine's
 // hyperbutler uses it.
 type sandboxHost struct {
@@ -217,29 +289,59 @@ func (h *sandboxHost) Boot(ctx context.Context, r manager.BootRequest) (manager.
 		return nil, err
 	}
 	var console io.Writer
+	var logf *os.File
 	if os.Getenv("HYPERBUTLER_DEBUG") != "" && h.brokerPipe == "" {
-		f, err := os.Create(filepath.Join(h.l.LogDir(), "sandbox-console-"+r.Name+".log")) //nolint:gosec // G304: the log in the user's own data layout
+		logf, err = os.Create(filepath.Join(h.l.LogDir(), "sandbox-console-"+r.Name+".log")) //nolint:gosec // G304: the log in the user's own data layout
 		if err == nil {
-			console = f
+			console = logf
 		}
 	}
-	return engine.BootSession(ctx, engine.SessionConfig{
+	v, err := engine.BootSession(ctx, engine.SessionConfig{
 		Layout: h.l, Slot: r.Slot, BrokerPipe: h.brokerPipe, Manifest: h.manifest,
 		CPUs: r.CPUs, MemoryMB: r.MemoryMB, DiskBlank: blank, Egress: r.Egress,
 		ConsoleLog: console, Logger: h.log,
 	})
+	if err != nil {
+		if logf != nil {
+			_ = logf.Close()
+		}
+		return nil, err
+	}
+	return &sessionVM{SessionVM: v, log: logf}, nil
+}
+
+// sessionVM closes the VM's console log with it.
+type sessionVM struct {
+	*engine.SessionVM
+	log *os.File
+}
+
+func (v *sessionVM) Close() error {
+	err := v.SessionVM.Close()
+	if v.log != nil {
+		_ = v.log.Close()
+	}
+	return err
 }
 
 func (h *sandboxHost) CreateDisk(slot uint8, size uint64) (uint64, error) {
 	return engine.CreateSessionDisk(h.l, slot, size)
 }
 
+// RemoveDisk removes the session's disk. A VM's worker process can hold it for a moment
+// after the VM is gone.
 func (h *sandboxHost) RemoveDisk(slot uint8) error {
-	err := os.Remove(engine.SessionDiskPath(h.l, slot))
-	if errors.Is(err, os.ErrNotExist) {
-		return nil
+	path := engine.SessionDiskPath(h.l, slot)
+	for deadline := time.Now().Add(10 * time.Second); ; {
+		err := os.Remove(path)
+		switch {
+		case err == nil, errors.Is(err, os.ErrNotExist):
+			return nil
+		case !errors.Is(err, windows.ERROR_SHARING_VIOLATION) || time.Now().After(deadline):
+			return err
+		}
+		time.Sleep(100 * time.Millisecond)
 	}
-	return err
 }
 
 // sandboxImageDirName is the folder next to hyperbutler.exe with the sandbox image, as
@@ -565,6 +667,9 @@ func sandboxDiff(in *install, args []string, stdout, stderr io.Writer) (int, err
 		_, _ = fmt.Fprintf(stdout, "%-8s %s%s\n", it.Kind, it.Shown, note)
 		if it.Text != "" {
 			_, _ = fmt.Fprint(stdout, it.Text)
+		}
+		if it.Unshown {
+			_, _ = fmt.Fprintf(stdout, "(not all of this change is shown; `apply --all` leaves it out, `--path %s` takes it)\n", it.Path)
 		}
 	}
 	return 0, nil

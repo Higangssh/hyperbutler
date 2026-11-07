@@ -109,6 +109,8 @@ func (s *state) serveCtl(c *vsockConn) error {
 		return bundleOut(c)
 	case ctl.TypeShutdown:
 		return shutdown(c)
+	case ctl.TypeHead:
+		return headCommit(c)
 	}
 	return fmt.Errorf("frame type %d first", t)
 }
@@ -351,7 +353,8 @@ func shutdown(c *vsockConn) error {
 
 var (
 	gitOID    = regexp.MustCompile(`^[0-9a-f]{40}([0-9a-f]{24})?$`)
-	gitBranch = regexp.MustCompile(`^refs/heads/[A-Za-z0-9._/-]{1,200}$`)
+	// The name comes from the host's git, which has judged it; this only keeps it one word.
+	gitBranch = regexp.MustCompile(`^refs/heads/[^\x00-\x20\x7f]{1,240}$`)
 )
 
 // bundleIn turns the workspace into a repository with the project's branches and tags
@@ -413,6 +416,27 @@ func bundleIn(c *vsockConn, req *ctl.BundleRequest) error {
 		if err := os.WriteFile(baseCommitFile, []byte(req.Commit), 0o600); err != nil {
 			return err
 		}
+	}
+	return ctl.WriteFrame(c, ctl.TypeExit, ctl.Exit(0))
+}
+
+// headCommit tells the host where HEAD is, when that is past what was copied in: enough
+// for it to know whether commits are waiting, without the bundle.
+func headCommit(c *vsockConn) error {
+	head, err := git("rev-parse", "--verify", "-q", "HEAD^{commit}").Output()
+	if err != nil {
+		return ctl.WriteFrame(c, ctl.TypeExit, ctl.Exit(ctl.ExitNoCommits))
+	}
+	oid := strings.TrimSpace(string(head))
+	if b, err := os.ReadFile(baseCommitFile); err == nil {
+		base := string(bytes.TrimSpace(b))
+		n, err := git("rev-list", "--count", base+"..HEAD").Output()
+		if base == oid || err == nil && strings.TrimSpace(string(n)) == "0" {
+			return ctl.WriteFrame(c, ctl.TypeExit, ctl.Exit(ctl.ExitNoCommits))
+		}
+	}
+	if err := ctl.WriteFrame(c, ctl.TypeOutput, []byte(oid)); err != nil {
+		return err
 	}
 	return ctl.WriteFrame(c, ctl.TypeExit, ctl.Exit(0))
 }

@@ -33,6 +33,7 @@ type fakeVM struct {
 
 	mu   sync.Mutex
 	base workspace.Baseline
+	head string
 	wg   sync.WaitGroup
 }
 
@@ -77,6 +78,11 @@ func (v *fakeVM) serve(port uint32, c net.Conn) {
 			v.once.Do(func() { close(v.gone) })
 			return
 		}
+		if t == ctl.TypeHead && v.head != "" {
+			_ = ctl.WriteFrame(c, ctl.TypeOutput, []byte(v.head))
+			_ = ctl.WriteFrame(c, ctl.TypeExit, ctl.Exit(0))
+			return
+		}
 		_ = ctl.WriteFrame(c, ctl.TypeExit, ctl.Exit(ctl.ExitNoCommits))
 	}
 }
@@ -86,11 +92,12 @@ func (v *fakeVM) Terminate() error      { v.once.Do(func() { close(v.gone) }); r
 func (v *fakeVM) Close() error          { v.wg.Wait(); return nil }
 
 type fakeHost struct {
-	t     *testing.T
-	mu    sync.Mutex
-	vms   map[uint8]*fakeVM
-	disks map[uint8]bool
-	boots int
+	t           *testing.T
+	mu          sync.Mutex
+	vms         map[uint8]*fakeVM
+	disks       map[uint8]bool
+	boots       int
+	removeFails int
 }
 
 func (h *fakeHost) Boot(_ context.Context, r BootRequest) (VM, error) {
@@ -112,6 +119,9 @@ func (h *fakeHost) CreateDisk(slot uint8, _ uint64) (uint64, error) {
 	defer h.mu.Unlock()
 	if h.disks[slot] {
 		return 0, errors.New("the disk exists")
+	}
+	if h.removeFails > 0 {
+		return 0, errors.New("unused")
 	}
 	h.disks[slot] = true
 	return 4096, nil
@@ -426,6 +436,124 @@ func TestSlotsAndNames(t *testing.T) {
 	}
 	if _, err := r.do(Request{Op: OpRun, Name: "x", Dir: "relative", Mode: "open"}); err == nil {
 		t.Fatal("took a relative project")
+	}
+}
+
+// TestAllNeedsAFullReview: --all takes only what a diff showed whole (REQ-SBX-002).
+func TestAllNeedsAFullReview(t *testing.T) {
+	r := newRig(t)
+	n := r.run("work")
+	r.guest(n, "a.txt", "changed\n")
+	r.must(Request{Op: OpDiff, Name: n, StatOnly: true})
+	out := r.must(Request{Op: OpApply, Name: n, All: true})
+	if len(out.Outcomes) != 1 || !strings.Contains(out.Outcomes[0].Error, "did not show") {
+		t.Fatalf("%+v", out.Outcomes)
+	}
+	if r.read("a.txt") != "one\ntwo\n" {
+		t.Fatal("--all applied what --stat did not show")
+	}
+	r.must(Request{Op: OpApply, Name: n, Paths: []string{"a.txt"}})
+	if r.read("a.txt") != "changed\n" {
+		t.Fatal("--path did not apply it")
+	}
+}
+
+// TestDiffPastTheTextLimit: the guest cannot push a change out of sight by putting a lot of
+// text before it.
+func TestDiffPastTheTextLimit(t *testing.T) {
+	r := newRig(t)
+	n := r.run("work")
+	big := strings.Repeat(strings.Repeat("x", 100)+"\n", 15000)
+	for i := range 20 {
+		r.guest(n, "big/"+string(rune('a'+i))+".txt", big)
+	}
+	r.guest(n, "z.txt", "last\n")
+	rep := r.must(Request{Op: OpDiff, Name: n})
+	z := item(rep, "z.txt")
+	if z == nil || z.Text != "" || !z.Unshown {
+		t.Fatalf("%+v", z)
+	}
+	r.must(Request{Op: OpApply, Name: n, All: true})
+	if _, err := os.Stat(filepath.Join(r.project, "z.txt")); !os.IsNotExist(err) {
+		t.Fatalf("--all applied an unshown change: %v", err)
+	}
+}
+
+func TestAttachAfterRestart(t *testing.T) {
+	r := newRig(t)
+	n := r.run("work")
+	s, _ := r.m.find(n)
+	s.terms.Store(3)
+	r.must(Request{Op: OpStop, Name: n})
+	r.must(Request{Op: OpStart, Name: n})
+	if s.terms.Load() != 0 {
+		t.Fatalf("terminals %d after a restart", s.terms.Load())
+	}
+}
+
+// TestLeftoverDisk: a disk no record owns is what a failed run left, and does not stop the
+// next one; with a record that could not be read it may be someone's work.
+func TestLeftoverDisk(t *testing.T) {
+	r := newRig(t)
+	r.h.disks[1] = true
+	if n := r.run("work"); n != "work" {
+		t.Fatal(n)
+	}
+	r.must(Request{Op: OpRemove, Name: "work", Discard: true})
+	r.m.Close()
+	if err := os.WriteFile(filepath.Join(r.state, "bad.json"), []byte("{"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	r.reload()
+	r.h.disks[1] = true
+	if _, err := r.do(Request{Op: OpRun, Name: "w2", Kept: true, Dir: r.project, Mode: "open"}); err == nil {
+		t.Fatal("removed a disk a broken record may own")
+	}
+	if !r.h.disks[1] {
+		t.Fatal("the disk is gone")
+	}
+}
+
+func TestDuplicateSlotIgnored(t *testing.T) {
+	r := newRig(t)
+	r.run("good")
+	r.m.Close()
+	if err := os.WriteFile(filepath.Join(r.state, "zzz.json"), []byte(`{"name":"zzz","slot":1,"dir":"C:\\p"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	r.reload()
+	if ls := r.must(Request{Op: OpList}); len(ls.Sessions) != 1 {
+		t.Fatalf("%+v", ls.Sessions)
+	}
+}
+
+// TestUnfetchedCommitsCount: removing a session must not lose its commits unasked.
+func TestUnfetchedCommitsCount(t *testing.T) {
+	r := newRig(t)
+	n := r.run("work")
+	s, _ := r.m.find(n)
+	s.rec.Git = true
+	r.h.vms[s.rec.Slot].head = strings.Repeat("a", 40)
+	if _, err := r.do(Request{Op: OpRemove, Name: n}); err == nil || !strings.Contains(err.Error(), "nobody fetched") {
+		t.Fatalf("%v", err)
+	}
+	s.rec.Fetched = strings.Repeat("a", 40)
+	r.must(Request{Op: OpRemove, Name: n})
+}
+
+func TestIdleWaitsForClients(t *testing.T) {
+	r := newRig(t)
+	r.m.mu.Lock()
+	r.m.active = 1
+	r.m.mu.Unlock()
+	if !r.m.IdleSince().IsZero() {
+		t.Fatal("idle while a client is served")
+	}
+	r.m.mu.Lock()
+	r.m.active = 0
+	r.m.mu.Unlock()
+	if r.m.IdleSince().IsZero() {
+		t.Fatal("busy with nothing running")
 	}
 }
 

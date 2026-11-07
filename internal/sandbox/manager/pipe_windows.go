@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"sync"
 	"time"
 
 	"golang.org/x/sys/windows"
@@ -38,6 +39,9 @@ func ListenAndServe(ctx context.Context, m *Manager, pipe string) error {
 	}
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
+	m.mu.Lock()
+	m.quit = cancel
+	m.mu.Unlock()
 	go func() {
 		t := time.NewTicker(30 * time.Second)
 		defer t.Stop()
@@ -54,6 +58,16 @@ func ListenAndServe(ctx context.Context, m *Manager, pipe string) error {
 		}
 	}()
 	context.AfterFunc(ctx, func() { _ = l.Close() })
+	var clients sync.WaitGroup
+	defer func() {
+		// A client that was just accepted finishes; one that hangs does not hold the exit.
+		done := make(chan struct{})
+		go func() { clients.Wait(); close(done) }()
+		select {
+		case <-done:
+		case <-time.After(10 * time.Second):
+		}
+	}()
 	for {
 		c, err := l.Accept()
 		if err != nil {
@@ -62,7 +76,7 @@ func ListenAndServe(ctx context.Context, m *Manager, pipe string) error {
 			}
 			return err
 		}
-		go m.Serve(ctx, c)
+		clients.Go(func() { m.Serve(ctx, c) })
 	}
 }
 

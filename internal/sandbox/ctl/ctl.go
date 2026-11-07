@@ -19,6 +19,7 @@
 //	TypeBundleIn  JSON BundleRequest  followed by Input frames, an empty one ends them
 //	TypeBundleOut (empty)             the commits since the copy, as a bundle
 //	TypeShutdown  (empty)             shut the session down in order; answered by TypeExit
+//	TypeHead      (empty)             the commit HEAD is at, as Output, if it is past the copy
 //
 // Then, host to guest:
 //
@@ -69,6 +70,7 @@ const (
 	TypeExit
 	TypeError
 	TypeShutdown
+	TypeHead
 )
 
 // TermRequest starts a terminal, or attaches to one when Attach is set. Argv empty means

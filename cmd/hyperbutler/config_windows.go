@@ -54,14 +54,15 @@ func (in *install) env() config.Env {
 	}
 }
 
-// diskExists reports whether the data disk (or its metadata) is in l.Data.
+// diskExists reports whether the data disk (or its metadata), or a sandbox session's disk,
+// is in l.Data.
 func diskExists(l engine.Layout) bool {
 	for _, p := range []string{l.DiskPath(), l.DiskMetaPath(), l.DiskPath() + ".new"} {
 		if _, err := os.Lstat(p); err == nil {
 			return true
 		}
 	}
-	return false
+	return len(sessionDisks(l)) > 0
 }
 
 func cmdConfig(args []string, stdout, stderr io.Writer) error {

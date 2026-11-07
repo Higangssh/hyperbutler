@@ -86,9 +86,16 @@ type Manager struct {
 	// git is the git executable the project's history goes through.
 	git string
 
+	// unreadable counts records that could not be read: each may own a disk.
+	unreadable int
+
 	mu       sync.Mutex
 	sessions map[string]*sess
 	lastBusy time.Time
+	// active counts clients being served; the manager does not end under one.
+	active int
+	// quit, if set, ends the manager (OpQuit).
+	quit context.CancelFunc
 }
 
 // sess is one session. mu serializes what changes it: booting, reviewing, applying,
@@ -102,8 +109,10 @@ type sess struct {
 	vm     VM
 	policy *egress.Policy
 	sent   map[string]copyin.Copied
-	// items is the last review: what apply writes, and nothing else ever is.
+	// items is the last review: what apply writes, and nothing else ever is. shown names
+	// the ones a diff showed whole, which is what --all may take.
 	items []session.Item
+	shown map[string]bool
 }
 
 // New loads the sessions recorded in dir, none of them running. Problems with a record are
@@ -117,7 +126,16 @@ func New(host Host, dir string, log *slog.Logger) (*Manager, error) {
 	for _, err := range errs {
 		log.Warn("a session's record could not be read", "err", err)
 	}
+	m.unreadable = len(errs)
+	var used [MaxSlot + 1]bool
 	for _, r := range recs {
+		if used[r.Slot] {
+			// Removing either would remove the other's disk. Only a crash or a hand reaches this.
+			log.Warn("two sessions' records name one disk; this one is ignored", "session", r.Name, "slot", r.Slot)
+			m.unreadable++
+			continue
+		}
+		used[r.Slot] = true
 		m.sessions[r.Name] = &sess{rec: r, sent: sentFromRecord(r.Sent)}
 	}
 	return m, nil
@@ -127,6 +145,10 @@ func New(host Host, dir string, log *slog.Logger) (*Manager, error) {
 func (m *Manager) IdleSince() time.Time {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if m.active > 0 {
+		m.lastBusy = time.Now()
+		return time.Time{}
+	}
 	for _, s := range m.sessions {
 		if s.running.Load() {
 			m.lastBusy = time.Now()
@@ -136,14 +158,8 @@ func (m *Manager) IdleSince() time.Time {
 	return m.lastBusy
 }
 
-// Busy counts as work, so an idle manager does not exit under a request.
-func (m *Manager) touch() {
-	m.mu.Lock()
-	m.lastBusy = time.Now()
-	m.mu.Unlock()
-}
-
-// Close ends every running session at once; their disks and records stay.
+// Close ends every running session, in order if the guest answers soon; their disks and
+// records stay.
 func (m *Manager) Close() {
 	m.mu.Lock()
 	all := make([]*sess, 0, len(m.sessions))
@@ -154,10 +170,13 @@ func (m *Manager) Close() {
 	for _, s := range all {
 		s.mu.Lock()
 		if s.vm != nil {
-			_ = s.vm.Terminate()
-			_ = s.vm.Close()
-			s.vm = nil
-			s.running.Store(false)
+			if askShutdown(context.Background(), s.vm) == nil {
+				select {
+				case <-s.vm.Gone():
+				case <-time.After(5 * time.Second):
+				}
+			}
+			m.endVM(s)
 		}
 		s.mu.Unlock()
 	}
@@ -174,10 +193,16 @@ func (m *Manager) find(name string) (*sess, error) {
 
 // Handle answers one request. progress is told what a long one is doing.
 func (m *Manager) Handle(ctx context.Context, req *Request, progress func(string)) (Reply, error) {
-	m.touch()
-	defer m.touch()
 	switch req.Op {
 	case OpPing:
+		return Reply{}, nil
+	case OpQuit:
+		m.mu.Lock()
+		q := m.quit
+		m.mu.Unlock()
+		if q != nil {
+			defer q()
+		}
 		return Reply{}, nil
 	case OpRun:
 		return m.run(ctx, req, progress)
@@ -342,6 +367,13 @@ func (m *Manager) run(ctx context.Context, req *Request, progress func(string)) 
 	if size == 0 {
 		size = DefaultDiskSize
 	}
+	// No record owns this slot, so a disk there is what a failed run left. With a record
+	// that could not be read it may be someone's work, and CreateDisk refuses it.
+	if m.unreadable == 0 {
+		if err := m.host.RemoveDisk(s.rec.Slot); err != nil {
+			return Reply{}, err
+		}
+	}
 	if s.rec.DiskMeta, err = m.host.CreateDisk(s.rec.Slot, size); err != nil {
 		return Reply{}, err
 	}
@@ -394,6 +426,7 @@ func (m *Manager) boot(ctx context.Context, s *sess, hook netstack.Egress) error
 	}
 	s.vm = vm
 	s.running.Store(true)
+	s.terms.Store(0) // the guest's terminals went with its last boot
 	go func() {
 		<-vm.Gone()
 		s.mu.Lock()
@@ -616,15 +649,12 @@ func (m *Manager) stop(ctx context.Context, s *sess, discard, remove bool, progr
 			return Reply{}, fmt.Errorf("%s has %d changes nobody applied; `hyperbutler sandbox diff %s` shows them, --discard removes it anyway", s.rec.Name, n, s.rec.Name)
 		}
 		if s.rec.Git {
-			b, err := m.readCommits(ctx, s)
+			head, err := headCommit(ctx, s.vm)
 			if err != nil {
 				return Reply{}, fmt.Errorf("list the session's commits: %w; --discard removes it anyway", err)
 			}
-			if b != nil {
-				defer func() { _ = os.Remove(b.path) }()
-				if b.commit != s.rec.Fetched {
-					return Reply{}, fmt.Errorf("%s has commits nobody fetched; `hyperbutler sandbox commits %s` brings them back, --discard removes it anyway", s.rec.Name, s.rec.Name)
-				}
+			if head != "" && head != s.rec.Fetched {
+				return Reply{}, fmt.Errorf("%s has commits nobody fetched; `hyperbutler sandbox commits %s` brings them back, --discard removes it anyway", s.rec.Name, s.rec.Name)
 			}
 		}
 	}
@@ -655,6 +685,34 @@ func (m *Manager) stop(ctx context.Context, s *sess, discard, remove bool, progr
 		s.sent, s.rec.Sent = nil, nil
 	}
 	return Reply{}, nil
+}
+
+// headCommit asks the guest where HEAD is, "" when that is not past the copy.
+func headCommit(ctx context.Context, vm VM) (string, error) {
+	ctx, cancel := context.WithTimeout(ctx, agentWait)
+	defer cancel()
+	c, err := vm.Dialer(ctl.Port, agentWait).DialContext(ctx)
+	if err != nil {
+		return "", err
+	}
+	defer func() { _ = c.Close() }()
+	stop := context.AfterFunc(ctx, func() { _ = c.Close() })
+	defer stop()
+	if err := ctl.WriteFrame(c, ctl.TypeHead, nil); err != nil {
+		return "", err
+	}
+	var out bytes.Buffer
+	code, err := readEnd(c, &out, 128)
+	if err != nil {
+		return "", err
+	}
+	if code == ctl.ExitNoCommits {
+		return "", nil
+	}
+	if code != 0 {
+		return "", fmt.Errorf("code %d", code)
+	}
+	return out.String(), nil
 }
 
 // askShutdown asks the guest to shut down through sbxd. The VM offers no Hyper-V shutdown
@@ -690,6 +748,7 @@ func (m *Manager) reviewLocked(ctx context.Context, s *sess) ([]session.Item, er
 	if err != nil {
 		return nil, err
 	}
+	s.shown = nil
 	root, err := os.OpenRoot(s.rec.Dir)
 	if err != nil {
 		return nil, err
@@ -740,9 +799,11 @@ func (m *Manager) diff(ctx context.Context, s *sess, statOnly bool) (Reply, erro
 	}
 	defer func() { _ = root.Close() }()
 	r := Reply{Items: make([]DiffItem, 0, len(items))}
+	shown := make(map[string]bool, len(items))
 	text := 0
 	for _, it := range items {
 		d := DiffItem{Path: review.Escape(it.Path), Shown: it.Shown, Kind: kindNames[it.Kind], Risk: string(it.Risk), Refused: it.Refused}
+		seen := false
 		if it.Refused == "" {
 			host, ok := hostFile(root, it.Path)
 			switch {
@@ -758,10 +819,16 @@ func (m *Manager) diff(ctx context.Context, s *sess, statOnly bool) (Reply, erro
 			if !statOnly && text < maxReviewText {
 				d.Text = td.Text
 				text += len(td.Text)
+				seen = !td.Cut
 			}
+			d.Unshown = !seen
+		}
+		if seen {
+			shown[it.Path] = true
 		}
 		r.Items = append(r.Items, d)
 	}
+	s.shown = shown
 	return r, nil
 }
 
@@ -789,6 +856,8 @@ func (m *Manager) apply(s *sess, req *Request) (Reply, error) {
 		case it.Risk != "" && !named:
 			// Each of these can run code later: --all does not take them.
 			r.Outcomes = append(r.Outcomes, Outcome{Path: it.Shown, Error: "not applied: it can run code or redirect a tool (" + string(it.Risk) + "); name it with --path after reading it"})
+		case !named && !s.shown[it.Path]:
+			r.Outcomes = append(r.Outcomes, Outcome{Path: it.Shown, Error: "not applied: the review did not show all of it; run diff without --stat, or name it with --path"})
 		default:
 			changes = append(changes, it.Change)
 		}
@@ -1000,8 +1069,13 @@ func (m *Manager) Term(ctx context.Context, req *Request) (net.Conn, error) {
 	if len(req.Env) > ctl.MaxEnv || len(req.Argv) > ctl.MaxArgs {
 		return nil, errors.New("too many arguments or variables for a terminal")
 	}
+	c, err := vm.Dialer(ctl.Port, agentWait).DialContext(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("session ctl port: %w", err)
+	}
 	t := ctl.TermRequest{Attach: req.Attach, Argv: req.Argv, Env: req.Env, Cols: req.Cols, Rows: req.Rows}
 	if t.Attach == "" {
+		// The first terminal of a boot is the one `attach` goes back to.
 		if n := s.terms.Add(1); n == 1 {
 			t.ID = "main"
 		} else {
@@ -1010,14 +1084,12 @@ func (m *Manager) Term(ctx context.Context, req *Request) (net.Conn, error) {
 	}
 	j, err := json.Marshal(t)
 	if err != nil {
+		_ = c.Close()
 		return nil, err
 	}
 	if len(j) > ctl.MaxData {
+		_ = c.Close()
 		return nil, errors.New("a terminal's arguments and variables are too long")
-	}
-	c, err := vm.Dialer(ctl.Port, agentWait).DialContext(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("session ctl port: %w", err)
 	}
 	if err := ctl.WriteFrame(c, ctl.TypeTerm, j); err != nil {
 		_ = c.Close()
@@ -1029,6 +1101,15 @@ func (m *Manager) Term(ctx context.Context, req *Request) (net.Conn, error) {
 // Serve answers one client on c: one request, and for OpTerm the terminal until either end
 // closes.
 func (m *Manager) Serve(ctx context.Context, c net.Conn) {
+	m.mu.Lock()
+	m.active++
+	m.mu.Unlock()
+	defer func() {
+		m.mu.Lock()
+		m.active--
+		m.lastBusy = time.Now()
+		m.mu.Unlock()
+	}()
 	defer func() { _ = c.Close() }()
 	br := bufio.NewReaderSize(c, 64<<10)
 	line, err := readLine(br, maxRequest)
