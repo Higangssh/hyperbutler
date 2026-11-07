@@ -334,6 +334,18 @@ func TestAllLeavesRiskyOut(t *testing.T) {
 	}
 }
 
+// TestApplyAfterAnEmptyReview: no changes is a review, so apply has nothing to do.
+func TestApplyAfterAnEmptyReview(t *testing.T) {
+	r := newRig(t)
+	n := r.run("work")
+	if rep := r.must(Request{Op: OpDiff, Name: n}); len(rep.Items) != 0 {
+		t.Fatalf("%+v", rep.Items)
+	}
+	if out := r.must(Request{Op: OpApply, Name: n, All: true}); len(out.Outcomes) != 0 {
+		t.Fatalf("%+v", out.Outcomes)
+	}
+}
+
 func TestApplyUnknownPath(t *testing.T) {
 	r := newRig(t)
 	n := r.run("work")

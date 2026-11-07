@@ -46,6 +46,7 @@ type state struct {
 }
 
 func run() error {
+	catchInherited()
 	secret, err := vmsecret.Load("/proc/cmdline")
 	if err != nil {
 		return err

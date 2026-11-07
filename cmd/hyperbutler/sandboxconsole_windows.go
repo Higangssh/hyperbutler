@@ -41,7 +41,9 @@ func newConsole() (*console, error) {
 		c.restore()
 		return nil, err
 	}
-	in := c.inMode&^(windows.ENABLE_LINE_INPUT|windows.ENABLE_ECHO_INPUT|windows.ENABLE_PROCESSED_INPUT|windows.ENABLE_QUICK_EDIT_MODE) |
+	// Mouse input off: with VT input on, the console would send every mouse move to the
+	// session as text. Quick edit stays as the user has it, so selecting and copying work.
+	in := c.inMode&^(windows.ENABLE_LINE_INPUT|windows.ENABLE_ECHO_INPUT|windows.ENABLE_PROCESSED_INPUT|windows.ENABLE_MOUSE_INPUT|windows.ENABLE_WINDOW_INPUT) |
 		windows.ENABLE_VIRTUAL_TERMINAL_INPUT | windows.ENABLE_EXTENDED_FLAGS
 	if err := windows.SetConsoleMode(c.in, in); err != nil {
 		c.restore()

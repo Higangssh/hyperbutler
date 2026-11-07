@@ -111,8 +111,9 @@ type sess struct {
 	sent   map[string]copyin.Copied
 	// items is the last review: what apply writes, and nothing else ever is. shown names
 	// the ones a diff showed whole, which is what --all may take.
-	items []session.Item
-	shown map[string]bool
+	items    []session.Item
+	shown    map[string]bool
+	reviewed bool
 }
 
 // New loads the sessions recorded in dir, none of them running. Problems with a record are
@@ -448,7 +449,7 @@ func (m *Manager) endVM(s *sess) {
 		s.vm = nil
 	}
 	s.running.Store(false)
-	s.items = nil
+	s.items, s.reviewed = nil, false
 }
 
 // history brings the project's branches and tags in as a bundle: no reflog, stash,
@@ -676,7 +677,7 @@ func (m *Manager) stop(ctx context.Context, s *sess, discard, remove bool, progr
 		}
 		m.endVM(s)
 	}
-	s.items = nil
+	s.items, s.reviewed = nil, false
 	if gone {
 		// The record last: a crash before it leaves a session that can be removed again.
 		if err := m.host.RemoveDisk(s.rec.Slot); err != nil {
@@ -772,6 +773,7 @@ func (m *Manager) reviewLocked(ctx context.Context, s *sess) ([]session.Item, er
 		kept = append(kept, it)
 	}
 	s.items = kept
+	s.reviewed = true
 	return kept, nil
 }
 
@@ -839,7 +841,7 @@ func (m *Manager) diff(ctx context.Context, s *sess, statOnly bool) (Reply, erro
 func (m *Manager) apply(s *sess, req *Request) (Reply, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.items == nil {
+	if !s.reviewed {
 		return Reply{}, fmt.Errorf("nothing was reviewed; `hyperbutler sandbox diff %s` first: apply writes what the review showed", s.rec.Name)
 	}
 	want := map[string]bool{}

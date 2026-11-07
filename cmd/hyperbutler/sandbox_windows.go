@@ -67,6 +67,14 @@ func cmdSandbox(args []string, stdin io.Reader, stdout, stderr io.Writer) (int, 
 	if err != nil {
 		return 1, err
 	}
+	// Before anything makes a folder in it: the broker takes only a data folder that is this
+	// user's alone, and a session can come before the first `hyperbutler start`.
+	if err := engine.MkdirPrivate(in.l.Home); err != nil {
+		return 1, err
+	}
+	if err := engine.MkdirPrivate(in.l.Data); err != nil {
+		return 1, err
+	}
 	sub, rest := args[0], args[1:]
 	if sub == "manager" {
 		return 0, runSandboxManager(in, rest)

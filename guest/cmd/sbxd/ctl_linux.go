@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"os"
 	"os/exec"
+	"os/signal"
 	"regexp"
 	"strings"
 	"sync"
@@ -39,6 +40,14 @@ const (
 var sessionEnv = []string{
 	"HOME=/home/agent", "USER=agent", "LOGNAME=agent", "SHELL=/bin/bash",
 	"PATH=/usr/local/bin:/usr/bin:/bin", "TERM=xterm-256color", "LANG=C.UTF-8",
+}
+
+// catchInherited undoes what the init's "&" did: a shell starts a background job with
+// SIGINT and SIGQUIT ignored, an ignored signal stays ignored across exec, and bash cannot
+// reset what it was given. Every program in a terminal would ignore Ctrl+C. A signal with a
+// handler goes back to its default across exec, so handling them here is enough.
+func catchInherited() {
+	signal.Notify(make(chan os.Signal, 1), syscall.SIGINT, syscall.SIGQUIT)
 }
 
 // listenCtl serves the ctl port. Unlike the other two, its connections run at once: a
