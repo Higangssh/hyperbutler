@@ -13,10 +13,14 @@ GitHub-hosted runners (ADR 0005, Decision 4).
 | Asset | Produced by | What it is |
 |---|---|---|
 | `hyperbutler-<tag>-windows-amd64.zip` | `dist/package.ps1` | The portable install, below |
+| `hyperbutler-<tag>-windows-amd64.msi` | `dist/msi/build-msi.ps1` | The installer, with the broker service ([install.md](install.md)) |
+| `hyperbutler-<tag>-sandbox-windows-amd64.msi` | `dist/msi/build-sandbox-msi.ps1`, run by `package.ps1` | The agent sandbox's image, a product of its own ([install.md](install.md#the-agent-sandbox-image)), which `hyperbutler sandbox install` fetches by this name from this release and checks against the hash in `hyperbutler.exe`. **Never replace this asset:** a different file breaks that install for everyone on this version |
 | `hyperbutler-<tag>-guest-sources.tar` | `scripts/guest-image/fetch-sources.sh` | Corresponding source of the guest image (GPL and others) |
 | `hyperbutler-<tag>-guest-inputs.tar` | `scripts/guest-image/ci-entry.sh` | The signed Alpine packages the image was built from (our mirror) |
+| `sandbox-sources.tar` (or `.000`, `.001`, ...), `sandbox-sources.tsv`, `SANDBOX-SOURCES.txt` | `scripts/guest-image/sandbox-sources.sh`, `build-sandbox.sh` | Corresponding source of the sandbox image's Debian packages, with its manifest and the text that names it. They keep their artifact names, which that text uses |
+| `sandbox-packages.tsv` | `guest/sandbox/build-rootfs.sh` | What is in the sandbox image, by package and source package. It stands in for an SBOM: syft cannot see inside the image's system disk |
 | `hyperbutler-<tag>-windows-amd64.spdx.json` | syft 1.55.0 | SBOM of the zip contents |
-| `SHA256SUMS` | `release.yml` | SHA-256 of the four files above |
+| `SHA256SUMS` | `release.yml` | SHA-256 of every file above |
 | Build provenance | `actions/attest-build-provenance` | SLSA provenance for every file in `SHA256SUMS`, signed through Sigstore. Verify with `gh attestation verify <file> --repo Higangssh/hyperbutler` |
 
 The zip has one top-level folder:
@@ -46,6 +50,13 @@ release here.
 | v0.1.0-preview.1 | 116.4 MB | release run (116,415,311 bytes; MSI 121,729,372 bytes) |
 | v0.1.0-preview.2 | 120.3 MB | release run, with `hyperbutler-broker.exe` (120,298,176 bytes; 196.7 MB unpacked; MSI 125,358,540 bytes) |
 | (dry run, 2026-11-07) | 143.2 MB | the v0.1.1 image plus buildx v0.38.2 from source (69.0 MB, 23.8 MB deflated), snapshot without guest license texts (143,225,514 bytes, 256.1 MB as `package.ps1` counts it; MSI 145,087,564 bytes). The same commit without buildx: 118,635,119 and 125,577,558 bytes, so buildx adds 24.6 MB to the zip and 19.5 MB to the MSI. The v0.1.1 release was 2.0 MB over its image's snapshot (guest license texts), so expect about 145 MB for both: under the limit, 5 MB short of 150,000,000 bytes |
+
+The sandbox image's MSI is a separate download, so REQ-UX-002 does not apply; the release's limit
+is 1 GiB (`build-sandbox-msi.ps1`, `sandboxmsi.MaxPinBytes`). Record it here too.
+
+| Release | Sandbox MSI | Image files | Notes |
+|---|---|---|---|
+| (dry run, 2026-11-07) | 228.1 MB (239,230,976 bytes) | 400,493,520 bytes, of which `system.vhd` 386,925,056 | a local image (snapshot 20261105T000000Z), `CompressionLevel="high"`, about 3 minutes to build on the reference laptop |
 
 The release is x64 only. Docker publishes no Windows arm64 docker CLI; since it is built
 from source here, an arm64 release would only need `GOARCH=arm64`, but the guest image is
@@ -95,15 +106,17 @@ administrator; the README says so.
      digest-pinned container and snapshot in `guest/sandbox/debian.lock`. Outputs:
      `vmlinuz-virt`, `initramfs-stage1.gz`, `system.vhd`, `image.json`,
      `sandbox-packages.tsv`, `BUILDINFO.txt`, and with sources `sandbox-sources.tar`,
-     `sandbox-sources.tsv`, `SANDBOX-SOURCES.txt`; `SHA256SUMS` over all of them. **Nothing
-     consumes this artifact yet** (`sandbox-image-release`, 14 days): no job needs it, so
-     it is not in the release, and its failure does not stop the draft, though the run
-     shows red. How the image ships is still to be decided.
+     `sandbox-sources.tsv`, `SANDBOX-SOURCES.txt`; `SHA256SUMS` over all of them. The artifact
+     (`sandbox-image-release`, 14 days) goes to package for the image and to publish for the
+     source bundle, so a failure here stops the release.
 2. **package** (`windows-latest`):
    - Checks that the tag is a semver tag, that it is HEAD, and that it is on `origin/main`.
-   - Checks the guest artifact against the digest from job 1, then runs `dist/package.ps1`
-     without `-Snapshot`, so every check is fatal. It links the SHA-256 of the checked
-     `image.json` into `hyperbutler.exe` and builds the docker CLI, compose and buildx from the
+   - Checks the guest and sandbox artifacts against the digests from job 1, then runs
+     `dist/package.ps1` without `-Snapshot`, so every check is fatal. It builds the sandbox
+     image's MSI with WiX, links the SHA-256 of the checked `image.json`s into `hyperbutler.exe`
+     and `hyperbutler-broker.exe` and the MSI's SHA-256, name and size into `hyperbutler.exe`,
+     and fails unless both report them, so the release fails without the sandbox image or its
+     pin. It builds the docker CLI, compose and buildx from the
      source modules in `dist/clients.lock` (through the Go module proxy, checked against
      sum.golang.org and the lock).
 3. **sbom** (`ubuntu-latest`, no permissions at all): syft, installed from the release
@@ -111,7 +124,9 @@ administrator; the README says so.
 4. **publish** (`ubuntu-latest`, environment `release`):
    - The only job with write permissions (`contents`, `id-token`, `attestations`). It does
      not check out the repository and runs no repository code.
-   - It checks every asset against the digests from the earlier jobs, writes
+   - It checks every asset against the digests from the earlier jobs, the sandbox MSI also by
+     the name `hyperbutler.exe` will ask for, takes the sandbox source bundle from the
+     sandbox-image artifact after checking that against its digest, writes
      `SHA256SUMS`, attests it, and creates a **draft** release with `gh release create
      --draft --verify-tag`.
 
@@ -453,8 +468,7 @@ code (libblkid, parts of e2fsprogs, libseccomp, libmnl). hyperbutler distributes
   2026-11-03, v0.1.0-rc.1: README uses "Docker" for the API, CLI and Docker Desktop only,
   with the trademark note.
 
-The sandbox image (ADR 0009) is not in a release yet. From the first release that carries
-it, it contains GPL and LGPL code from Debian, and these apply as well:
+The sandbox image (ADR 0009) contains GPL and LGPL code from Debian, and these apply as well:
 
 - [ ] `sandbox-sources.tar` is attached to the same release as the image, with
   `SANDBOX-SOURCES.txt` and `sandbox-sources.tsv`, and stays there while the image is
@@ -464,8 +478,10 @@ it, it contains GPL and LGPL code from Debian, and these apply as well:
 - [ ] The bundle comes from the same run as the image. Spot-check that
   `sandbox-sources.tsv` has `glibc`, `bash`, `coreutils`, `gcc-14` and `linux` at the versions
   in `sandbox-packages.tsv`, and that the tar's SHA-256 matches `SANDBOX-SOURCES.txt`.
-- [ ] The `publish` job's asset list and `SHA256SUMS` take these files, and the image
-  and its pin (`imageset.SandboxPin`) come from the sandbox-image job in the same run.
+- [ ] `SHA256SUMS` lists these files, and `hyperbutler version --json` reports the image's pin
+  (`sandboxImageManifestSha256`, the SHA-256 of `image.json` from the sandbox-image job in the
+  same run) and the MSI (`sandboxMsi`, `sandboxMsiSha256`, `sandboxMsiBytes`, the asset's own).
+- [ ] The sandbox MSI carries `SANDBOX-SOURCES.txt`, which names this bundle.
 
 ### 3. Cut the release
 
@@ -477,14 +493,21 @@ it, it contains GPL and LGPL code from Debian, and these apply as well:
    - [ ] Download all assets; `sha256sum -c SHA256SUMS`.
    - [ ] `gh attestation verify <each asset> --repo Higangssh/hyperbutler`.
    - [ ] `hyperbutler version` prints the tag.
-   - [ ] The zip size is recorded above.
+   - [ ] The zip size and the sandbox MSI's are recorded above.
    - [ ] Run the Quick Start on a clean Windows 11 Home account.
+   - [ ] Install the draft's MSI, then its sandbox MSI as [install.md](install.md#test-procedure-the-agent-sandbox-images-msi)
+     says, and start a session through the broker service. A draft's assets are not public,
+     so the download itself is first seen working when the release is published: run `hyperbutler
+     sandbox install` right after, and if it fails, delete the release and tag a new version.
 5. Write the release notes: what changed, the measured status, and the known gaps.
 6. Publish the draft.
 7. The winget manifest: copy the previous version's folder under `dist/winget/`, set the
    version, URL and SHA-256, and submit it. Since the MSI installs the broker service (ADR
    0004, Installer (M4)) it has no `InstallerSwitches` `Custom: ADDHYPERVADMIN=1`, which
-   v0.1.0-preview.1's had: winget users need no group membership.
+   v0.1.0-preview.1's had: winget users need no group membership. The sandbox image needs no
+   second package: `hyperbutler sandbox install` fetches it for the version it is, while a package
+   of its own could put a version there that the installed `hyperbutler.exe` refuses. `winget
+   uninstall` of hyperbutler fails (1603) while the sandbox product is installed, as any uninstall does.
 
 If a gate fails after tagging, delete the draft, fix on `main`, and tag a new version.
 Never move a published tag.

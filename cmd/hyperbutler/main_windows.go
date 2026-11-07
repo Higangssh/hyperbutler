@@ -109,7 +109,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	case "gui":
 		err = cmdGUI(args[1:], stdout, stderr)
 	case "sandbox":
-		code, err = cmdSandbox(args[1:], stdout, stderr)
+		code, err = cmdSandbox(args[1:], os.Stdin, stdout, stderr)
 	case "mcp":
 		err = cmdMCP(args[1:], os.Stdin, stdout, stderr)
 	case "engine":

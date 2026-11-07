@@ -123,6 +123,11 @@ and what it may run is fenced in. [docs/mcp.md](docs/mcp.md)
 **Moving from Docker Desktop.** `hyperbutler import --from-desktop` copies images and volumes
 over, and creates `docker run` containers again. [docs/tools.md](docs/tools.md)
 
+**A sandbox for AI coding agents (coming in v0.2).** `hyperbutler sandbox run` gives an agent a
+Linux VM of its own and a copy of your project: changes reach your files only after you read and
+apply them, and the network it can reach is a mode you choose. Its image is a separate download of
+about 240 MB, on first use. [docs/sandbox.md](docs/sandbox.md)
+
 **When something is wrong.** `hyperbutler doctor` checks every prerequisite and says how to
 fix it (`--fix` repairs what it may); `hyperbutler diagnose` packs a redacted report.
 [More](docs/usage.md#troubleshooting-and-uninstalling)

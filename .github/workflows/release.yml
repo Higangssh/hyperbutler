@@ -5,13 +5,14 @@ name: Release
 # docs/release.md (soak, host-full, etc.), which hosted runners cannot run.
 #
 #   guest-image  canonical guest image + GPL source bundle (strict: signed inputs only)
-#   sandbox-image  canonical agent sandbox image + source bundle; not in the release yet
-#   package      hyperbutler.exe and hyperbutler-broker.exe (both pinned to the guest
-#                image's image.json), the docker CLI,
-#                compose and buildx built from dist/clients.lock, and the portable zip
-#                (dist/package.ps1), on Windows
+#   sandbox-image  canonical agent sandbox image + source bundle
+#   package      the sandbox image's MSI, hyperbutler.exe and hyperbutler-broker.exe (both
+#                pinned to both images' image.json, hyperbutler.exe also to that MSI), the
+#                docker CLI, compose and buildx built from dist/clients.lock, and the
+#                portable zip (dist/package.ps1), on Windows
 #   sbom         SPDX SBOM of the zip contents (syft), with no write permissions
-#   publish      SHA256SUMS, build provenance attestation, draft release
+#   publish      the sandbox source bundle, SHA256SUMS, build provenance attestation, draft
+#                release
 #
 # Artifacts move between jobs of this run only, and each consumer checks them against a
 # digest passed as a job output, so a swapped artifact fails the run.
@@ -39,8 +40,8 @@ jobs:
       with-sources: true
       artifact-name: guest-image-release # must not match the release-* pattern in publish
 
-  # Nothing consumes this yet: how the sandbox image ships is still to be decided. Its
-  # artifact stays out of the release until a job here takes it.
+  # The image goes into its own MSI in package; its source bundle goes straight to publish,
+  # which is why its artifact is not a release-* one.
   sandbox-image:
     needs: guest-image
     uses: ./.github/workflows/sandbox-image.yml
@@ -53,15 +54,17 @@ jobs:
       artifact-name: sandbox-image-release # must not match the release-* pattern in publish
 
   package:
-    needs: guest-image
+    needs: [guest-image, sandbox-image]
     runs-on: windows-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     permissions:
       contents: read
     outputs:
       name: ${{ steps.pkg.outputs.name }}
       zip-sha256: ${{ steps.pkg.outputs.sha256 }}
       msi-sha256: ${{ steps.msi.outputs.msi_sha256 }}
+      sandbox-msi-name: ${{ steps.pkg.outputs.sandbox_msi_name }}
+      sandbox-msi-sha256: ${{ steps.pkg.outputs.sandbox_msi_sha256 }}
       sources-sha256: ${{ steps.src.outputs.sources }}
       inputs-sha256: ${{ steps.src.outputs.inputs }}
     defaults:
@@ -112,6 +115,35 @@ jobs:
             if ($h -ne $Matches[1]) { throw "checksum mismatch: $($Matches[2])" }
           }
 
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: ${{ needs.sandbox-image.outputs.artifact-name }}
+          path: ${{ runner.temp }}/sandbox
+
+      - name: Verify the sandbox image artifact
+        env:
+          WANT: ${{ needs.sandbox-image.outputs.sums-sha256 }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if (-not $env:WANT) { throw 'the sandbox-image job reported no digest' }
+          $dir = Join-Path $env:RUNNER_TEMP 'sandbox'
+          $got = (Get-FileHash -Algorithm SHA256 (Join-Path $dir 'SHA256SUMS')).Hash.ToLowerInvariant()
+          if ($got -ne $env:WANT) { throw "sandbox SHA256SUMS digest $got, the build job reported $env:WANT" }
+          foreach ($l in Get-Content (Join-Path $dir 'SHA256SUMS')) {
+            if ($l -notmatch '^([0-9a-f]{64}) [ *](.+)$') { throw "bad SHA256SUMS line: $l" }
+            $h = (Get-FileHash -Algorithm SHA256 -LiteralPath (Join-Path $dir $Matches[2])).Hash.ToLowerInvariant()
+            if ($h -ne $Matches[1]) { throw "checksum mismatch: $($Matches[2])" }
+          }
+
+      # WiX is the .NET tool at a pinned version; nuget.org serves it and its extensions, signed.
+      - name: Install WiX
+        run: |
+          $ErrorActionPreference = 'Stop'
+          dotnet tool install wix --version 5.0.2 --tool-path (Join-Path $env:RUNNER_TEMP 'wix')
+          if ($LASTEXITCODE -ne 0) { throw 'dotnet tool install wix failed' }
+
+      # Without -Snapshot, package.ps1 fails unless the sandbox image, its pin in both
+      # executables and its MSI's pin in hyperbutler.exe are all there.
       - name: Package
         id: pkg
         env:
@@ -120,10 +152,10 @@ jobs:
         run: |
           $g = Join-Path $env:RUNNER_TEMP 'guest'
           ./dist/package.ps1 -ImageDir $g -SourceBundle (Join-Path $g 'guest-sources.tar') `
+            -SandboxImageDir (Join-Path $env:RUNNER_TEMP 'sandbox') -Wix (Join-Path $env:RUNNER_TEMP 'wix/wix.exe') `
             -ReleaseUrl $env:RELEASE_URL -Version $env:TAG -Out (Join-Path $env:RUNNER_TEMP 'dist')
 
-      # The MSI (docs/install.md), from the folder package.ps1 staged for the zip. WiX is the
-      # .NET tool at a pinned version; nuget.org serves it and its extensions, signed.
+      # The MSI (docs/install.md), from the folder package.ps1 staged for the zip.
       - name: Build the MSI
         id: msi
         env:
@@ -131,8 +163,6 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $tools = Join-Path $env:RUNNER_TEMP 'wix'
-          dotnet tool install wix --version 5.0.2 --tool-path $tools
-          if ($LASTEXITCODE -ne 0) { throw 'dotnet tool install wix failed' }
           ./dist/msi/build-msi.ps1 -Stage (Join-Path $env:RUNNER_TEMP "dist/$env:NAME") -Wix (Join-Path $tools 'wix.exe') `
             -Out (Join-Path $env:RUNNER_TEMP 'dist')
 
@@ -209,9 +239,10 @@ jobs:
           retention-days: 7
 
   publish:
-    needs: [package, sbom]
+    needs: [sandbox-image, package, sbom]
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    # The sandbox source bundle is about 1 GB.
+    timeout-minutes: 60
     # Configure required reviewers for this environment in the repository settings.
     environment: release
     permissions:
@@ -226,12 +257,38 @@ jobs:
           merge-multiple: true
           path: ${{ runner.temp }}/assets
 
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: ${{ needs.sandbox-image.outputs.artifact-name }}
+          path: ${{ runner.temp }}/sandbox
+
+      # They keep their artifact names, which SANDBOX-SOURCES.txt uses. The image itself is in
+      # the sandbox MSI; sandbox-packages.tsv goes with the bundle because it is what lists the
+      # image's contents: syft cannot look inside the MSI's system disk.
+      - name: Take the sandbox source bundle
+        env:
+          WANT: ${{ needs.sandbox-image.outputs.sums-sha256 }}
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/sandbox"
+          [ -n "$WANT" ] || { echo "the sandbox-image job reported no digest"; exit 1; }
+          echo "$WANT  SHA256SUMS" | sha256sum --check --strict
+          sha256sum --check --strict --quiet SHA256SUMS
+          [ -f sandbox-sources.tar ] || [ -f sandbox-sources.tar.000 ] || { echo "the sandbox image has no source bundle"; exit 1; }
+          for f in sandbox-sources.tsv SANDBOX-SOURCES.txt sandbox-packages.tsv; do
+            [ -f "$f" ] || { echo "the sandbox image has no $f"; exit 1; }
+            mv "$f" "$RUNNER_TEMP/assets/"
+          done
+          mv sandbox-sources.tar* "$RUNNER_TEMP/assets/"
+
       - name: Verify and checksum the assets
         env:
           NAME: ${{ needs.package.outputs.name }}
           TAG: ${{ github.ref_name }}
           ZIP_SHA256: ${{ needs.package.outputs.zip-sha256 }}
           MSI_SHA256: ${{ needs.package.outputs.msi-sha256 }}
+          SBX_NAME: ${{ needs.package.outputs.sandbox-msi-name }}
+          SBX_SHA256: ${{ needs.package.outputs.sandbox-msi-sha256 }}
           SRC_SHA256: ${{ needs.package.outputs.sources-sha256 }}
           INPUTS_SHA256: ${{ needs.package.outputs.inputs-sha256 }}
         run: |
@@ -239,15 +296,20 @@ jobs:
           cd "$RUNNER_TEMP/assets"
           src="hyperbutler-$TAG-guest-sources.tar"
           inputs="hyperbutler-$TAG-guest-inputs.tar"
-          printf '%s  %s\n' "$ZIP_SHA256" "$NAME.zip" "$MSI_SHA256" "$NAME.msi" "$SRC_SHA256" "$src" "$INPUTS_SHA256" "$inputs" |
+          sbx="hyperbutler-$TAG-sandbox-windows-amd64.msi"
+          # What hyperbutler.exe will fetch: this name, in this release (internal/sandboxmsi).
+          [ "$SBX_NAME.msi" = "$sbx" ] || { echo "the sandbox MSI is $SBX_NAME.msi, want $sbx"; exit 1; }
+          [ -n "$SBX_SHA256" ] || { echo "the package job reported no sandbox MSI"; exit 1; }
+          printf '%s  %s\n' "$ZIP_SHA256" "$NAME.zip" "$MSI_SHA256" "$NAME.msi" "$SBX_SHA256" "$sbx" "$SRC_SHA256" "$src" "$INPUTS_SHA256" "$inputs" |
             sha256sum --check --strict
           for f in *; do
             case "$f" in
-              "$NAME.zip" | "$NAME.msi" | "$src" | "$inputs" | "$NAME.spdx.json") ;;
+              "$NAME.zip" | "$NAME.msi" | "$sbx" | "$src" | "$inputs" | "$NAME.spdx.json") ;;
+              sandbox-sources.tar | sandbox-sources.tar.[0-9][0-9][0-9] | sandbox-sources.tsv | SANDBOX-SOURCES.txt | sandbox-packages.tsv) ;;
               *) echo "unexpected file in the release assets: $f"; exit 1 ;;
             esac
           done
-          sha256sum "$NAME.zip" "$NAME.msi" "$src" "$inputs" "$NAME.spdx.json" >SHA256SUMS
+          sha256sum * >SHA256SUMS
           cat SHA256SUMS
 
       - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
@@ -269,9 +331,11 @@ jobs:
 
           - \`$NAME.msi\`: the installer; it also installs the broker service (no Hyper-V Administrators or admin rights needed day to day; a preview until its install test in docs/install.md has run), PATH and Virtual Machine Platform (docs/install.md). Not code-signed yet: SmartScreen asks once (More info, Run anyway).
           - \`$NAME.zip\`: unzip, add the folder to PATH, run \`hyperbutler start\`.
+          - \`hyperbutler-$TAG-sandbox-windows-amd64.msi\`: the agent sandbox's image, not needed to run Docker. \`hyperbutler sandbox install\` fetches this file and checks it against a hash inside \`hyperbutler.exe\`; it needs the MSI above.
           - \`hyperbutler-$TAG-guest-sources.tar\`: corresponding source of the guest image's GPL components.
           - \`hyperbutler-$TAG-guest-inputs.tar\`: the signed Alpine packages the guest image was built from.
-          - \`$NAME.spdx.json\`: SBOM. \`SHA256SUMS\`: checksums of the above.
+          - \`sandbox-sources.tar\` (or numbered parts, joined with \`cat\`), \`sandbox-sources.tsv\`, \`SANDBOX-SOURCES.txt\`: corresponding source of the sandbox image's Debian packages. \`sandbox-packages.tsv\`: what is in that image.
+          - \`$NAME.spdx.json\`: SBOM of the zip. \`SHA256SUMS\`: checksums of the above.
 
           Verify: \`gh attestation verify $NAME.zip --repo $GITHUB_REPOSITORY\`
 
@@ -279,4 +343,5 @@ jobs:
           EOF
           gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --draft --verify-tag "${pre[@]}" \
             --title "hyperbutler $TAG" --notes-file notes.md \
-            "$NAME.zip" "$NAME.msi" "hyperbutler-$TAG-guest-sources.tar" "hyperbutler-$TAG-guest-inputs.tar" "$NAME.spdx.json" SHA256SUMS
+            "$NAME.zip" "$NAME.msi" "hyperbutler-$TAG-sandbox-windows-amd64.msi" "hyperbutler-$TAG-guest-sources.tar" "hyperbutler-$TAG-guest-inputs.tar" \
+            sandbox-sources.tar* sandbox-sources.tsv SANDBOX-SOURCES.txt sandbox-packages.tsv "$NAME.spdx.json" SHA256SUMS

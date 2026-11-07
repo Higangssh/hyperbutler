@@ -185,8 +185,19 @@ func (in *install) planUninstall(keepData, up bool) *uninstallPlan {
 			addFile(f, "an agent sandbox session's record")
 		}
 		if exists(in.sandboxDir()) {
+			removed[strings.ToLower(in.sandboxDir())] = true
 			p.add(planned{UninstallItem: UninstallItem{Kind: uninstallDir, Path: in.sandboxDir(), Detail: "empty afterwards"}})
 		}
+	}
+	// A download `sandbox install` could not clean up after itself (it was killed).
+	if m, err := filepath.Glob(filepath.Join(in.sandboxMSIDir(), "*")); err == nil {
+		for _, f := range m {
+			addFile(f, "an interrupted download of the agent sandbox's installer")
+		}
+	}
+	if exists(in.sandboxMSIDir()) {
+		removed[strings.ToLower(in.sandboxMSIDir())] = true
+		p.add(planned{UninstallItem: UninstallItem{Kind: uninstallDir, Path: in.sandboxMSIDir(), Detail: "empty afterwards"}})
 	}
 	for _, f := range sandboxLogs(l) {
 		addFile(f, "log")
@@ -262,6 +273,9 @@ func (in *install) planUninstall(keepData, up bool) *uninstallPlan {
 		p.keep(uninstallFile, exe, "hyperbutler.exe and its folder are not removed")
 	}
 	p.notes = append(p.notes, uninstallNotes...)
+	if n := sandboxProductNote(installedProduct().sandboxVersion); n != "" {
+		p.notes = append(p.notes, n)
+	}
 	return p
 }
 
@@ -762,8 +776,9 @@ func (in *install) holdsLock(it planned) bool {
 // Seams for the tests: how uninstall removes a file or an empty directory, and revokes
 // a VM's access through HCS.
 var (
-	uninstallRemove = removeVisible
-	revokeVMAccess  = vm.RevokeVMAccess
+	uninstallRemove  = removeVisible
+	revokeVMAccess   = vm.RevokeVMAccess
+	installedProduct = readMachineProduct
 )
 
 // revokeACE removes a VM account's access entry: through HCS for a known compute system

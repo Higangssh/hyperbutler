@@ -1,6 +1,7 @@
 // Package notelemetry is the static half of the REQ-UX-005 check ("No telemetry"):
 // with default settings, hyperbutler makes no network requests of its own except the
-// update check (REQ-UX-022), which `config set updateCheck false` turns off. Its tests
+// update check (REQ-UX-022), which `config set updateCheck false` turns off (a download
+// the user asks for, `sandbox install`, is not a request of its own). Its tests
 // run in the normal `go test ./...` job, on Windows and Linux; the runtime half is the
 // manual bench/no-telemetry.
 //

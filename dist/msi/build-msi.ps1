@@ -45,13 +45,8 @@ foreach ($l in Get-Content -LiteralPath (Join-Path $Stage 'BUILDINFO.txt')) {
     if ($l -match '^version: (.+)$') { $version = $Matches[1].Trim() }
 }
 if (-not $version) { Fail 'BUILDINFO.txt names no version' }
-$productVersion = '0.0.0'
-# A release tag, or one of its pre-releases (-rc.1 and the like): not a `git describe` of a
-# later commit (v0.2.0-5-gabc1234) or a dirty tree, which would share the tag's version.
-if ($version -match '^v(\d{1,3})\.(\d{1,3})\.(\d{1,5})(?:-(?:alpha|beta|rc|preview)(?:\.?\d+)?)?$') {
-    if ([int]$Matches[1] -gt 255 -or [int]$Matches[2] -gt 255 -or [int]$Matches[3] -gt 65535) { Fail "version $version does not fit an MSI version" }
-    $productVersion = "$($Matches[1]).$($Matches[2]).$($Matches[3])"
-}
+. (Join-Path $here 'msi-version.ps1')
+$productVersion = MsiVersion $version
 
 $wixOut = (& $Wix --version) | Select-Object -First 1
 if ($LASTEXITCODE -ne 0 -or "$wixOut" -notmatch "^$([regex]::Escape($wixVersion))\b") { Fail "$Wix is '$wixOut', want WiX $wixVersion" }

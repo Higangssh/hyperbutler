@@ -9,6 +9,35 @@ The design and the threats it answers are in [ADR 0009](adr/0009-agent-sandbox.m
 You need the same machine as for the Docker engine (Windows 11, x64, virtualization on).
 The Docker VM does not have to be running, and a session does not use it.
 
+## Installing the image
+
+A session boots a Linux image of its own, which is not part of the main installer: it is about
+twice the size of everything else, and many people never start a session. It is a second
+MSI, "hyperbutler agent sandbox" in Apps, about 240 MB to download and 400 MB on disk.
+
+```powershell
+hyperbutler sandbox install
+```
+
+`sandbox run` and `start` offer the same when the image is missing or does not match, and say
+how much they would download; nothing is downloaded without you saying yes. Where nobody can
+answer (a script, redirected input), they print the command and fail.
+
+The command downloads the MSI of your hyperbutler's own release from GitHub, refuses it unless
+its SHA-256 is the one built into `hyperbutler.exe`, and asks Windows for permission once; the
+prompt says "Windows Installer". The image goes into `sandbox-image` next to the broker in
+`C:\Program Files\hyperbutler`, the only place a session boots from, and the broker checks it
+against its own pin at every first start. Offline, or with a copy you already have, name the
+file: `sandbox install --msi FILE` (the same hash check). The proxy is `proxy.https`, or
+`HTTPS_PROXY`.
+
+It needs the installed hyperbutler: a zip has no broker service to go next to. A development
+build has no pin, so it installs nothing and boots what `HYPERBUTLER_SANDBOX_IMAGE` names.
+
+After you upgrade hyperbutler, the next `sandbox run` offers the image of the new release if it
+changed. Your sessions, in your data folder, are not touched by any of this. To remove the
+image, uninstall "hyperbutler agent sandbox" in Apps ([docs/install.md](install.md#the-agent-sandbox-image)).
+
 ## A session
 
 ```powershell

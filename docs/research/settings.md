@@ -390,6 +390,10 @@ fields are only added; removing or renaming one means a new version.
   `modified` when the build has them. `imagePinned` is true for a release build, which
   boots only the guest image it was released with; `imageManifestSha256` is then the
   SHA-256 of that image's `image.json` (ADR 0005, Decision 4).
+  Added 2026-11-07, within schema 1: `sandboxImagePinned`, and in a build that has them
+  `sandboxImageManifestSha256` (the agent sandbox image's `image.json`), `sandboxMsi`,
+  `sandboxMsiSha256` and `sandboxMsiBytes` (its installer, as `sandbox install` fetches it; the
+  size is a string of digits, as it is linked in) (ADR 0009, "Shipping the image").
 - `status`: `schema`, `running`, `setUp`, `home`, `dockerContextSelected`, `daemonJson`,
   `daemonJsonExists`, and when known `state` (the engine's state.json, with `daemonConfig`,
   `imageDir`, `pastRuntimeIds` (this installation's last 16 VM runtime ids), `hostGateway`: `address`, `enabled`, `ports`, `reloads`, `error`, and `unpublishedPorts`: the published ports of running containers that could not be mirrored on the host, each with `container`, `port`, `reason`, `since`), `dataDir`, `disk`, `diskHostBytes`, `diskSizeBytes`, `hostFreeBytes`,
@@ -449,7 +453,8 @@ fields are only added; removing or renaming one means a new version.
   `warn`, `fail`), `summary` and, when there is one, `fix`. The ids: `vm-platform`,
   `hcs-service`, `hypervisor` (only when it is off), `hcs`, `hyperv-admins`, `pipe`,
   `docker-cli`, `docker-context`, `credential-helper`, `other-engines`, `host-disk`,
-  `guest-disk`, `autostart`. doctor reads only: the registry, `computecore.dll`, HCS's
+  `guest-disk`, `autostart`, and `sandbox-image` (added 2026-11-07: in a build with the pin,
+  whether the agent sandbox image is there and matches; no line in a zip without one). doctor reads only: the registry, `computecore.dll`, HCS's
   list of compute systems, the pipe file system's listing (no pipe is opened), PATH,
   `docker --version`, the docker CLI's config.json and Task Scheduler (`schtasks /Query`).
 - `import --from-desktop` (added for 0.2, REQ-UX-023; [docs/tools.md](../tools.md)):

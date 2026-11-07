@@ -104,7 +104,9 @@ powershell -ExecutionPolicy Bypass -File dist\package.ps1 -ImageDir $env:TEMP\gu
 ```
 
 It builds the bundled docker CLI, compose and buildx from `dist/clients.lock`, which needs the Go
-module proxy (or a filled module cache); `-NoClients` leaves them out.
+module proxy (or a filled module cache); `-NoClients` leaves them out. `-SandboxImageDir` with an
+image from `guest/sandbox/build.ps1` and `-Wix` with WiX 5's `wix.exe` also build the agent
+sandbox image's MSI and pin it ([install.md](install.md#the-agent-sandbox-image)).
 
 ## The module path and MCPGODEBUG
 

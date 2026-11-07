@@ -84,8 +84,8 @@ hyperbutler sends no usage data or telemetry. Its one request of its own is the 
 check: at most once a day it asks api.github.com for the latest release, anonymously (no
 identifier beyond the request itself). The installer's options page has a box for it, and
 `hyperbutler config set updateCheck false` turns it off later. Everything else on the
-network (image pulls, registries, proxies) happens because you or your containers asked
-for it.
+network (image pulls, registries, proxies, the agent sandbox's installer from
+`hyperbutler sandbox install`) happens because you or your containers asked for it.
 
 If a step fails, the install still finishes, except the broker service on a first
 install. `HKLM\SOFTWARE\hyperbutler\Setup` keeps the
@@ -94,6 +94,49 @@ outcome of the last step (`LastResult`) and the accounts the installer added
 check shows a service that did not install or does not run). The broker step is
 `"C:\Program Files\hyperbutler\hyperbutler.exe" setup broker install`, which an
 administrator can run again by hand.
+
+## The agent sandbox image
+
+`hyperbutler-vX.Y.Z-sandbox-windows-amd64.msi` is a second product, "hyperbutler agent sandbox" in
+Apps, for `hyperbutler sandbox` only ([docs/sandbox.md](sandbox.md), [ADR
+0009](adr/0009-agent-sandbox.md)). It is apart because of REQ-UX-002's 150 MB limit on this
+installer. `hyperbutler sandbox install` is how you get it: it fetches the file and checks it
+against the hash inside `hyperbutler.exe`. You can also run it by hand: `msiexec /i FILE
+/passive /norestart`. `hyperbutler.exe` and the broker use it only if it is the image they were
+built with.
+
+| Step | When | Undone on uninstall |
+|---|---|---|
+| Copies `image.json`, `vmlinuz-virt`, `initramfs-stage1.gz`, `system.vhd` and `sandbox-packages.tsv` (and in a release `SANDBOX-SOURCES.txt`) to `sandbox-image\` in the folder the main MSI recorded (`HKLM\SOFTWARE\hyperbutler`, `InstallDir`), with the access the `image\` folder has: every VM and every user may read, only administrators and SYSTEM may write | always | yes |
+| Records `SandboxVersion` and `SandboxProductCode` under `HKLM\SOFTWARE\hyperbutler` | always | yes |
+
+It has no service, no window, no custom action and no shortcut, and it does not change what the
+broker may do.
+
+- **Without hyperbutler** it refuses, with a message saying to install that first.
+- **Upgrading hyperbutler** does not touch it: Windows Installer removes only the files of the
+  product it removes, and `sandbox-image\` is not among them. The new `hyperbutler.exe` and
+  broker carry the new release's pin, so if the image changed, sessions stop starting until
+  `hyperbutler sandbox install`, which `sandbox run` and `start` offer; that install replaces the
+  old image as a major upgrade. A release whose image did not change keeps working, and Apps goes
+  on showing the older sandbox version.
+- **Uninstalling hyperbutler refuses while it is installed**, in Apps and with `msiexec /x`
+  (exit 1603; the message is in the log of a silent run), before anything has changed:
+  uninstall "hyperbutler agent sandbox" first. Why not remove it along the way: Windows Installer
+  runs one install at a time, so the main product's uninstall cannot start the removal of
+  another, and the ways around that (a process left running afterward, a second UAC prompt for it)
+  fail quietly and leave what this is meant to avoid: a 400 MB folder in Program Files with no
+  product to go with it. `hyperbutler uninstall` says so too. `msiexec /x {product code}` removes
+  it from a script; the code is the `SandboxProductCode` value above.
+  A machine whose record outlived the product passes `IGNORESANDBOX=1` to the main MSI.
+- **Uninstalling it can ask for a restart.** From a machine's first session until the service
+  next stops, the broker holds the image's files open (ADR 0004: what it verified stays verified),
+  so they go at the next restart (exit 3010), and the Docker VMs go on running. To have them go at
+  once, an administrator runs `sc.exe stop hyperbutler-broker` first, which ends every user's VMs;
+  the MSI does not do that for you. Installing a new image is not affected: an upgrade of
+  hyperbutler restarts the service, and a broker never holds an image that does not match its pin.
+- **No repair in Apps.** A repair needs the file, and `hyperbutler sandbox install` fetches it; it
+  also rewrites a damaged image of the same version.
 
 ## Unsigned builds
 
@@ -108,9 +151,13 @@ Get-FileHash .\hyperbutler-*-windows-amd64.msi -Algorithm SHA256   # compare wit
 
 ```
 dotnet tool install wix --version 5.0.2 --tool-path DIR
-pwsh -File dist\package.ps1 -ImageDir IMAGE [-Snapshot]
+pwsh -File dist\package.ps1 -ImageDir IMAGE -SandboxImageDir SANDBOX_IMAGE -Wix DIR\wix.exe [-Snapshot]
 pwsh -File dist\msi\build-msi.ps1 -Stage dist\out\hyperbutler-VERSION-windows-amd64 -Wix DIR\wix.exe
 ```
+
+`package.ps1` builds the sandbox MSI first (`dist\msi\build-sandbox-msi.ps1`, about 3 minutes
+on the reference laptop), because `hyperbutler.exe` pins it. Without `-SandboxImageDir` both
+executables build and boot no session, except by the development rules; only `-Snapshot` allows it.
 
 `build-msi.ps1` builds from the folder `package.ps1` staged (the zip's contents, with
 `hyperbutler-broker.exe`), runs the Windows Installer consistency checks, and holds the
@@ -132,6 +179,72 @@ is never a release.
   seconds) no user can start a VM. A future installer could update the service in place.
 - The upgrade's removal of the accounts an earlier installer added to Hyper-V
   Administrators has no rollback: it runs last, just before the install commits.
+- The agent sandbox image's MSI has not been installed on any machine yet: the procedure is
+  below. A product installed before this one's first release has no record to refuse an
+  uninstall by, which is harmless: that product has no sandbox.
+
+## Test procedure: the agent sandbox image's MSI
+
+In a normal PowerShell unless it says elevated, from the folder `dist\package.ps1 -Snapshot
+-Version v0.2.0-preview.N -SandboxImageDir ... -Out $d` wrote; `$s` is its
+`hyperbutler-...-sandbox-windows-amd64-snapshot.msi`, `$m` the main MSI built from the same
+stage by `build-msi.ps1`. A snapshot's version is not a release, so it cannot download: this
+uses `--msi` for the install and step 8 for the download. Keep to one sandbox MSI per `-Version`:
+two builds of one version have different product codes, and the same-version rewrite of step 9 is
+for the same file, which a release's one asset always is. Every step: record the outcome here.
+
+1. **Refused without the main product** (on a machine without it, or before step 2):
+   `msiexec /i $s /l*v sbx0.log`: the message says to install hyperbutler first, nothing changes,
+   exit 1603.
+2. Install or upgrade the main MSI: `msiexec /i $m /qb /norestart`. Open a new shell.
+   `hyperbutler version --json` from Program Files: `sandboxImagePinned` true and the MSI's
+   name, hash and size. `hyperbutler-broker.exe -version-json` the same pin.
+   `hyperbutler doctor`: `sandbox-image` info.
+3. **The offer:** `hyperbutler sandbox run C:\some\small\project`: it asks, with the size. `n`:
+   nothing was downloaded, exit 1, and the message names `sandbox install`. Again with
+   `"" | hyperbutler sandbox run C:\some\small\project`: no question, the command printed, exit 1.
+4. **Declining UAC:** `hyperbutler sandbox install --msi $s`, answer No at the prompt: the
+   message says so, exit 1, no `sandbox-image` folder, and the temporary file under
+   `%LOCALAPPDATA%\hyperbutler\sandbox-msi` is gone.
+5. **The install:** the same, answer Yes: one prompt ("Windows Installer"), the progress window,
+   exit 0, "is installed". While the progress window is up, in another shell, try to change the
+   temporary file (`Set-Content` on it, `Remove-Item`, `Rename-Item`, and `Rename-Item` of its
+   folder): each fails with "in use". Afterward:
+   - Apps shows "hyperbutler agent sandbox" with the same version, and one "hyperbutler";
+   - `icacls "C:\Program Files\hyperbutler\sandbox-image\system.vhd"`: `NT VIRTUAL
+     MACHINE\Virtual Machines` and `BUILTIN\Users` read, Administrators and SYSTEM full, as
+     `image\system.vhd`;
+   - `reg query HKLM\SOFTWARE\hyperbutler`: `InstallDir`, `SandboxVersion`, `SandboxProductCode`;
+   - `sandbox-msi` is empty; `doctor`: `sandbox-image` ok.
+6. **Already there:** `hyperbutler sandbox install`: "already installed", no prompt, no network.
+7. **A session through the installed broker,** as the user, not elevated: `hyperbutler sandbox run
+   --name t C:\some\small\project`, a command in it, `exit`, `sandbox diff t`, `sandbox stop t
+   --discard`. This is also the first time the installed broker service boots a session.
+8. **The download** needs a published release, so it runs after the next tag is published
+   (docs/release.md, Cut the release): from that release's MSI, `hyperbutler sandbox install`:
+   progress on one line, then as in step 5. Before that, a snapshot's `hyperbutler sandbox install`
+   without `--msi` says to use `--msi`.
+9. **A damaged image:** elevated, `sc.exe stop hyperbutler-broker` (the broker holds the files of an
+   image it has booted), and append a byte to `sandbox-image\vmlinuz-virt`, leaving `image.json`.
+   `hyperbutler sandbox run ...`: the service starts, the session does not, and the message says to
+   run `hyperbutler sandbox install`. Run it with `--msi $s`: the same-version path (`REINSTALL`),
+   and the file is whole again. The session starts.
+10. **The main product's upgrade leaves it alone:** install another build of the main MSI (a new
+    product code), `/qb /norestart`: `sandbox-image\` is still there, every file with its old time.
+    If the pin changed, `sandbox run` offers the new image, and installing it replaces the old
+    product (one "hyperbutler agent sandbox" in Apps).
+11. **A file in use:** after step 7 (the broker still holds the image), elevated `msiexec /x
+    {SandboxProductCode} /passive /norestart`: exit 3010, no window asking to close anything, the
+    broker's PID unchanged; after a restart the folder is gone. Install it again.
+12. **Uninstalling the main product refuses:** `msiexec /x $m /qb`: the message names the sandbox,
+    exit 1603, the engine was not stopped, `sc.exe query hyperbutler-broker` RUNNING, every file in
+    place. `hyperbutler uninstall --dry-run`'s notes say the same.
+13. **The right order:** `msiexec /x $s /qb /norestart`: `sandbox-image` gone, the two registry values
+    gone, `C:\Program Files\hyperbutler` and the service still there, `doctor`: `sandbox-image` info.
+    Then `msiexec /x $m /qb /norestart`: the folder and `HKLM\SOFTWARE\hyperbutler` gone.
+14. **The way out:** with both installed again, `msiexec /x $m IGNORESANDBOX=1 /qb /norestart`:
+    the main product goes, `sandbox-image` stays, and "hyperbutler agent sandbox" is still in Apps.
+    Its uninstall there still works without the main product and removes the folder.
 
 ## Test procedure: the broker service from the MSI (M4)
 

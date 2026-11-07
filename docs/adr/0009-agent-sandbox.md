@@ -2,7 +2,7 @@
 
 - Status: proposed
 - Date: 2026-11-05
-- Requirements: REQ-SBX-001 to REQ-SBX-009 (proposed below), REQ-PLAT-003, REQ-UX-004,
+- Requirements: REQ-SBX-001 to REQ-SBX-010 (proposed below), REQ-PLAT-003, REQ-UX-004,
   REQ-UX-005
 
 ## Context
@@ -218,8 +218,6 @@ a sandbox image whose system disk is the Docker image's own file is refused, sin
 image's access bookkeeping would revoke the other's VM; the slot is checked before any
 backend state is made, and the server bounds it again before indexing. Open:
 
-- Release builds carry no sandbox pin until the sandbox image exists, so a release broker
-  boots no session (fail closed); `dist/package.ps1` gains the pin with the image.
 - A data disk is checked by its metadata only (owner, ACL, links, reparse), not its
   contents, so a differencing VHDX whose parent the user cannot read but VMs can (a file
   readable by the Virtual Machines group, or a share reached as the computer account)
@@ -343,8 +341,8 @@ does build.ps1's steps on the Ubuntu runner, with the same output names. The ker
 modules come from the guest image's `kernel-modules.tar`, which build.ps1 instead reads from
 its cache. The one difference in the container's options is `apparmor=unconfined`:
 Docker's default AppArmor profile denies mount even with `SYS_ADMIN`, and the runner
-has AppArmor. `ci.yml` and `release.yml` call the workflow; nothing consumes its artifact
-yet, so no release carries the image until how it ships is decided. `build-rootfs.sh` now
+has AppArmor. `ci.yml` and `release.yml` call the workflow; "Shipping the image" below says
+how a release carries its artifact. `build-rootfs.sh` now
 fixes the modules' modes and times, which came from wherever they were staged: from the
 same inputs and Go version, build.ps1 and build-sandbox.sh made the same `system.vhd`, byte
 for byte (run on the same machine and engine, 2026-11-07).
@@ -497,6 +495,67 @@ request; `attach` after a restart; two records on one disk; a 2 GiB bundle read 
 whether commits were waiting. Accepted: terminal output reaches the terminal raw, as over ssh
 (docs/sandbox.md says what that allows).
 
+### Shipping the image (2026-11-07)
+
+The image (387 MB, 239 MB in its MSI) does not fit the main installer's 150 MB (REQ-UX-002), and
+most users never start a session. Decided by the maintainer: **a separate MSI, downloaded on
+first use, verified by a pinned hash, installed with one UAC prompt.** The alternatives were a
+per-user copy, which would make the broker boot an image from a folder the user can write and so
+grow what it has to trust, and a machine-wide download by the broker, which would give a SYSTEM
+service a network client. As built, the broker gains nothing: it still boots only what is next to
+it in Program Files, against the pin compiled into it.
+
+- **Pins.** `dist/package.ps1 -SandboxImageDir` builds `hyperbutler-<tag>-sandbox-windows-amd64.msi`
+  first, then links the image's `image.json` hash into `hyperbutler.exe` and the broker
+  (`imageset.pinnedSandboxManifest`) and the MSI's hash, name and size into `hyperbutler.exe`
+  (`pinnedSandboxMSI`, `...Name`, `...Bytes`). `version --json` and `-version-json` report them and
+  `package.ps1` checks that they do. A release without them fails. A rebuilt MSI has new product
+  and package codes, so `hyperbutler.exe` is reproducible only given the released MSI's hash.
+- **The download** (`internal/sandboxmsi`, `hyperbutler sandbox install`). Only on request: the
+  command itself, or a yes in a console to `sandbox run` or `start`, which name the size. It fetches
+  `https://github.com/Higangssh/hyperbutler/releases/download/<this version>/<name>`, https only
+  across redirects, with a User-Agent and nothing else, no more bytes than the pin says, to a
+  random name in the private folder `%LOCALAPPDATA%\hyperbutler\sandbox-msi`. Nothing the network
+  says is trusted, only the hash. `--msi FILE` takes the bytes from a file instead, through the same
+  checks.
+- **The race.** A file the user can write, handed to an elevated installer. After the writer
+  closes it, the file is opened `FILE_SHARE_READ` only (`sandboxmsi.Lock`) and hashed through that
+  handle, and the handle stays open until msiexec has ended. So bytes written before the lock are
+  in the hash, and none can be written after it. A handle still open for writing, or a writable
+  mapping of the file even with its handle closed, makes the lock fail: both are tested, and
+  the mapping's refusal is the file system's rule, not ours. msiexec gets the final path of the
+  locked handle, which holds no junction or link, and no directory on it can be renamed while a
+  file below it is open (tested). Only a fixed local volume qualifies. A file with a second name is
+  refused. The elevated command is fixed: `%SystemRoot%\System32\msiexec.exe /i "<path>" /passive
+  /norestart`, verb `runas`, working folder System32, and no `/l`: an elevated log written to a path
+  this user can link elsewhere would be the same mistake again.
+- **The MSI's own trust.** Embedded cabinets, so nothing beside the file is read; no custom action
+  of its own; no property on the command line beyond `REINSTALL` for a same-version rewrite. Windows
+  Installer records the temporary folder as the product's source, where a same-user program could
+  put a file later. Nothing in hyperbutler uses that: Apps hides the repair, and `sandbox install`
+  passes the file itself. An administrator's `msiexec /fa {code}` would look there, subject to
+  Windows Installer's own check of the package against its cached copy.
+- **Assumed, not stopped.** A program running as the same user at the same integrity level can kill
+  `hyperbutler.exe`, which drops the lock, and swap the file in the moment before Windows Installer
+  reads it, or inject code into `hyperbutler.exe`. Such a program can equally show the same UAC prompt
+  for an MSI of its own, which reads exactly alike ("Windows Installer"), so the lock takes away
+  quiet substitution behind a prompt the user expected, not elevation by a program the user is
+  already running. Moving the check behind the prompt would close the first of these: an elevated
+  helper from Program Files that hashes a copy in an admin-only folder. It was not chosen, because
+  the prompt would then name an unsigned program instead of Windows Installer. It can follow once
+  releases are signed.
+- **Upgrades and uninstall.** A main upgrade leaves `sandbox-image\` alone; a changed pin makes
+  sessions refuse until the offered install, which is a major upgrade of the sandbox product. A
+  main uninstall refuses while the sandbox product is there, before it has changed anything:
+  Windows Installer runs one install at a time, so removal from inside is not available, and
+  every way around it can fail after the main product has gone, leaving the orphan. Two steps in
+  Apps is the price. docs/install.md has the details.
+
+**Not tested yet:** every step that needs a real elevation or a real install (docs/install.md, "Test
+procedure: the agent sandbox image's MSI"), including whether Windows Installer accepts the file
+while it is held, which an MSI database opened read-only (2026-11-07) does, and the first session
+through the installed broker service.
+
 ## Adversarial review
 
 The first draft was reviewed on 2026-11-05. Each finding and its answer:
@@ -566,3 +625,4 @@ The first draft was reviewed on 2026-11-05. Each finding and its answer:
 | REQ-SBX-007 | Sessions are cheap enough to keep several. | Memory per idle session and boot to a shell are measured and published (`bench/sandbox`). *Targets open until the spike.* | P1 |
 | REQ-SBX-008 | Ephemeral means gone. | After an `--rm` session ends, its disk, saved state, flow log, review cache and question answers are deleted; only "allow always" entries remain (`hyperbutler uninstall --dry-run` lists none of the rest). | P1 |
 | REQ-SBX-009 | The review cannot be faked by text. | File names, diffs, commit messages and domain names with control, bidi or look-alike characters are shown escaped or in punycode (unit test). | P1 |
+| REQ-SBX-010 | The image is installed only when asked, and only the pinned one. | The main installer stays within REQ-UX-002 without the image. Nothing is downloaded unasked, and without a console nothing is asked; a file whose SHA-256 is not the release's is never handed to msiexec, and nobody can change it from the hash to msiexec's end (unit tests with an injected download, hash and exec; `internal/sandboxmsi`; the install itself by docs/install.md). | P1 |

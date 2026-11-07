@@ -92,11 +92,14 @@ func main() {
 	flag.Parse()
 	if *versionJSON {
 		pin, pinned := imageset.Pin()
+		sbx, sbxPinned := imageset.SandboxPin()
 		b, _ := json.Marshal(struct {
-			Version             string `json:"version"`
-			ImagePinned         bool   `json:"imagePinned"`
-			ImageManifestSha256 string `json:"imageManifestSha256,omitempty"`
-		}{version, pinned, pin})
+			Version                    string `json:"version"`
+			ImagePinned                bool   `json:"imagePinned"`
+			ImageManifestSha256        string `json:"imageManifestSha256,omitempty"`
+			SandboxImagePinned         bool   `json:"sandboxImagePinned"`
+			SandboxImageManifestSha256 string `json:"sandboxImageManifestSha256,omitempty"`
+		}{version, pinned, pin, sbxPinned, sbx})
 		fmt.Println(string(b))
 		return
 	}

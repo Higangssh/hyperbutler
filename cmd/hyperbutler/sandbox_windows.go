@@ -22,6 +22,7 @@ import (
 
 	"github.com/Higangssh/hyperbutler/internal/broker"
 	"github.com/Higangssh/hyperbutler/internal/engine"
+	"github.com/Higangssh/hyperbutler/internal/imageset"
 	"github.com/Higangssh/hyperbutler/internal/sandbox/ctl"
 	"github.com/Higangssh/hyperbutler/internal/sandbox/manager"
 )
@@ -37,8 +38,12 @@ const sandboxUsage = `hyperbutler sandbox: run a coding agent in a VM of its own
         --env NAME         pass this variable from here into the terminal (repeat)
         --include PATH     copy a file kept out as a secret (repeat)
         --memory MB, --cpus N, --large
+  hyperbutler sandbox install [--msi FILE]
+      Downloads and installs the agent sandbox image, a separate installer of about 240 MB
+      that this release pins by hash; Windows asks for permission once. run and start offer
+      it when it is missing. --msi takes the file from here instead of the network.
   hyperbutler sandbox ls
-  hyperbutler sandbox attach NAME       the session's first terminal again (Ctrl+] leaves it)
+  hyperbutler sandbox attach NAME      the session's first terminal again (Ctrl+] leaves it)
   hyperbutler sandbox shell NAME [COMMAND ARG...]   another terminal
   hyperbutler sandbox diff NAME [--stat]   what changed; apply writes exactly this
   hyperbutler sandbox apply NAME (--all | --path PATH...)
@@ -53,7 +58,7 @@ const sandboxUsage = `hyperbutler sandbox: run a coding agent in a VM of its own
 // detachKey leaves a terminal; the session goes on.
 const detachKey = 0x1d // Ctrl+]
 
-func cmdSandbox(args []string, stdout, stderr io.Writer) (int, error) {
+func cmdSandbox(args []string, stdin io.Reader, stdout, stderr io.Writer) (int, error) {
 	if len(args) == 0 || args[0] == "help" || args[0] == "-h" || args[0] == "--help" {
 		_, _ = fmt.Fprint(stdout, sandboxUsage)
 		return 0, nil
@@ -67,8 +72,10 @@ func cmdSandbox(args []string, stdout, stderr io.Writer) (int, error) {
 		return 0, runSandboxManager(in, rest)
 	}
 	switch sub {
+	case "install":
+		return sandboxInstall(in, rest, stdout, stderr)
 	case "run":
-		return sandboxRun(in, rest, stdout, stderr)
+		return sandboxRun(in, rest, stdin, stdout, stderr)
 	case "shell", "attach":
 		return sandboxTerm(in, sub, rest, stderr)
 	case "ls":
@@ -84,7 +91,7 @@ func cmdSandbox(args []string, stdout, stderr io.Writer) (int, error) {
 	case "blocked":
 		return sandboxBlocked(in, rest, stdout)
 	case "start", "stop", "rm":
-		return sandboxLifecycle(in, sub, rest, stdout, stderr)
+		return sandboxLifecycle(in, sub, rest, stdin, stdout, stderr)
 	}
 	_, _ = fmt.Fprint(stderr, sandboxUsage)
 	return 2, fmt.Errorf("unknown sandbox command %q", sub)
@@ -280,6 +287,7 @@ type sandboxHost struct {
 	l        engine.Layout
 	broker   *engine.SessionBroker // nil in developer mode
 	manifest string
+	custom   bool // manifest is a developer's own image, or the broker a foreground one
 	log      *slog.Logger
 }
 
@@ -305,7 +313,8 @@ func (h *sandboxHost) Boot(ctx context.Context, r manager.BootRequest) (manager.
 		if logf != nil {
 			_ = logf.Close()
 		}
-		return nil, err
+		pin, _ := imageset.SandboxPin()
+		return nil, sandboxBootError(err, h.custom, h.manifest, pin)
 	}
 	return &sessionVM{SessionVM: v, log: logf}, nil
 }
@@ -375,7 +384,7 @@ func runSandboxManager(in *install, args []string) error {
 	if err := engine.MkdirPrivate(in.sandboxDir()); err != nil {
 		return err
 	}
-	host := &sandboxHost{l: in.l, manifest: manifest, log: log}
+	host := &sandboxHost{l: in.l, manifest: manifest, custom: custom || os.Getenv("HYPERBUTLER_SANDBOX_BROKER") != "", log: log}
 	if choice.pipe != "" {
 		host.broker = engine.NewSessionBroker(choice.pipe, in.l.Data, log)
 	}
@@ -389,7 +398,7 @@ func runSandboxManager(in *install, args []string) error {
 	return manager.ListenAndServe(ctx, m, manager.PipeName(in.l.Tag()))
 }
 
-func sandboxRun(in *install, args []string, stdout, stderr io.Writer) (int, error) {
+func sandboxRun(in *install, args []string, stdin io.Reader, stdout, stderr io.Writer) (int, error) {
 	fs := flag.NewFlagSet("sandbox run", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	name := fs.String("name", "", "keep the session under this name")
@@ -415,6 +424,9 @@ func sandboxRun(in *install, args []string, stdout, stderr io.Writer) (int, erro
 	envs, err := envValues(env)
 	if err != nil {
 		return 2, err
+	}
+	if err := ensureSandboxImage(in, stdin, stdout, stderr); err != nil {
+		return 1, err
 	}
 	c, err := sandboxClient(in)
 	if err != nil {
@@ -763,7 +775,7 @@ func sandboxBlocked(in *install, args []string, stdout io.Writer) (int, error) {
 	return 0, nil
 }
 
-func sandboxLifecycle(in *install, sub string, args []string, stdout, stderr io.Writer) (int, error) {
+func sandboxLifecycle(in *install, sub string, args []string, stdin io.Reader, stdout, stderr io.Writer) (int, error) {
 	fs := flag.NewFlagSet("sandbox "+sub, flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	discard := fs.Bool("discard", false, "even though it has changes nobody applied")
@@ -773,6 +785,11 @@ func sandboxLifecycle(in *install, sub string, args []string, stdout, stderr io.
 	}
 	if len(pos) != 1 {
 		return 2, fmt.Errorf("sandbox %s takes one session name", sub)
+	}
+	if sub == "start" {
+		if err := ensureSandboxImage(in, stdin, stdout, stderr); err != nil {
+			return 1, err
+		}
 	}
 	op := map[string]manager.Op{"start": manager.OpStart, "stop": manager.OpStop, "rm": manager.OpRemove}[sub]
 	r, err := sandboxOne(in, &manager.Request{Op: op, Name: pos[0], Discard: *discard}, stderr)

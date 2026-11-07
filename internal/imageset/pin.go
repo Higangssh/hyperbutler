@@ -28,6 +28,17 @@ var pinnedManifest string
 // sandbox session unless it is a development build that allows unpinned images.
 var pinnedSandboxManifest string
 
+// pinnedSandboxMSI, pinnedSandboxMSIName and pinnedSandboxMSIBytes are the SHA-256, file
+// name and size of the sandbox image's installer of this release (`hyperbutler sandbox
+// install`, internal/sandboxmsi). dist/package.ps1 builds that MSI first and links them
+// into hyperbutler.exe only: the broker never sees an installer, it checks the image the
+// installer put next to it against pinnedSandboxManifest.
+var (
+	pinnedSandboxMSI      string
+	pinnedSandboxMSIName  string
+	pinnedSandboxMSIBytes string
+)
+
 // Pin returns the image.json SHA-256 this build was linked with, and whether it has
 // one. A build without a pin accepts any image whose files match its own manifest.
 func Pin() (sum string, pinned bool) {
@@ -37,6 +48,12 @@ func Pin() (sum string, pinned bool) {
 // SandboxPin is Pin for the sandbox image.
 func SandboxPin() (sum string, pinned bool) {
 	return pinnedSandboxManifest, pinnedSandboxManifest != ""
+}
+
+// SandboxMSIPin returns the sandbox installer's pin as linked in: SHA-256, file name and
+// size in bytes, all empty in a build without one. internal/sandboxmsi.ParsePin checks them.
+func SandboxMSIPin() (sum, name, bytes string) {
+	return pinnedSandboxMSI, pinnedSandboxMSIName, pinnedSandboxMSIBytes
 }
 
 // CheckPin checks the manifest bytes b, read from path, against pin. An empty pin

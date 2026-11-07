@@ -1,0 +1,102 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  The agent sandbox image's MSI (docs/install.md, ADR 0009, "Shipping the image"): a
+  per-machine product of its own, because the image would take the main installer past
+  REQ-UX-002's limit and most users never start a session. `hyperbutler sandbox install`
+  downloads it, checks it against the hash compiled into hyperbutler.exe, and runs it.
+  dist/msi/build-sandbox-msi.ps1 builds it.
+
+  It puts the image in the sandbox-image folder next to hyperbutler-broker.exe, the one place
+  the broker boots a session from (internal/broker, SandboxImageDirName), against the
+  pin compiled into the broker. It adds no service, no custom action, and nothing the broker
+  would trust but those files.
+
+  The product it needs. Without hyperbutler installed it refuses (the launch condition),
+  and the main MSI's own uninstall refuses while this product is there (HbRefuseUninstallSandbox
+  in hyperbutler.wxs), so the folder is never left behind by itself. Upgrading the main product
+  leaves this one alone: Windows Installer removes only its own files, and the image, whose
+  pin the new hyperbutler may no longer match, is replaced when `sandbox run` next offers to.
+-->
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <Package Name="hyperbutler agent sandbox" Manufacturer="hyperbutler" Version="$(var.ProductVersion)"
+           UpgradeCode="3D6B8F5E-4C21-4E7A-9B0D-8A1F6C2E7D34" Scope="perMachine" Language="1033"
+           InstallerVersion="500">
+    <SummaryInformation Description="hyperbutler $(var.Version): the Linux image of hyperbutler sandbox, the agent sandbox" />
+    <!-- As the main MSI: a release replaces its own release candidate, and the old product's
+         removal is inside this install's transaction. -->
+    <MajorUpgrade AllowSameVersionUpgrades="yes" Schedule="afterInstallInitialize"
+                  DowngradeErrorMessage="A newer version of the hyperbutler agent sandbox is already installed." />
+    <MediaTemplate EmbedCab="yes" CompressionLevel="high" />
+
+    <Property Id="ARPURLINFOABOUT" Value="https://github.com/Higangssh/hyperbutler/blob/main/docs/sandbox.md" />
+    <Property Id="ARPHELPLINK" Value="https://github.com/Higangssh/hyperbutler/blob/main/docs/install.md" />
+    <Property Id="ARPNOMODIFY" Value="1" />
+    <!-- A repair needs the MSI, and `hyperbutler sandbox install` is what fetches it. -->
+    <Property Id="ARPNOREPAIR" Value="1" />
+    <!-- The broker holds the image's files open while it has booted a session. Restart Manager
+         would offer to stop the broker, which ends every user's VMs; as in the main MSI, it
+         stays out, and a file in use is replaced at the next restart (3010). -->
+    <Property Id="MSIRESTARTMANAGERCONTROL" Value="Disable" />
+
+    <!-- Where the main MSI installed (its SystemPath component writes this value). Not Secure:
+         AppSearch runs in the execute sequence too, and a standard user who starts a repair
+         must not be able to pass this folder to the part that runs as SYSTEM. -->
+    <Property Id="HBMAINDIR">
+      <RegistrySearch Id="MainInstallDir" Root="HKLM" Key="SOFTWARE\hyperbutler" Name="InstallDir" Type="raw" Bitness="always64" />
+    </Property>
+    <Launch Condition="Installed OR HBMAINDIR"
+            Message="The hyperbutler agent sandbox needs hyperbutler. Install hyperbutler first, then run: hyperbutler sandbox install" />
+    <SetDirectory Id="INSTALLFOLDER" Value="[HBMAINDIR]" Sequence="both" Condition="HBMAINDIR" />
+
+    <StandardDirectory Id="ProgramFiles64Folder">
+      <Directory Id="INSTALLFOLDER" Name="hyperbutler">
+        <Directory Id="SandboxImageFolder" Name="sandbox-image" />
+      </Directory>
+    </StandardDirectory>
+
+    <ComponentGroup Id="Image" Directory="SandboxImageFolder">
+      <!-- The same access as the main MSI's image folder, with the same reason (see
+           hyperbutler.wxs): a VM's worker opens system.vhd as its own per-VM account, a user
+           cannot add that account to a file under Program Files, so the folder lets every VM
+           read and nobody but administrators and SYSTEM write; the files inherit that. The
+           broker and hcsProvider both look for it (vm.VMGroupCanRead). -->
+      <Component Id="SandboxImageAcl" Guid="1F3B7C92-8D4E-4A66-B1C5-6E2D9A0F4B78">
+        <CreateFolder>
+          <PermissionEx Sddl="D:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;0x1200a9;;;BU)(A;OICI;0x1200a9;;;S-1-5-83-0)" />
+        </CreateFolder>
+      </Component>
+      <!-- What hyperbutler.exe reads: SandboxVersion, for whether a reinstall is needed, and
+           SandboxProductCode, what the main MSI's uninstall looks for and the way to remove
+           this product from a command line. -->
+      <Component Id="SandboxRecord" Guid="C2A94E17-5B3D-4F08-A7E6-0D8B1F3C6A25">
+        <RegistryValue Root="HKLM" Key="SOFTWARE\hyperbutler" Name="SandboxVersion" Type="string" Value="$(var.Version)" KeyPath="yes" />
+        <RegistryValue Root="HKLM" Key="SOFTWARE\hyperbutler" Name="SandboxProductCode" Type="string" Value="[ProductCode]" />
+      </Component>
+      <Component Id="ImageManifest">
+        <File Id="ImageManifest" Name="image.json" Source="!(bindpath.image)image.json" KeyPath="yes" />
+      </Component>
+      <Component Id="ImageKernel">
+        <File Id="ImageKernel" Name="vmlinuz-virt" Source="!(bindpath.image)vmlinuz-virt" KeyPath="yes" />
+      </Component>
+      <Component Id="ImageInitrd">
+        <File Id="ImageInitrd" Name="initramfs-stage1.gz" Source="!(bindpath.image)initramfs-stage1.gz" KeyPath="yes" />
+      </Component>
+      <Component Id="ImageSystem">
+        <File Id="ImageSystem" Name="system.vhd" Source="!(bindpath.image)system.vhd" KeyPath="yes" />
+      </Component>
+      <Component Id="ImagePackages">
+        <File Id="ImagePackages" Name="sandbox-packages.tsv" Source="!(bindpath.image)sandbox-packages.tsv" KeyPath="yes" />
+      </Component>
+      <!-- Where the source of what is in the image is (GPL and others), in a release. A local
+           image has no bundle, and build-sandbox-msi.ps1 says whether this one does. -->
+      <?if $(var.HasSourceOffer) = 1 ?>
+      <Component Id="ImageSourceOffer">
+        <File Id="ImageSourceOffer" Name="SANDBOX-SOURCES.txt" Source="!(bindpath.image)SANDBOX-SOURCES.txt" KeyPath="yes" />
+      </Component>
+      <?endif?>
+    </ComponentGroup>
+    <Feature Id="Main" Title="hyperbutler agent sandbox" Level="1">
+      <ComponentGroupRef Id="Image" />
+    </Feature>
+  </Package>
+</Wix>

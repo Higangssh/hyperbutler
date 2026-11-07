@@ -9,6 +9,7 @@ import (
 
 	"github.com/Higangssh/hyperbutler/internal/config"
 	"github.com/Higangssh/hyperbutler/internal/engine"
+	"github.com/Higangssh/hyperbutler/internal/imageset"
 	"github.com/Higangssh/hyperbutler/internal/schema"
 )
 
@@ -32,6 +33,14 @@ type VersionJSON struct {
 	// build has no pin and accepts any image that matches its own image.json.
 	ImagePinned   bool   `json:"imagePinned"`
 	ImageManifest string `json:"imageManifestSha256,omitempty"`
+	// SandboxImagePinned is the same for the agent sandbox image (ADR 0009), and the
+	// SandboxMSI fields name the release's installer of it, which `sandbox install` fetches
+	// and checks. A development build has none of them.
+	SandboxImagePinned   bool   `json:"sandboxImagePinned"`
+	SandboxImageManifest string `json:"sandboxImageManifestSha256,omitempty"`
+	SandboxMSI           string `json:"sandboxMsi,omitempty"`
+	SandboxMSISha256     string `json:"sandboxMsiSha256,omitempty"`
+	SandboxMSIBytes      string `json:"sandboxMsiBytes,omitempty"`
 }
 
 // The documents the GUI reads too live in internal/schema; these names keep the CLI's.
@@ -105,6 +114,8 @@ type UninstallItem struct {
 func versionInfo() VersionJSON {
 	v := VersionJSON{Schema: SchemaVersion, Version: "(devel)", GoVersion: runtime.Version(), OS: runtime.GOOS, Arch: runtime.GOARCH}
 	v.ImageManifest, v.ImagePinned = engine.ImagePin()
+	v.SandboxImageManifest, v.SandboxImagePinned = imageset.SandboxPin()
+	v.SandboxMSISha256, v.SandboxMSI, v.SandboxMSIBytes = imageset.SandboxMSIPin()
 	if bi, ok := debug.ReadBuildInfo(); ok {
 		if bi.Main.Version != "" {
 			v.Version = bi.Main.Version
@@ -154,6 +165,9 @@ func cmdVersion(args []string, stdout, stderr io.Writer) error {
 		_, _ = fmt.Fprintln(stdout, "guest image: pinned, image.json sha256", v.ImageManifest)
 	} else {
 		_, _ = fmt.Fprintln(stdout, "guest image: not pinned (development build)")
+	}
+	if v.SandboxImagePinned {
+		_, _ = fmt.Fprintln(stdout, "sandbox image: pinned, image.json sha256", v.SandboxImageManifest)
 	}
 	return nil
 }

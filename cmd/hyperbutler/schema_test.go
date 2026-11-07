@@ -68,8 +68,9 @@ func TestSchemaFields(t *testing.T) {
 	itemKeys := []string{"key", "value", "default", "source", "type", "apply", "description"}
 
 	checkKeys(t, "version", VersionJSON{Schema: 1, Version: "v", GoVersion: "go", OS: "windows", Arch: "amd64", Revision: "r", Modified: true,
-		ImagePinned: true, ImageManifest: "h"},
-		[]string{"schema", "version", "goVersion", "os", "arch", "revision", "modified", "imagePinned", "imageManifestSha256"})
+		ImagePinned: true, ImageManifest: "h", SandboxImagePinned: true, SandboxImageManifest: "h", SandboxMSI: "n", SandboxMSISha256: "h", SandboxMSIBytes: "1"},
+		[]string{"schema", "version", "goVersion", "os", "arch", "revision", "modified", "imagePinned", "imageManifestSha256",
+			"sandboxImagePinned", "sandboxImageManifestSha256", "sandboxMsi", "sandboxMsiSha256", "sandboxMsiBytes"})
 	checkKeys(t, "config get", ConfigGetJSON{Schema: 1, Item: item}, append([]string{"schema"}, itemKeys...))
 	var listKeys []string
 	for _, k := range itemKeys {
@@ -174,7 +175,7 @@ func TestVersionInfo(t *testing.T) {
 		t.Fatalf("%+v", v)
 	}
 	// A test binary is a development build: no image pin.
-	if v.ImagePinned || v.ImageManifest != "" {
+	if v.ImagePinned || v.ImageManifest != "" || v.SandboxImagePinned || v.SandboxImageManifest != "" || v.SandboxMSI != "" || v.SandboxMSISha256 != "" || v.SandboxMSIBytes != "" {
 		t.Fatalf("pinned: %+v", v)
 	}
 }

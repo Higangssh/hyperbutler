@@ -7,8 +7,9 @@
 # until it is reviewed and the count raised), and REASON says why these uses make no
 # request of hyperbutler's own: they reach only this machine (a pipe, an hvsock,
 # loopback, a Unix socket in the guest), or they carry the guest's traffic, which is
-# the user's. The single exception is the update check (REQ-UX-022, at the end), which
-# REQ-UX-005 allows because it can be turned off.
+# the user's. The single exception among what runs unasked is the update check (REQ-UX-022,
+# at the end), which REQ-UX-005 allows because it can be turned off. The one other request,
+# `sandbox install`'s download, is made only when the user asks for it.
 
 # The engine talks to the guest's dockerd (the Docker API) over hvsock. The Transport
 # literals have no Proxy (only http.DefaultTransport reads HTTP_PROXY) and their
@@ -74,6 +75,14 @@ internal/updatecheck/updatecheck.go net/http.Client 3 REQ-UX-022 update check: o
 internal/updatecheck/updatecheck.go net/http.Transport 2 REQ-UX-022 update check: one GET to api.github.com, off with updateCheck=false (its transport: no cookies, no compression, system CAs)
 cmd/hyperbutler/update_windows.go net/http.ProxyURL 1 REQ-UX-022 update check: one GET to api.github.com, off with updateCheck=false (through proxy.https)
 cmd/hyperbutler/update_windows.go net/http.ProxyFromEnvironment 1 REQ-UX-022 update check: one GET to api.github.com, off with updateCheck=false (through HTTPS_PROXY)
+
+# `hyperbutler sandbox install` (ADR 0009, "Shipping the image"), and the offer `sandbox run`
+# and `start` make in a console, download the sandbox image's installer, once, because the
+# user asked for it: never on its own, never in the background, and with only a User-Agent
+# header. Nothing it receives is trusted before its SHA-256 equals the pin in hyperbutler.exe.
+internal/sandboxmsi/sandboxmsi.go url:github.com 1 sandbox install: the release asset's address, fetched only when the user asks
+internal/sandboxmsi/download.go net/http.Client 3 sandbox install: one GET of the release asset, https only, the user asked for it (NewClient's result and literal, and Download's parameter)
+internal/sandboxmsi/download.go net/http.Transport 2 sandbox install: its transport, no cookies, no compression, system CAs (the literal, and Download closing its idle connection)
 
 # Autostart (REQ-UX-015) runs the system's own schtasks.exe (GetSystemDirectory) to
 # create, read and delete the user's sign-in task; it only talks to the local Task

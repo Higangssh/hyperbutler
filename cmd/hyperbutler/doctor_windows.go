@@ -13,8 +13,10 @@ import (
 
 	"golang.org/x/sys/windows"
 
+	"github.com/Higangssh/hyperbutler/guest/image"
 	"github.com/Higangssh/hyperbutler/internal/engine"
 	"github.com/Higangssh/hyperbutler/internal/engine/dockerctx"
+	"github.com/Higangssh/hyperbutler/internal/imageset"
 	"github.com/Higangssh/hyperbutler/internal/transport"
 	"github.com/Higangssh/hyperbutler/internal/vm"
 )
@@ -153,6 +155,13 @@ func runDoctor(in *install) DoctorJSON {
 		add(c)
 	}
 	add(autostartCheck(in))
+	if exe, err := os.Executable(); err == nil {
+		pin, _ := imageset.SandboxPin()
+		m := filepath.Join(filepath.Dir(exe), sandboxImageDirName, image.ManifestName)
+		if c, ok := sandboxImageCheck(m, pin, bc.Status == doctorOK); ok {
+			add(c)
+		}
+	}
 	return r
 }
 

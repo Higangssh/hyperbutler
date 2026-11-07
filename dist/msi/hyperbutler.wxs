@@ -25,7 +25,8 @@
   Uninstalling removes the service, the files, the PATH entries and the shortcut, takes
   out of the group only the accounts this installer put in (an upgrade keeps them until
   the broker runs), and leaves Virtual Machine Platform on and every user's data in
-  %LOCALAPPDATA%\hyperbutler alone (`hyperbutler uninstall` removes that).
+  %LOCALAPPDATA%\hyperbutler alone (`hyperbutler uninstall` removes that). It refuses
+  while the agent sandbox's own product (sandbox.wxs) is installed.
 -->
 <Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
      xmlns:ui="http://wixtoolset.org/schemas/v4/wxs/ui"
@@ -205,7 +206,22 @@
     <CustomAction Id="HbEnableVMP" BinaryRef="Wix4UtilCA_X64" DllEntry="WixQuietExec64"
                   Execute="deferred" Impersonate="no" Return="ignore" />
 
+    <!-- The agent sandbox image is a product of its own (sandbox.wxs), with its files in this
+         product's folder. It cannot be removed from here: Windows Installer runs one install
+         at a time, so a removal started by this one would wait for this one. And an orphan
+         sandbox-image folder is the worse outcome: so a real uninstall stops here, before
+         anything changed, and says what to do. An upgrade's removal of the old product goes
+         on: it leaves the image in place. IGNORESANDBOX=1 is the way out for a machine whose
+         record outlived its product. -->
+    <Property Id="HBSANDBOXPRODUCT">
+      <RegistrySearch Id="SandboxProduct" Root="HKLM" Key="SOFTWARE\hyperbutler" Name="SandboxProductCode" Type="raw" Bitness="always64" />
+    </Property>
+    <Property Id="IGNORESANDBOX" Secure="yes" />
+    <CustomAction Id="HbRefuseUninstallSandbox"
+                  Error="The hyperbutler agent sandbox is installed, in this product's folder. Uninstall &quot;hyperbutler agent sandbox&quot; in Apps first, then uninstall hyperbutler." />
+
     <InstallExecuteSequence>
+      <Custom Action="HbRefuseUninstallSandbox" Before="HbStopEngine" Condition="REMOVE~=&quot;ALL&quot; AND NOT UPGRADINGPRODUCTCODE AND HBSANDBOXPRODUCT AND NOT IGNORESANDBOX" />
       <Custom Action="HbStopEngine" Before="InstallValidate" Condition="REMOVE~=&quot;ALL&quot; OR WIX_UPGRADE_DETECTED" />
       <!-- Uninstall, and the removal of the old product in an upgrade. -->
       <Custom Action="HbBrokerUninstallRollback" Before="HbBrokerUninstall" Condition="REMOVE~=&quot;ALL&quot;" />
