@@ -23,12 +23,16 @@ directly through the Windows Host Compute Service (the API WSL 2 uses), runs doc
 and lets the stock `docker` CLI and Docker Compose talk to it. No WSL, no Docker Desktop.
 
 > [!NOTE]
-> **v0.1.1.** v0.1.0, the first release, passed a 24-hour soak (261,338 docker commands,
-> none failed); v0.1.1 made bind mounts from `C:\` about twice as fast. It works end to end
-> on Windows 11 Home. Some release tests have not run yet,
+> **v0.1.1** is the latest release. v0.1.0, the first, passed a 24-hour soak (261,338 docker
+> commands, none failed); v0.1.1 made bind mounts from `C:\` about twice as fast. It works end
+> to end on Windows 11 Home. Some release tests have not run yet,
 > among them an install on a clean PC and a real sleep test; [status](docs/status.md) and
 > the [release checklist](docs/release.md) list them. Early software: try it, report what
 > breaks.
+>
+> **[v0.2.0-rc.1](https://github.com/Higangssh/hyperbutler/releases/tag/v0.2.0-rc.1)**, a
+> pre-release, adds the [sandbox for AI coding agents](#a-sandbox-for-ai-coding-agents).
+> v0.2.0 follows once it has passed its own 24-hour soak.
 
 ## Highlights
 
@@ -46,6 +50,8 @@ and lets the stock `docker` CLI and Docker Compose talk to it. No WSL, no Docker
   it only starts and stops your VM ([how](#how-it-works)).
 - **Safe for AI agents.** A built-in MCP server lets an AI assistant read and, if you allow it,
   manage your containers, with limits it cannot lift.
+- **A sandbox for coding agents** (v0.2.0-rc.1). An agent works in a VM of its own on a copy
+  of your project; you read its changes before they reach your files.
 - **Free for every company size.** Apache-2.0, no telemetry.
 
 ## Measured against Docker Desktop
@@ -123,14 +129,36 @@ and what it may run is fenced in. [docs/mcp.md](docs/mcp.md)
 **Moving from Docker Desktop.** `hyperbutler import --from-desktop` copies images and volumes
 over, and creates `docker run` containers again. [docs/tools.md](docs/tools.md)
 
-**A sandbox for AI coding agents (coming in v0.2).** `hyperbutler sandbox run` gives an agent a
-Linux VM of its own and a copy of your project: changes reach your files only after you read and
-apply them, and the network it can reach is a mode you choose. Its image is a separate download of
-about 260 MB, on first use. [docs/sandbox.md](docs/sandbox.md)
-
 **When something is wrong.** `hyperbutler doctor` checks every prerequisite and says how to
 fix it (`--fix` repairs what it may); `hyperbutler diagnose` packs a redacted report.
 [More](docs/usage.md#troubleshooting-and-uninstalling)
+
+## A sandbox for AI coding agents
+
+New in [v0.2.0-rc.1](https://github.com/Higangssh/hyperbutler/releases/tag/v0.2.0-rc.1), a
+pre-release. `hyperbutler sandbox run` gives a coding agent, or any command, a Linux VM of its
+own with a copy of your project:
+
+```powershell
+hyperbutler sandbox run --name work C:\src\myapp   # a shell in the copy; start your agent there
+hyperbutler sandbox diff work                      # every change, against your files now
+hyperbutler sandbox apply work --all               # only then do they reach C:\src\myapp
+```
+
+- **Your files stay yours.** The agent sees none of your disk. Its changes reach the project
+  only when you apply them, and a change that could run code later (a `Makefile`, a CI
+  workflow, a package manifest) is never taken by `--all`. Files named like secrets stay out of
+  the copy.
+- **A network you choose.** `dev` reaches package registries, git hosts and model providers'
+  APIs by exact name; `locked` only what you allow; `open` everything.
+  `hyperbutler sandbox blocked` shows what it asked for and did not get.
+- **Browsers work.** Chromium runs headless in a session, so an agent can drive it with
+  Playwright ([how](docs/sandbox.md#browsers)).
+- **It keeps going.** Ctrl+] leaves the terminal and the agent goes on; `sandbox attach` comes
+  back.
+
+The session image is a separate download of about 260 MB, on first use.
+[docs/sandbox.md](docs/sandbox.md)
 
 ## How it works
 

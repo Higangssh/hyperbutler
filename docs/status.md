@@ -60,11 +60,15 @@ the release package, through the engine alone and through a foreground broker: `
 `hello-world`, a bind mount read and write (about 500 and 880 MB/s for 128 MiB), Compose
 with a published port and a bind mount, `stop`. The next soak runs before v0.2.
 
-Since v0.1.1, on `main` for v0.2 and not released: `hyperbutler sandbox`
+v0.2.0-rc.1 (2026-11-08) is a pre-release with what came after v0.1.1: `hyperbutler sandbox`
 ([docs/sandbox.md](sandbox.md), [ADR 0009](adr/0009-agent-sandbox.md)), whose image is a second
-MSI that `hyperbutler sandbox install` fetches and has not been installed on a machine yet; containers in
-`hyperbutler import` (REQ-UX-024); the bundled buildx plugin, so `docker build` uses BuildKit;
-`bench/compat-tools` ([compat.md](compat.md)). The soak before v0.2 has not run.
+MSI that `hyperbutler sandbox install` fetches, with headless Chromium in a session; containers
+in `hyperbutler import` (REQ-UX-024); the bundled buildx plugin, so `docker build` uses
+BuildKit; `bench/compat-tools` ([compat.md](compat.md)), nine Testcontainers and SDK samples.
+Tested on one machine before the tag: both MSIs installed, repaired, upgraded and removed in
+each order; a session through the installed broker service; the terminal (keys, resize,
+Ctrl+C, leaving and coming back) through a real pseudo console; Playwright's Chromium on
+github.com in `dev` mode. The soak before v0.2.0 has not run.
 
 Bind mounts from Windows paths work but are not yet fast for write-heavy trees: use a
 named volume for `node_modules`.
