@@ -139,7 +139,6 @@ func TestParseEntry(t *testing.T) {
 		{"lan.example.com", Entry{Name: "lan.example.com"}},
 		{"xn--bcher-kva.example", Entry{Name: "xn--bcher-kva.example"}},
 		{"a-b.c1.example", Entry{Name: "a-b.c1.example"}},
-		{"*.github.io", Entry{Name: "github.io", Wildcard: true}},
 	} {
 		got, err := ParseEntry(tc.in)
 		if err != nil || got != tc.want {
@@ -174,6 +173,83 @@ func TestParseEntry(t *testing.T) {
 		if err != nil && !isPrintableASCII(err.Error()) {
 			t.Errorf("%q: error has raw bytes: %q", in, err.Error())
 		}
+	}
+}
+
+// A wildcard on a zone where anyone can get a name would allow every tenant.
+func TestWildcardOnPublicSuffixRefused(t *testing.T) {
+	for _, in := range []string{"*.co.uk", "*.github.io", "*.s3.amazonaws.com", "*.pages.dev"} {
+		if e, err := ParseEntry(in); err == nil {
+			t.Errorf("%q accepted: %+v", in, e)
+		}
+	}
+	for _, in := range []string{"*.example.com", "*.foo.github.io", "*.example.co.uk", "*.corp.home"} {
+		if _, err := ParseEntry(in); err != nil {
+			t.Errorf("%q: %v", in, err)
+		}
+	}
+	// The exact names are not wildcards, and Allow makes the same check.
+	for _, in := range []string{"co.uk", "github.io"} {
+		if _, err := ParseEntry(in); err != nil {
+			t.Errorf("%q: %v", in, err)
+		}
+	}
+	p := newPolicy(t, Dev, newClock())
+	if err := p.Allow(Entry{Name: "github.io", Wildcard: true}); err == nil {
+		t.Error("Allow took a wildcard on a public suffix")
+	}
+}
+
+func TestBlockedLogSurvivesPortScan(t *testing.T) {
+	if blockedReserved() > maxBlocked {
+		t.Fatalf("the shares add up to %d", blockedReserved())
+	}
+	c := newClock()
+	p := newPolicy(t, Dev, c, "a.example")
+	// One address on many ports is one line.
+	target := netip.MustParseAddr("203.0.113.9")
+	for port := range 300 {
+		p.Conn(ap(target, uint16(port+1)))
+	}
+	b := p.Blocked()
+	if len(b) != 1 || b[0].Name != target.String() || b[0].Kind != KindAddress || b[0].Count != 300 {
+		t.Fatalf("%+v", b)
+	}
+	// Scans that change the key, of each kind a scan can reach: the table stays bounded.
+	p.Answer("a.example", []netip.Addr{addrNPM})
+	for i := range 600 {
+		p.Conn(ap(netip.AddrFrom4([4]byte{203, 0, byte(i >> 8), byte(i)}), 443))
+		p.Conn(ap(addrNPM, uint16(i+1000)))
+		p.UDP(ap(addrNPM, uint16(i+1000)))
+	}
+	if n := len(p.Blocked()); n > maxBlocked {
+		t.Fatalf("%d entries", n)
+	}
+	if p.BlockedLost() == 0 {
+		t.Fatal("nothing was lost; the scan did not fill the table")
+	}
+	// A later name is still recorded.
+	p.AllowQuery("later.evil.example", dns.TypeA)
+	p.Inspect(ap(addrNPM, 443), hello(sniExt("later-sni.example")))
+	found := map[string]bool{}
+	for _, e := range p.Blocked() {
+		found[e.Name] = true
+	}
+	if !found["later.evil.example"] || !found["later-sni.example"] {
+		t.Fatalf("later names were lost: %+v", p.Blocked())
+	}
+	// The share of query names is not the whole table's: they fill what is free.
+	q := newPolicy(t, Dev, c)
+	for i := range maxBlocked + 50 {
+		q.AllowQuery(fmt.Sprintf("n%d.example", i), dns.TypeA)
+	}
+	want := maxBlocked - blockedReserved() + blockedReserve(KindQuery)
+	if n := len(q.Blocked()); n != want {
+		t.Fatalf("%d query names, want %d", n, want)
+	}
+	q.Conn(ap(addrNPM, 443))
+	if blockedKinds(q)[KindAddress] == "" {
+		t.Fatal("a flood of query names took the share of addresses")
 	}
 }
 
@@ -308,7 +384,7 @@ func TestWildcardReachesWeb(t *testing.T) {
 		t.Fatal("refused")
 	}
 	p.Answer("a.tenant.example", []netip.Addr{addrNPM})
-	if p.Inspect(ap(addrNPM, 443), hello(sniExt("a.tenant.example"))) != netstack.InspectAllow {
+	if p.Inspect(ap(addrNPM, 443), hello(sniExt("a.tenant.example"))) != netstack.InspectAllowTLS {
 		t.Fatal("a wildcard name was refused")
 	}
 	if p.Inspect(ap(addrNPM, 443), hello(sniExt("b.tenant.example"))) != netstack.InspectDeny {
@@ -417,7 +493,7 @@ func TestPortEntryDoesNotOpenWeb(t *testing.T) {
 	if p.Inspect(ap(addrNPM, 443), hello(sniExt("ssh.example"))) != netstack.InspectDeny {
 		t.Fatal("ssh.example:22 opened 443")
 	}
-	if p.Inspect(ap(addrNPM, 443), hello(sniExt("tls.example"))) != netstack.InspectAllow {
+	if p.Inspect(ap(addrNPM, 443), hello(sniExt("tls.example"))) != netstack.InspectAllowTLS {
 		t.Fatal("tls.example:443 did not open 443")
 	}
 	if p.Inspect(ap(addrNPM, 80), []byte("GET / HTTP/1.1\r\nHost: tls.example\r\n\r\n")) != netstack.InspectDeny {
@@ -431,7 +507,7 @@ func TestPinExpiryAndRenewal(t *testing.T) {
 	p.Answer("a.example", []netip.Addr{addrNPM})
 	c.advance(DefaultPinTTL - time.Second)
 	// An accepted connection renews.
-	if p.Inspect(ap(addrNPM, 443), hello(sniExt("a.example"))) != netstack.InspectAllow {
+	if p.Inspect(ap(addrNPM, 443), hello(sniExt("a.example"))) != netstack.InspectAllowTLS {
 		t.Fatal("refused inside the window")
 	}
 	c.advance(DefaultPinTTL - time.Second)
@@ -468,7 +544,7 @@ func TestPinsPerName(t *testing.T) {
 	if p.Inspect(ap(addrNPM, 443), hello(sniExt("a.example"))) != netstack.InspectDeny {
 		t.Fatal("a.example's pin expired, b.example's renewal must not keep it")
 	}
-	if p.Inspect(ap(addrNPM, 443), hello(sniExt("b.example"))) != netstack.InspectAllow {
+	if p.Inspect(ap(addrNPM, 443), hello(sniExt("b.example"))) != netstack.InspectAllowTLS {
 		t.Fatal("b.example is still pinned")
 	}
 }
@@ -616,14 +692,16 @@ func TestBlockedLog(t *testing.T) {
 	for i := range maxBlocked + 50 {
 		p.AllowQuery(fmt.Sprintf("n%d.example", i), dns.TypeA)
 	}
-	if n := len(p.Blocked()); n != maxBlocked {
-		t.Fatalf("%d entries", n)
+	kept := len(p.Blocked())
+	if kept > maxBlocked {
+		t.Fatalf("%d entries", kept)
 	}
-	if p.BlockedLost() != 50 {
-		t.Fatalf("lost %d", p.BlockedLost())
+	lost := p.BlockedLost()
+	if lost != uint64(maxBlocked+50-kept) {
+		t.Fatalf("lost %d of %d, kept %d", lost, maxBlocked+50, kept)
 	}
 	p.AllowQuery("n0.example", dns.TypeA)
-	if b := p.Blocked(); b[0].Name != "n0.example" || b[0].Count != 2 || p.BlockedLost() != 50 {
+	if b := p.Blocked(); b[0].Name != "n0.example" || b[0].Count != 2 || p.BlockedLost() != lost {
 		t.Fatalf("%+v, lost %d", b[0], p.BlockedLost())
 	}
 }
@@ -641,13 +719,13 @@ func TestCanonical(t *testing.T) {
 		t.Run(string(mode), func(t *testing.T) {
 			t.Run("allowed name and server name", func(t *testing.T) {
 				p := setup(t)
-				if !p.AllowQuery(name, dns.TypeA) || p.Conn(ap(addrNPM, 443)) != netstack.ConnInspect || p.Inspect(ap(addrNPM, 443), sni) != netstack.InspectAllow {
+				if !p.AllowQuery(name, dns.TypeA) || p.Conn(ap(addrNPM, 443)) != netstack.ConnInspect || p.Inspect(ap(addrNPM, 443), sni) != netstack.InspectAllowTLS {
 					t.Fatal("the ordinary path is blocked")
 				}
 			})
 			t.Run("real TLS client", func(t *testing.T) {
 				p := setup(t)
-				if p.Inspect(ap(addrNPM, 443), realHello(t, &tls.Config{ServerName: name})) != netstack.InspectAllow {
+				if p.Inspect(ap(addrNPM, 443), realHello(t, &tls.Config{ServerName: name})) != netstack.InspectAllowTLS {
 					t.Fatal("refused")
 				}
 			})
@@ -770,7 +848,7 @@ func TestCanonical(t *testing.T) {
 							t.Fatalf("after %d of %d bytes: %d", k, len(b), got)
 						}
 					}
-					if p.Inspect(ap(addrNPM, 443), b) != netstack.InspectAllow {
+					if p.Inspect(ap(addrNPM, 443), b) != netstack.InspectAllowTLS {
 						t.Fatal("refused when whole")
 					}
 				}
@@ -778,7 +856,7 @@ func TestCanonical(t *testing.T) {
 			t.Run("server name spellings", func(t *testing.T) {
 				p := setup(t)
 				for _, n := range []string{"REGISTRY.NPMJS.ORG", name + "."} {
-					if p.Inspect(ap(addrNPM, 443), hello(sniExt(n))) != netstack.InspectAllow {
+					if p.Inspect(ap(addrNPM, 443), hello(sniExt(n))) != netstack.InspectAllowTLS {
 						t.Errorf("%s refused", n)
 					}
 				}
@@ -838,7 +916,7 @@ func TestHookReturnsCanonicalForms(t *testing.T) {
 	if len(got) != 1 {
 		t.Fatalf("%v", got)
 	}
-	if p.Inspect(ap(addrNPM, 443), hello(sniExt("a.example"))) != netstack.InspectAllow {
+	if p.Inspect(ap(addrNPM, 443), hello(sniExt("a.example"))) != netstack.InspectAllowTLS {
 		t.Fatal("a pin made in capitals does not match")
 	}
 }

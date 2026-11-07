@@ -30,6 +30,13 @@ type Egress interface {
 	// is everything so far, valid only during the call, and must not be changed. It
 	// returns InspectMore to wait for more bytes, InspectAllow or InspectDeny.
 	Inspect(dst netip.AddrPort, first []byte) InspectResult
+	// InspectReply looks at what the server sent first on a connection allowed with
+	// InspectAllowTLS, everything so far, on the same terms as Inspect. The guest gets
+	// nothing of it, and the server nothing more from the guest, until it has decided.
+	InspectReply(dst netip.AddrPort, reply []byte) ReplyResult
+	// InspectRetry looks at what the guest sent after a ReplyRetry, as Inspect does. On
+	// allow, the bytes go to the server and the connection is relayed as usual.
+	InspectRetry(dst netip.AddrPort, next []byte) InspectResult
 	// UDP says whether a guest UDP flow to dst may be forwarded (DNS to the stack's own
 	// server is not a flow and never asks).
 	UDP(dst netip.AddrPort) bool
@@ -58,6 +65,27 @@ const (
 	InspectAllow
 	// InspectMore waits for more bytes, within MaxInspectBytes and inspectTimeout.
 	InspectMore
+	// InspectAllowTLS is InspectAllow for a ClientHello. A server can answer it by asking
+	// for another (TLS 1.3's HelloRetryRequest), and that one goes out in plaintext too,
+	// with a server name of its own. So the stack waits for the server's first bytes
+	// before relaying (Egress.InspectReply), within DialTimeout and MaxInspectBytes, and
+	// gives up by closing, never by relaying what it has not seen.
+	InspectAllowTLS
+)
+
+// ReplyResult is what Egress.InspectReply decided. The zero value closes the connection.
+type ReplyResult int
+
+const (
+	// ReplyDeny closes the connection.
+	ReplyDeny ReplyResult = iota
+	// ReplyPass gives the guest the bytes and relays as usual.
+	ReplyPass
+	// ReplyMore waits for more bytes.
+	ReplyMore
+	// ReplyRetry gives the guest the bytes, and shows Egress.InspectRetry what it sends
+	// next before that goes out.
+	ReplyRetry
 )
 
 // ErrEgressDenied is why a guest flow is refused when only Config.Egress objected.

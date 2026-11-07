@@ -2,6 +2,7 @@ package egress
 
 import (
 	"context"
+	"crypto/sha256"
 	"crypto/tls"
 	"errors"
 	"io"
@@ -258,6 +259,113 @@ func TestParseClientHelloBounds(t *testing.T) {
 	}
 	if r := parseClientHello(endless); r.state != parseBad {
 		t.Fatalf("endless records: %+v", r)
+	}
+}
+
+// serverHello is a ServerHello with the given random, in records of at most size bytes.
+func serverHello(random [32]byte, size int) []byte {
+	body := append(u16(0x0303), random[:]...)
+	body = append(body, 0, 0x13, 0x01, 0)
+	body = append(append(body, u16(6)...), ext(0x002b, []byte{3, 4})...)
+	n := len(body)
+	hs := append([]byte{tlsHandshakeServerHello, byte(n >> 16), byte(n >> 8), byte(n)}, body...)
+	var out []byte
+	for len(hs) > 0 {
+		k := min(size, len(hs))
+		out = append(append(out, tlsRecordHandshake, 3, 3, byte(k>>8), byte(k)), hs[:k]...)
+		hs = hs[k:]
+	}
+	return out
+}
+
+func TestParseServerReply(t *testing.T) {
+	var random [32]byte
+	random[0] = 7
+	for _, tc := range []struct {
+		name string
+		b    []byte
+		want replyState
+	}{
+		{"retry", serverHello(tlsRetryRandom, 1<<14), replyRetry},
+		{"retry, a record per byte", serverHello(tlsRetryRandom, 1), replyRetry},
+		{"retry, records of 5", serverHello(tlsRetryRandom, 5), replyRetry},
+		{"ordinary hello", serverHello(random, 1<<14), replyPass},
+		{"nothing yet", nil, replyMore},
+		{"record header cut", []byte{22, 3}, replyMore},
+		{"random cut", serverHello(tlsRetryRandom, 1<<14)[:30], replyMore},
+		{"server speaks first", []byte("220 smtp ready\r\n"), replyPass},
+		{"alert", []byte{21, 3, 3, 0, 2, 2, 40}, replyPass},
+		{"change cipher spec", []byte{20, 3, 3, 0, 1, 1}, replyPass},
+		{"application data", []byte{23, 3, 3, 0, 1, 1}, replyPass},
+		{"another handshake message", []byte{22, 3, 3, 0, 1, 11}, replyPass},
+		{"not version 3", []byte{22, 4}, replyPass},
+		{"zero-length record", []byte{22, 3, 3, 0, 0}, replyPass},
+		{"oversized record", []byte{22, 3, 3, 0xff, 0xff}, replyPass},
+		{"another record inside", append(serverHello(tlsRetryRandom, 5)[:10], 21, 3, 3, 0, 2, 2, 40), replyPass},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := parseServerReply(tc.b); got != tc.want {
+				t.Fatalf("%d, want %d", got, tc.want)
+			}
+		})
+	}
+	// The real constant: the SHA-256 of the words.
+	if sha256.Sum256([]byte("HelloRetryRequest")) != tlsRetryRandom {
+		t.Fatal("wrong HelloRetryRequest random")
+	}
+}
+
+func TestParseRetryHello(t *testing.T) {
+	ccs := []byte{20, 3, 3, 0, 1, 1}
+	h := hello(sniExt("a.example"))
+	for _, tc := range []struct {
+		name  string
+		b     []byte
+		state parseState
+	}{
+		{"hello", h, parseDone},
+		{"change cipher spec, hello", append(append([]byte{}, ccs...), h...), parseDone},
+		{"nothing", nil, parseMore},
+		{"change cipher spec cut", ccs[:3], parseMore},
+		{"change cipher spec only", ccs, parseMore},
+		{"two of them", append(append([]byte{}, ccs...), ccs...), parseBad},
+		{"wrong length", []byte{20, 3, 3, 0, 2, 1, 1, 22}, parseBad},
+		{"wrong value", []byte{20, 3, 3, 0, 1, 2}, parseBad},
+		{"wrong version", []byte{20, 2}, parseBad},
+		{"alert", []byte{21, 3, 3, 0, 2, 1, 0}, parseBad},
+		{"application data", []byte{23, 3, 3, 0, 1, 1}, parseBad},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if r := parseRetryHello(tc.b); r.state != tc.state {
+				t.Fatalf("%+v, want %d", r, tc.state)
+			}
+		})
+	}
+	if r := parseRetryHello(hello(sniExt("a.example"), ext(tlsExtECH, []byte{1}))); r.state != parseBad || r.kind != KindECH {
+		t.Fatalf("ECH in a second hello: %+v", r)
+	}
+}
+
+func TestPipelinedHello(t *testing.T) {
+	h := hello(sniExt("b.example"))
+	early := []byte{23, 3, 3, 0, 2, 9, 9}
+	ccs := []byte{20, 3, 3, 0, 1, 1}
+	for _, tc := range []struct {
+		name string
+		b    []byte
+		want bool
+	}{
+		{"nothing", nil, false},
+		{"early data", early, false},
+		{"change cipher spec, early data", append(append([]byte{}, ccs...), early...), false},
+		{"a record cut short", early[:4], false},
+		{"second hello", h, true},
+		{"second hello, cut", h[:3], true},
+		{"second hello behind early data", append(append([]byte{}, early...), h...), true},
+	} {
+		if got := pipelinedHello(tc.b); got != tc.want {
+			t.Errorf("%s: %v", tc.name, got)
+		}
 	}
 }
 

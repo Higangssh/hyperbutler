@@ -435,12 +435,22 @@ func (n *Stack) relayInspected(r *tcp.ForwarderRequest, dst netip.AddrPort, tgt 
 	defer n.sizeBuffers(ep)()
 	stopIn := context.AfterFunc(n.ctx, func() { _ = in.Close() })
 	defer stopIn()
-	out := n.admitInspected(in, dst, tgt)
-	if out == nil {
-		// A reset, not a close: the guest sees a refusal, and the endpoint does not stay
-		// in TIME-WAIT.
+	// A reset, not a close: the guest sees a refusal, and the endpoint does not stay in
+	// TIME-WAIT.
+	refuse := func() {
 		ep.SocketOptions().SetLinger(tcpip.LingerOption{Enabled: true})
 		_ = in.Close()
+	}
+	out, watch := n.admitInspected(in, dst, tgt)
+	if out == nil {
+		refuse()
+		return
+	}
+	stopOut := context.AfterFunc(n.ctx, func() { _ = out.Close() })
+	defer stopOut()
+	if watch && !n.watchHelloRetry(in, out, dst) {
+		_ = out.Close()
+		refuse()
 		return
 	}
 	if tgt.Kind != TargetOut {
@@ -448,72 +458,129 @@ func (n *Stack) relayInspected(r *tcp.ForwarderRequest, dst netip.AddrPort, tgt 
 	}
 	n.st.tcpActive.Add(1)
 	defer n.st.tcpActive.Add(-1)
-	stopOut := context.AfterFunc(n.ctx, func() { _ = out.Close() })
-	defer stopOut()
 	proxy(in, ep, out)
 }
 
 // admitInspected reads and shows the guest's first bytes to Egress.Inspect, and on allow
-// dials tgt and writes them there. nil means the connection is over; it is counted here.
-func (n *Stack) admitInspected(in *gonet.TCPConn, dst netip.AddrPort, tgt Target) net.Conn {
+// dials tgt and writes them there. It also reports whether Inspect asked for the server's
+// reply to be watched. A nil connection means it is over; that is counted here.
+func (n *Stack) admitInspected(in *gonet.TCPConn, dst netip.AddrPort, tgt Target) (net.Conn, bool) {
 	bp := copyBufs.Get().(*[]byte)
 	defer copyBufs.Put(bp)
-	first, ok := n.readInspected(in, dst, (*bp)[:MaxInspectBytes])
-	if !ok {
+	first, result := n.readInspected(in, dst, (*bp)[:MaxInspectBytes], n.cfg.Egress.Inspect)
+	if result != InspectAllow && result != InspectAllowTLS {
 		n.flows.flow("tcp", dst, routeDenied)
 		n.st.tcpDenied.Add(1)
 		n.log.Debug("guest tcp denied by inspection", "dst", dst)
-		return nil
+		return nil, false
 	}
 	n.flows.flow("tcp", dst, routeName(tgt, nil))
 	out, err := n.dialTarget(tgt)
 	if err != nil {
 		n.st.tcpRefused.Add(1)
 		n.log.Debug("guest tcp dial failed", "dst", tgt.Addr, "err", err)
-		return nil
+		return nil, false
 	}
 	if tgt.Kind == TargetOut && selfConnected(out) {
 		_ = out.Close()
 		n.st.tcpDenied.Add(1)
 		n.log.Debug("guest tcp denied after dial: host address", "dst", tgt.Addr)
-		return nil
+		return nil, false
 	}
-	// At most MaxInspectBytes into a fresh socket, but the far side need not read them.
-	_ = out.SetWriteDeadline(time.Now().Add(n.cfg.DialTimeout))
-	if _, err := out.Write(first); err != nil {
+	if err := n.writeInspected(out, first); err != nil {
 		_ = out.Close()
 		n.st.tcpRefused.Add(1)
 		n.log.Debug("guest tcp first bytes failed", "dst", tgt.Addr, "err", err)
-		return nil
+		return nil, false
 	}
-	_ = out.SetWriteDeadline(time.Time{})
-	return out
+	return out, result == InspectAllowTLS
 }
 
-// readInspected reads into buf until Egress.Inspect decides. It reports what was read
-// and whether it was allowed. A full buffer, inspectTimeout and the guest closing without
-// a decision all deny.
-func (n *Stack) readInspected(in *gonet.TCPConn, dst netip.AddrPort, buf []byte) ([]byte, bool) {
+// writeInspected writes bytes that were held for inspection: at most MaxInspectBytes, but
+// the far side need not read them.
+func (n *Stack) writeInspected(c net.Conn, b []byte) error {
+	_ = c.SetWriteDeadline(time.Now().Add(n.cfg.DialTimeout))
+	if _, err := c.Write(b); err != nil {
+		return err
+	}
+	return c.SetWriteDeadline(time.Time{})
+}
+
+// readInspected reads into buf until decide does. It returns what was read and the
+// decision. A full buffer, inspectTimeout and the guest closing without a decision all
+// deny.
+func (n *Stack) readInspected(in *gonet.TCPConn, dst netip.AddrPort, buf []byte, decide func(netip.AddrPort, []byte) InspectResult) ([]byte, InspectResult) {
 	_ = in.SetReadDeadline(time.Now().Add(inspectTimeout))
 	have := 0
 	for have < len(buf) {
 		k, err := in.Read(buf[have:])
 		have += k
 		if k > 0 {
-			switch n.cfg.Egress.Inspect(dst, buf[:have]) {
-			case InspectAllow:
+			switch r := decide(dst, buf[:have]); r {
+			case InspectAllow, InspectAllowTLS:
 				_ = in.SetReadDeadline(time.Time{})
-				return buf[:have], true
+				return buf[:have], r
 			case InspectMore:
 			default:
-				return nil, false
+				return nil, InspectDeny
 			}
 		}
 		if err != nil {
-			return nil, false
+			return nil, InspectDeny
 		}
 	}
-	return nil, false
+	return nil, InspectDeny
+}
+
+// watchHelloRetry holds the relay back until the server's first bytes are seen, so that a
+// second ClientHello cannot go out uninspected after a HelloRetryRequest. Everything read
+// is passed on. It reports false when the connection must end; that is counted here. A
+// second request from the server is not watched: TLS 1.3 forbids one, and a client must
+// abort on it.
+func (n *Stack) watchHelloRetry(in *gonet.TCPConn, out net.Conn, dst netip.AddrPort) bool {
+	bp := copyBufs.Get().(*[]byte)
+	defer copyBufs.Put(bp)
+	buf := (*bp)[:MaxInspectBytes]
+	_ = out.SetReadDeadline(time.Now().Add(n.cfg.DialTimeout))
+	result := ReplyMore
+	have := 0
+	for result == ReplyMore && have < len(buf) {
+		k, err := out.Read(buf[have:])
+		have += k
+		if k > 0 {
+			result = n.cfg.Egress.InspectReply(dst, buf[:have])
+		}
+		if err != nil && result == ReplyMore {
+			n.st.tcpRefused.Add(1)
+			n.log.Debug("guest tcp: no reply from the server", "dst", dst, "err", err)
+			return false
+		}
+	}
+	_ = out.SetReadDeadline(time.Time{})
+	if result != ReplyPass && result != ReplyRetry {
+		n.st.tcpDenied.Add(1)
+		n.log.Debug("guest tcp denied by the server's reply", "dst", dst)
+		return false
+	}
+	if err := n.writeInspected(in, buf[:have]); err != nil {
+		n.st.tcpRefused.Add(1)
+		return false
+	}
+	if result == ReplyPass {
+		return true
+	}
+	next, decision := n.readInspected(in, dst, buf, n.cfg.Egress.InspectRetry)
+	if decision != InspectAllow && decision != InspectAllowTLS {
+		n.flows.flow("tcp", dst, routeDenied)
+		n.st.tcpDenied.Add(1)
+		n.log.Debug("guest tcp denied by inspecting its second hello", "dst", dst)
+		return false
+	}
+	if err := n.writeInspected(out, next); err != nil {
+		n.st.tcpRefused.Add(1)
+		return false
+	}
+	return true
 }
 
 // dialer returns a dialer that re-checks the policy on the address actually connected

@@ -51,10 +51,14 @@ func FuzzClientHello(f *testing.F) {
 	f.Add(realHello(f, &tls.Config{ServerName: "a.example", MaxVersion: tls.VersionTLS12}))
 	dst := netip.MustParseAddrPort("8.8.4.4:443")
 	f.Fuzz(func(t *testing.T, b []byte) {
+		checkPrefixes(t, b, parseRetryHello)
 		r := checkPrefixes(t, b, parseClientHello)
 		if r.state == parseDone {
 			if r.name == "" {
 				t.Fatal("accepted without a name")
+			}
+			if r.end <= 0 || r.end > len(b) {
+				t.Fatalf("hello ends at %d of %d", r.end, len(b))
 			}
 			if got, seen := stdlibServerName(b); seen && !strings.EqualFold(strings.TrimSuffix(r.name, "."), got) {
 				t.Fatalf("this parser read %q, crypto/tls read %q", r.name, got)
@@ -70,7 +74,7 @@ func FuzzClientHello(f *testing.F) {
 		}
 		p.Answer("a.example", []netip.Addr{dst.Addr()})
 		v := p.Inspect(dst, b)
-		if v == netstack.InspectAllow {
+		if v == netstack.InspectAllowTLS {
 			if c, ok := canonName(r.name); !ok || c != "a.example" {
 				t.Fatalf("allowed %q", r.name)
 			}
@@ -79,6 +83,50 @@ func FuzzClientHello(f *testing.F) {
 			t.Fatalf("verdict %d for %+v", v, r)
 		}
 		checkLog(t, p)
+	})
+}
+
+// FuzzServerReply: arbitrary bytes from a server. The parser never panics, a decided prefix
+// stays decided, and whatever way a HelloRetryRequest's bytes come after its 5-byte
+// record headers, it is one exactly when the handshake bytes say so.
+func FuzzServerReply(f *testing.F) {
+	var random [32]byte
+	f.Add(serverHello(tlsRetryRandom, 1<<14))
+	f.Add(serverHello(tlsRetryRandom, 1))
+	f.Add(serverHello(tlsRetryRandom, 7))
+	f.Add(serverHello(random, 1<<14))
+	f.Add([]byte("220 smtp ready\r\n"))
+	f.Add([]byte{21, 3, 3, 0, 2, 2, 40})
+	f.Add([]byte{22, 3, 3, 0, 0})
+	f.Add([]byte{})
+	f.Fuzz(func(t *testing.T, b []byte) {
+		whole := parseServerReply(b)
+		if len(b) <= maxFuzzPrefixes {
+			for k := range len(b) {
+				if r := parseServerReply(b[:k]); r != replyMore && r != whole {
+					t.Fatalf("after %d of %d bytes: %d, but whole: %d", k, len(b), r, whole)
+				}
+			}
+		}
+		// A real one is seen whatever follows it, and however it was cut.
+		size := 1 + len(b)%64
+		if parseServerReply(append(serverHello(tlsRetryRandom, size), b...)) != replyRetry {
+			t.Fatalf("missed in records of %d", size)
+		}
+		var other [32]byte
+		copy(other[:], b)
+		if other != tlsRetryRandom && parseServerReply(append(serverHello(other, size), b...)) != replyPass {
+			t.Fatalf("another random taken for a retry, in records of %d", size)
+		}
+		// Through the policy, a retry is the only way to more inspection.
+		p, err := New(Locked, nil, Options{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		v := p.InspectReply(netip.MustParseAddrPort("8.8.4.4:443"), b)
+		if (v == netstack.ReplyRetry) != (whole == replyRetry) || (v == netstack.ReplyMore) != (whole == replyMore) {
+			t.Fatalf("verdict %d for %d", v, whole)
+		}
 	})
 }
 

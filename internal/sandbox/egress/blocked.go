@@ -25,8 +25,8 @@ const (
 	KindWildcardCap = "wildcard-cap"
 	// KindPrivateAnswer is an address dropped from an allowed name's answer.
 	KindPrivateAnswer = "private-answer"
-	// KindAddress is a connection to an address no answer gave (Name is the address and
-	// port).
+	// KindAddress is a connection to an address no answer gave (Name is the address, for
+	// any port).
 	KindAddress = "address"
 	// KindPort is a connection to a pinned address on a port no entry names.
 	KindPort = "port"
@@ -68,6 +68,7 @@ type blockedEntry struct {
 
 type blockedLog struct {
 	entries map[blockedKey]*blockedEntry
+	perKind map[string]int
 	seq     uint64
 	lost    uint64
 }
@@ -80,15 +81,57 @@ func (l *blockedLog) add(name, kind string, now time.Time) {
 		e.Last = now
 		return
 	}
-	if len(l.entries) >= maxBlocked {
+	if !l.room(kind) {
 		l.lost++
 		return
 	}
 	if l.entries == nil {
 		l.entries = map[blockedKey]*blockedEntry{}
+		l.perKind = map[string]int{}
 	}
 	l.entries[k] = &blockedEntry{BlockedName: BlockedName{Name: shown, Kind: kind, Count: 1, First: now, Last: now}, seq: l.seq}
 	l.seq++
+	l.perKind[kind]++
+}
+
+// room reports whether a new entry of a kind fits. Each kind has a share of its own, and
+// the rest of the table goes to whoever comes first, so that a port scan cannot keep a
+// later query name out of the log.
+func (l *blockedLog) room(kind string) bool {
+	if l.perKind[kind] < blockedReserve(kind) {
+		return true
+	}
+	beyond := 0
+	for k, n := range l.perKind {
+		if over := n - blockedReserve(k); over > 0 {
+			beyond += over
+		}
+	}
+	return beyond < maxBlocked-blockedReserved()
+}
+
+// blockedReserve is a kind's own share of the table. Query names are what the user acts
+// on, so they get the largest.
+func blockedReserve(kind string) int {
+	if kind == KindQuery {
+		return 64
+	}
+	return 8
+}
+
+// reservedKinds are the kinds with a share. There is room for all of them in maxBlocked
+// (TestBlockedLogSurvivesPortScan).
+var reservedKinds = []string{
+	KindQuery, KindQueryType, KindWildcardCap, KindPrivateAnswer, KindAddress, KindPort, KindServerName,
+	KindNoServerName, KindECH, KindNotTLS, KindBadHello, KindHTTPHost, KindUDP,
+}
+
+func blockedReserved() int {
+	total := 0
+	for _, k := range reservedKinds {
+		total += blockedReserve(k)
+	}
+	return total
 }
 
 func (l *blockedLog) snapshot() []BlockedName {
