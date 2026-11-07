@@ -1061,48 +1061,54 @@ func (m *Manager) blocked(s *sess) (Reply, error) {
 
 // Term connects a terminal of the session and returns the guest's connection, already
 // told what it is for; after that it carries ctl frames the client reads.
-func (m *Manager) Term(ctx context.Context, req *Request) (net.Conn, error) {
+func (m *Manager) Term(ctx context.Context, req *Request) (net.Conn, string, error) {
 	s, err := m.find(req.Name)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	s.mu.Lock()
 	vm := s.vm
 	s.mu.Unlock()
 	if vm == nil {
-		return nil, fmt.Errorf("%s is stopped; `hyperbutler sandbox start %s` runs it", s.rec.Name, s.rec.Name)
+		return nil, "", fmt.Errorf("%s is stopped; `hyperbutler sandbox start %s` runs it", s.rec.Name, s.rec.Name)
 	}
 	if len(req.Env) > ctl.MaxEnv || len(req.Argv) > ctl.MaxArgs {
-		return nil, errors.New("too many arguments or variables for a terminal")
+		return nil, "", errors.New("too many arguments or variables for a terminal")
 	}
-	c, err := vm.Dialer(ctl.Port, agentWait).DialContext(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("session ctl port: %w", err)
+	if req.Attach != "" && !terminalID.MatchString(req.Attach) {
+		return nil, "", fmt.Errorf("%q is not a terminal: main, or sh-2 and on", req.Attach)
 	}
 	t := ctl.TermRequest{Attach: req.Attach, Argv: req.Argv, Env: req.Env, Cols: req.Cols, Rows: req.Rows}
-	if t.Attach == "" {
-		// The first terminal of a boot is the one `attach` goes back to.
+	id := t.Attach
+	if id == "" {
+		// The first terminal of a boot is the one `attach` goes back to by default.
 		if n := s.terms.Add(1); n == 1 {
-			t.ID = "main"
+			id = "main"
 		} else {
-			t.ID = fmt.Sprintf("sh-%d", n)
+			id = fmt.Sprintf("sh-%d", n)
 		}
+		t.ID = id
 	}
 	j, err := json.Marshal(t)
 	if err != nil {
-		_ = c.Close()
-		return nil, err
+		return nil, "", err
 	}
 	if len(j) > ctl.MaxData {
-		_ = c.Close()
-		return nil, errors.New("a terminal's arguments and variables are too long")
+		return nil, "", errors.New("a terminal's arguments and variables are too long")
+	}
+	c, err := vm.Dialer(ctl.Port, agentWait).DialContext(ctx)
+	if err != nil {
+		return nil, "", fmt.Errorf("session ctl port: %w", err)
 	}
 	if err := ctl.WriteFrame(c, ctl.TypeTerm, j); err != nil {
 		_ = c.Close()
-		return nil, err
+		return nil, "", err
 	}
-	return c, nil
+	return c, id, nil
 }
+
+// terminalID is what Term names terminals.
+var terminalID = regexp.MustCompile(`^(main|sh-[1-9][0-9]{0,5})$`)
 
 // Serve answers one client on c: one request, and for OpTerm the terminal until either end
 // closes.
@@ -1129,13 +1135,13 @@ func (m *Manager) Serve(ctx context.Context, c net.Conn) {
 		return
 	}
 	if req.Op == OpTerm {
-		g, err := m.Term(ctx, &req)
+		g, id, err := m.Term(ctx, &req)
 		if err != nil {
 			_ = enc.Encode(Reply{Error: err.Error()})
 			return
 		}
 		defer func() { _ = g.Close() }()
-		if err := enc.Encode(Reply{}); err != nil {
+		if err := enc.Encode(Reply{Terminal: id}); err != nil {
 			return
 		}
 		// The frames go through unread: the client decodes them, bounded (ctl.ReadFrame).

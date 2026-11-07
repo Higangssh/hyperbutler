@@ -506,6 +506,33 @@ func TestAttachAfterRestart(t *testing.T) {
 	}
 }
 
+// TestTerminalIDs: every terminal is told its ID, so Ctrl+] can say how to come back, and
+// attach takes only an ID Term gives out.
+func TestTerminalIDs(t *testing.T) {
+	r := newRig(t)
+	n := r.run("work")
+	for _, want := range []string{"main", "sh-2", "sh-3"} {
+		c, id, err := r.m.Term(context.Background(), &Request{Op: OpTerm, Name: n})
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = c.Close()
+		if id != want {
+			t.Fatalf("got %q, want %q", id, want)
+		}
+	}
+	c, id, err := r.m.Term(context.Background(), &Request{Op: OpTerm, Name: n, Attach: "sh-2"})
+	if err != nil || id != "sh-2" {
+		t.Fatalf("%q %v", id, err)
+	}
+	_ = c.Close()
+	for _, bad := range []string{"sh-0", "sh-", "x", "main ", "../main", "sh-1234567"} {
+		if _, _, err := r.m.Term(context.Background(), &Request{Op: OpTerm, Name: n, Attach: bad}); err == nil {
+			t.Fatalf("attach %q accepted", bad)
+		}
+	}
+}
+
 // TestLeftoverDisk: a disk no record owns is what a failed run left, and does not stop the
 // next one; with a record that could not be read it may be someone's work.
 func TestLeftoverDisk(t *testing.T) {

@@ -43,7 +43,8 @@ const sandboxUsage = `hyperbutler sandbox: run a coding agent in a VM of its own
       that this release pins by hash; Windows asks for permission once. run and start offer
       it when it is missing. --msi takes the file from here instead of the network.
   hyperbutler sandbox ls
-  hyperbutler sandbox attach NAME      the session's first terminal again (Ctrl+] leaves it)
+  hyperbutler sandbox attach NAME [TERMINAL]   back to a terminal: the first, or the one
+      Ctrl+] named when you left it (sh-2, ...)
   hyperbutler sandbox shell NAME [COMMAND ARG...]   another terminal
   hyperbutler sandbox diff NAME [--stat]   what changed; apply writes exactly this
   hyperbutler sandbox apply NAME (--all | --path PATH...)
@@ -457,9 +458,7 @@ func sandboxRun(in *install, args []string, stdin io.Reader, stdout, stderr io.W
 	if err != nil {
 		return 1, err
 	}
-	if detached {
-		_, _ = fmt.Fprintf(stdout, "left the terminal. `hyperbutler sandbox attach %s` goes back.\n", s.Name)
-	} else {
+	if !detached {
 		_, _ = fmt.Fprintf(stdout, "next: `hyperbutler sandbox diff %s`, `apply %s --all`, `stop %s`\n", s.Name, s.Name, s.Name)
 	}
 	return code, nil
@@ -490,8 +489,11 @@ func sandboxTerm(in *install, sub string, args []string, stderr io.Writer) (int,
 	if err != nil {
 		return 2, err
 	}
-	if name == "" || sub == "attach" && len(argv) > 0 {
-		return 2, fmt.Errorf("sandbox %s takes one session name", sub)
+	if name == "" {
+		return 2, fmt.Errorf("sandbox %s takes a session name", sub)
+	}
+	if sub == "attach" && len(argv) > 1 {
+		return 2, errors.New("sandbox attach takes a session name and maybe a terminal (main, sh-2, ...)")
 	}
 	envs, err := envValues(env)
 	if err != nil {
@@ -500,13 +502,13 @@ func sandboxTerm(in *install, sub string, args []string, stderr io.Writer) (int,
 	attach := ""
 	if sub == "attach" {
 		attach = "main"
+		if len(argv) == 1 {
+			attach, argv = argv[0], nil
+		}
 	}
-	code, detached, err := openTerminal(in, name, attach, argv, envs)
+	code, _, err := openTerminal(in, name, attach, argv, envs)
 	if err != nil {
 		return 1, err
-	}
-	if detached {
-		_, _ = fmt.Fprintf(os.Stdout, "left the terminal. `hyperbutler sandbox attach %s` goes back to the first one.\n", name)
 	}
 	return code, nil
 }
@@ -525,8 +527,13 @@ func openTerminal(in *install, name, attach string, argv, env []string) (code in
 	}
 	defer con.restore()
 	cols, rows := con.size()
-	if _, err := c.Do(&manager.Request{Op: manager.OpTerm, Name: name, Attach: attach, Argv: argv, Env: env, Cols: cols, Rows: rows}, nil); err != nil {
+	r, err := c.Do(&manager.Request{Op: manager.OpTerm, Name: name, Attach: attach, Argv: argv, Env: env, Cols: cols, Rows: rows}, nil)
+	if err != nil {
 		return 0, false, err
+	}
+	back := name
+	if r.Terminal != "main" && r.Terminal != "" {
+		back += " " + shownGuestText([]byte(r.Terminal))
 	}
 	s := c.Stream()
 	done := make(chan struct{})
@@ -602,6 +609,8 @@ func openTerminal(in *install, name, attach string, argv, env []string) (code in
 	}()
 	select {
 	case <-detach:
+		con.restore()
+		_, _ = fmt.Fprintf(os.Stdout, "\r\nleft the terminal; it goes on. `hyperbutler sandbox attach %s` goes back.\n", back)
 		return 0, true, nil
 	case e := <-out:
 		if e.err != nil {

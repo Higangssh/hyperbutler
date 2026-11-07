@@ -60,13 +60,17 @@ that terminal and never appears on a command line:
 hyperbutler sandbox run --name work --env OPENAI_API_KEY C:\src\myapp codex
 ```
 
-Ctrl+] leaves the terminal and the session goes on; what the agent runs keeps running.
+Ctrl+] leaves the terminal and the session goes on; what the agent runs keeps running. It
+tells you how to come back:
 
 ```powershell
-hyperbutler sandbox attach work   # back to the first terminal
-hyperbutler sandbox shell work    # another terminal
+hyperbutler sandbox attach work        # back to the first terminal
+hyperbutler sandbox shell work         # another terminal
+hyperbutler sandbox attach work sh-2   # back to that one, after Ctrl+]
 hyperbutler sandbox ls
 ```
+
+A terminal whose program has ended shows what it printed last and its exit code, once.
 
 ## Bringing the work out
 

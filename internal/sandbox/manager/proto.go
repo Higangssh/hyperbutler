@@ -95,6 +95,8 @@ type Reply struct {
 
 	Blocked     []Blocked `json:"blocked,omitempty"`
 	BlockedLost uint64    `json:"blockedLost,omitempty"`
+
+	Terminal string `json:"terminal,omitempty"` // OpTerm: the ID `attach` takes to come back
 }
 
 // Info describes one session.
