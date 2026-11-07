@@ -3,6 +3,7 @@ package netstack
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"net"
 	"net/netip"
@@ -602,7 +603,7 @@ func expectClosed(t *testing.T, c net.Conn) {
 	if err == nil {
 		t.Fatal("the stack sent data on a connection it should refuse")
 	}
-	if ne, ok := err.(net.Error); ok && ne.Timeout() {
+	if ne, ok := errors.AsType[net.Error](err); ok && ne.Timeout() {
 		t.Fatal("the connection stayed open")
 	}
 }

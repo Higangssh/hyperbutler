@@ -82,7 +82,7 @@ func ParseEntry(s string) (Entry, error) {
 	var e Entry
 	if after, ok := strings.CutPrefix(rest, "lan:"); ok {
 		if allDigits(after) {
-			return Entry{}, fmt.Errorf("egress: entry %s: a name cannot be a number, and a host called lan is not told apart from lan:", quoted(s))
+			return Entry{}, fmt.Errorf("egress: entry %s: a name cannot be a number, and a host called lan is not told apart from the lan prefix", quoted(s))
 		}
 		e.LAN, rest = true, after
 	}

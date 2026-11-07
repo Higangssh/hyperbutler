@@ -55,9 +55,9 @@ func TestTextDiffBinary(t *testing.T) {
 
 // TestTextDiffEscapes: a line cannot hide itself or write over the review (REQ-SBX-009).
 func TestTextDiffEscapes(t *testing.T) {
-	d := TextDiff(nil, []byte("safe\x1b[2K\rlooks harmless ‮ evil\n"))
+	d := TextDiff(nil, []byte("safe\x1b[2K\rlooks harmless \u202e evil\n"))
 	for _, r := range d.Text {
-		if r != '\n' && (unicode.IsControl(r) || r == '‮') {
+		if r != '\n' && (unicode.IsControl(r) || r == '\u202e') {
 			t.Fatalf("%q reached the text: %q", r, d.Text)
 		}
 	}
@@ -80,7 +80,7 @@ func TestTextDiffBounds(t *testing.T) {
 func FuzzTextDiff(f *testing.F) {
 	f.Add([]byte("a\nb\n"), []byte("a\nc\n"))
 	f.Add([]byte{0}, []byte("x"))
-	f.Add([]byte("\x1b]0;t\x07\r\n"), []byte("‮\n"))
+	f.Add([]byte("\x1b]0;t\x07\r\n"), []byte("\u202e\n"))
 	f.Fuzz(func(t *testing.T, a, b []byte) {
 		d := TextDiff(a, b)
 		for _, r := range d.Text {

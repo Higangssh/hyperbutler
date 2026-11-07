@@ -7,6 +7,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"errors"
 	"io"
 	"math/big"
 	"net"
@@ -251,7 +252,7 @@ func TestStackSecondHelloOtherNameRefused(t *testing.T) {
 			_ = c.SetReadDeadline(time.Now().Add(10 * time.Second))
 			if _, err := c.Read(make([]byte, 1)); err == nil {
 				t.Fatal("the connection went on")
-			} else if ne, ok := err.(net.Error); ok && ne.Timeout() {
+			} else if ne, ok := errors.AsType[net.Error](err); ok && ne.Timeout() {
 				t.Fatal("the connection stayed open")
 			}
 			if got := srv.received(); !bytes.Equal(got, first) {
@@ -410,7 +411,7 @@ func TestStackSlowServerClosed(t *testing.T) {
 	}
 	_ = c.SetReadDeadline(time.Now().Add(10 * time.Second))
 	_, err = c.Read(make([]byte, 1))
-	if ne, ok := err.(net.Error); err == nil || (ok && ne.Timeout()) {
+	if ne, ok := errors.AsType[net.Error](err); err == nil || (ok && ne.Timeout()) {
 		t.Fatalf("the connection stayed open: %v", err)
 	}
 	if e := time.Since(start); e < 400*time.Millisecond || e > 5*time.Second {
@@ -493,7 +494,7 @@ func TestStackServerClosesWithoutReply(t *testing.T) {
 	}
 	_ = c.SetReadDeadline(time.Now().Add(5 * time.Second))
 	_, err = c.Read(make([]byte, 1))
-	if ne, ok := err.(net.Error); err == nil || (ok && ne.Timeout()) {
+	if ne, ok := errors.AsType[net.Error](err); err == nil || (ok && ne.Timeout()) {
 		t.Fatalf("not closed: %v", err)
 	}
 }

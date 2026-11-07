@@ -172,7 +172,7 @@ func spawnSandboxManager(in *install) error {
 	if err := os.MkdirAll(in.l.LogDir(), 0o700); err != nil {
 		return err
 	}
-	logf, err := os.OpenFile(filepath.Join(in.l.LogDir(), "sandbox.log"), os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0o600) //nolint:gosec // G304: the log in the user's own data layout
+	logf, err := os.OpenFile(filepath.Join(in.l.LogDir(), "sandbox.log"), os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0o600)
 	if err != nil {
 		return err
 	}
@@ -291,7 +291,7 @@ func (h *sandboxHost) Boot(ctx context.Context, r manager.BootRequest) (manager.
 	var console io.Writer
 	var logf *os.File
 	if os.Getenv("HYPERBUTLER_DEBUG") != "" && h.brokerPipe == "" {
-		logf, err = os.Create(filepath.Join(h.l.LogDir(), "sandbox-console-"+r.Name+".log")) //nolint:gosec // G304: the log in the user's own data layout
+		logf, err = os.Create(filepath.Join(h.l.LogDir(), "sandbox-console-"+r.Name+".log"))
 		if err == nil {
 			console = logf
 		}
