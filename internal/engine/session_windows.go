@@ -106,7 +106,7 @@ func (c *sharedClient) Close() error {
 	var err error
 	c.once.Do(func() {
 		if c.slot != 0 {
-			_ = c.brokerClient.StopSlot(c.slot, true)
+			_ = c.StopSlot(c.slot, true)
 		}
 		err = c.b.release()
 	})
