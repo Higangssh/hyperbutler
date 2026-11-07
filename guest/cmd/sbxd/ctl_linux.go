@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -35,6 +36,13 @@ const (
 	// ptyDrain is how long output is read after the process exits; a background process
 	// can hold the terminal open forever.
 	ptyDrain = time.Second
+)
+
+var (
+	// viewerWait is how long a write to the attached window may take before it is let go.
+	viewerWait = 5 * time.Second
+	// terminalDir is where a terminal's program starts; a variable for the tests.
+	terminalDir = workspaceDir
 )
 
 var sessionEnv = []string{
@@ -137,15 +145,17 @@ type terminal struct {
 	// fd is ptmx's descriptor: calling Fd() would take the file off the runtime poller.
 	fd int
 
-	mu      sync.Mutex
-	screen  []byte
-	viewer  *vsockConn
-	exited  bool
-	code    int32
+	mu     sync.Mutex
+	screen []byte
+	viewer net.Conn
+	exited bool
+	code   int32
+	// told is the window the exit code reached; that terminal is over and is let go.
+	told    net.Conn
 	drained chan struct{}
 }
 
-func (ts *terminals) serve(c *vsockConn, req *ctl.TermRequest) error {
+func (ts *terminals) serve(c net.Conn, req *ctl.TermRequest) error {
 	t, err := ts.find(req)
 	if err != nil {
 		return err
@@ -154,12 +164,17 @@ func (ts *terminals) serve(c *vsockConn, req *ctl.TermRequest) error {
 		setSize(t.fd, req.Cols, req.Rows)
 	}
 	if done := t.attach(c); done {
-		ts.mu.Lock()
-		delete(ts.m, t.id)
-		ts.mu.Unlock()
+		ts.remove(t)
 		return nil
 	}
-	defer t.detach(c)
+	// A terminal whose exit code this window got is over; otherwise it stays for the next
+	// attach. Kept, every finished `sandbox shell NAME COMMAND` would count against
+	// ctl.MaxTerminals until the session restarts.
+	defer func() {
+		if t.detach(c) {
+			ts.remove(t)
+		}
+	}()
 	for {
 		ty, data, err := ctl.ReadFrame(c)
 		if err != nil {
@@ -178,6 +193,14 @@ func (ts *terminals) serve(c *vsockConn, req *ctl.TermRequest) error {
 		default:
 			return fmt.Errorf("frame type %d on a terminal", ty)
 		}
+	}
+}
+
+func (ts *terminals) remove(t *terminal) {
+	ts.mu.Lock()
+	defer ts.mu.Unlock()
+	if ts.m[t.id] == t {
+		delete(ts.m, t.id)
 	}
 }
 
@@ -237,7 +260,7 @@ func startTerminal(req *ctl.TermRequest) (*terminal, error) {
 		argv = []string{"/bin/bash", "-l"}
 	}
 	cmd := exec.Command(argv[0], argv[1:]...) //nolint:gosec // G204: this agent runs what the user's session asks for, as the agent user
-	cmd.Dir = workspaceDir
+	cmd.Dir = terminalDir
 	cmd.Env = append(append([]string(nil), sessionEnv...), req.Env...)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = pts, pts, pts
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true, Setctty: true, Ctty: 0}
@@ -283,13 +306,9 @@ func (t *terminal) pump() {
 			if over := len(t.screen) - screenKept; over > 0 {
 				t.screen = append(t.screen[:0], t.screen[over:]...)
 			}
-			if v := t.viewer; v != nil {
-				_ = v.SetWriteDeadline(time.Now().Add(5 * time.Second))
-				if ctl.WriteFrame(v, ctl.TypeOutput, buf[:n]) != nil {
-					// The host stopped reading: it can attach again.
-					t.viewer = nil
-					_ = v.Close()
-				}
+			if v := t.viewer; v != nil && !t.write(v, ctl.TypeOutput, buf[:n]) {
+				// The host stopped reading: it can attach again.
+				t.viewer = nil
 			}
 			t.mu.Unlock()
 		}
@@ -301,18 +320,32 @@ func (t *terminal) pump() {
 
 // attach makes c the viewer, after what the terminal printed so far. It reports whether
 // the terminal has ended, in which case c has been told and nothing more follows.
-func (t *terminal) attach(c *vsockConn) bool {
+// write sends one frame to the window within viewerWait, and closes the window if it
+// cannot. The deadline is cleared after: one left behind would fail the next write, the
+// exit code included, once the program had been quiet that long.
+func (t *terminal) write(v net.Conn, ty ctl.Type, data []byte) bool {
+	_ = v.SetWriteDeadline(time.Now().Add(viewerWait))
+	err := ctl.WriteFrame(v, ty, data)
+	_ = v.SetWriteDeadline(time.Time{})
+	if err != nil {
+		_ = v.Close()
+		return false
+	}
+	return true
+}
+
+func (t *terminal) attach(c net.Conn) bool {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	for b := t.screen; len(b) > 0; {
 		n := min(len(b), ctl.MaxData)
-		if ctl.WriteFrame(c, ctl.TypeOutput, b[:n]) != nil {
+		if !t.write(c, ctl.TypeOutput, b[:n]) {
 			return false
 		}
 		b = b[n:]
 	}
 	if t.exited {
-		_ = ctl.WriteFrame(c, ctl.TypeExit, ctl.Exit(t.code))
+		_ = t.write(c, ctl.TypeExit, ctl.Exit(t.code))
 		return true
 	}
 	if t.viewer != nil {
@@ -323,12 +356,14 @@ func (t *terminal) attach(c *vsockConn) bool {
 	return false
 }
 
-func (t *terminal) detach(c *vsockConn) {
+// detach lets c go, and reports whether c got the exit code.
+func (t *terminal) detach(c net.Conn) bool {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	if t.viewer == c {
 		t.viewer = nil
 	}
+	return t.told == c
 }
 
 func (t *terminal) finish(code int32) {
@@ -336,7 +371,9 @@ func (t *terminal) finish(code int32) {
 	defer t.mu.Unlock()
 	t.exited, t.code = true, code
 	if v := t.viewer; v != nil {
-		_ = ctl.WriteFrame(v, ctl.TypeExit, ctl.Exit(code))
+		if t.write(v, ctl.TypeExit, ctl.Exit(code)) {
+			t.told = v
+		}
 		t.viewer = nil
 	}
 	close(t.drained)
