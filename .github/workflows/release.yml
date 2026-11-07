@@ -5,6 +5,7 @@ name: Release
 # docs/release.md (soak, host-full, etc.), which hosted runners cannot run.
 #
 #   guest-image  canonical guest image + GPL source bundle (strict: signed inputs only)
+#   sandbox-image  canonical agent sandbox image + source bundle; not in the release yet
 #   package      hyperbutler.exe and hyperbutler-broker.exe (both pinned to the guest
 #                image's image.json), the docker CLI,
 #                compose and buildx built from dist/clients.lock, and the portable zip
@@ -37,6 +38,19 @@ jobs:
       strict: true
       with-sources: true
       artifact-name: guest-image-release # must not match the release-* pattern in publish
+
+  # Nothing consumes this yet: how the sandbox image ships is still to be decided. Its
+  # artifact stays out of the release until a job here takes it.
+  sandbox-image:
+    needs: guest-image
+    uses: ./.github/workflows/sandbox-image.yml
+    permissions:
+      contents: read
+    with:
+      guest-artifact-name: ${{ needs.guest-image.outputs.artifact-name }}
+      guest-sums-sha256: ${{ needs.guest-image.outputs.sums-sha256 }}
+      with-sources: true
+      artifact-name: sandbox-image-release # must not match the release-* pattern in publish
 
   package:
     needs: guest-image

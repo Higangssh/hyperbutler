@@ -1,15 +1,19 @@
 #!/bin/sh
 # Builds the sandbox image's system disk (ADR 0009) inside the builder container that
-# debian.lock pins. guest/sandbox/build.ps1 runs it on a Docker Engine (hyperbutler's own
-# works: no WSL).
+# debian.lock pins. scripts/guest-image/build-sandbox.sh runs it in CI, and
+# guest/sandbox/build.ps1 on a Docker Engine on Windows (hyperbutler's own works: no WSL).
+# Keep the steps of those two in sync.
 #
 #   build-rootfs.sh DIR
 #
 # DIR holds debian.lock, init, sbxd, netfwd and modules/<kver>/ (the kernel modules of the
-# Docker image this disk boots with); build.ps1 sends them, with this script, as one tar on
-# stdin. stdout: a tar with system.erofs and sandbox-packages.tsv (package, version, arch).
+# Docker image this disk boots with); the caller sends them, with this script, as one tar on
+# stdin. stdout: a tar with system.erofs and sandbox-packages.tsv (tab-separated, sorted:
+# package, version, arch, source package, source version; the last two are what
+# scripts/guest-image/sandbox-sources.sh downloads).
 # Needs CAP_SYS_ADMIN: mmdebstrap mounts /proc and /sys in the tree while maintainer
-# scripts run.
+# scripts run. On a host with AppArmor it also needs the container unconfined, since
+# Docker's default profile denies mount even with the capability.
 set -eu
 
 [ "$#" -eq 1 ] || { echo "usage: build-rootfs.sh DIR" >&2; exit 2; }
@@ -60,7 +64,8 @@ mmdebstrap --mode=root --variant=essential --skip=check/empty --skip=update \
 	--include="$pkgs" \
 	"$suite" "$root" "$src1" "$src2" "$src3" >&2
 
-chroot "$root" dpkg-query -W -f '${Package}\t${Version}\t${Architecture}\n' | LC_ALL=C sort >"$in/sandbox-packages.tsv"
+chroot "$root" dpkg-query -W -f '${Package}\t${Version}\t${Architecture}\t${source:Package}\t${source:Version}\n' |
+	LC_ALL=C sort >"$in/sandbox-packages.tsv"
 
 # What a read-only root needs: writable state lives on mounts the init makes.
 rm -rf "$root/var/cache/apt" "$root/var/lib/apt/lists" "$root/var/log"/* "$root/etc/apt/sources.list" "$root/etc/apt/mirrors"
@@ -103,6 +108,11 @@ cp -a "$in/modules/." "$root/usr/lib/modules/"
 for k in "$root"/usr/lib/modules/*; do
 	chroot "$root" depmod "${k##*/}"
 done
+# The same modes and times wherever the modules were staged (build.ps1's come from a
+# Windows folder, 0666 and today; CI's from kernel-modules.tar, 0644 and time 0), so both
+# builds make the same disk.
+chmod -R u+rwX,go+rX,go-w "$root/usr/lib/modules"
+find "$root/usr/lib/modules" -exec touch -h -d "@$SOURCE_DATE_EPOCH" {} +
 
 # Every file's time is the snapshot's; --all-root and a UUID from the inputs make the
 # image a function of the lock and the files put in.

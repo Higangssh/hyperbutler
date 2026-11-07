@@ -1,6 +1,7 @@
 # Builds the agent sandbox image (ADR 0009) on Windows, with no WSL: a Debian slim system
 # disk with sbxd, booted by the Docker image's kernel and stage-1 initramfs, and its own
-# image.json.
+# image.json. Release images come only from CI, from scripts/guest-image/build-sandbox.sh
+# (ADR 0005, Decision 4), which does the same steps from the guest-image artifact.
 #
 #   powershell -ExecutionPolicy Bypass -File guest\sandbox\build.ps1 [-Image DIR] [-Cache DIR]
 #       [-Out DIR] [-Docker docker.exe] [-DockerHost npipe:////./pipe/...]

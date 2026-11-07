@@ -86,6 +86,19 @@ administrator; the README says so.
    - Outputs: image files, `guest-inputs.tsv`, `BUILDINFO.txt`, `licenses/`,
      `guest-sources.tar`, `guest-inputs.tar`, `SHA256SUMS`. The job passes the digest of
      `SHA256SUMS` to the next job as a job output.
+   - `kernel-modules.tar` (`modules/<kver>/...`, sorted, fixed time and owner) is for the
+     next job. `package.ps1` copies only its `-ImageFiles`, so it stays out of the zip.
+   - **sandbox-image** (`sandbox-image.yml`, reusable, also run by `ci.yml`; needs
+     guest-image) checks that artifact against the job's digest, then runs
+     `scripts/guest-image/build-sandbox.sh`: the kernel version in the bzImage header must
+     name the one directory in `kernel-modules.tar`, and the Debian system comes from the
+     digest-pinned container and snapshot in `guest/sandbox/debian.lock`. Outputs:
+     `vmlinuz-virt`, `initramfs-stage1.gz`, `system.vhd`, `image.json`,
+     `sandbox-packages.tsv`, `BUILDINFO.txt`, and with sources `sandbox-sources.tar`,
+     `sandbox-sources.tsv`, `SANDBOX-SOURCES.txt`; `SHA256SUMS` over all of them. **Nothing
+     consumes this artifact yet** (`sandbox-image-release`, 14 days): no job needs it, so
+     it is not in the release, and its failure does not stop the draft, though the run
+     shows red. How the image ships is still to be decided.
 2. **package** (`windows-latest`):
    - Checks that the tag is a semver tag, that it is HEAD, and that it is on `origin/main`.
    - Checks the guest artifact against the digest from job 1, then runs `dist/package.ps1`
@@ -111,7 +124,7 @@ Supply-chain rules the workflows follow:
 - Top-level `permissions: {}` in `release.yml`, `contents: read` elsewhere. Write
   permissions only in `publish`.
 - `persist-credentials: false` on every checkout.
-- No caches in the guest-image and release jobs, so a PR run cannot poison a release
+- No caches in the guest-image, sandbox-image and release jobs, so a PR run cannot poison a release
   build. `setup-go` runs with `cache: false` there.
 - Workflow inputs reach shell code only through environment variables, and
   `ci-entry.sh` validates them (relative paths inside the repository, plain file names).
@@ -439,6 +452,20 @@ code (libblkid, parts of e2fsprogs, libseccomp, libmnl). hyperbutler distributes
   note in the README.
   2026-11-03, v0.1.0-rc.1: README uses "Docker" for the API, CLI and Docker Desktop only,
   with the trademark note.
+
+The sandbox image (ADR 0009) is not in a release yet. From the first release that carries
+it, it contains GPL and LGPL code from Debian, and these apply as well:
+
+- [ ] `sandbox-sources.tar` is attached to the same release as the image, with
+  `SANDBOX-SOURCES.txt` and `sandbox-sources.tsv`, and stays there while the image is
+  offered. A tar of 2 GiB or more arrives as `sandbox-sources.tar.000`, `.001`, ...: attach
+  every part. These keep their artifact names, which `SANDBOX-SOURCES.txt` uses. The first
+  bundle was 941,281,280 bytes (448 source packages).
+- [ ] The bundle comes from the same run as the image. Spot-check that
+  `sandbox-sources.tsv` has `glibc`, `bash`, `coreutils`, `gcc-14` and `linux` at the versions
+  in `sandbox-packages.tsv`, and that the tar's SHA-256 matches `SANDBOX-SOURCES.txt`.
+- [ ] The `publish` job's asset list and `SHA256SUMS` take these files, and the image
+  and its pin (`imageset.SandboxPin`) come from the sandbox-image job in the same run.
 
 ### 3. Cut the release
 

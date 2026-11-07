@@ -8,7 +8,9 @@
 #           first, the snapshot only for what they no longer carry (build-rootfs.sh).
 # snapshot  the snapshot.debian.org timestamp of the debian and debian-security archives.
 #           A snapshot never changes, so the same timestamp gives the same package
-#           versions; build-rootfs.sh writes them to sandbox-packages.tsv.
+#           versions; build-rootfs.sh writes them to sandbox-packages.tsv, and
+#           scripts/guest-image/sandbox-sources.sh fetches their source from the same
+#           snapshot.
 # packages  installed on top of Debian's essential set, without recommends: what agents
 #           and the builds they run expect (ADR 0009, "Sessions and disks"), and what
 #           the session init needs (tini, busybox for poweroff, kmod, iproute2, e2fsprogs,
