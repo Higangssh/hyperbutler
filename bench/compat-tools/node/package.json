@@ -1,0 +1,8 @@
+{
+  "name": "compat-tools-node",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "testcontainers": "12.2.1"
+  }
+}

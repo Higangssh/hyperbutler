@@ -1,0 +1,8 @@
+{
+  "name": "compat-tools build and feature sample",
+  "build": { "dockerfile": "Dockerfile" },
+  "features": {
+    "ghcr.io/devcontainers/features/node:1": { "version": "22" }
+  },
+  "postCreateCommand": "node --version > /workspaces/${localWorkspaceFolderBasename}/post-create.txt"
+}

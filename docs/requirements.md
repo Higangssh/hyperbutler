@@ -408,8 +408,15 @@ Status of the 0.2 usage requirements (2026-11-01; checked on one machine, Window
 - REQ-API-003: met (docs/tools.md): `DOCKER_HOST` per shell and per user,
   `~/.testcontainers.properties`, VS Code and JetBrains settings, and `config set pipe
   \\.\pipe\docker_engine` as the opt-in, which warns when Docker Desktop is installed or
-  that pipe is served. The IDE steps are from their documentation, not run
-  (REQ-API-002's `bench/compat-tools`).
+  that pipe is served. The IDE steps are from their documentation, not run. The settings
+  and the opt-in ran with the tools below (2026-11-07), which corrected tools.md for
+  Testcontainers for Go and Node.
+- REQ-API-002: partly met (`bench/compat-tools`, 2026-11-07, docs/compat.md, "Client
+  tools"). The Docker SDKs for Go and Python, Testcontainers for Go, Python and Node and
+  the Dev Containers CLI pass their samples against the pipe. Testcontainers for Go needs
+  `TESTCONTAINERS_DOCKER_SOCKET_OVERRIDE` for Ryuk, and for Node a backslash in
+  `DOCKER_HOST`. Open: Testcontainers for Java (no Java on the machine; the sample has not
+  run) and the VS Code extension itself, which cannot be driven from a script.
 - REQ-FS-006: met. The proxy refuses UNC (`\\server\share`, `\\?\UNC\...`), `\\wsl$` and
   `\\wsl.localhost`, device paths and folders on a mapped network drive in `-v` and
   `--mount`, before dockerd sees them, with why and what to do (unit tests; on the VM
