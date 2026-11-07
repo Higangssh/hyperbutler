@@ -212,8 +212,7 @@ volumes. `--container` and `--all-containers` create them again in hyperbutler f
 `docker inspect`, read through the same read-only client, and **do not start them**:
 Docker Desktop's may still hold their ports. Stop that one, then `docker start` the new
 one. A restart policy does not start it either: dockerd restarts only containers that have
-run (expected from how dockerd treats a container never started; not tested against a
-restart of the VM).
+run (checked on 2026-11-07 by restarting the VM).
 
 - **What carries over.** Image, command and entrypoint, environment, labels, working
   directory, user, hostname if it was set, stop signal and timeout, health check, published
