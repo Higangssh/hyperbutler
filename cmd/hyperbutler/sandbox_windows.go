@@ -24,6 +24,7 @@ import (
 	"github.com/Higangssh/hyperbutler/internal/engine"
 	"github.com/Higangssh/hyperbutler/internal/imageset"
 	"github.com/Higangssh/hyperbutler/internal/sandbox/ctl"
+	"github.com/Higangssh/hyperbutler/internal/sandbox/egress"
 	"github.com/Higangssh/hyperbutler/internal/sandbox/manager"
 )
 
@@ -39,7 +40,7 @@ const sandboxUsage = `hyperbutler sandbox: run a coding agent in a VM of its own
         --include PATH     copy a file kept out as a secret (repeat)
         --memory MB, --cpus N, --large
   hyperbutler sandbox install [--msi FILE]
-      Downloads and installs the agent sandbox image, a separate installer of about 240 MB
+      Downloads and installs the agent sandbox image, a separate installer of about 260 MB
       that this release pins by hash; Windows asks for permission once. run and start offer
       it when it is missing. --msi takes the file from here instead of the network.
   hyperbutler sandbox ls
@@ -782,15 +783,27 @@ func sandboxBlocked(in *install, args []string, stdout io.Writer) (int, error) {
 		return 0, nil
 	}
 	t := newTable(stdout, "NAME", "KIND", "COUNT")
+	ech := false
 	for _, b := range r.Blocked {
 		t.row(b.Name, b.Kind, strconv.FormatUint(b.Count, 10))
+		ech = ech || b.Kind == egress.KindECH
 	}
 	t.flush()
 	if r.BlockedLost > 0 {
 		_, _ = fmt.Fprintf(stdout, "and %d more\n", r.BlockedLost)
 	}
+	if ech {
+		_, _ = fmt.Fprintln(stdout, echHint)
+	}
 	return 0, nil
 }
+
+// echHint follows an ech line, which a browser is the usual cause of (docs/sandbox.md,
+// Browsers).
+const echHint = `
+ech: a connection that hid which server it wanted, so it was refused. Browsers do this on
+every connection. In a session Chrome and Playwright's channel "chromium" have it turned
+off; Playwright's default headless browser does not: launch it with channel: "chromium".`
 
 func sandboxLifecycle(in *install, sub string, args []string, stdin io.Reader, stdout, stderr io.Writer) (int, error) {
 	fs := flag.NewFlagSet("sandbox "+sub, flag.ContinueOnError)

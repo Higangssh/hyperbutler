@@ -111,8 +111,8 @@ built with.
 | Records `SandboxVersion` and `SandboxProductCode` under `HKLM\SOFTWARE\hyperbutler` | always | yes |
 
 It has no service, no window, no custom action and no shortcut, and it does not change what the
-broker may do. It takes about 640 MB of disk until it is uninstalled: 400 MB in that folder, and
-about 239 MB for the copy of the package Windows Installer keeps in `C:\Windows\Installer`, as it
+broker may do. It takes about 680 MB of disk until it is uninstalled: 420 MB in that folder, and
+about 260 MB for the copy of the package Windows Installer keeps in `C:\Windows\Installer`, as it
 does for every MSI with its cabinets inside (the main product's copy is its whole MSI too).
 
 - **Without hyperbutler** it refuses, with a message saying to install that first.

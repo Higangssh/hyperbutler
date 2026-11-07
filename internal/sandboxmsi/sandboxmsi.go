@@ -46,7 +46,7 @@ import (
 const ReleaseBase = "https://github.com/Higangssh/hyperbutler/releases/download/"
 
 // MaxPinBytes bounds the size a pin may state: a pin above it is a broken build. The MSI is
-// about 240 MB (docs/release.md); dist/msi/build-sandbox-msi.ps1 has the same limit.
+// about 260 MB (docs/release.md); dist/msi/build-sandbox-msi.ps1 has the same limit.
 const MaxPinBytes = 1 << 30
 
 // Pin is the installer of this release, as compiled into hyperbutler.exe.

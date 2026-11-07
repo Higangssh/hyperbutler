@@ -53,6 +53,10 @@ apt-get $aptopt -qq install -y --no-install-recommends mmdebstrap erofs-utils >&
 SOURCE_DATE_EPOCH=$(date -u -d "$(echo "$ts" | sed 's/\(....\)\(..\)\(..\)T\(..\)\(..\)\(..\)Z/\1-\2-\3 \4:\5:\6/')" +%s)
 export SOURCE_DATE_EPOCH
 root=/rootfs
+# Mesa's GPU drivers, which libgbm1 depends on (about 190 MiB: LLVM, gallium, z3). The VM has
+# no GPU: Chromium starts without them and draws, WebGL included, with its own software
+# renderer (docs/research/sandbox-browsers.md). The packages stay listed, with their source.
+gpu=/usr/lib/x86_64-linux-gnu
 # --skip=update: the tree uses the snapshot's indexes fetched above, copied in by the
 # setup hook (with the mirror lists, wherever apt resolves their path).
 mmdebstrap --mode=root --variant=essential --skip=check/empty --skip=update \
@@ -61,6 +65,8 @@ mmdebstrap --mode=root --variant=essential --skip=check/empty --skip=update \
 	--dpkgopt='path-exclude=/usr/share/man/*' --dpkgopt='path-exclude=/usr/share/info/*' \
 	--dpkgopt='path-exclude=/usr/share/locale/*' --dpkgopt='path-include=/usr/share/locale/locale.alias' \
 	--dpkgopt='path-exclude=/usr/share/doc/*' --dpkgopt='path-include=/usr/share/doc/*/copyright' \
+	--dpkgopt="path-exclude=$gpu/libLLVM*" --dpkgopt="path-exclude=$gpu/libgallium*" \
+	--dpkgopt="path-exclude=$gpu/libz3*" --dpkgopt="path-exclude=$gpu/dri/*" --dpkgopt="path-exclude=$gpu/gbm/*" \
 	--include="$pkgs" \
 	"$suite" "$root" "$src1" "$src2" "$src3" >&2
 
@@ -75,6 +81,17 @@ ln -s ../run/resolv.conf "$root/etc/resolv.conf"
 echo sandbox >"$root/etc/hostname"
 printf '127.0.0.1\tlocalhost\n127.0.1.1\tsandbox\n::1\tlocalhost ip6-localhost ip6-loopback\n' >"$root/etc/hosts"
 mkdir -p "$root/workspace" "$root/data" "$root/var/lib/hyperbutler"
+
+# Chromium sends a random ("GREASE") Encrypted ClientHello on every connection, which the
+# session's network refuses as it would a real one: both hide the server name it checks.
+# The managed policy turns it off, read-only here, for each build's own folder: Google
+# Chrome, Chrome for Testing (Playwright's "chromium") and Debian's chromium. Playwright's
+# headless shell reads no policy (docs/sandbox.md, Browsers).
+for d in opt/chrome opt/chrome_for_testing chromium; do
+	install -d -m 0755 "$root/etc/$d/policies/managed"
+	printf '{"EncryptedClientHelloEnabled": false}\n' >"$root/etc/$d/policies/managed/hyperbutler.json"
+	chmod 0644 "$root/etc/$d/policies/managed/hyperbutler.json"
+done
 
 # The agent user. The image has no shadow tools (no passwd package); the lines are written
 # as useradd would, with no password (login only through the session's own terminal).

@@ -13,7 +13,7 @@ The Docker VM does not have to be running, and a session does not use it.
 
 A session boots a Linux image of its own, which is not part of the main installer: it is about
 twice the size of everything else, and many people never start a session. It is a second
-MSI, "hyperbutler agent sandbox" in Apps, about 240 MB to download and about 640 MB on disk (the image, and Windows Installer's copy of the
+MSI, "hyperbutler agent sandbox" in Apps, about 260 MB to download and about 680 MB on disk (the image, and Windows Installer's copy of the
 package).
 
 ```powershell
@@ -151,6 +151,39 @@ In `dev` and `locked`:
 Known limits: traffic inside TLS is not seen, so a CDN that serves several sites on one name
 (domain fronting) and DNS over HTTPS to an allowed host cannot be told apart; on port 80 only
 the first request of a connection is checked; a port you name is checked by address only.
+
+## Browsers
+
+The image has what Chromium needs to run headless (no GPU drivers: it draws, WebGL included,
+in software), with Latin, CJK and emoji fonts. The browser itself is the agent's to install,
+as on any machine. For Playwright:
+
+```powershell
+hyperbutler sandbox run --name web --allow cdn.playwright.dev --allow storage.googleapis.com C:\src\myapp
+# in the session:
+npx playwright install chromium
+```
+
+`storage.googleapis.com` is where Chrome for Testing is served from, and it is Google Cloud
+Storage: anyone can make a bucket there that accepts uploads, so it is not in `dev` by
+default. Allow it for the install, or install in `--egress open`, and decide whether the
+session keeps it.
+
+Chromium puts a random Encrypted ClientHello in every connection, and `dev` and `locked`
+refuse that as they refuse a real one. The image turns it off by policy for Google Chrome,
+Chrome for Testing and Debian's chromium:
+
+| Browser in the session | In `dev` and `locked` |
+|---|---|
+| Playwright, `channel: "chromium"` or `"chrome"` | works |
+| Playwright's default headless browser (the headless shell, which reads no policy) | refused, `ech` in `sandbox blocked`: launch with `channel: "chromium"` |
+| Firefox | not in the image (it needs GTK and FFmpeg's libraries) |
+
+```js
+const browser = await chromium.launch({ channel: 'chromium' });
+```
+
+Measured with Playwright 1.65 and Chrome for Testing 158 against github.com.
 
 ## Ending a session
 
