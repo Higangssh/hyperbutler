@@ -732,16 +732,26 @@ func (s *Server) handle(ctx context.Context, id Identity, p Peer, own *lease, re
 		if err != nil {
 			return s.internal("status", err)
 		}
-		if running != 0 {
-			return errorReply(proto.CodeBusy, "stop your VMs before moving their data")
-		}
 		dctx, dcancel := context.WithTimeout(ctx, dataDirTimeout)
 		defer dcancel()
 		d, err := s.openDataDirBounded(dctx, p, req.Handle, id.SID)
 		if err != nil {
+			if running != 0 {
+				return errorReply(proto.CodeBusy, "stop your VMs before moving their data")
+			}
 			// The reply carries the fixed reason only; the cause is for the log.
 			s.cfg.Logf("broker: set data location for %s: %v", id.SID, err)
 			return rejectReply(err)
+		}
+		if running != 0 {
+			// The Docker engine and the sandbox manager are two processes of one user, and
+			// each sends the location before its first start. The same folder moves nothing.
+			same := u.dataDir != nil && u.dataDir.same(d)
+			_ = d.Close()
+			if !same {
+				return errorReply(proto.CodeBusy, "stop your VMs before moving their data")
+			}
+			return proto.Reply{Type: okType(req.Op)}
 		}
 		if u.dataDir != nil {
 			_ = u.dataDir.Close()

@@ -86,19 +86,19 @@ func (f *fakeBrokerClient) Start(proto.Request) (proto.Reply, error) {
 	}
 	return proto.Reply{State: proto.StateRunning, VMID: [16]byte{1}, Secret: vmsecret.Secret{9}}, nil
 }
-func (f *fakeBrokerClient) Status() (proto.Reply, error) {
+func (f *fakeBrokerClient) StatusSlot(uint8) (proto.Reply, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.statusN++
 	return proto.Reply{State: f.state}, f.err
 }
-func (f *fakeBrokerClient) Pause(resume bool) (proto.Reply, error) {
+func (f *fakeBrokerClient) PauseSlot(_ uint8, resume bool) (proto.Reply, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.pauses = append(f.pauses, resume)
 	return proto.Reply{State: proto.StatePaused}, nil
 }
-func (f *fakeBrokerClient) Stop(force bool) error {
+func (f *fakeBrokerClient) StopSlot(_ uint8, force bool) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.stops = append(f.stops, force)

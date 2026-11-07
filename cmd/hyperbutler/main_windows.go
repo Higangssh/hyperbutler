@@ -49,6 +49,7 @@ Usage:
   hyperbutler import  --from-desktop [--image NAME,...|--all-images] [--volume NAME,...|--all-volumes] [--dry-run] [--json]
   hyperbutler mcp     [--allow-write [--allow-delete]]   (MCP server on stdio, docs/mcp.md)
   hyperbutler gui     [--wait] [--lang LANG]   (the window, docs/gui.md)
+  hyperbutler sandbox run|ls|attach|shell|diff|apply|commits|...   (a coding agent in its own VM, docs/sandbox.md)
 
 State lives in %LOCALAPPDATA%\hyperbutler (override with HYPERBUTLER_HOME).
 Run "hyperbutler COMMAND -h" for a command's flags.
@@ -107,6 +108,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		err = cmdImport(args[1:], os.Stdin, stdout, stderr)
 	case "gui":
 		err = cmdGUI(args[1:], stdout, stderr)
+	case "sandbox":
+		code, err = cmdSandbox(args[1:], stdout, stderr)
 	case "mcp":
 		err = cmdMCP(args[1:], os.Stdin, stdout, stderr)
 	case "engine":

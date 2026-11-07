@@ -90,7 +90,7 @@ chmod 0755 "$root/usr/sbin/init"
 
 # Every command the session init runs must be in the tree: a missing one would only show
 # as a failed boot.
-for c in tini busybox mount umount modprobe ip blkid mke2fs e2fsck setpriv pkill env cp chown dd tr wc sleep cat; do
+for c in tini busybox mount umount modprobe ip blkid mke2fs e2fsck setpriv pkill env cp chown dd tr wc sleep cat mkfifo; do
 	chroot "$root" sh -c "command -v $c" >/dev/null || { echo "the tree has no $c" >&2; exit 1; }
 done
 

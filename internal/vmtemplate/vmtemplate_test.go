@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/Higangssh/hyperbutler/internal/guestctl"
+	"github.com/Higangssh/hyperbutler/internal/sandbox/ctl"
 	"github.com/Higangssh/hyperbutler/internal/sandbox/wire"
 	"github.com/Higangssh/hyperbutler/internal/transport"
 	"github.com/Higangssh/hyperbutler/internal/vm"
@@ -257,8 +258,8 @@ func TestControlPort(t *testing.T) {
 	if ControlPort != guestctl.ControlPort {
 		t.Fatalf("ControlPort %d, guestctl.ControlPort %d", ControlPort, guestctl.ControlPort)
 	}
-	if SandboxPort != wire.Port || SandboxCopyPort != wire.CopyPort {
-		t.Fatalf("sandbox ports %d and %d, wire %d and %d", SandboxPort, SandboxCopyPort, wire.Port, wire.CopyPort)
+	if SandboxPort != wire.Port || SandboxCopyPort != wire.CopyPort || SandboxCtlPort != ctl.Port {
+		t.Fatalf("sandbox ports %d, %d and %d, wire %d and %d, ctl %d", SandboxPort, SandboxCopyPort, SandboxCtlPort, wire.Port, wire.CopyPort, ctl.Port)
 	}
 }
 
@@ -277,7 +278,7 @@ func TestBuildSandbox(t *testing.T) {
 	for _, svc := range c.Services {
 		got[svc.ID.String()] = true
 	}
-	for _, p := range []uint32{SandboxPort, SandboxCopyPort, NetPort} {
+	for _, p := range []uint32{SandboxPort, SandboxCopyPort, SandboxCtlPort, NetPort} {
 		if !got[transport.VsockServiceID(p).String()] {
 			t.Errorf("no service for port %d", p)
 		}
@@ -287,7 +288,7 @@ func TestBuildSandbox(t *testing.T) {
 			t.Errorf("a session offers port %d", p)
 		}
 	}
-	if len(c.Services) != 3 {
+	if len(c.Services) != 4 {
 		t.Errorf("%d services", len(c.Services))
 	}
 	for name, mut := range map[string]func(*Spec){

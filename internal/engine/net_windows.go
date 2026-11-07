@@ -63,6 +63,10 @@ type NetConfig struct {
 	// OnUnpublished, if set, is called with every port of running containers that
 	// auto-publishing could not mirror (State.UnpublishedPorts), whenever that changes.
 	OnUnpublished func([]UnpublishedPort)
+	// Egress, if set, narrows what the guest may reach (a sandbox session, ADR 0009).
+	Egress netstack.Egress
+	// NoDiag leaves the network out of the debug endpoint: a session's process has none.
+	NoDiag bool
 	// Debug logs denied guest connections.
 	Debug bool
 }
@@ -119,7 +123,7 @@ func setupNet(nc NetConfig, log *slog.Logger) (g *guestNet, spec *vmtemplate.Net
 	if !subnet.IsValid() {
 		subnet = netstack.DefaultSubnet
 	}
-	cfg := netstack.Config{Subnet: subnet, MTU: nc.MTU, HostForwards: nc.HostForwards, HostGateway: nc.HostGateway, LinkCRC: nc.CRC}
+	cfg := netstack.Config{Subnet: subnet, MTU: nc.MTU, HostForwards: nc.HostForwards, HostGateway: nc.HostGateway, LinkCRC: nc.CRC, Egress: nc.Egress}
 	nlog := log
 	if !nc.Debug {
 		nlog = slog.New(levelFilter{h: log.Handler(), min: slog.LevelWarn})
@@ -130,7 +134,9 @@ func setupNet(nc NetConfig, log *slog.Logger) (g *guestNet, spec *vmtemplate.Net
 	}
 	cfg = st.Config()
 	g = &guestNet{nc: nc, cfg: cfg, st: st, svc: transport.VsockServiceID(nc.Port), publish: nc.Publish, log: log}
-	g.unpublish = diag.Publish(NetVarName, func() any { return NetVars{Stats: st.Stats(), Flows: st.Flows()} })
+	if !nc.NoDiag {
+		g.unpublish = diag.Publish(NetVarName, func() any { return NetVars{Stats: st.Stats(), Flows: st.Flows()} })
+	}
 	return g, netSpec(nc, cfg), nil
 }
 

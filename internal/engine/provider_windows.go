@@ -27,6 +27,9 @@ type BootSpec struct {
 	Share, DaemonConfig bool
 	// BlankDisk says the data disk was never written: the guest may format it.
 	BlankDisk bool
+	// Slot is 0 for the Docker VM and 1..proto.MaxSlot for a sandbox session (ADR 0009),
+	// which boots the sandbox image and offers sbxd's ports.
+	Slot uint8
 }
 
 // RuntimeInfo names a booted VM.
@@ -109,7 +112,7 @@ func (p *hcsProvider) Boot(ctx context.Context, bs BootSpec) (_ Lease, _ Runtime
 		Owner: VMOwner, UserSID: p.sid, Secret: secret,
 		MemoryMB: bs.MemoryMB, CPUs: bs.CPUs,
 		Kernel: p.kernel, Initrd: p.initrd,
-		Net: bs.Net, Share: bs.Share, DaemonConfig: bs.DaemonConfig,
+		Net: bs.Net, Share: bs.Share, DaemonConfig: bs.DaemonConfig, Sandbox: bs.Slot != 0,
 		ConsolePipe: consolePipe,
 		Dev:         vmtemplate.Dev{CmdLine: cfg.CmdLine, ExtraCmdLine: cfg.ExtraCmdLine, ExtraServices: cfg.ExtraServices},
 	}

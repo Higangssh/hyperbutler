@@ -62,10 +62,13 @@ const (
 	// ControlPort is the guest control channel's (guestctl.ControlPort, which a test
 	// holds equal: guestctl dials, and the broker may not link it).
 	ControlPort = 2380
-	// SandboxPort and SandboxCopyPort are a sandbox session's (ADR 0009): sbxd's change
-	// list and its copy-in (wire.Port and wire.CopyPort, which a test holds equal).
+	// SandboxPort, SandboxCopyPort and SandboxCtlPort are a sandbox session's (ADR 0009):
+	// sbxd's change
+	// list, its copy-in and its terminals and bundles (wire.Port, wire.CopyPort and
+	// ctl.Port, which a test holds equal).
 	SandboxPort     = 2390
 	SandboxCopyPort = 2391
+	SandboxCtlPort  = 2392
 )
 
 // Network limits, the ones netstack enforces (netstack.Config.Validate and
@@ -190,7 +193,7 @@ type Spec struct {
 	Share bool
 	// DaemonConfig tells the guest's init to wait for daemon.json on the control channel.
 	DaemonConfig bool
-	// Sandbox makes the VM a sandbox session (ADR 0009): its services are sbxd's two
+	// Sandbox makes the VM a sandbox session (ADR 0009): its services are sbxd's three
 	// ports instead of the Docker API and the control channel, and it gets no share,
 	// daemon.json or host gateway.
 	Sandbox bool
@@ -274,6 +277,7 @@ func Build(s *Spec) (*vm.Config, error) {
 		svcs = []vm.Service{
 			{ID: hvaddr.VsockServiceID(SandboxPort), ConnectSDDL: sddl},
 			{ID: hvaddr.VsockServiceID(SandboxCopyPort), ConnectSDDL: sddl},
+			{ID: hvaddr.VsockServiceID(SandboxCtlPort), ConnectSDDL: sddl},
 		}
 	}
 	if n := s.Net; n != nil {

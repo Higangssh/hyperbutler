@@ -3,6 +3,7 @@
 package broker
 
 import (
+	"os"
 	"testing"
 
 	"github.com/Higangssh/hyperbutler/internal/broker/proto"
@@ -162,4 +163,29 @@ func TestMemoryCap(t *testing.T) {
 	if _, err := New(Config{Backend: NewFakeBackend(), MaxTotalMemoryMB: 6144}); err != nil {
 		t.Fatalf("the cap of an 8 GB host: %v", err)
 	}
+}
+
+// TestDataLocationSameFolderWhileRunning: the Docker engine and the sandbox manager are two
+// connections of one user, and each sends the location before it starts a VM. The same
+// folder is no move; another one stays refused, and the VM keeps its location.
+func TestDataLocationSameFolderWhileRunning(t *testing.T) {
+	s, _ := newTestServer(t, Config{validateDataDir: acceptAll})
+	dir := t.TempDir()
+	handle := func() uint64 {
+		f, err := os.Open(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = f.Close() })
+		return uint64(f.Fd())
+	}
+	p := &localPeer{sid: sidA}
+	engine := openSession(t, s, p)
+	wantOK(t, engine.do(proto.Request{Op: proto.OpSetDataLocation, Handle: handle()}), proto.OpSetDataLocation)
+	wantOK(t, engine.do(proto.Request{Op: proto.OpStart}), proto.OpStart)
+	sandbox := openSession(t, s, p)
+	wantOK(t, sandbox.do(proto.Request{Op: proto.OpSetDataLocation, Handle: handle()}), proto.OpSetDataLocation)
+	wantOK(t, sandbox.do(proto.Request{Op: proto.OpStart, Slot: 1}), proto.OpStart)
+	wantCode(t, sandbox.do(proto.Request{Op: proto.OpSetDataLocation, Handle: tempDirHandle(t)}), proto.CodeBusy)
+	wantCode(t, engine.do(proto.Request{Op: proto.OpSetDataLocation, Handle: tempDirHandle(t)}), proto.CodeBusy)
 }

@@ -1,15 +1,15 @@
 //go:build linux
 
 // sbxd is the guest agent of a sandbox session VM (ADR 0009). It takes the project the
-// host copies in, once, on wire.CopyPort, records what it unpacked, and answers the
-// host's requests for the session's changes on wire.Port. Every connection must come
+// host copies in, once, on wire.CopyPort, records what it unpacked, answers the
+// host's requests for the session's changes on wire.Port, and runs the agent's terminals
+// and the git bundles on ctl.Port. Every connection must come
 // from the host (CID 2) and begin with the session's VM secret from the kernel command
 // line; anything else is closed without a byte written.
 package main
 
 import (
 	"errors"
-	"fmt"
 	"io/fs"
 	"log/slog"
 	"os"
@@ -41,6 +41,8 @@ type state struct {
 
 	mu   sync.Mutex
 	base workspace.Baseline // nil until the project is copied in
+
+	terms terminals
 }
 
 func run() error {
@@ -60,9 +62,13 @@ func run() error {
 	if b, err := workspace.Load(baselineFile); err == nil {
 		s.base = b
 	} else if !errors.Is(err, fs.ErrNotExist) {
-		return fmt.Errorf("baseline: %w", err)
+		// The agent can write here, and a crash can cut the file. The session stays usable:
+		// everything lists as added, and the host's own hashes decide what is a conflict.
+		slog.Warn("sbxd: the baseline cannot be read; every file lists as added", "err", err)
+		s.base = workspace.Baseline{}
 	}
-	errc := make(chan error, 2)
+	errc := make(chan error, 3)
+	go func() { errc <- s.listenCtl() }()
 	go func() { errc <- s.listen(wire.CopyPort, s.copyIn) }()
 	go func() { errc <- s.listen(wire.Port, s.changes) }()
 	return <-errc
@@ -115,6 +121,8 @@ func (s *state) copyIn(c *vsockConn) error {
 		return err
 	}
 	s.base = b
+	// Everything before the host's byte below must survive a VM that is terminated.
+	unix.Sync()
 	// The host reads this byte as the copy's end: everything before it is on disk.
 	_, err = c.Write([]byte{1})
 	return err

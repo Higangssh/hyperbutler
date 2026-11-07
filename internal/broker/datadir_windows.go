@@ -30,6 +30,17 @@ func (d *DataDir) Handle() windows.Handle {
 	return d.h
 }
 
+// same reports whether d and o are one directory. Without an answer it says no: the caller
+// then treats the request as moving the data.
+func (d *DataDir) same(o *DataDir) bool {
+	a, b := d.Handle(), o.Handle()
+	if a == 0 || b == 0 {
+		return false
+	}
+	same, err := sameFile(a, b)
+	return err == nil && same
+}
+
 // Close closes the handle. It is safe to call more than once.
 func (d *DataDir) Close() error {
 	d.mu.Lock()

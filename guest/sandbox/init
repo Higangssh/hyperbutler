@@ -14,9 +14,9 @@
 # and starts sbxd as the agent user. Every step prints "hyperbutler-t <uptime> <step>" on
 # the console.
 #
-# Shutdown: SIGTERM or SIGUSR2 (busybox poweroff, which the kernel runs when the host asks
-# through the Hyper-V shutdown component) stops sbxd and every agent process, unmounts the
-# data disk and powers off.
+# Shutdown: a line on /run/hyperbutler/stop (the host, through sbxd), SIGTERM or SIGUSR2
+# (busybox poweroff) stops sbxd and every agent process, unmounts the data disk and powers
+# off.
 
 PATH=/usr/sbin:/usr/bin:/sbin:/bin
 export PATH
@@ -185,6 +185,14 @@ mount --bind /data/home /home
 mount --bind /data/usr-local /usr/local
 mount --bind /data/state /var/lib/hyperbutler
 t session-disk-ready
+
+# The host asks through sbxd, which writes to this pipe: the Hyper-V shutdown component
+# is not offered to this VM, and sbxd may not signal the init. The agent user can write
+# here too, which only ends its own session.
+mkdir -m 0755 /run/hyperbutler
+mkfifo -m 0600 /run/hyperbutler/stop
+chown 1000:1000 /run/hyperbutler/stop
+(read -r _ </run/hyperbutler/stop; kill -TERM $$) &
 
 stop_session() {
 	t shutdown-requested

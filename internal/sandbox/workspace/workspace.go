@@ -99,7 +99,26 @@ func (b Baseline) Save(name string) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(name, j, 0o600)
+	// A new file renamed over the old: a VM that stops at any moment leaves a whole one.
+	tmp := name + ".tmp"
+	f, err := os.OpenFile(tmp, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600) //nolint:gosec // G304: the agent's own baseline file
+	if err != nil {
+		return err
+	}
+	_, err = f.Write(j)
+	if err == nil {
+		err = f.Sync()
+	}
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	if err == nil {
+		err = os.Rename(tmp, name)
+	}
+	if err != nil {
+		_ = os.Remove(tmp)
+	}
+	return err
 }
 
 // Load reads a baseline Save wrote.

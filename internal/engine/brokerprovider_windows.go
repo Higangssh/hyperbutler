@@ -49,9 +49,9 @@ type brokerClient interface {
 	Version() (uint8, string, error)
 	SetDataLocation(h windows.Handle) error
 	Start(req proto.Request) (proto.Reply, error)
-	Status() (proto.Reply, error)
-	Pause(resume bool) (proto.Reply, error)
-	Stop(force bool) error
+	StatusSlot(slot uint8) (proto.Reply, error)
+	PauseSlot(slot uint8, resume bool) (proto.Reply, error)
+	StopSlot(slot uint8, force bool) error
 	Close() error
 }
 
@@ -63,7 +63,7 @@ func startRequest(bs BootSpec) (proto.Request, error) {
 	if bs.CPUs < 1 || bs.CPUs > proto.MaxCPUs || bs.MemoryMB < proto.MinMemoryMB || bs.MemoryMB > proto.MaxMemoryMB {
 		return proto.Request{}, fmt.Errorf("engine: %d CPUs and %d MiB are outside what the broker accepts", bs.CPUs, bs.MemoryMB)
 	}
-	req := proto.Request{Op: proto.OpStart, CPUs: uint32(bs.CPUs), MemoryMB: uint32(bs.MemoryMB)}
+	req := proto.Request{Op: proto.OpStart, Slot: bs.Slot, CPUs: uint32(bs.CPUs), MemoryMB: uint32(bs.MemoryMB)}
 	if bs.Share {
 		req.Features |= proto.FeatureShare
 	}
@@ -179,7 +179,7 @@ func (p *brokerProvider) Boot(ctx context.Context, bs BootSpec) (_ Lease, _ Runt
 	if poll <= 0 {
 		poll = brokerPoll
 	}
-	l := &brokerLease{c: c, log: p.log, gone: make(chan struct{}), soon: make(chan struct{}), stop: make(chan struct{}), done: make(chan struct{})}
+	l := &brokerLease{c: c, slot: bs.Slot, log: p.log, gone: make(chan struct{}), soon: make(chan struct{}), stop: make(chan struct{}), done: make(chan struct{})}
 	go l.watch(poll)
 	return l, RuntimeInfo{RuntimeID: guid.FromArray(r.VMID), Secret: r.Secret}, nil
 }
@@ -198,8 +198,9 @@ func openDirHandle(dir string) (windows.Handle, error) {
 
 // brokerLease is a VM the broker runs for this connection.
 type brokerLease struct {
-	c   brokerClient
-	log *slog.Logger
+	c    brokerClient
+	slot uint8
+	log  *slog.Logger
 
 	gone     chan struct{}
 	goneOnce sync.Once
@@ -265,7 +266,7 @@ func (l *brokerLease) watch(every time.Duration) {
 			continue
 		case <-t.C:
 		}
-		r, err := l.c.Status()
+		r, err := l.c.StatusSlot(l.slot)
 		err = l.note(err)
 		switch {
 		case errors.Is(err, broker.ErrLost):
@@ -286,7 +287,7 @@ func (l *brokerLease) watch(every time.Duration) {
 }
 
 func (l *brokerLease) State() (string, error) {
-	r, err := l.c.Status()
+	r, err := l.c.StatusSlot(l.slot)
 	if l.note(err) != nil {
 		return "", err
 	}
@@ -301,12 +302,12 @@ func (l *brokerLease) State() (string, error) {
 }
 
 func (l *brokerLease) Pause() error {
-	_, err := l.c.Pause(false)
+	_, err := l.c.PauseSlot(l.slot, false)
 	return l.note(err)
 }
 
 func (l *brokerLease) Resume() error {
-	_, err := l.c.Pause(true)
+	_, err := l.c.PauseSlot(l.slot, true)
 	return l.note(err)
 }
 
@@ -314,14 +315,14 @@ func (l *brokerLease) ShutDown() error {
 	if l.silent.Load() {
 		return errBrokerSilent
 	}
-	return l.note(l.c.Stop(false))
+	return l.note(l.c.StopSlot(l.slot, false))
 }
 
 func (l *brokerLease) Terminate() error {
 	if l.silent.Load() {
 		return errBrokerSilent
 	}
-	err := l.note(l.c.Stop(true))
+	err := l.note(l.c.StopSlot(l.slot, true))
 	if err == nil || broker.IsCode(err, proto.CodeNotRunning) {
 		l.markGone()
 		return nil
