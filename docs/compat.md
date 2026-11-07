@@ -217,8 +217,8 @@ not on this machine, so nothing here compares with it by running it.
 | Testcontainers for Node (the same) | `testcontainers` 12.2.1 | pass, Ryuk included, but **not with the usual `DOCKER_HOST`** | `DOCKER_HOST=npipe:////.\pipe\<name>` with that backslash |
 | Dev Containers CLI, `up` and `exec` of an image, a Windows folder as the workspace | `@devcontainers/cli` 0.90.0 | pass | `DOCKER_HOST` or a selected docker context; `--docker-path` |
 | Dev Containers CLI, a Dockerfile with a feature (`ghcr.io/devcontainers/features/node:1`) | the same | pass | the same; see the legacy builder below |
-| Testcontainers for Java | | not run: no `java` on this machine | |
-| Testcontainers for .NET | | not run: runtimes 8.0.16 and 10.0.10, no SDK | |
+| Testcontainers for Java (the same; Maven 3.9.16, Temurin 21.0.13) | `testcontainers` 2.0.5 | pass, Ryuk included | `DOCKER_HOST`, or `docker.host` in `~/.testcontainers.properties` |
+| Testcontainers for .NET (the same; SDK 8.0.427) | `Testcontainers` 4.16.0 | pass, Ryuk included, but **not with the usual `DOCKER_HOST`** | `DOCKER_HOST=npipe://./pipe/<name>` |
 | JetBrains IDEs | | not automated (a GUI) | a Docker connection, [tools.md](tools.md#jetbrains-ides-intellij-goland-pycharm-rider-) |
 | VS Code Docker, Container Tools and Dev Containers extensions | | not automated (a GUI); VS Code 1.143.1 is here, the extensions did not run | [tools.md](tools.md#vs-code) |
 
@@ -259,6 +259,22 @@ only. In `~/.testcontainers.properties` the backslash is doubled:
 `docker.host=npipe:////.\\pipe\\hb_compat`. With nothing set the library tries
 `\\.\pipe\docker_engine`, and works there.
 
+**Testcontainers for .NET: the pipe's name.** With `npipe:////./pipe/hb_compat`:
+
+```
+System.TypeInitializationException: The type initializer for 'DotNet.Testcontainers.Configurations.TestcontainersSettings' threw an exception.
+ ---> System.InvalidOperationException: The endpoint is not a npipe URI.
+```
+
+.NET's `Uri` also drops the `.`. `npipe://./pipe/hb_compat`, the form Docker.DotNet's own
+default has (`npipe://./pipe/docker_engine`), works, Ryuk included. The docker CLI takes that
+spelling as well. `docker.host` in `~/.testcontainers.properties` did not reach the engine in
+either spelling here: the library went to `\\.\pipe\docker_engine`.
+
+Java and .NET were added in a second run on the same day: the engine and the guest image
+built from commit 5dbcd33 (the guest image from CI), the same docker CLI, every sample above
+run again and passing, the opt-in below not run.
+
 **The legacy builder.** The docker CLI in the zip has no buildx plugin, so for a feature
 the Dev Containers CLI runs a plain `docker build`, and it works with a warning: `DEPRECATED:
 The legacy builder is deprecated and will be removed in a future release.`
@@ -274,6 +290,8 @@ would reach Docker Desktop if that were running.
 | Testcontainers for Go | no | yes |
 | Testcontainers for Python | yes | no |
 | Testcontainers for Node | no | only with the backslash spelling above |
+| Testcontainers for Java | no | yes |
+| Testcontainers for .NET | no | no, in either spelling |
 | Dev Containers CLI | yes | |
 
 **The opt-in**, `hyperbutler config set pipe \\.\pipe\docker_engine` and a new start, with

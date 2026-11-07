@@ -58,9 +58,11 @@ foreach ($d in @($engineHome, $dockerConfig, $contextConfig, $toolHome, "$toolHo
 }
 $pipePath = "\\.\pipe\$Pipe"
 $dockerHost = "npipe:////./pipe/$Pipe"
-# Testcontainers for Node parses DOCKER_HOST as a URL, which drops the path's "." and leaves
-# //pipe/NAME. A backslash after the dot keeps it; other tools do not take this spelling.
-$altHost = "npipe:////.\pipe\$Pipe"
+# Spellings some Testcontainers need, as a sample's AltHost. Node and .NET parse DOCKER_HOST
+# as a URL, which drops the path's "." and leaves //pipe/NAME. For Node a backslash after the
+# dot keeps it; .NET takes the host form Docker.DotNet documents. Other tools take neither.
+$altHostNode = "npipe:////.\pipe\$Pipe"
+$altHostDotnet = "npipe://./pipe/$Pipe"
 
 $script:results = New-Object System.Collections.ArrayList
 $script:settingRows = New-Object System.Collections.ArrayList
@@ -262,7 +264,7 @@ $samples = [ordered]@{
         Prepare = { Initialize-Node }
         Version = { 'testcontainers ' + (Get-Content -Raw (Join-Path $nodeWork 'node_modules\testcontainers\package.json') | ConvertFrom-Json).version }
         Run = { param($v, $sec) $v.DEBUG = 'testcontainers*'; Invoke-Tool $nodeExe @('tc_sample.mjs') $nodeWork $v $sec 'node-tc' }
-        AltHost = $true
+        AltHost = $altHostNode
         TC = $true
     }
     'java-tc'   = @{
@@ -291,6 +293,7 @@ $samples = [ordered]@{
             Copy-Item (Join-Path $PSScriptRoot 'dotnet\*') $d -Force
             Invoke-Tool $dotnetExe @('run', '--project', "$d\compat.csproj") $d $v $sec 'dotnet-tc'
         }
+        AltHost = $altHostDotnet
         TC = $true
     }
 }
@@ -354,7 +357,7 @@ function Invoke-Sample([string]$id) {
     $attempts = New-Object System.Collections.ArrayList
     [void]$attempts.Add(@{ Label = 'DOCKER_HOST'; Vars = @{}; Ryuk = $true })
     if ($s.ContainsKey('AltHost')) {
-        [void]$attempts.Add(@{ Label = "DOCKER_HOST=$altHost"; Vars = @{ DOCKER_HOST = $altHost }; Ryuk = $true })
+        [void]$attempts.Add(@{ Label = "DOCKER_HOST=$($s.AltHost)"; Vars = @{ DOCKER_HOST = $s.AltHost }; Ryuk = $true })
     }
     [void]$attempts.Add(@{ Label = 'DOCKER_HOST, TESTCONTAINERS_DOCKER_SOCKET_OVERRIDE=/var/run/docker.sock'; Vars = @{ TESTCONTAINERS_DOCKER_SOCKET_OVERRIDE = '/var/run/docker.sock' }; Ryuk = $true })
     [void]$attempts.Add(@{ Label = 'DOCKER_HOST, TESTCONTAINERS_RYUK_DISABLED=true'; Vars = @{ TESTCONTAINERS_RYUK_DISABLED = 'true' }; Ryuk = $false })
@@ -446,13 +449,13 @@ function Invoke-SettingRows {
             Clear-Containers
             if ($mode -eq 'properties' -and $s.ContainsKey('AltHost')) {
                 # A backslash is an escape in a properties file, so it is doubled there.
-                [IO.File]::WriteAllText($tcProps, "docker.host=$($altHost -replace '\\', '\\')`n")
+                [IO.File]::WriteAllText($tcProps, "docker.host=$($s.AltHost -replace '\\', '\\')`n")
                 $v = ToolVars $mode
                 $v.TESTCONTAINERS_RYUK_DISABLED = 'true'
                 $r = & $s.Run $v 240
                 $reached = $r.Code -eq 0
-                [void]$script:settingRows.Add([pscustomobject]@{ id = $id; tool = $s.Name; setting = "properties, docker.host=$altHost"; reached = $reached; note = $(if ($reached) { '' } else { Get-Reason $r }) })
-                Write-Host ('{0,-8} {1} through properties with the backslash spelling' -f $(if ($reached) { 'yes' } else { 'no' }), $s.Name)
+                [void]$script:settingRows.Add([pscustomobject]@{ id = $id; tool = $s.Name; setting = "properties, docker.host=$($s.AltHost)"; reached = $reached; note = $(if ($reached) { '' } else { Get-Reason $r }) })
+                Write-Host ('{0,-8} {1} through properties with its own spelling' -f $(if ($reached) { 'yes' } else { 'no' }), $s.Name)
                 Clear-Containers
                 [IO.File]::WriteAllText($tcProps, "docker.host=$dockerHost`n")
             }

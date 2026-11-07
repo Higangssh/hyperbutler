@@ -32,9 +32,9 @@ code is 1 if a tool failed; `-Only ID,ID`, `-SkipSettings` and `-SkipOptIn` shor
 | `devcontainer-image` | `@devcontainers/cli` through npx | `up` of an image, a folder from a temp dir as the workspace, `exec` |
 | `devcontainer-features` | the same | `up` of a Dockerfile with a feature |
 
-A runtime that is not on the machine gives `skipped` with the reason. The Java and .NET
-samples are here for a machine that has them; until a run says otherwise in
-docs/compat.md, they have not been run. JetBrains IDEs and the VS Code extensions are GUI
+A runtime that is not on the machine gives `skipped` with the reason. Java needs `java` and
+`mvn` on PATH and .NET an SDK; a JDK zip, a Maven zip and `dotnet-install.ps1 -InstallDir`
+put first on PATH are enough, with nothing installed. JetBrains IDEs and the VS Code extensions are GUI
 programs and listed as not automated, with their settings in
 [docs/tools.md](../../docs/tools.md).
 

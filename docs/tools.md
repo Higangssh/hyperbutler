@@ -48,7 +48,7 @@ Testcontainers reads `DOCKER_HOST`, or `~/.testcontainers.properties`
 docker.host=npipe:////./pipe/docker_engine_hyperbutler
 ```
 
-What each language needs (`bench/compat-tools`; Java and .NET have not run):
+What each language needs (`bench/compat-tools`):
 
 - **Go:** `DOCKER_HOST` or the file above, and for Ryuk, which otherwise fails with
   `error while creating mount source path '/pipe/docker_engine_hyperbutler'`:
@@ -68,6 +68,15 @@ What each language needs (`bench/compat-tools`; Java and .NET have not run):
   and in the file, `docker.host=npipe:////.\\pipe\\docker_engine_hyperbutler`.
 - **Python:** `DOCKER_HOST` or the selected docker context. It does not read `docker.host`
   from the file.
+- **Java:** `DOCKER_HOST` or the file above, Ryuk included, with nothing else.
+- **.NET:** the usual spelling fails (`The endpoint is not a npipe URI`). Use the form
+  Docker.DotNet has for its own default, which the docker CLI also takes:
+
+  ```powershell
+  $env:DOCKER_HOST = "npipe://./pipe/docker_engine_hyperbutler"
+  ```
+
+  It did not read `docker.host` from the file.
 
 ### VS Code
 
