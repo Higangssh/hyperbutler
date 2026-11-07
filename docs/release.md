@@ -26,9 +26,9 @@ The zip has one top-level folder:
 | `hyperbutler.exe` | `CGO_ENABLED=0 go build -trimpath -buildvcs=true -ldflags "-s -w -buildid= -X ...imageset.pinnedManifest=<sha256 of image.json>"`. The version is the tag, taken from Git by the Go toolchain; `package.ps1` fails if `go version -m hyperbutler.exe` reports anything else, or if `hyperbutler.exe version --json` does not report the image pin |
 | `hyperbutler-broker.exe` | The HCS access broker (ADR 0004), built like `hyperbutler.exe` with the same image pin and `-X main.version=<tag>`; `package.ps1` fails unless `hyperbutler-broker.exe -version-json` reports both. In the zip (listed in `BUILDINFO.txt` and `SHA256SUMS`), and in the MSI, which installs it as the `hyperbutler-broker` service |
 | `image/vmlinuz-virt`, `image/initramfs-stage1.gz`, `image/system.vhd`, `image/image.json` | The guest image (ADR 0005 A2b), from the guest-image job. In `image\`, not next to `hyperbutler.exe`, where Explorer shows `system.vhd` as a disk image and a double-click offers to mount it. `hyperbutler start` finds them in the `image\` folder next to `hyperbutler.exe` (`--image-dir` names another), says to extract the zip again if they are missing there and names any left directly next to `hyperbutler.exe` by an older layout, checks `image.json` against the SHA-256 linked into `hyperbutler.exe` and the other files against `image.json` (ADR 0005, Decision 4). `package.ps1 -ImageFiles` names them |
-| `clients/docker.exe`, `clients/cli-plugins/docker-compose.exe` | The docker CLI and the compose plugin, built by `package.ps1` from the docker/cli and docker/compose source modules pinned in `dist/clients.lock` (module proxy, sum.golang.org and the lock's `h1:` hash; upstream build tags and version flags, `CGO_ENABLED=0 -trimpath`). Not next to `hyperbutler.exe`, so they never shadow a docker CLI on PATH ([compat.md](compat.md#the-docker-cli-and-docker-desktop)). Their license texts are in `THIRD-PARTY/clients/` |
+| `clients/docker.exe`, `clients/cli-plugins/docker-compose.exe`, `clients/cli-plugins/docker-buildx.exe` | The docker CLI and the compose and buildx plugins, built by `package.ps1` from the docker/cli, docker/compose and docker/buildx source modules pinned in `dist/clients.lock` (module proxy, sum.golang.org and the lock's `h1:` hash; upstream build tags and version flags, `CGO_ENABLED=0 -trimpath`). Not next to `hyperbutler.exe`, so they never shadow a docker CLI on PATH ([compat.md](compat.md#the-docker-cli-and-docker-desktop)). Their license texts are in `THIRD-PARTY/clients/` |
 | `LICENSE`, `NOTICE` | hyperbutler's own |
-| `THIRD-PARTY/` | License texts of every Go module linked into `hyperbutler.exe`, the guest binaries or the bundled clients, of the Go standard library, and of every guest package (from the upstream sources), with an index in `README.txt`. The docker/cli and docker/compose LICENSE and NOTICE files (Apache-2.0 §4(a), (d)) are in `THIRD-PARTY/clients/<name>/` |
+| `THIRD-PARTY/` | License texts of every Go module linked into `hyperbutler.exe`, the guest binaries or the bundled clients, of the Go standard library, and of every guest package (from the upstream sources), with an index in `README.txt`. The docker/cli and docker/compose LICENSE and NOTICE files (Apache-2.0 §4(a), (d)) and the docker/buildx LICENSE and AUTHORS files (it has no NOTICE) are in `THIRD-PARTY/clients/<name>/` |
 | `SOURCE-OFFER.txt` | Names the source bundle by file name, SHA-256 and URL |
 | `README.txt`, `BUILDINFO.txt`, `SHA256SUMS` | Quick start; versions, flags, commit and hashes; checksums of every file in the zip |
 
@@ -45,6 +45,7 @@ release here.
 | (dry run, 2026-11-01) | 106.7 MB | A2b image (local build, 88 MiB system disk) plus the docker CLI 29.9.2 and compose v5.6.1 built from source (30.4 and 30.0 MB), snapshot (111,857,104 bytes; 173.7 MB unpacked). Docker's prebuilt `docker.exe` would have been 44.9 MB |
 | v0.1.0-preview.1 | 116.4 MB | release run (116,415,311 bytes; MSI 121,729,372 bytes) |
 | v0.1.0-preview.2 | 120.3 MB | release run, with `hyperbutler-broker.exe` (120,298,176 bytes; 196.7 MB unpacked; MSI 125,358,540 bytes) |
+| (dry run, 2026-11-07) | 143.2 MB | the v0.1.1 image plus buildx v0.38.2 from source (69.0 MB, 23.8 MB deflated), snapshot without guest license texts (143,225,514 bytes, 256.1 MB as `package.ps1` counts it; MSI 145,087,564 bytes). The same commit without buildx: 118,635,119 and 125,577,558 bytes, so buildx adds 24.6 MB to the zip and 19.5 MB to the MSI. The v0.1.1 release was 2.0 MB over its image's snapshot (guest license texts), so expect about 145 MB for both: under the limit, 5 MB short of 150,000,000 bytes |
 
 The release is x64 only. Docker publishes no Windows arm64 docker CLI; since it is built
 from source here, an arm64 release would only need `GOARCH=arm64`, but the guest image is
@@ -89,7 +90,7 @@ administrator; the README says so.
    - Checks that the tag is a semver tag, that it is HEAD, and that it is on `origin/main`.
    - Checks the guest artifact against the digest from job 1, then runs `dist/package.ps1`
      without `-Snapshot`, so every check is fatal. It links the SHA-256 of the checked
-     `image.json` into `hyperbutler.exe` and builds the docker CLI and compose from the
+     `image.json` into `hyperbutler.exe` and builds the docker CLI, compose and buildx from the
      source modules in `dist/clients.lock` (through the Go module proxy, checked against
      sum.golang.org and the lock).
 3. **sbom** (`ubuntu-latest`, no permissions at all): syft, installed from the release
@@ -105,7 +106,7 @@ Supply-chain rules the workflows follow:
 
 - Every action is pinned by full commit SHA, with the version in a comment. Downloaded
   tools (golangci-lint, syft, shellcheck for local checks) are pinned by SHA-256. The
-  bundled docker CLI and compose are built from source modules pinned by their `h1:`
+  bundled docker CLI, compose and buildx are built from source modules pinned by their `h1:`
   hash (`dist/clients.lock`), never downloaded as binaries.
 - Top-level `permissions: {}` in `release.yml`, `contents: read` elsewhere. Write
   permissions only in `publish`.
@@ -291,6 +292,9 @@ soak runs separately and its result goes here.
   pinned versions, against the release candidate.
   2026-11-03, v0.1.0-rc.1: `Docker version 29.9.2, build a82e528`, `Docker Compose version
   v5.7.0` from the zip.
+- [ ] `docker-buildx` is the current release, and `docker buildx version` from the zip
+  prints the pinned version, against the release candidate. So far a snapshot only,
+  2026-11-07: `github.com/docker/buildx v0.38.2 3c4cbd3...`, the latest (2026-11-03).
 - [x] REQ-MEM-001: idle memory ≤ 400 MB (`bench/mem-idle`) against the release candidate.
   2026-11-01, main at 0012298 with a local A2b image: median 313.9 MiB (329 MB; engine 19.1,
   vmmem 289.3, vmwp 5.5 MiB), PASS. The engine's working set rose from 7.3 to 19.8 MiB over

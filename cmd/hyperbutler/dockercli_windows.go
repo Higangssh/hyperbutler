@@ -17,9 +17,10 @@ import (
 	"github.com/Higangssh/hyperbutler/internal/engine/dockerctx"
 )
 
-// The release zip carries the docker CLI and the compose plugin in clients\ next to
-// hyperbutler.exe (dist/clients.lock): clients\docker.exe and
-// clients\cli-plugins\docker-compose.exe. The README puts the hyperbutler folder on PATH,
+// The release zip carries the docker CLI and the compose and buildx plugins in clients\
+// next to hyperbutler.exe (dist/clients.lock): clients\docker.exe,
+// clients\cli-plugins\docker-compose.exe and clients\cli-plugins\docker-buildx.exe. The
+// README puts the hyperbutler folder on PATH,
 // and clients\ only for someone without a docker CLI, so a docker CLI installed later
 // is not shadowed. hyperbutler never copies them anywhere and never changes PATH: a
 // docker.exe already on PATH (Docker Desktop's, a standalone install, a package
@@ -153,8 +154,9 @@ func checkDockerCLI(c dockerCLI, stdout, stderr io.Writer) {
 
 // syncCompose offers the bundled compose plugin to the docker CLI as a fallback (see
 // dockerctx.SyncPluginDir): it is used only while no other docker-compose is in the
-// CLI's plugin search. It runs with the context management (context.manage), since it
-// edits the same config.json.
+// CLI's plugin search. The bundled buildx is in the same folder and comes and goes with
+// it (docs/compat.md, Buildx and BuildKit). It runs with the context management
+// (context.manage), since it edits the same config.json.
 func syncCompose(store dockerctx.Store, stdout, stderr io.Writer) {
 	d := clientsDir()
 	if d == "" || !isRegular(filepath.Join(d, pluginsDirName, composePlugin)) {

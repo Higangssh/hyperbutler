@@ -17,8 +17,8 @@
 # (-X ...imageset.pinnedManifest), so the release binary boots only that image (ADR 0005,
 # Decision 4).
 #
-# The docker CLI and the compose plugin (clients\ in the zip) are built here from the
-# source modules pinned in dist/clients.lock: fetched through the Go module proxy,
+# The docker CLI and the compose and buildx plugins (clients\ in the zip) are built here
+# from the source modules pinned in dist/clients.lock: fetched through the Go module proxy,
 # checked against sum.golang.org and against the lock's own h1: hash, and built with
 # their upstream build tags and version flags, CGO_ENABLED=0, -trimpath. Their
 # dependencies are checked against the source's own go.sum. -NoClients leaves them out
@@ -307,7 +307,7 @@ try {
         $env:GOOS, $env:GOARCH, $env:CGO_ENABLED, $env:GOTOOLCHAIN, $env:GOFLAGS = $saved
     }
 
-    # --- Windows clients: docker CLI and compose plugin, built from source ---------------
+    # --- Windows clients: docker CLI, compose and buildx plugins, built from source -------
     # In clients\, not next to hyperbutler.exe: the folder the README puts on PATH holds no
     # docker.exe, so a docker CLI installed later is never shadowed by this one.
     $clientLines = @()
@@ -315,7 +315,11 @@ try {
         Warn '-NoClients: the zip has no docker CLI'
     } else {
         if (-not $ClientLock) { $ClientLock = Join-Path $dist 'clients.lock' }
-        $want = @{ 'docker-cli' = 'clients/docker.exe'; 'docker-compose' = 'clients/cli-plugins/docker-compose.exe' }
+        $want = @{
+            'docker-cli'     = 'clients/docker.exe'
+            'docker-compose' = 'clients/cli-plugins/docker-compose.exe'
+            'docker-buildx'  = 'clients/cli-plugins/docker-buildx.exe'
+        }
         $entries = @()
         foreach ($l in Get-Content $ClientLock) {
             if ($l -match '^\s*(#|$)') { continue }
@@ -356,8 +360,8 @@ try {
         }
         $savedEnv = $env:GOOS, $env:GOARCH, $env:CGO_ENABLED, $env:GOTOOLCHAIN, $env:GOFLAGS
         $index.Add('')
-        $index.Add('== Windows clients in clients/: docker.exe and cli-plugins/docker-compose.exe, built from')
-        $index.Add('   the source modules in dist/clients.lock')
+        $index.Add('== Windows clients in clients/: docker.exe, cli-plugins/docker-compose.exe and')
+        $index.Add('   cli-plugins/docker-buildx.exe, built from the source modules in dist/clients.lock')
         $index.Add('')
         $goSaved = EnterPinnedGoEnv
         try {
@@ -393,6 +397,13 @@ try {
                     $ld = "-s -w -buildid= -X github.com/docker/cli/cli/version.GitCommit=$short " +
                         "-X github.com/docker/cli/cli/version.BuildTime=$($e.Time) -X github.com/docker/cli/cli/version.Version=$v"
                     $pkg = './cmd/docker'
+                } elseif ($e.Name -eq 'docker-buildx') {
+                    # Dockerfile, target buildx-build: CGO_ENABLED=0, no tags, and these -X
+                    # flags, with the tag as the version and the whole commit as the revision.
+                    $tags = ''
+                    $ld = "-s -w -buildid= -X github.com/docker/buildx/version.Version=$($e.ModVersion) " +
+                        "-X github.com/docker/buildx/version.Revision=$($e.Commit) -X github.com/docker/buildx/version.Package=github.com/docker/buildx"
+                    $pkg = './cmd/buildx'
                 } else {
                     # Makefile and Dockerfile: CGO_ENABLED=0, the e2e tag, and the version flag.
                     $tags = 'e2e'
@@ -403,7 +414,9 @@ try {
                 Push-Location $tree
                 try {
                     Write-Host "building $($want[$e.Name]) from $($e.Mod)@$($e.ModVersion)"
-                    Exec go build -trimpath -buildvcs=false -tags $tags -ldflags $ld -o $dst $pkg | Out-Null
+                    # Windows PowerShell drops an empty argument, so no tags means no -tags.
+                    $tagArgs = if ($tags) { @('-tags', $tags) } else { @() }
+                    Exec go build -trimpath -buildvcs=false @tagArgs -ldflags $ld -o $dst $pkg | Out-Null
                 } finally { Pop-Location }
                 $env:GOFLAGS = ''
 
@@ -437,7 +450,7 @@ try {
                     foreach ($lf in $files) { Copy-Item -LiteralPath $lf.FullName (Join-Path $mdst $lf.Name) }
                     $index.Add("  $($d.Path)  $($d.Version)  " + (($files | ForEach-Object { "clients/$($e.Name)/go/$($d.Path)/$($_.Name)" }) -join ' '))
                 }
-                $clientLines += "  $(Sha256 $dst)  $($want[$e.Name])  ($($e.Mod)@$($e.ModVersion) $($e.Sum), commit $($e.Commit); -tags $tags -ldflags `"$ld`")"
+                $clientLines += "  $(Sha256 $dst)  $($want[$e.Name])  ($($e.Mod)@$($e.ModVersion) $($e.Sum), commit $($e.Commit); $(if ($tags) { "-tags $tags " })-ldflags `"$ld`")"
             }
         } finally {
             ExitPinnedGoEnv $goSaved
@@ -517,7 +530,8 @@ try {
         '     Leave the files in image\ alone (Windows offers to mount system.vhd). To upgrade,',
         '     run hyperbutler stop and extract the new archive there, replacing every file.',
         '  2. Add that folder to your user PATH. If you have no docker CLI yet, add its',
-        '     clients\ subfolder too: it holds docker.exe and cli-plugins\docker-compose.exe.',
+        '     clients\ subfolder too: it holds docker.exe and, in cli-plugins\, docker-compose.exe',
+        '     and docker-buildx.exe.',
         '  3. hyperbutler start',
         '  4. docker run --rm hello-world',
         '  5. hyperbutler stop',
@@ -545,7 +559,7 @@ try {
         "hyperbutler-broker.exe: $(Sha256 $brokerExe)",
         "guest image pin (image.json sha256): $(if ($pin) { $pin } else { 'none' })",
         'guest image:'
-    ) + $imageLines + @('docker CLI and compose plugin (built from source, dist/clients.lock):') + $(if ($clientLines.Count) { $clientLines } else { @('  none (-NoClients)') })
+    ) + $imageLines + @('docker CLI, compose and buildx plugins (built from source, dist/clients.lock):') + $(if ($clientLines.Count) { $clientLines } else { @('  none (-NoClients)') })
     $gbi = Join-Path $ImageDir 'BUILDINFO.txt'
     if (Test-Path $gbi) { $bi += 'guest image build:'; $bi += (Get-Content $gbi | ForEach-Object { "  $_" }) }
     WriteText (Join-Path $stage 'BUILDINFO.txt') $bi

@@ -94,6 +94,15 @@ not even without Docker Desktop, because a later Docker Desktop install would th
 in a confusing way. Back to the default: `hyperbutler config unset pipe`, then
 `hyperbutler restart`.
 
+### `docker build` and buildx
+
+The release carries the buildx plugin (`clients\cli-plugins\docker-buildx.exe`), so a plain
+`docker build` uses BuildKit and `docker buildx` works, with no flags and through
+`DOCKER_HOST` as well as a docker context. Buildx names its builder after the context:
+`default` under `DOCKER_HOST`, `hyperbutler` under the `hyperbutler` context. Which buildx
+runs when you have your own, and what was tested:
+[compat.md](compat.md#the-docker-cli-and-docker-desktop).
+
 ## Moving from Docker Desktop (REQ-UX-023, REQ-UX-021)
 
 The two engines keep separate data disks; nothing is shared or migrated automatically.

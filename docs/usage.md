@@ -47,8 +47,8 @@ which needs no installer and no admin rights, except the one-time prerequisites.
    developer arrangement, not the supported one: the MSI's broker service needs none.
    When you no longer need it, remove it the same way with `/delete` instead of `/add`.
 
-4. Nothing else: the zip comes with the `docker` CLI and the compose plugin (in its
-   `clients\` folder, built from Docker's source). A docker CLI you already have, 19.03 or
+4. Nothing else: the zip comes with the `docker` CLI and the compose and buildx plugins (in
+   its `clients\` folder, built from Docker's source). A docker CLI you already have, 19.03 or
    later (Docker Desktop's, or any other), works too. Docker Desktop is not needed.
 
 WSL is not needed and can stay disabled.
@@ -129,6 +129,11 @@ so you can delete them.
   and takes it out again when one appears. Docker Desktop's or your own compose always
   wins. With `context.manage false`, nothing is added; run
   `docker compose` from Docker Desktop, or add the folder to `cliPluginsExtraDirs` yourself.
+- That folder also holds the buildx plugin, which makes a plain `docker build` use BuildKit.
+  It comes and goes with the folder, so with your own compose and no buildx, `docker build`
+  uses the legacy builder until you copy `docker-buildx.exe` to
+  `%USERPROFILE%\.docker\cli-plugins`, and with your own buildx and no compose, the bundled
+  one is used instead of yours ([compat.md](compat.md#the-docker-cli-and-docker-desktop)).
 - Docker Desktop can run at the same time: hyperbutler serves `\\.\pipe\docker_engine_hyperbutler`,
   not Desktop's `docker_engine`, and only adds its own `hyperbutler` docker context. `start`
   selects it (and prints the one it replaced); switch back with `docker context use

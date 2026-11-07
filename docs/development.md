@@ -103,7 +103,7 @@ powershell -ExecutionPolicy Bypass -File guest\prototype\build.ps1 -Out $env:TEM
 powershell -ExecutionPolicy Bypass -File dist\package.ps1 -ImageDir $env:TEMP\guest -Snapshot
 ```
 
-It builds the bundled docker CLI and compose from `dist/clients.lock`, which needs the Go
+It builds the bundled docker CLI, compose and buildx from `dist/clients.lock`, which needs the Go
 module proxy (or a filled module cache); `-NoClients` leaves them out.
 
 ## The module path and MCPGODEBUG

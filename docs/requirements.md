@@ -419,6 +419,12 @@ Status of the 0.2 usage requirements (2026-11-01; checked on one machine, Window
   \\.\pipe\docker_engine` as the opt-in, which warns when Docker Desktop is installed or
   that pipe is served. The IDE steps are from their documentation, not run
   (REQ-API-002's `bench/compat-tools`).
+- REQ-API-001, build (BuildKit), 2026-11-07: the release did not have it until now. It
+  carried no buildx plugin, so `docker build` ran the legacy builder. It now bundles buildx
+  v0.38.2 from source (`dist/clients.lock`), which BuildKit features need. Checked by hand
+  on one machine (docs/compat.md, Buildx and BuildKit), not with `bench/compat`. The plugin
+  adds 24.6 MB to the zip and 19.5 MB to the MSI; REQ-UX-002 is still met, with little
+  room left (docs/release.md).
 - REQ-FS-006: met. The proxy refuses UNC (`\\server\share`, `\\?\UNC\...`), `\\wsl$` and
   `\\wsl.localhost`, device paths and folders on a mapped network drive in `-v` and
   `--mount`, before dockerd sees them, with why and what to do (unit tests; on the VM

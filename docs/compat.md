@@ -82,9 +82,10 @@ and `status` says so.
 REQ-UX-001, REQ-API-001. Code: `cmd/hyperbutler/dockercli_windows.go`,
 `internal/engine/dockerctx`.
 
-**Which docker CLI.** The release zip carries `clients\docker.exe` and
-`clients\cli-plugins\docker-compose.exe`, built by `dist/package.ps1` from the docker/cli
-and docker/compose source modules pinned in `dist/clients.lock`. They sit in a subfolder
+**Which docker CLI.** The release zip carries `clients\docker.exe`,
+`clients\cli-plugins\docker-compose.exe` and `clients\cli-plugins\docker-buildx.exe`, built
+by `dist/package.ps1` from the docker/cli, docker/compose and docker/buildx source modules
+pinned in `dist/clients.lock`. They sit in a subfolder
 so that the folder on PATH (the one with `hyperbutler.exe`) holds no `docker.exe`: the
 README adds `clients\` to PATH only for someone without a docker CLI. hyperbutler never
 edits PATH (system or user), never copies a CLI anywhere, and runs no docker CLI except
@@ -107,9 +108,50 @@ not, finds the bundled compose. With the context management on (`context.manage`
 default), `start` lists `clients\cli-plugins` in `cliPluginsExtraDirs` while no other
 `docker-compose.exe` is in that search, and takes it out again when one appears (Docker
 Desktop installs into `%ProgramFiles%\Docker\cli-plugins`). An extra directory comes
-first, so listing it next to another copy would shadow that copy; this rule never does.
+first, so listing it next to another compose would shadow that copy; this rule never does.
 Nothing is copied into `~/.docker/cli-plugins`. `hyperbutler delete` and `hyperbutler
 uninstall` take the entry out.
+
+**Buildx and BuildKit.** dockerd in the guest has BuildKit built in (`docker buildx ls`
+reports v0.34.0), but the docker CLI reaches it only through the buildx plugin. Without
+the plugin `docker build` falls back to the legacy builder ("DEPRECATED: The legacy
+builder is deprecated") and stops at `RUN --mount` ("the --mount option requires
+BuildKit"), and `docker compose build` refuses `secrets` ("the classic builder doesn't
+support secrets"). With it, a plain `docker build` uses BuildKit with no flag.
+
+`docker-buildx.exe` is in the same folder as compose, so the rule above registers both or
+neither, and it looks at compose alone:
+
+| Plugins you already have | `docker compose` | `docker build` |
+|---|---|---|
+| none | bundled | BuildKit, bundled buildx |
+| compose and buildx (Docker Desktop) | yours | yours |
+| only compose | yours | legacy builder, as without hyperbutler: the folder is not listed |
+| only buildx | bundled | **BuildKit, bundled buildx**: the listed folder comes first and shadows yours |
+
+For the third row, copy `clients\cli-plugins\docker-buildx.exe` to
+`%USERPROFILE%\.docker\cli-plugins`, or install buildx your own way. The last two rows
+were checked with the plugin search of the CLI (`docker info`), not with `hyperbutler
+start`.
+
+Tested on 2026-11-07 with buildx v0.38.2, the docker CLI 29.9.2 and compose v5.7.0 against
+the v0.1.1 guest image, on one machine: `RUN --mount=type=cache` (kept across builds that
+do not pass `--no-cache`; a `--no-cache` build starts on an empty cache mount), heredocs in
+`RUN` and `COPY`, `COPY --link`, `--target`, `--build-arg`, `--secret` (not left in the
+image), `.dockerignore`, Windows paths for the context, `-f`, `--secret`, `--iidfile`,
+`--metadata-file` and `--output type=local`, a Dockerfile on stdin, a context of 420 MB and
+500 small files (checksum matches), three builds at once, a client killed in mid-build,
+`buildx ls`, `du`, `inspect`, `bake`, `history ls` and `imagetools inspect`, `docker compose
+build` with build secrets, `-H`, `DOCKER_HOST` and a docker context, and a
+`docker-container` builder (`buildx create`, `--load`, `rm`). All of it goes through the
+Docker API proxy unchanged: `/grpc` and `/session` take the connection over, and the
+request filter copies such a connection byte for byte (`internal/transport/rewrite.go`).
+
+With a docker context selected and nothing serving `\\.\pipe\docker_engine`, `docker buildx
+ls` also prints a `default` row with status `error` and "Cannot load builder default:
+failed to connect to the docker API". Buildx lists every docker context, and the `default`
+one points at that pipe. It exits 0 and the selected builder works; `buildx du` and builds
+do not print it.
 
 **Docker Desktop at the same time.**
 
@@ -118,7 +160,7 @@ uninstall` take the entry out.
 | Docker API pipe | `\\.\pipe\docker_engine` (context `default`), `\\.\pipe\dockerDesktopLinuxEngine` (context `desktop-linux`) | `\\.\pipe\docker_engine_hyperbutler` (setting `pipe`), context `hyperbutler`; `start` fails if the pipe is taken |
 | docker contexts | `desktop-linux` and others | only its own `hyperbutler`, marked `HyperbutlerManaged`; a foreign context of that name is left alone |
 | `currentContext` in `config.json` | set by Desktop | `start` selects `hyperbutler` and prints the context it replaced; every other key is kept |
-| compose plugin | `%ProgramFiles%\Docker\cli-plugins` | used only when there is no other (above) |
+| compose and buildx plugins | `%ProgramFiles%\Docker\cli-plugins` | used only when there is no other compose (above) |
 
 **Not covered** (no Docker Desktop on the test machine; from reading the code):
 
