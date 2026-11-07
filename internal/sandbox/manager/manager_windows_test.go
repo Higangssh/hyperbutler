@@ -104,13 +104,16 @@ func (h *fakeHost) Boot(_ context.Context, r BootRequest) (VM, error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.boots++
-	v := h.vms[r.Slot]
-	if v == nil {
-		v = &fakeVM{t: h.t, dir: h.t.TempDir()}
-		h.vms[r.Slot] = v
+	// A new VM each boot, on the disk the slot had.
+	v := &fakeVM{t: h.t, gone: make(chan struct{})}
+	if old := h.vms[r.Slot]; old != nil {
+		old.mu.Lock()
+		v.dir, v.base = old.dir, old.base
+		old.mu.Unlock()
+	} else {
+		v.dir = h.t.TempDir()
 	}
-	v.gone = make(chan struct{})
-	v.once = sync.Once{}
+	h.vms[r.Slot] = v
 	return v, nil
 }
 
