@@ -1,7 +1,9 @@
 #!/bin/sh
 # Linux port of guest/prototype/build.ps1: the ADR 0005 A2b image (kernel, stage-1
 # initramfs, read-only erofs system disk, manifest). It is the default `build-script` of
-# .github/workflows/guest-image.yml.
+# .github/workflows/guest-image.yml. It also writes kernel-modules.tar, which build.ps1
+# does not: the sandbox image's CI build (build-sandbox.sh) reads it, and the zip does not
+# carry it.
 #
 # Build-script contract (what guest-image.yml provides, and what any replacement must
 # accept):
@@ -131,6 +133,10 @@ stage_modules() {
 }
 stage_modules "$stage/modules-boot" modules-boot.txt
 stage_modules "$stage/modules" modules-boot.txt modules.txt
+# The sandbox image boots this kernel and copies these modules into its own system disk
+# (build-sandbox.sh). Sorted, with a fixed time, owner and modes: a function of the inputs.
+tar --sort=name --mtime=@0 --owner=0 --group=0 --numeric-owner --mode=u+rwX,go+rX,go-w --format=gnu \
+    -C "$stage" -cf "$HYPERBUTLER_OUT/kernel-modules.tar" modules
 
 # --- tools and guest binaries ---------------------------------------------------------
 tools="$HYPERBUTLER_WORK/tools"

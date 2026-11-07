@@ -8,7 +8,8 @@ name: Guest image
 # Reusable: ci.yml calls it on every push and PR, release.yml calls it on a tag with
 # strict mode and the source bundle on. The build script, lock file and output names are
 # inputs; the defaults build the ADR 0005 A2b layout (kernel, stage 1, erofs system disk,
-# manifest), the same as guest/prototype/build.ps1.
+# manifest), the same as guest/prototype/build.ps1, plus kernel-modules.tar for
+# sandbox-image.yml.
 
 on:
   workflow_call:
@@ -24,7 +25,7 @@ on:
       outputs:
         description: Space-separated file names the build script must produce
         type: string
-        default: vmlinuz-virt initramfs-stage1.gz system.vhd image.json
+        default: vmlinuz-virt initramfs-stage1.gz system.vhd image.json kernel-modules.tar
       strict:
         description: Accept only signed Alpine packages (inputs whose source can be bundled)
         type: boolean

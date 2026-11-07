@@ -126,6 +126,19 @@ jobs:
       strict: true
       with-sources: ${{ github.event_name != 'pull_request' }}
 
+  # The canonical sandbox image build (ADR 0009) on the kernel and modules just built, the
+  # same one release.yml runs. Like the guest image's, its source bundle is built on pushes
+  # to main and manual runs only.
+  sandbox-image:
+    needs: guest-image
+    uses: ./.github/workflows/sandbox-image.yml
+    permissions:
+      contents: read
+    with:
+      guest-artifact-name: ${{ needs.guest-image.outputs.artifact-name }}
+      guest-sums-sha256: ${{ needs.guest-image.outputs.sums-sha256 }}
+      with-sources: ${{ github.event_name != 'pull_request' }}
+
   # 88 targets at 10 s each keeps this under about 20 minutes. Longer runs happen once a
   # week in fuzz-weekly.yml.
   fuzz:

@@ -47,7 +47,7 @@ the double-click launcher.
 
 Both build inside a digest-pinned container and need a Docker engine (hyperbutler itself
 works). Images you build locally are for testing only; release images are built only in
-CI.
+CI (`.github/workflows/guest-image.yml` and `sandbox-image.yml`).
 
 ## Tests
 

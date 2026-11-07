@@ -371,6 +371,11 @@ Some limits on that:
    attestations. `hyperbutler.exe` embeds the expected hashes (since 2026-11-01: the
    SHA-256 of `image.json`, which carries the others; see "A2b implementation").
 
+   The agent sandbox image (ADR 0009) follows the same rule by another path: CI only, its
+   own pinned container and lock (Debian, `guest/sandbox/debian.lock`), and its own source
+   bundle, from `.github/workflows/sandbox-image.yml`. It boots this image's kernel and
+   stage 1, and takes this build's `kernel-modules.tar`.
+
    Two paths for contributors without WSL:
    - The initramfs can be rebuilt natively on Windows. That works today, with `guest/cmd/mkinitramfs`.
    - The erofs image is built by `mkfs.erofs` in a pinned Alpine container on any Docker

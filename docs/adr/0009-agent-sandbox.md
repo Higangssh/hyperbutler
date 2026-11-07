@@ -312,8 +312,8 @@ git bundle for commits, and the `open` and `locked` egress modes.
   lock decides every version and hash. The packages themselves come from Debian's own
   mirrors (fast) and from the snapshot only when the mirrors no longer carry a file
   (the snapshot is slow and answers 503 under load); apt checks each against the
-  snapshot's indexes either way. `sandbox-packages.tsv` lists what went in, for the
-  source offer.
+  snapshot's indexes either way. `sandbox-packages.tsv` lists what went in: package,
+  version, architecture, source package and source version, tab-separated and sorted.
 - The kernel and the stage-1 initramfs are the Docker image's: the build checks that the
   kernel's version names the kernel modules it copies in, and writes its own
   `image.json`, so the sandbox image has its own pin (`imageset.SandboxPin`).
@@ -337,6 +337,36 @@ it came before sbxd listened (each attempt now gets one second); trixie's essent
 has no `mount`; Debian's kmod needs `depmod`'s binary indexes. The build now checks that
 every command the init runs is in the tree. Changes made inside the session wait for
 the agent's terminal.
+
+**CI build and source bundle (2026-11-07).** Release images come only from CI (ADR 0005,
+Decision 4): `.github/workflows/sandbox-image.yml` checks the guest-image artifact of the
+same run against the digest its caller passes, and `scripts/guest-image/build-sandbox.sh`
+does build.ps1's steps on the Ubuntu runner, with the same output names. The kernel's
+modules come from the guest image's `kernel-modules.tar`, which build.ps1 instead reads from
+its cache. The one difference in the container's options is `apparmor=unconfined`:
+Docker's default AppArmor profile denies mount even with `SYS_ADMIN`, and the runner
+has AppArmor. `ci.yml` and `release.yml` call the workflow; nothing consumes its artifact
+yet, so no release carries the image until how it ships is decided. `build-rootfs.sh` now
+fixes the modules' modes and times, which came from wherever they were staged: from the
+same inputs and Go version, build.ps1 and build-sandbox.sh made the same `system.vhd`, byte
+for byte (run on the same machine and engine, 2026-11-07).
+
+With `with-sources`, `scripts/guest-image/sandbox-sources.sh` runs in the same pinned
+container, with deb-src lines from the same snapshot and mirror priorities, so apt checks
+every file against the snapshot's signed Sources indexes. It downloads every source package
+in `sandbox-packages.tsv` at its exact version; a missing version fails the build. It
+also holds each `.dsc` to the list (apt's own comparison calls `1.0` and `1.0-0` equal) and
+each file to its `.dsc`. The artifact gets `sandbox-sources.tar`, its manifest
+`sandbox-sources.tsv` and the release text `SANDBOX-SOURCES.txt`. A tar of 2 GiB or more, the
+limit of a GitHub release asset, becomes numbered parts of 2000 MiB
+(`sandbox-sources.tar.000`, `.001`, ...; join them with `cat`).
+
+First bundle (snapshot 20261105T000000Z, 2026-11-07): 448 source packages for 566 binary
+packages, 2,096 files, 941,281,280 bytes (898 MiB; about 2.4 times the system disk), so
+one asset and no parts. It took 8 min 13 s through the reference laptop's engine (939 MB in
+7 min 40 s at 2 MB/s), every file from the Debian mirrors and none from the snapshot. The
+largest are `linux` 152 MB (`linux-libc-dev`), `node-corepack` 126 MB, `gcc-14` 94 MB and
+`npm` 68 MB.
 
 Reviewed on 2026-11-05. Fixed: a `.git` at any depth (a planted `sub/.git` would run
 code at the next `git status`) is never applied and never copied; a work tree with no
