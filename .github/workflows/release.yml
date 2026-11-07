@@ -6,8 +6,8 @@ name: Release
 #
 #   guest-image  canonical guest image + GPL source bundle (strict: signed inputs only)
 #   package      hyperbutler.exe and hyperbutler-broker.exe (both pinned to the guest
-#                image's image.json), the docker CLI
-#                and compose built from dist/clients.lock, and the portable zip
+#                image's image.json), the docker CLI,
+#                compose and buildx built from dist/clients.lock, and the portable zip
 #                (dist/package.ps1), on Windows
 #   sbom         SPDX SBOM of the zip contents (syft), with no write permissions
 #   publish      SHA256SUMS, build provenance attestation, draft release

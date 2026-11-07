@@ -95,8 +95,8 @@ Everything else, from published ports to troubleshooting, is in the [docs](docs/
 
 ## Features
 
-**Docker CLI and Compose.** The bundled `docker` CLI and compose plugin are built from pinned
-source; your own docker CLI works too. Builds, healthchecks, service names, named volumes,
+**Docker CLI and Compose.** The bundled `docker` CLI and the compose and buildx plugins are
+built from pinned source; your own docker CLI works too. Builds, healthchecks, service names, named volumes,
 bind mounts and published ports are tested end to end (`bench/compose`).
 [More](docs/usage.md#the-docker-cli-compose-and-docker-desktop)
 
