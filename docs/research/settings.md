@@ -392,8 +392,9 @@ fields are only added; removing or renaming one means a new version.
   SHA-256 of that image's `image.json` (ADR 0005, Decision 4).
   Added 2026-11-07, within schema 1: `sandboxImagePinned`, and in a build that has them
   `sandboxImageManifestSha256` (the agent sandbox image's `image.json`), `sandboxMsi`,
-  `sandboxMsiSha256` and `sandboxMsiBytes` (its installer, as `sandbox install` fetches it; the
-  size is a string of digits, as it is linked in) (ADR 0009, "Shipping the image").
+  `sandboxMsiSha256`, `sandboxMsiBytes` and `sandboxMsiProductCode` (its installer, as `sandbox
+  install` fetches it; the size is a string of digits, as it is linked in) (ADR 0009, "Shipping the
+  image").
 - `status`: `schema`, `running`, `setUp`, `home`, `dockerContextSelected`, `daemonJson`,
   `daemonJsonExists`, and when known `state` (the engine's state.json, with `daemonConfig`,
   `imageDir`, `pastRuntimeIds` (this installation's last 16 VM runtime ids), `hostGateway`: `address`, `enabled`, `ports`, `reloads`, `error`, and `unpublishedPorts`: the published ports of running containers that could not be mirrored on the host, each with `container`, `port`, `reason`, `since`), `dataDir`, `disk`, `diskHostBytes`, `diskSizeBytes`, `hostFreeBytes`,

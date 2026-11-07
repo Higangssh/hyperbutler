@@ -62,6 +62,8 @@ type machineProduct struct {
 	installDir     string // the main MSI's folder; empty when it is not installed
 	service        bool   // the broker service exists
 	sandboxVersion string // the sandbox MSI's version; empty when it is not installed
+	// sandboxProductCode is that MSI's product code, with braces.
+	sandboxProductCode string
 }
 
 // readMachineProduct reads it. A key that cannot be read counts as not installed.
@@ -71,6 +73,7 @@ func readMachineProduct() machineProduct {
 		defer func() { _ = k.Close() }()
 		m.installDir, _, _ = k.GetStringValue(regInstallDir)
 		m.sandboxVersion, _, _ = k.GetStringValue(regSandboxVersion)
+		m.sandboxProductCode, _, _ = k.GetStringValue(regSandboxProductCode)
 	}
 	st, err := machineService.query()
 	m.service = err == nil && st.Installed
@@ -142,8 +145,8 @@ func newSandboxSetup(in *install) (*sandboxSetup, error) {
 		},
 	}
 	s.manifestPin, _ = imageset.SandboxPin()
-	sum, name, size := imageset.SandboxMSIPin()
-	s.msi, s.msiErr = sandboxmsi.ParsePin(sum, name, size)
+	sum, name, size, code := imageset.SandboxMSIPin()
+	s.msi, s.msiErr = sandboxmsi.ParsePin(sum, name, size, code)
 	s.verify = func() error {
 		set, err := imageset.Open(s.manifest, s.manifestPin)
 		if err != nil {
@@ -199,10 +202,10 @@ func (s *sandboxSetup) install(ctx context.Context, localMSI string, stdout, std
 	}
 	res, err := s.run(ctx, &sandboxmsi.Installer{
 		Pin: s.msi, Dir: s.dir, Fetch: fetch, Lock: sandboxmsi.Lock, Exec: sandboxmsi.Exec, Verify: s.verify,
-		// The product already there at this very version is the same MSI, which msiexec
-		// would otherwise only open in maintenance mode and leave as it is. An older one is
-		// a major upgrade, for which that would install nothing.
-		Reinstall: sameSandboxVersion(s.product().sandboxVersion, s.msi.Name),
+		// The product already there with this product code is this MSI, which msiexec would
+		// otherwise only open in maintenance mode and leave as it is. Anything else is a major
+		// upgrade, for which that would remove the old product and install nothing.
+		Reinstall: strings.EqualFold(strings.Trim(s.product().sandboxProductCode, "{}"), s.msi.ProductCode),
 		Note:      func(f string, a ...any) { _, _ = fmt.Fprintf(stderr, f+"\n", a...) },
 	})
 	if err != nil {
@@ -214,12 +217,6 @@ func (s *sandboxSetup) install(ctx context.Context, localMSI string, stdout, std
 	}
 	_, _ = fmt.Fprintln(stdout, "The agent sandbox image is installed. `hyperbutler sandbox run DIR` starts a session.")
 	return nil
-}
-
-// sameSandboxVersion reports whether the product at installed version is the pinned file's:
-// dist/package.ps1 names the MSI after the version it records.
-func sameSandboxVersion(installed, msiName string) bool {
-	return installed != "" && strings.HasPrefix(msiName, "hyperbutler-"+installed+"-sandbox-")
 }
 
 // sandboxInstall is `hyperbutler sandbox install`.
@@ -266,7 +263,9 @@ func (s *sandboxSetup) ensure(ctx context.Context, stdin io.Reader, stdout, stde
 	if !s.console(stdin) {
 		return fmt.Errorf("the agent sandbox image %s. Run `%s` to install it (%s from github.com)", what, sandboxInstallCommand, engine.HumanSize(uint64(s.msi.Bytes))) //nolint:gosec // G115: ParsePin keeps it positive
 	}
-	_, _ = fmt.Fprintf(stdout, "The agent sandbox image %s. Download it from github.com (%s) and install it? Windows asks for permission once. [y/N] ", what, engine.HumanSize(uint64(s.msi.Bytes))) //nolint:gosec // G115: ParsePin keeps it positive
+	// On stderr: stdout may be redirected while stdin is the console, and a question nobody
+	// sees looks like a hang.
+	_, _ = fmt.Fprintf(stderr, "The agent sandbox image %s. Download it from github.com (%s) and install it? Windows asks for permission once. [y/N] ", what, engine.HumanSize(uint64(s.msi.Bytes))) //nolint:gosec // G115: ParsePin keeps it positive
 	line, _ := bufio.NewReader(stdin).ReadString('\n')
 	if a := strings.ToLower(strings.TrimSpace(line)); a != "y" && a != "yes" {
 		return fmt.Errorf("the agent sandbox image %s. `%s` installs it when you want it", what, sandboxInstallCommand)

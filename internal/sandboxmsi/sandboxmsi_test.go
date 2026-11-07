@@ -25,10 +25,16 @@ func hashOf(b []byte) string {
 func TestParsePin(t *testing.T) {
 	sum := strings.Repeat("a", 64)
 	good := "hyperbutler-v0.2.0-rc.1-sandbox-windows-amd64.msi"
-	if _, err := ParsePin("", "", ""); !errors.Is(err, ErrNoPin) {
+	const code = "11111111-2222-3333-4444-555555555555"
+	for _, bad := range []string{"", "{" + code + "}", "11111111-2222-3333-4444-55555555555a", "11111111222233334444555555555555", code + "0"} {
+		if _, err := ParsePin(sum, good, "1", bad); err == nil || errors.Is(err, ErrNoPin) {
+			t.Errorf("product code %q: %v", bad, err)
+		}
+	}
+	if _, err := ParsePin("", "", "", ""); !errors.Is(err, ErrNoPin) {
 		t.Errorf("empty: %v", err)
 	}
-	p, err := ParsePin(sum, good, "270000000")
+	p, err := ParsePin(sum, good, "270000000", code)
 	if err != nil || p.Bytes != 270000000 || p.Name != good || p.SHA256 != sum {
 		t.Fatalf("%+v %v", p, err)
 	}
@@ -56,7 +62,7 @@ func TestParsePin(t *testing.T) {
 		{sum, good, fmt.Sprint(int64(MaxPinBytes) + 1)},
 		{sum, good, "99999999999999999999"},
 	} {
-		if _, err := ParsePin(c[0], c[1], c[2]); err == nil || errors.Is(err, ErrNoPin) {
+		if _, err := ParsePin(c[0], c[1], c[2], code); err == nil || errors.Is(err, ErrNoPin) {
 			t.Errorf("%q: %v", c, err)
 		}
 	}
@@ -112,7 +118,7 @@ func FuzzParsePin(f *testing.F) {
 	f.Add(strings.Repeat("a", 64), "x.msi", "1")
 	f.Add("", "", "")
 	f.Fuzz(func(t *testing.T, sum, name, size string) {
-		p, err := ParsePin(sum, name, size)
+		p, err := ParsePin(sum, name, size, "11111111-2222-3333-4444-555555555555")
 		if err != nil {
 			return
 		}

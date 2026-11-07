@@ -41,6 +41,7 @@ type VersionJSON struct {
 	SandboxMSI           string `json:"sandboxMsi,omitempty"`
 	SandboxMSISha256     string `json:"sandboxMsiSha256,omitempty"`
 	SandboxMSIBytes      string `json:"sandboxMsiBytes,omitempty"`
+	SandboxMSIProduct    string `json:"sandboxMsiProductCode,omitempty"`
 }
 
 // The documents the GUI reads too live in internal/schema; these names keep the CLI's.
@@ -115,7 +116,7 @@ func versionInfo() VersionJSON {
 	v := VersionJSON{Schema: SchemaVersion, Version: "(devel)", GoVersion: runtime.Version(), OS: runtime.GOOS, Arch: runtime.GOARCH}
 	v.ImageManifest, v.ImagePinned = engine.ImagePin()
 	v.SandboxImageManifest, v.SandboxImagePinned = imageset.SandboxPin()
-	v.SandboxMSISha256, v.SandboxMSI, v.SandboxMSIBytes = imageset.SandboxMSIPin()
+	v.SandboxMSISha256, v.SandboxMSI, v.SandboxMSIBytes, v.SandboxMSIProduct = imageset.SandboxMSIPin()
 	if bi, ok := debug.ReadBuildInfo(); ok {
 		if bi.Main.Version != "" {
 			v.Version = bi.Main.Version

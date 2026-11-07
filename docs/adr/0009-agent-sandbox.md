@@ -502,15 +502,18 @@ most users never start a session. Decided by the maintainer: **a separate MSI, d
 first use, verified by a pinned hash, installed with one UAC prompt.** The alternatives were a
 per-user copy, which would make the broker boot an image from a folder the user can write and so
 grow what it has to trust, and a machine-wide download by the broker, which would give a SYSTEM
-service a network client. As built, the broker gains nothing: it still boots only what is next to
+service a network client. The price of an MSI is disk: Windows Installer keeps a copy of the
+package, so about 640 MB in all rather than 400 MB. As built, the broker gains nothing: it still boots only what is next to
 it in Program Files, against the pin compiled into it.
 
 - **Pins.** `dist/package.ps1 -SandboxImageDir` builds `hyperbutler-<tag>-sandbox-windows-amd64.msi`
   first, then links the image's `image.json` hash into `hyperbutler.exe` and the broker
   (`imageset.pinnedSandboxManifest`) and the MSI's hash, name and size into `hyperbutler.exe`
-  (`pinnedSandboxMSI`, `...Name`, `...Bytes`). `version --json` and `-version-json` report them and
-  `package.ps1` checks that they do. A release without them fails. A rebuilt MSI has new product
-  and package codes, so `hyperbutler.exe` is reproducible only given the released MSI's hash.
+  and product code (`pinnedSandboxMSI`, `...Name`, `...Bytes`, `...ProductCode`). `version --json`
+  and `-version-json` report them and `package.ps1` checks that they do. A release without them
+  fails. A rebuilt MSI has new product and package codes, so `hyperbutler.exe` is reproducible only
+  given the released MSI's hash and product code. The product code tells a rewrite of the same file
+  (`REINSTALL`) from an upgrade, where `REINSTALL` would remove the old image and install nothing.
 - **The download** (`internal/sandboxmsi`, `hyperbutler sandbox install`). Only on request: the
   command itself, or a yes in a console to `sandbox run` or `start`, which name the size. It fetches
   `https://github.com/Higangssh/hyperbutler/releases/download/<this version>/<name>`, https only
@@ -536,8 +539,9 @@ it in Program Files, against the pin compiled into it.
   passes the file itself. An administrator's `msiexec /fa {code}` would look there, subject to
   Windows Installer's own check of the package against its cached copy.
 - **Assumed, not stopped.** A program running as the same user at the same integrity level can kill
-  `hyperbutler.exe`, which drops the lock, and swap the file in the moment before Windows Installer
-  reads it, or inject code into `hyperbutler.exe`. Such a program can equally show the same UAC prompt
+  `hyperbutler.exe`, which drops the lock, and swap the file at any time before Windows Installer
+  reads it, the whole time the UAC prompt is on screen included, or inject code into
+  `hyperbutler.exe`. Such a program can equally show the same UAC prompt
   for an MSI of its own, which reads exactly alike ("Windows Installer"), so the lock takes away
   quiet substitution behind a prompt the user expected, not elevation by a program the user is
   already running. Moving the check behind the prompt would close the first of these: an elevated

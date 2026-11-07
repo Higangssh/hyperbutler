@@ -18,7 +18,10 @@
   pin the new hyperbutler may no longer match, is replaced when `sandbox run` next offers to.
 -->
 <Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <!-- ProductCode comes from the build, because hyperbutler.exe pins it: it is how `sandbox
+       install` knows the product already there is this very file. -->
   <Package Name="hyperbutler agent sandbox" Manufacturer="hyperbutler" Version="$(var.ProductVersion)"
+           ProductCode="$(var.ProductCode)"
            UpgradeCode="3D6B8F5E-4C21-4E7A-9B0D-8A1F6C2E7D34" Scope="perMachine" Language="1033"
            InstallerVersion="500">
     <SummaryInformation Description="hyperbutler $(var.Version): the Linux image of hyperbutler sandbox, the agent sandbox" />
@@ -31,7 +34,7 @@
     <Property Id="ARPURLINFOABOUT" Value="https://github.com/Higangssh/hyperbutler/blob/main/docs/sandbox.md" />
     <Property Id="ARPHELPLINK" Value="https://github.com/Higangssh/hyperbutler/blob/main/docs/install.md" />
     <Property Id="ARPNOMODIFY" Value="1" />
-    <!-- A repair needs the MSI, and `hyperbutler sandbox install` is what fetches it. -->
+    <!-- `hyperbutler sandbox install` is the repair: it checks the result against the pin. -->
     <Property Id="ARPNOREPAIR" Value="1" />
     <!-- The broker holds the image's files open while it has booted a session. Restart Manager
          would offer to stop the broker, which ends every user's VMs; as in the main MSI, it

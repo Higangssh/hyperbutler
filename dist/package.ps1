@@ -22,8 +22,8 @@
 # (ADR 0009). It ships as an MSI of its own, built here with -Wix (dist/msi/build-sandbox-msi.ps1,
 # WiX 5) into -Out and never into the zip. The SHA-256 of its image.json is linked into
 # hyperbutler.exe and hyperbutler-broker.exe (-X ...imageset.pinnedSandboxManifest), and the
-# MSI's SHA-256, name and size into hyperbutler.exe (-X ...imageset.pinnedSandboxMSI and
-# others), which is why the MSI comes first. Without it both build, and boot sessions only by
+# MSI's SHA-256, name, size and product code into hyperbutler.exe (-X ...imageset.pinnedSandboxMSI
+# and others), which is why the MSI comes first. Without it both build, and boot sessions only by
 # the development rules (ADR 0009); only -Snapshot allows that.
 #
 # The docker CLI and the compose and buildx plugins (clients\ in the zip) are built here
@@ -182,7 +182,7 @@ try {
     if (-not $pin) { Warn 'no image.json among -ImageFiles; hyperbutler.exe is not pinned to a guest image' }
 
     # --- agent sandbox image: an MSI of its own, built first so that hyperbutler.exe can pin it ---
-    $sandboxPin = ''; $sandboxMsi = ''; $sandboxMsiName = ''; $sandboxMsiSum = ''; $sandboxMsiBytes = ''
+    $sandboxPin = ''; $sandboxMsi = ''; $sandboxMsiName = ''; $sandboxMsiSum = ''; $sandboxMsiBytes = ''; $sandboxMsiCode = ''
     $sandboxLines = @()
     if ($SandboxImageDir) {
         $SandboxImageDir = (Resolve-Path -LiteralPath $SandboxImageDir).Path
@@ -206,7 +206,8 @@ try {
         }
         $sandboxMsiName = "hyperbutler-$Version-sandbox-windows-amd64"
         if ($Snapshot) { $sandboxMsiName += '-snapshot' }
-        & (Join-Path $dist 'msi\build-sandbox-msi.ps1') -ImageDir $SandboxImageDir -Version $Version -Name $sandboxMsiName -Wix $Wix -Out $Out
+        $sandboxMsiCode = [guid]::NewGuid().ToString().ToUpperInvariant()
+        & (Join-Path $dist 'msi\build-sandbox-msi.ps1') -ImageDir $SandboxImageDir -Version $Version -Name $sandboxMsiName -ProductCode $sandboxMsiCode -Wix $Wix -Out $Out
         $sandboxMsi = Join-Path $Out "$sandboxMsiName.msi"
         $sandboxMsiSum = Sha256 $sandboxMsi
         $sandboxMsiBytes = "$((Get-Item -LiteralPath $sandboxMsi).Length)"
@@ -241,7 +242,7 @@ try {
         # The broker gets the image pins and no more: it never sees an installer.
         $brokerLdflags = "$ldflags -X main.version=$Version"
         if ($sandboxMsi) {
-            $ldflags += " -X $imgset.pinnedSandboxMSI=$sandboxMsiSum -X $imgset.pinnedSandboxMSIName=$sandboxMsiName.msi -X $imgset.pinnedSandboxMSIBytes=$sandboxMsiBytes"
+            $ldflags += " -X $imgset.pinnedSandboxMSI=$sandboxMsiSum -X $imgset.pinnedSandboxMSIName=$sandboxMsiName.msi -X $imgset.pinnedSandboxMSIBytes=$sandboxMsiBytes -X $imgset.pinnedSandboxMSIProductCode=$sandboxMsiCode"
         }
         Exec go build -trimpath -buildvcs=true -ldflags $ldflags -o $exe ./cmd/hyperbutler | Out-Null
         $goVersion = (Exec go version) | Select-Object -First 1
@@ -252,7 +253,7 @@ try {
                 Fail "hyperbutler.exe reports image pin '$($vj.imageManifestSha256)', expected '$pin'"
             }
             CheckSandboxPin 'hyperbutler.exe' $vj
-            foreach ($c in @(@('sandboxMsi', $(if ($sandboxMsi) { "$sandboxMsiName.msi" })), @('sandboxMsiSha256', $sandboxMsiSum), @('sandboxMsiBytes', $sandboxMsiBytes))) {
+            foreach ($c in @(@('sandboxMsi', $(if ($sandboxMsi) { "$sandboxMsiName.msi" })), @('sandboxMsiSha256', $sandboxMsiSum), @('sandboxMsiBytes', $sandboxMsiBytes), @('sandboxMsiProductCode', $sandboxMsiCode))) {
                 if ("$(JsonField $vj $c[0])" -cne "$($c[1])") { Fail "hyperbutler.exe reports $($c[0]) '$(JsonField $vj $c[0])', expected '$($c[1])'" }
             }
         } else { Warn "cannot run the amd64 hyperbutler.exe here to check its image pin" }

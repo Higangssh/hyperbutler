@@ -1,8 +1,9 @@
 # Builds the agent sandbox image's MSI (sandbox.wxs, docs/install.md) with WiX 5.
 # dist/package.ps1 runs it before it links hyperbutler.exe, which pins the result by hash.
 #
-#   pwsh -File dist\msi\build-sandbox-msi.ps1 -ImageDir DIR -Version vX.Y.Z -Name NAME [-Wix PATH] [-Out DIR]
+#   pwsh -File dist\msi\build-sandbox-msi.ps1 -ImageDir DIR -Version vX.Y.Z -Name NAME -ProductCode GUID [-Wix PATH] [-Out DIR]
 #
+# -ProductCode is uppercase, without braces; package.ps1 makes a new one per build and pins it.
 # -ImageDir holds the image files: the sandbox-image artifact, or guest/sandbox/build.ps1's
 # output folder. -Name is the file name without .msi. It is a release asset of its own, so
 # REQ-UX-002's limit does not apply; -MaxBytes is the limit sandboxmsi.MaxPinBytes takes.
@@ -12,6 +13,7 @@ param(
     [Parameter(Mandatory)] [string]$ImageDir,
     [Parameter(Mandatory)] [string]$Version,
     [Parameter(Mandatory)] [string]$Name,
+    [Parameter(Mandatory)] [string]$ProductCode,
     [string]$Wix = 'wix',
     [string]$Out = '',
     [long]$MaxBytes = 1GB
@@ -30,6 +32,7 @@ foreach ($f in 'image.json', 'vmlinuz-virt', 'initramfs-stage1.gz', 'system.vhd'
     if (-not (Test-Path -LiteralPath (Join-Path $ImageDir $f) -PathType Leaf)) { Fail "$ImageDir has no $f" }
 }
 if ($Name -notmatch '^[A-Za-z0-9][A-Za-z0-9._+-]*$') { Fail "bad name: $Name" }
+if ($ProductCode -cnotmatch '^[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{12}$') { Fail "bad product code: $ProductCode" }
 if (-not $Out) { $Out = Split-Path -Parent $ImageDir }
 New-Item -ItemType Directory -Force $Out | Out-Null
 $Out = (Resolve-Path $Out).Path
@@ -49,8 +52,8 @@ Push-Location $work
 try {
     # No extensions: sandbox.wxs has no UI and no custom action of its own.
     & $Wix build -arch x64 -nologo `
-        -d "ProductVersion=$productVersion" -d "Version=$Version" -d "HasSourceOffer=$hasOffer" `
-        -bindpath "image=$ImageDir\" `
+        -d "ProductVersion=$productVersion" -d "Version=$Version" -d "HasSourceOffer=$hasOffer" -d "ProductCode={$ProductCode}" `
+        -bindpath "image=$ImageDir\\" `
         -o $msi (Join-Path $here 'sandbox.wxs')
     if ($LASTEXITCODE -ne 0) { Fail "wix build failed (exit $LASTEXITCODE)" }
     # The internal consistency evaluators; see build-msi.ps1. Nothing to leave out: this

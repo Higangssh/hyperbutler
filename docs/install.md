@@ -111,7 +111,9 @@ built with.
 | Records `SandboxVersion` and `SandboxProductCode` under `HKLM\SOFTWARE\hyperbutler` | always | yes |
 
 It has no service, no window, no custom action and no shortcut, and it does not change what the
-broker may do.
+broker may do. It takes about 640 MB of disk until it is uninstalled: 400 MB in that folder, and
+about 239 MB for the copy of the package Windows Installer keeps in `C:\Windows\Installer`, as it
+does for every MSI with its cabinets inside (the main product's copy is its whole MSI too).
 
 - **Without hyperbutler** it refuses, with a message saying to install that first.
 - **Upgrading hyperbutler** does not touch it: Windows Installer removes only the files of the
@@ -189,9 +191,7 @@ In a normal PowerShell unless it says elevated, from the folder `dist\package.ps
 -Version v0.2.0-preview.N -SandboxImageDir ... -Out $d` wrote; `$s` is its
 `hyperbutler-...-sandbox-windows-amd64-snapshot.msi`, `$m` the main MSI built from the same
 stage by `build-msi.ps1`. A snapshot's version is not a release, so it cannot download: this
-uses `--msi` for the install and step 8 for the download. Keep to one sandbox MSI per `-Version`:
-two builds of one version have different product codes, and the same-version rewrite of step 9 is
-for the same file, which a release's one asset always is. Every step: record the outcome here.
+uses `--msi` for the install and step 8 for the download. Every step: record the outcome here.
 
 1. **Refused without the main product** (on a machine without it, or before step 2):
    `msiexec /i $s /l*v sbx0.log`: the message says to install hyperbutler first, nothing changes,
@@ -215,7 +215,9 @@ for the same file, which a release's one asset always is. Every step: record the
      MACHINE\Virtual Machines` and `BUILTIN\Users` read, Administrators and SYSTEM full, as
      `image\system.vhd`;
    - `reg query HKLM\SOFTWARE\hyperbutler`: `InstallDir`, `SandboxVersion`, `SandboxProductCode`;
-   - `sandbox-msi` is empty; `doctor`: `sandbox-image` ok.
+   - `sandbox-msi` is empty; `doctor`: `sandbox-image` ok;
+   - the size of Windows Installer's copy, the `LocalPackage` of the product under
+     `HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Installer\UserData\S-1-5-18\Products`.
 6. **Already there:** `hyperbutler sandbox install`: "already installed", no prompt, no network.
 7. **A session through the installed broker,** as the user, not elevated: `hyperbutler sandbox run
    --name t C:\some\small\project`, a command in it, `exit`, `sandbox diff t`, `sandbox stop t
@@ -227,8 +229,8 @@ for the same file, which a release's one asset always is. Every step: record the
 9. **A damaged image:** elevated, `sc.exe stop hyperbutler-broker` (the broker holds the files of an
    image it has booted), and append a byte to `sandbox-image\vmlinuz-virt`, leaving `image.json`.
    `hyperbutler sandbox run ...`: the service starts, the session does not, and the message says to
-   run `hyperbutler sandbox install`. Run it with `--msi $s`: the same-version path (`REINSTALL`),
-   and the file is whole again. The session starts.
+   run `hyperbutler sandbox install`. Run it with `--msi $s`: the product code is the pinned one, so
+   it passes `REINSTALL`, and the file is whole again. The session starts.
 10. **The main product's upgrade leaves it alone:** install another build of the main MSI (a new
     product code), `/qb /norestart`: `sandbox-image\` is still there, every file with its old time.
     If the pin changed, `sandbox run` offers the new image, and installing it replaces the old

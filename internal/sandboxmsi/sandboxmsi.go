@@ -54,10 +54,14 @@ type Pin struct {
 	SHA256 string // lowercase hex
 	Name   string // the release asset's file name
 	Bytes  int64
+	// ProductCode is the MSI's, uppercase, without braces: what tells the same file from
+	// another build of the same version.
+	ProductCode string
 }
 
 var (
-	pinName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._+-]{0,127}\.msi$`)
+	pinName        = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._+-]{0,127}\.msi$`)
+	pinProductCode = regexp.MustCompile(`^[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{12}$`)
 	// A release tag as dist/package.ps1 accepts it. Pseudo-versions match too, which a
 	// caller with updatecheck.IsDevBuild keeps out.
 	releaseTag = regexp.MustCompile(`^v\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?$`)
@@ -68,8 +72,8 @@ var ErrNoPin = errors.New("this build carries no pin for the sandbox installer")
 
 // ParsePin checks the pin as linked in. All empty is ErrNoPin; anything else that is not a
 // whole, well-formed pin is a broken build and an error of its own.
-func ParsePin(sum, name, size string) (Pin, error) {
-	if sum == "" && name == "" && size == "" {
+func ParsePin(sum, name, size, productCode string) (Pin, error) {
+	if sum == "" && name == "" && size == "" && productCode == "" {
 		return Pin{}, ErrNoPin
 	}
 	if len(sum) != 64 || strings.Trim(sum, "0123456789abcdef") != "" {
@@ -82,7 +86,10 @@ func ParsePin(sum, name, size string) (Pin, error) {
 	if err != nil || n <= 0 || n > MaxPinBytes || size != strconv.FormatInt(n, 10) {
 		return Pin{}, fmt.Errorf("this hyperbutler.exe carries a malformed sandbox installer size %q; download the release again", size)
 	}
-	return Pin{SHA256: sum, Name: name, Bytes: n}, nil
+	if !pinProductCode.MatchString(productCode) {
+		return Pin{}, fmt.Errorf("this hyperbutler.exe carries a malformed sandbox installer product code %q; download the release again", productCode)
+	}
+	return Pin{SHA256: sum, Name: name, Bytes: n, ProductCode: productCode}, nil
 }
 
 // ReleaseURL is the address of the asset name in the release tag. Both go into a URL, so a
@@ -170,8 +177,9 @@ type Installer struct {
 	Exec func(ctx context.Context, path string, reinstall bool) (uint32, error)
 	// Verify checks what is installed against the manifest pin.
 	Verify func() error
-	// Reinstall makes msiexec rewrite the files of a product that is already installed
-	// (the same MSI), which otherwise does nothing.
+	// Reinstall makes msiexec rewrite the files of a product that is already installed,
+	// for the same MSI only: it otherwise does nothing there, and on any other MSI of this
+	// upgrade code, REINSTALL would remove the old product and install nothing.
 	Reinstall bool
 	// Note says what is going on.
 	Note func(format string, args ...any)

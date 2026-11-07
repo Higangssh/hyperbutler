@@ -57,7 +57,7 @@ func newSetupFixture(t *testing.T) *setupFixture {
 	s := &sandboxSetup{
 		manifest:    filepath.Join(exeDir, "sandbox-image", "image.json"),
 		manifestPin: sum(fx.image),
-		msi:         sandboxmsi.Pin{SHA256: sum(msi), Name: "x.msi", Bytes: int64(len(msi))},
+		msi:         sandboxmsi.Pin{SHA256: sum(msi), Name: "x.msi", Bytes: int64(len(msi)), ProductCode: "AAAAAAAA-2222-3333-4444-555555555555"},
 		version:     "v0.2.0",
 		exeDir:      exeDir,
 		dir:         filepath.Join(t.TempDir(), "sandbox-msi"),
@@ -154,12 +154,18 @@ func TestSandboxInstallAlreadyThere(t *testing.T) {
 // TestSandboxInstallSameVersionRewrites: the same MSI over a broken image needs REINSTALL,
 // and another version must not get it, or it would install nothing.
 func TestSandboxInstallSameVersionRewrites(t *testing.T) {
-	for installed, want := range map[string]bool{"v0.2.0": true, "v0.2.0-rc.1": false, "v0.1.9": false, "": false} {
+	const code = "11111111-2222-3333-4444-555555555555"
+	for installed, want := range map[string]bool{
+		"{" + code + "}":                         true,
+		"{" + strings.ToLower(code) + "}":        true,
+		"{99999999-2222-3333-4444-555555555555}": false, // another build, of any version
+		"":                                       false,
+	} {
 		fx := newSetupFixture(t)
-		fx.msi.Name = "hyperbutler-v0.2.0-sandbox-windows-amd64.msi"
+		fx.msi.ProductCode = code
 		fx.place(t, []byte("old"))
 		fx.product = func() machineProduct {
-			return machineProduct{installDir: fx.exeDir, service: true, sandboxVersion: installed}
+			return machineProduct{installDir: fx.exeDir, service: true, sandboxProductCode: installed}
 		}
 		if err := fx.install(context.Background(), "", io.Discard, io.Discard); err != nil {
 			t.Fatal(err)
@@ -246,7 +252,7 @@ func TestSandboxEnsure(t *testing.T) {
 		fx := newSetupFixture(t)
 		fx.place(t, fx.image)
 		var out bytes.Buffer
-		if err := fx.ensure(ctx, strings.NewReader(""), &out, io.Discard); err != nil || out.Len() != 0 {
+		if err := fx.ensure(ctx, strings.NewReader(""), &out, &out); err != nil || out.Len() != 0 {
 			t.Errorf("%v %q", err, out.String())
 		}
 	})
@@ -277,7 +283,7 @@ func TestSandboxEnsure(t *testing.T) {
 		t.Run(fmt.Sprintf("answer %q", answer), func(t *testing.T) {
 			fx := newSetupFixture(t)
 			var out bytes.Buffer
-			err := fx.ensure(ctx, strings.NewReader(answer), &out, io.Discard)
+			err := fx.ensure(ctx, strings.NewReader(answer), io.Discard, &out)
 			if !strings.Contains(out.String(), "KiB") && !strings.Contains(out.String(), " B)") {
 				t.Errorf("the question names no size: %q", out.String())
 			}
@@ -296,7 +302,7 @@ func TestSandboxEnsure(t *testing.T) {
 		fx := newSetupFixture(t)
 		fx.place(t, []byte("old"))
 		var out bytes.Buffer
-		_ = fx.ensure(ctx, strings.NewReader("n\n"), &out, io.Discard)
+		_ = fx.ensure(ctx, strings.NewReader("n\n"), io.Discard, &out)
 		if !strings.Contains(out.String(), "does not match") {
 			t.Errorf("%q", out.String())
 		}
@@ -305,7 +311,7 @@ func TestSandboxEnsure(t *testing.T) {
 		fx := newSetupFixture(t)
 		fx.product = func() machineProduct { return machineProduct{} }
 		var out bytes.Buffer
-		err := fx.ensure(ctx, strings.NewReader("y\n"), &out, io.Discard)
+		err := fx.ensure(ctx, strings.NewReader("y\n"), io.Discard, &out)
 		if !errors.Is(err, errSandboxNeedsMSI) || out.Len() != 0 || fx.fetched != 0 {
 			t.Errorf("%v %q", err, out.String())
 		}

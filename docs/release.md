@@ -52,7 +52,8 @@ release here.
 | (dry run, 2026-11-07) | 143.2 MB | the v0.1.1 image plus buildx v0.38.2 from source (69.0 MB, 23.8 MB deflated), snapshot without guest license texts (143,225,514 bytes, 256.1 MB as `package.ps1` counts it; MSI 145,087,564 bytes). The same commit without buildx: 118,635,119 and 125,577,558 bytes, so buildx adds 24.6 MB to the zip and 19.5 MB to the MSI. The v0.1.1 release was 2.0 MB over its image's snapshot (guest license texts), so expect about 145 MB for both: under the limit, 5 MB short of 150,000,000 bytes |
 
 The sandbox image's MSI is a separate download, so REQ-UX-002 does not apply; the release's limit
-is 1 GiB (`build-sandbox-msi.ps1`, `sandboxmsi.MaxPinBytes`). Record it here too.
+is 1 GiB (`build-sandbox-msi.ps1`, `sandboxmsi.MaxPinBytes`). Record it here too. On a machine it
+takes the image files plus the MSI again, which Windows Installer keeps in `C:\Windows\Installer`.
 
 | Release | Sandbox MSI | Image files | Notes |
 |---|---|---|---|
@@ -480,7 +481,8 @@ The sandbox image (ADR 0009) contains GPL and LGPL code from Debian, and these a
   in `sandbox-packages.tsv`, and that the tar's SHA-256 matches `SANDBOX-SOURCES.txt`.
 - [ ] `SHA256SUMS` lists these files, and `hyperbutler version --json` reports the image's pin
   (`sandboxImageManifestSha256`, the SHA-256 of `image.json` from the sandbox-image job in the
-  same run) and the MSI (`sandboxMsi`, `sandboxMsiSha256`, `sandboxMsiBytes`, the asset's own).
+  same run) and the MSI (`sandboxMsi`, `sandboxMsiSha256`, `sandboxMsiBytes`, the asset's own, and
+  `sandboxMsiProductCode`).
 - [ ] The sandbox MSI carries `SANDBOX-SOURCES.txt`, which names this bundle.
 
 ### 3. Cut the release
