@@ -184,6 +184,9 @@ func BootSession(ctx context.Context, c SessionConfig) (_ *SessionVM, err error)
 		log = slog.Default()
 	}
 	step := func(format string, args ...any) { log.Debug(fmt.Sprintf(format, args...)) }
+	if c.ConsoleLog == nil {
+		c.ConsoleLog = io.Discard
+	}
 	g, netSpec, err := setupNet(NetConfig{Egress: c.Egress, NoDiag: true}, log)
 	if err != nil {
 		return nil, err

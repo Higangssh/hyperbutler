@@ -3,7 +3,6 @@
 package main
 
 import (
-	"os"
 	"os/exec"
 	"os/signal"
 	"regexp"
@@ -42,5 +41,3 @@ func ignoredInChild(t *testing.T) uint64 {
 	}
 	return v
 }
-
-var _ = os.Args
