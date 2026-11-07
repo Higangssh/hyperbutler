@@ -374,14 +374,24 @@ Enforced in `dev` and `locked`:
   Other ports need an entry that names them, by address only. `host:port` allows that port
   only, so `github.com` and `github.com:22` are two entries.
 - **Refused hellos and heads**: not TLS, SSLv2, no server name, several, ECH (`0xfe0d`, its
-  drafts and ESNI), any length that does not add up; no Host, several, folded headers, bare
-  LF, absolute-form targets, CONNECT.
+  drafts and ESNI), any length that does not add up, a second hello right behind the first;
+  no Host, several, folded headers, bare LF, absolute-form targets, CONNECT.
+- **A second hello**: a server can answer a ClientHello with a HelloRetryRequest, and the
+  second hello is in plaintext with a server name of its own. So on 443 nothing else from the
+  guest goes out until the server's first bytes are seen, within the dial timeout (10 s by
+  default; past it the connection closes, it is not relayed unseen). After a
+  HelloRetryRequest the guest's next bytes, a ChangeCipherSpec at most and a hello, pass the
+  same checks before they go on. Whatever else the server sends, the client deals with. Port
+  80 does not wait.
 - **UDP** is never forwarded, so QUIC falls back to TCP.
-- **Wildcards** (`*.host`, any depth, not `host` itself, never a whole top-level domain) get
-  64 distinct names per session. The name is counted at the question, because the question is
-  the data channel; past the cap it is blocked and counted.
-- **Blocked log**: 256 entries by name and kind with a count of the rest. Guest-chosen text is
-  printable ASCII with `\xHH` for everything else, and cut to a bounded length.
+- **Wildcards** (`*.host`, any depth, not `host` itself, never a zone on the public suffix
+  list, ICANN's or the private part, such as `*.co.uk` or `*.github.io`) get 64 distinct names
+  per session. The name is counted at the question, because the question is the data channel;
+  past the cap it is blocked and counted.
+- **Blocked log**: 256 entries by name and kind with a count of the rest, one line per address
+  however many ports, and a share of the table for each kind, so a scan does not keep a later
+  name out of it. Guest-chosen text is printable ASCII with `\xHH` for everything else, and cut
+  to a bounded length.
 
 Known limits:
 
@@ -390,8 +400,13 @@ Known limits:
   over HTTPS to an allowed name looks like any HTTPS.
 - A connection on a `host:port` port is checked by address only, so it reaches whatever else
   shares that address.
-- Up to 64 names of a wildcard still reach the host's resolver, about 16 KB of query names per
-  wildcard per session.
+- 64 distinct names of a wildcard reach the host's resolver per session; repeated queries among
+  them are not bounded, so the cap limits the names a query can be made of, not how much a
+  guest can signal by which of them it asks for and when.
+- One allowed name the agent can influence opens 443 and 80 to any public address that name
+  answers with, for example through a DNS record of a host it controls, and a server with a
+  default virtual host does not care for the server name. Allow only names whose answers you
+  trust.
 - A ClientHello must not offer ECH. Browsers that send a placeholder ECH extension when they
   have no real key, as Chromium does, are refused on 443 until a placeholder can be told apart
   from the real thing. Clients on Go's `crypto/tls` send none unless configured for ECH.
@@ -467,7 +482,7 @@ The first draft was reviewed on 2026-11-05. Each finding and its answer:
 | REQ-SBX-002 | The project never changes without approval. | After any session, `<dir>` is byte-identical to before until `sandbox apply`; `apply` writes only accepted files, with the bytes shown in the review (unit and VM tests). | P1 |
 | REQ-SBX-003 | Apply refuses hostile paths. | Fuzzed change sets with `..`, absolute and drive-relative paths, ADS, device names, trailing dots and spaces, 8.3 names, `\`, Unicode case and normalisation collisions, overlong names and reparse points never write outside `<dir>`, through a link, or over another file (fuzz test). | P1 |
 | REQ-SBX-004 | Known secret files stay out by default. | Ignored files, files with the built-in secret names and files matching the built-in token formats never reach the session without `--include`; `.git/config` and the reflog never do (unit test over fixtures). | P1 |
-| REQ-SBX-005 | Egress follows the mode. | In `locked` and `dev`, connections and lookups outside the allowlist fail, including by IPv4 and IPv6 literal, DNS over TCP, record types other than A/AAAA/CNAME, QUIC, a different TLS server name to a pinned address, no server name, and an allowed name answering with a private address; a blocked name causes no query at the host's resolver (`bench/sandbox-egress`, unit tests with a mock resolver). | P1 |
+| REQ-SBX-005 | Egress follows the mode. | In `locked` and `dev`, connections and lookups outside the allowlist fail, including by IPv4 and IPv6 literal, DNS over TCP, record types other than A/AAAA/CNAME, QUIC, a different TLS server name to a pinned address, no server name, and an allowed name answering with a private address; a blocked name causes no query at the host's resolver (verified today by unit tests with a mock resolver; `bench/sandbox-egress` is still to come). | P1 |
 | REQ-SBX-006 | Unknown domains are asked about or counted, never silently allowed. | A blocked name produces one question or, past the rate, one count in the blocked list; no answer means blocked; there is no allow-all (unit test, GUI test). | P1 |
 | REQ-SBX-007 | Sessions are cheap enough to keep several. | Memory per idle session and boot to a shell are measured and published (`bench/sandbox`). *Targets open until the spike.* | P1 |
 | REQ-SBX-008 | Ephemeral means gone. | After an `--rm` session ends, its disk, saved state, flow log, review cache and question answers are deleted; only "allow always" entries remain (`hyperbutler uninstall --dry-run` lists none of the rest). | P1 |

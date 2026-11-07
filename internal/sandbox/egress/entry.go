@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+
+	"golang.org/x/net/publicsuffix"
 )
 
 const (
@@ -54,6 +56,13 @@ func (e Entry) validate() error {
 	}
 	if e.Wildcard && !strings.Contains(e.Name, ".") {
 		return fmt.Errorf("egress: wildcard *.%s would cover a whole top-level domain", e.Name)
+	}
+	if e.Wildcard {
+		// The list holds both ICANN's suffixes and the private ones (github.io), where
+		// anyone can get a name.
+		if suffix, _ := publicsuffix.PublicSuffix(e.Name); suffix == e.Name {
+			return fmt.Errorf("egress: wildcard *.%s would cover a zone where anyone can get a name", e.Name)
+		}
 	}
 	return nil
 }

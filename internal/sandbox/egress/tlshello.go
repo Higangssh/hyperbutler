@@ -12,12 +12,13 @@ const (
 	parseDone
 )
 
-// parsed is a parser's result: on parseDone the name asked for, as sent; on parseBad a
-// Kind for the log.
+// parsed is a parser's result: on parseDone the name asked for, as sent, and for a hello
+// where its last record ends; on parseBad a Kind for the log.
 type parsed struct {
 	state parseState
 	name  string
 	kind  string
+	end   int
 }
 
 const (
@@ -53,6 +54,7 @@ func parseClientHello(b []byte) parsed {
 	if full {
 		b = b[:maxHelloBytes]
 	}
+	whole := len(b)
 	var hs []byte
 	first := true
 	for {
@@ -102,11 +104,139 @@ func parseClientHello(b []byte) parsed {
 				return helloBad(KindBadHello)
 			}
 			if complete && len(hs) == need {
-				return parseHelloBody(hs[tlsHandshakeHdrLen:])
+				res := parseHelloBody(hs[tlsHandshakeHdrLen:])
+				res.end = whole - (len(b) - tlsRecordHeaderLen - declared)
+				return res
 			}
 		}
 		if !complete {
 			return helloMoreOrFull(full)
+		}
+		b = b[tlsRecordHeaderLen+declared:]
+	}
+}
+
+// pipelinedHello reports whether the bytes behind a hello hold a handshake record, read
+// the way a server frames them. Early data and a ChangeCipherSpec may follow a hello; a
+// second hello may not. A record cut short ends the walk: what the guest sends after it
+// is not read until the server has answered, and after a HelloRetryRequest it does not
+// parse as a hello.
+func pipelinedHello(b []byte) bool {
+	for len(b) > 0 {
+		if b[0] == tlsRecordHandshake {
+			return true
+		}
+		if len(b) < tlsRecordHeaderLen {
+			return false
+		}
+		n := tlsRecordHeaderLen + (int(b[3])<<8 | int(b[4]))
+		if n > len(b) {
+			return false
+		}
+		b = b[n:]
+	}
+	return false
+}
+
+// tlsRecordChangeCipher is the one record a client may send between its two hellos.
+const tlsRecordChangeCipher = 20
+
+// parseRetryHello reads what the guest sends after a HelloRetryRequest: at most one
+// ChangeCipherSpec record of the one legal form, then a ClientHello by parseClientHello's
+// rules. Anything else fails: a client has no reason to send it.
+func parseRetryHello(b []byte) parsed {
+	if len(b) > 0 && b[0] == tlsRecordChangeCipher {
+		const ccsLen = tlsRecordHeaderLen + 1
+		for i, c := range b[:min(len(b), ccsLen)] {
+			switch i {
+			case 1:
+				if c != 3 {
+					return helloBad(KindBadHello)
+				}
+			case 2:
+				if c < 1 || c > 4 {
+					return helloBad(KindBadHello)
+				}
+			case 3:
+				if c != 0 {
+					return helloBad(KindBadHello)
+				}
+			case 4, 5:
+				if c != 1 {
+					return helloBad(KindBadHello)
+				}
+			}
+		}
+		if len(b) < ccsLen {
+			return parsed{state: parseMore}
+		}
+		b = b[ccsLen:]
+	}
+	return parseClientHello(b)
+}
+
+// What parseServerReply can say about the first bytes from the server.
+type replyState int
+
+const (
+	replyPass replyState = iota
+	replyMore
+	replyRetry
+)
+
+const (
+	tlsHandshakeServerHello = 2
+	// tlsServerRandomEnd is where the random of a ServerHello ends: the handshake header,
+	// the version and 32 bytes.
+	tlsServerRandomEnd = tlsHandshakeHdrLen + 2 + 32
+)
+
+// tlsRetryRandom is the fixed random that makes a ServerHello a HelloRetryRequest (RFC
+// 8446, section 4.1.3): the SHA-256 of "HelloRetryRequest".
+var tlsRetryRandom = [32]byte{
+	0xcf, 0x21, 0xad, 0x74, 0xe5, 0x9a, 0x61, 0x11, 0xbe, 0x1d, 0x8c, 0x02, 0x1e, 0x65, 0xb8, 0x91,
+	0xc2, 0xa2, 0x11, 0x16, 0x7a, 0xbb, 0x8c, 0x5e, 0x07, 0x9e, 0x09, 0xe2, 0xc8, 0xa8, 0x33, 0x9c,
+}
+
+// parseServerReply looks for a HelloRetryRequest at the start of what a server sends. It
+// reassembles the handshake as far as the random, whatever the records, so that a server
+// cannot hide one by cutting it small. Anything that is not on its way to being a
+// ServerHello is not this parser's concern and passes at once: a server that speaks first,
+// an alert. So it never waits on anything but a handshake record cut short.
+func parseServerReply(b []byte) replyState {
+	var hs []byte
+	for {
+		if len(b) == 0 {
+			return replyMore
+		}
+		if b[0] != tlsRecordHandshake || (len(b) >= 2 && b[1] != 3) {
+			return replyPass
+		}
+		if len(b) < tlsRecordHeaderLen {
+			return replyMore
+		}
+		declared := int(b[3])<<8 | int(b[4])
+		if declared == 0 || declared > tlsMaxRecordLen {
+			return replyPass
+		}
+		frag := b[tlsRecordHeaderLen:]
+		frag = frag[:min(len(frag), declared)]
+		if hs == nil {
+			hs = frag[:len(frag):len(frag)] // appending to it copies, not overwrites b
+		} else {
+			hs = append(hs, frag...)
+		}
+		if len(hs) >= 1 && hs[0] != tlsHandshakeServerHello {
+			return replyPass
+		}
+		if len(hs) >= tlsServerRandomEnd {
+			if [32]byte(hs[tlsServerRandomEnd-32:tlsServerRandomEnd]) == tlsRetryRandom {
+				return replyRetry
+			}
+			return replyPass
+		}
+		if len(frag) < declared {
+			return replyMore
 		}
 		b = b[tlsRecordHeaderLen+declared:]
 	}

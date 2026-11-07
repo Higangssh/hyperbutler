@@ -11,7 +11,8 @@
 //     window.
 //   - Connections: only to a pinned address. On 443 the ClientHello's server name, and on
 //     80 (dev only) the Host header, must be a name that address is pinned for; other
-//     ports need an entry that names them and are checked by address only.
+//     ports need an entry that names them and are checked by address only. If the server
+//     answers with a HelloRetryRequest, the second hello is checked the same way.
 //   - UDP is not forwarded, so QUIC falls back to TCP.
 //
 // What this cannot see, and the documentation says so:
@@ -20,6 +21,9 @@
 //     send one server name and another Host header (domain fronting) to a CDN that serves
 //     both, and DNS over HTTPS to an allowed name looks like any other HTTPS.
 //   - What crosses a host:port entry: it is by address only.
+//   - Where an allowed name points. A name the agent can influence opens 443 and 80 to any
+//     public address it answers with, and a server with a default virtual host does not
+//     care for the server name.
 //   - Allowed names themselves: several preset hosts accept uploads from anyone, so dev
 //     narrows exfiltration and only locked defends against it.
 //
@@ -347,7 +351,8 @@ func (p *Policy) Conn(dst netip.AddrPort) netstack.ConnDecision {
 	defer p.mu.Unlock()
 	names := p.pins.live(addr, now)
 	if len(names) == 0 {
-		p.blocked.add(dst.String(), KindAddress, now)
+		// By address only: one address on many ports is one line.
+		p.blocked.add(addr.String(), KindAddress, now)
 		return netstack.ConnDeny
 	}
 	switch {
@@ -382,17 +387,49 @@ const (
 // the address is pinned for. It only ever parses first, so a hello that arrives in many
 // pieces costs one parse per read, bounded by the stack's buffer and deadline.
 func (p *Policy) Inspect(dst netip.AddrPort, first []byte) netstack.InspectResult {
-	var res parsed
-	nameKind := KindServerName
 	switch {
 	case dst.Port() == httpsPort:
-		res = parseClientHello(first)
+		res := parseClientHello(first)
+		if res.state == parseDone && pipelinedHello(first[res.end:]) {
+			// A second hello right behind the first would reach the server before the
+			// stack could see that the server asked for it.
+			res = helloBad(KindBadHello)
+		}
+		r := p.decide(dst, res, KindServerName)
+		if r == netstack.InspectAllow {
+			return netstack.InspectAllowTLS
+		}
+		return r
 	case dst.Port() == httpPort && p.mode == Dev:
-		res = parseHTTPHead(first)
-		nameKind = KindHTTPHost
-	default:
-		res = parsed{state: parseBad, kind: KindPort}
+		return p.decide(dst, parseHTTPHead(first), KindHTTPHost)
 	}
+	return p.decide(dst, parsed{state: parseBad, kind: KindPort}, "")
+}
+
+// InspectReply implements netstack.Egress: only a HelloRetryRequest asks for more
+// inspection. Whatever else the server sent, the client deals with.
+func (p *Policy) InspectReply(_ netip.AddrPort, reply []byte) netstack.ReplyResult {
+	switch parseServerReply(reply) {
+	case replyMore:
+		return netstack.ReplyMore
+	case replyRetry:
+		return netstack.ReplyRetry
+	}
+	return netstack.ReplyPass
+}
+
+// InspectRetry implements netstack.Egress: the second hello passes the same checks as the
+// first, for the same pins.
+func (p *Policy) InspectRetry(dst netip.AddrPort, next []byte) netstack.InspectResult {
+	if dst.Port() != httpsPort {
+		return p.decide(dst, parsed{state: parseBad, kind: KindPort}, "")
+	}
+	return p.decide(dst, parseRetryHello(next), KindServerName)
+}
+
+// decide turns a parser's result into a verdict: the name must be pinned for the address,
+// which an accepted connection renews.
+func (p *Policy) decide(dst netip.AddrPort, res parsed, nameKind string) netstack.InspectResult {
 	if res.state == parseMore {
 		return netstack.InspectMore
 	}

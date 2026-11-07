@@ -26,6 +26,8 @@ type fakeEgress struct {
 	conn     func(netip.AddrPort) ConnDecision
 	inspect  func(netip.AddrPort, []byte) InspectResult
 	udp      func(netip.AddrPort) bool
+	reply    func(netip.AddrPort, []byte) ReplyResult
+	retry    func(netip.AddrPort, []byte) InspectResult
 	queries  []string
 	answers  []string
 	offered  [][]netip.Addr
@@ -68,6 +70,20 @@ func (f *fakeEgress) Inspect(dst netip.AddrPort, first []byte) InspectResult {
 	f.mu.Unlock()
 	if f.inspect != nil {
 		return f.inspect(dst, first)
+	}
+	return InspectDeny
+}
+
+func (f *fakeEgress) InspectReply(dst netip.AddrPort, reply []byte) ReplyResult {
+	if f.reply != nil {
+		return f.reply(dst, reply)
+	}
+	return ReplyDeny
+}
+
+func (f *fakeEgress) InspectRetry(dst netip.AddrPort, next []byte) InspectResult {
+	if f.retry != nil {
+		return f.retry(dst, next)
 	}
 	return InspectDeny
 }
@@ -846,6 +862,222 @@ func TestEgressUDP(t *testing.T) {
 	if _, _, _, udps := hook.seen(); udps != 1 {
 		t.Fatalf("DNS to the stack asked the UDP hook: %d", udps)
 	}
+}
+
+// tlsHook allows every first hello as TLS. The recording server echoes, so its "reply" is
+// the guest's bytes.
+func tlsHook() *fakeEgress {
+	return &fakeEgress{
+		conn:    func(netip.AddrPort) ConnDecision { return ConnInspect },
+		inspect: func(netip.AddrPort, []byte) InspectResult { return InspectAllowTLS },
+	}
+}
+
+func writeAndEcho(t *testing.T, c net.Conn, msg string) {
+	t.Helper()
+	if _, err := c.Write([]byte(msg)); err != nil {
+		t.Fatal(err)
+	}
+	buf := make([]byte, len(msg))
+	c.SetReadDeadline(time.Now().Add(5 * time.Second))
+	if _, err := io.ReadFull(c, buf); err != nil || string(buf) != msg {
+		t.Fatalf("%q %v", buf, err)
+	}
+}
+
+func TestEgressReplyPassRelays(t *testing.T) {
+	hook := tlsHook()
+	hook.reply = func(netip.AddrPort, []byte) ReplyResult { return ReplyPass }
+	hook.retry = func(netip.AddrPort, []byte) InspectResult {
+		t.Error("InspectRetry asked without a retry")
+		return InspectDeny
+	}
+	_, g, srv := egressStack(t, hook)
+	c, err := guestDial(t, g, egressVirt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	writeAndEcho(t, c, "hello")
+	writeAndEcho(t, c, "relayed")
+	if got := string(srv.received()); got != "hellorelayed" {
+		t.Fatalf("%q", got)
+	}
+}
+
+// After a retry, the guest's next bytes wait for the hook, then go out, then the relay runs.
+func TestEgressReplyRetryInspectsNextBytes(t *testing.T) {
+	hook := tlsHook()
+	hook.reply = func(netip.AddrPort, []byte) ReplyResult { return ReplyRetry }
+	var seen atomic.Int64
+	hook.retry = func(_ netip.AddrPort, b []byte) InspectResult {
+		seen.Add(1)
+		if len(b) < len("second") {
+			return InspectMore
+		}
+		return InspectAllow
+	}
+	_, g, srv := egressStack(t, hook)
+	c, err := guestDial(t, g, egressVirt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	writeAndEcho(t, c, "first")
+	if _, err := c.Write([]byte("sec")); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(50 * time.Millisecond)
+	if got := string(srv.received()); got != "first" {
+		t.Fatalf("part of the second hello went out before the hook allowed it: %q", got)
+	}
+	if _, err := c.Write([]byte("ond")); err != nil {
+		t.Fatal(err)
+	}
+	buf := make([]byte, 6)
+	c.SetReadDeadline(time.Now().Add(5 * time.Second))
+	if _, err := io.ReadFull(c, buf); err != nil || string(buf) != "second" {
+		t.Fatalf("%q %v", buf, err)
+	}
+	writeAndEcho(t, c, "relayed")
+	if seen.Load() == 0 {
+		t.Fatal("not inspected")
+	}
+}
+
+func TestEgressReplyRetryDenied(t *testing.T) {
+	hook := tlsHook()
+	hook.reply = func(netip.AddrPort, []byte) ReplyResult { return ReplyRetry }
+	hook.retry = func(netip.AddrPort, []byte) InspectResult { return InspectDeny }
+	n, g, srv := egressStack(t, hook)
+	c, err := guestDial(t, g, egressVirt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	writeAndEcho(t, c, "first")
+	if _, err := c.Write([]byte("second")); err != nil {
+		t.Fatal(err)
+	}
+	expectClosed(t, c)
+	if got := string(srv.received()); got != "first" {
+		t.Fatalf("the server got %q", got)
+	}
+	if s := n.Stats(); s.TCPDenied != 1 || s.TCPActive != 0 {
+		t.Fatalf("%+v", s)
+	}
+	if r := flowRoutes(n, egressVirt); r["denied"] != 1 {
+		t.Fatalf("flows %v", r)
+	}
+}
+
+func TestEgressReplyDeniedOrUnknown(t *testing.T) {
+	for _, result := range []ReplyResult{ReplyDeny, ReplyResult(99)} {
+		hook := tlsHook()
+		hook.reply = func(netip.AddrPort, []byte) ReplyResult { return result }
+		n, g, _ := egressStack(t, hook)
+		c, err := guestDial(t, g, egressVirt)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer c.Close()
+		if _, err := c.Write([]byte("first")); err != nil {
+			t.Fatal(err)
+		}
+		expectClosed(t, c)
+		if s := n.Stats(); s.TCPDenied != 1 {
+			t.Fatalf("%+v", s)
+		}
+	}
+}
+
+// A server that keeps saying too little ends the connection at the deadline: it is not
+// relayed uninspected, and later bytes from the guest do not reach it.
+func TestEgressReplyDeadline(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got bytes.Buffer
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		s, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer s.Close()
+		_, _ = s.Write([]byte{22}) // the start of a record, and never the rest
+		buf := make([]byte, 256)
+		for {
+			k, err := s.Read(buf)
+			mu.Lock()
+			got.Write(buf[:k])
+			mu.Unlock()
+			if err != nil {
+				return
+			}
+		}
+	}()
+	defer func() { ln.Close(); wg.Wait() }()
+	hook := tlsHook()
+	hook.reply = func(netip.AddrPort, []byte) ReplyResult { return ReplyMore }
+	n := newTestStack(t, func(c *Config) {
+		c.HostForwards = []HostForward{{Virtual: egressVirt, Host: netip.MustParseAddrPort(ln.Addr().String())}}
+		c.Egress = hook
+		c.DialTimeout = 500 * time.Millisecond
+	})
+	g := newFakeGuest(t, n)
+	c, err := guestDial(t, g, egressVirt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	start := time.Now()
+	if _, err := c.Write([]byte("first")); err != nil {
+		t.Fatal(err)
+	}
+	// In a later read than the first bytes: those go out in one piece, whatever they hold.
+	for wait := time.Now().Add(5 * time.Second); time.Now().Before(wait); time.Sleep(2 * time.Millisecond) {
+		mu.Lock()
+		arrived := got.Len() > 0
+		mu.Unlock()
+		if arrived {
+			break
+		}
+	}
+	_, _ = c.Write([]byte("later"))
+	expectClosed(t, c)
+	if e := time.Since(start); e < 400*time.Millisecond || e > 5*time.Second {
+		t.Fatalf("closed after %v", e)
+	}
+	if s := n.Stats(); s.TCPRefused != 1 || s.TCPActive != 0 {
+		t.Fatalf("%+v", s)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if !strings.HasPrefix(got.String(), "first") || strings.Contains(got.String(), "later") {
+		t.Fatalf("the server got %q", got.String())
+	}
+}
+
+// Plain InspectAllow never asks about the reply: a silent server still gets the relay.
+func TestEgressPlainAllowIsNotWatched(t *testing.T) {
+	hook := tlsHook()
+	hook.inspect = func(netip.AddrPort, []byte) InspectResult { return InspectAllow }
+	hook.reply = func(netip.AddrPort, []byte) ReplyResult {
+		t.Error("InspectReply asked on a plain allow")
+		return ReplyDeny
+	}
+	_, g, _ := egressStack(t, hook)
+	c, err := guestDial(t, g, egressVirt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	writeAndEcho(t, c, "plain")
 }
 
 // Without a hook, the stack's denial errors and routes are what they were.

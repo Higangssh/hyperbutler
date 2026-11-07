@@ -284,15 +284,34 @@ type sessionNet struct {
 
 func newSessionNet(t *testing.T, mode Mode, specs ...string) *sessionNet {
 	t.Helper()
+	sk, target := newSink(t)
+	s := newSessionNetTo(t, mode, sessionOpts{target: target}, specs...)
+	s.sink = sk
+	return s
+}
+
+// sessionOpts: where the forwards go, the stack's dial timeout (which also limits the wait
+// for a server's reply), and what goes around the policy, if anything.
+type sessionOpts struct {
+	target netip.AddrPort
+	dial   time.Duration
+	wrap   func(*Policy) netstack.Egress
+}
+
+func newSessionNetTo(t *testing.T, mode Mode, o sessionOpts, specs ...string) *sessionNet {
+	t.Helper()
 	h, p, err := Hook(mode, entries(t, specs...), Options{})
 	if err != nil {
 		t.Fatal(err)
+	}
+	if o.wrap != nil {
+		h = o.wrap(p)
 	}
 	res := &mockResolver{addrs: map[string][]netip.Addr{
 		stackName:        {addrNPM},
 		"rebind.example": {netip.MustParseAddr("192.168.1.1")},
 	}}
-	sk, target := newSink(t)
+	target := o.target
 	tlsVirt := netip.MustParseAddrPort("192.168.127.253:443")
 	webVirt := netip.MustParseAddrPort("192.168.127.253:80")
 	n, err := netstack.New(netstack.Config{
@@ -300,12 +319,13 @@ func newSessionNet(t *testing.T, mode Mode, specs ...string) *sessionNet {
 		HostAddrs:    func() ([]netip.Addr, error) { return nil, nil },
 		HostForwards: []netstack.HostForward{{Virtual: tlsVirt, Host: target}, {Virtual: webVirt, Host: target}},
 		Egress:       h,
+		DialTimeout:  o.dial,
 	}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(n.Close)
-	return &sessionNet{n: n, g: newGuest(t, n), p: p, res: res, sink: sk, tls: tlsVirt, web: webVirt}
+	return &sessionNet{n: n, g: newGuest(t, n), p: p, res: res, tls: tlsVirt, web: webVirt}
 }
 
 // pinForward pins stackName to the forwards' address. It is a private one, so the entry
@@ -384,7 +404,7 @@ func TestStackLiteralAddressRefused(t *testing.T) {
 	if s.sink.accepted.Load() != 0 || s.n.Stats().TCPDenied != 1 {
 		t.Fatalf("accepted %d, %+v", s.sink.accepted.Load(), s.n.Stats())
 	}
-	if blockedKinds(s.p)[KindAddress] != s.tls.String() {
+	if blockedKinds(s.p)[KindAddress] != s.tls.Addr().String() {
 		t.Fatalf("%+v", s.p.Blocked())
 	}
 }
