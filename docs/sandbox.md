@@ -13,7 +13,7 @@ The Docker VM does not have to be running, and a session does not use it.
 
 A session boots a Linux image of its own, which is not part of the main installer: it is about
 twice the size of everything else, and many people never start a session. It is a second
-MSI, "hyperbutler agent sandbox" in Apps, about 260 MB to download and about 680 MB on disk (the image, and Windows Installer's copy of the
+MSI, "hyperbutler agent sandbox" in Apps, about 270 MB to download and about 680 MB on disk (the image, and Windows Installer's copy of the
 package).
 
 ```powershell

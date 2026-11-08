@@ -157,7 +157,7 @@ hyperbutler sandbox apply work --all               # only then do they reach C:\
 - **It keeps going.** Ctrl+] leaves the terminal and the agent goes on; `sandbox attach` comes
   back.
 
-The session image is a separate download of about 260 MB, on first use.
+The session image is a separate download of about 270 MB, on first use.
 [docs/sandbox.md](docs/sandbox.md)
 
 ## How it works
