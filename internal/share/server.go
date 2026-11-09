@@ -197,6 +197,7 @@ type Server struct {
 	recent   map[nodeKey]time.Time // names the guest itself changed (echo suppression)
 	// When recent and changed were last pruned (pruneRecentLocked, noteChangeLocked).
 	recentPruned, changedPruned time.Time
+	negPruned                   time.Time // when negative was last pruned (pruneNegativeLocked)
 	watchers                    map[string]Closer
 
 	// Host files for guest opens without handles (openfile.go), by node.
@@ -1130,8 +1131,10 @@ func (s *Server) lookupBody(h *inHeader, name string) []byte {
 		if errors.Is(err, ENOENT) && s.opt.NegTTL > 0 {
 			s.mu.Lock()
 			raced := s.racedLocked(k, since)
+			now := time.Now()
+			s.pruneNegativeLocked(now)
 			if len(s.negative) < s.opt.MaxNodes && !raced {
-				s.negative[k] = time.Now()
+				s.negative[k] = now
 			}
 			s.unlock()
 			ttl := s.ttl(s.opt.NegTTL)
@@ -1828,6 +1831,28 @@ func (s *Server) markRecent(parent uint64, name string) {
 // keeps creating new names (a build, the soak) must not grow the set: it was pruned only
 // past 65536 entries before, which the 24 h soak showed as a slow rise. The survivors
 // move to a new map, because a Go map keeps its buckets after deletes.
+// pruneNegativeLocked forgets "missing" answers the guest no longer caches. An entry
+// is only kept so a full invalidation can tell the guest to drop it; once its NegTTL
+// has run out (twice, for margin) the guest has dropped it already. Without this the
+// map grew with every bind mount: a forgotten directory node or a removed share left
+// its entries behind, about 3 MiB of Go heap in the 24 h soak of v0.2.0-rc.1 and up
+// to MaxNodes entries in all.
+func (s *Server) pruneNegativeLocked(now time.Time) {
+	keepFor := 2 * s.opt.NegTTL
+	if now.Sub(s.negPruned) < keepFor && len(s.negative) <= 65536 {
+		return
+	}
+	s.negPruned = now
+	cut := now.Add(-keepFor)
+	keep := make(map[nodeKey]time.Time, len(s.negative)/2)
+	for k, t := range s.negative {
+		if t.After(cut) {
+			keep[k] = t
+		}
+	}
+	s.negative = keep
+}
+
 func (s *Server) pruneRecentLocked(now time.Time) {
 	if now.Sub(s.recentPruned) < echoWindow && len(s.recent) <= 65536 {
 		return

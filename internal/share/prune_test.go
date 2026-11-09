@@ -40,3 +40,34 @@ func TestRecentAndChangedPruned(t *testing.T) {
 		t.Error("a fresh name is not suppressed as an echo")
 	}
 }
+
+// TestNegativePruned: "missing" answers older than twice NegTTL are forgotten on the
+// next one, including those whose parent node is gone (the 24 h soak of v0.2.0-rc.1
+// showed the set growing with every bind mount), and fresh ones are kept.
+func TestNegativePruned(t *testing.T) {
+	s := NewServer(Options{NegTTL: time.Second})
+	now := time.Now()
+	for i := 0; i < 5000; i++ {
+		s.negative[nodeKey{uint64(1000 + i), "gone"}] = now.Add(-time.Minute)
+	}
+	s.negative[nodeKey{rootNode, "fresh"}] = now.Add(-time.Second)
+
+	s.pruneNegativeLocked(now)
+	if len(s.negative) != 1 {
+		t.Fatalf("negative has %d names after the window, want 1", len(s.negative))
+	}
+	if _, ok := s.negative[nodeKey{rootNode, "fresh"}]; !ok {
+		t.Error("an answer the guest may still cache was forgotten")
+	}
+
+	// Within the window nothing is scanned again.
+	s.negative[nodeKey{rootNode, "old"}] = now.Add(-time.Minute)
+	s.pruneNegativeLocked(now.Add(time.Second))
+	if len(s.negative) != 2 {
+		t.Errorf("negative has %d names, want 2 (pruned again inside the window)", len(s.negative))
+	}
+	s.pruneNegativeLocked(now.Add(3 * time.Second))
+	if len(s.negative) != 0 {
+		t.Errorf("negative has %d names, want 0", len(s.negative))
+	}
+}
