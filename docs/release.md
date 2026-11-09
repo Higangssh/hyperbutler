@@ -239,7 +239,10 @@ soak runs separately and its result goes here.
     than twice the negative TTL are pruned). A 1 h run of the fix (2026-11-09, 11825
     docker commands, 0 failed) passed with no share allocations in its end profile, but
     1 h is too short to tell this growth from noise (rc.1 grew about 1200 entries in its
-    first hour, below the profile's sampling).
+    first hour, below the profile's sampling). **Accepted for v0.2.0** (2026-11-09): this
+    run plus the fix, which a unit test covers (`TestNegativePruned`); the share server's
+    other maps were checked for the same pattern and are bounded. The next 24 h soak
+    runs against v0.2.0 itself and gates v0.3.
 - [ ] The 45 MB working set seen under the soak workload is profiled and explained
   (ADR 0003, Consequences) before any memory budget is claimed.
 - [x] `go test -race ./...` and the goleak meta-test pass on Windows and Linux (CI).
