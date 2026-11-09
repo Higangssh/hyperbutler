@@ -434,6 +434,12 @@ soak runs separately and its result goes here.
   message was not captured. Recheck with the release zip. Found on the way: the image
   files (`system.vhd`) sat next to `hyperbutler.exe`, and a double-click on
   `system.vhd` asked Windows to mount it. Fixed: they are in `image\` now.
+  2026-11-09, v0.2.0 draft, both MSIs installed: on a second local standard account, in
+  neither Administrators nor Hyper-V Administrators (so through the broker service), with
+  its earlier `%LOCALAPPDATA%\hyperbutler` and `~\.docker` moved aside: first `start` 2.7 s,
+  hello-world, a bind mount read and write, `-p 127.0.0.1:18080:80` (HTTP 200), `docker
+  build` with BuildKit, Compose with a loopback port (HTTP 200), `stop` 1.6 s all passed.
+  Not a new account, and from the MSI rather than the zip.
 - [ ] REQ-UX-005: `bench/no-telemetry` passes against the release candidate (default
   5 minute idle, fresh `-home`), and `internal/notelemetry` is green in CI. 2026-11-01:
   PASS on two runs, nothing seen outside the bench's own pull.
