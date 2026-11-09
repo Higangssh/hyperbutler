@@ -37,7 +37,7 @@ documents.
 | Idle memory, minutes 5–10 (`bench/mem-idle`, [ADR 0003](adr/0003-implementation-language.md#consequences), 2026-11-03, v0.1.0-rc.1 from the MSI) | **319.3 MiB** (335 MB): engine 20.5 MiB, vmmem 286.9 MiB, vmwp 5.0 MiB, broker service 6.9 MiB (preview.2: 360.8 MiB, its broker 38.8 MiB until the service ran the working-set guard). Without the broker (the zip), 2026-11-01: 313.9 MiB | ≤ 400 MB (REQ-MEM-001); 1.0: ≤ 250 MB | Yes for 0.1, **no** for 1.0. The engine commits 65 MiB; a process that reads all of its memory (likely Defender) can make all of it resident |
 | Memory back to the host after a workload, *spike*: `spike/vhdx`, 3 GiB guest ([guest-services](research/guest-services.md)) | 2 GiB of page cache: VM back to 350 MiB (260 MiB at ready) 27 s after the read | REQ-MEM-002 | Partly: the 12 GB / 8 GB bench has not been run |
 | Bind mounts from Windows paths, `docker run -v C:\…` and `--mount type=bind` ([ADR 0007](adr/0007-bind-mounts.md#opens-without-open-fuse_no_open_support-and-the-size-0-report-2026-10-31)) | work through `hyperbutler start`: read/write, `:ro`, single files; shares no container uses are removed; opens cost no round trip. `bench/fs-*`: cached reads 1.12× ext4, sequential write + fsync 278 MiB/s; lstat 2.2×, missing names 1.2×, `git status` 1.7× ext4; a Windows edit reaches inotify in p95 3.4 ms with none missed, and pinned Vite and webpack rebuild; 10k creates 11.5 s (ext4: 0.11 s) | 1.0: REQ-FS-001/002/005; REQ-FS-003 ≤ 200 ms p95 | REQ-FS-002 and REQ-FS-003 **yes**. REQ-FS-001 reads yes; REQ-FS-001 writes and REQ-FS-005 not measured (no WSL 2 for the 9P baseline) |
-| Download size | v0.1.0-preview.2: the zip is 120.3 MB, the MSI 125.4 MB | ≤ 150 MB (REQ-UX-002) | Yes |
+| Download size | v0.2.0: the zip is 146.1 MB, the MSI 146.2 MB (v0.1.0-preview.2: 120.3 and 125.4 MB; the bundled buildx plugin is most of the growth). The sandbox image's MSI, fetched only on request, is 271.5 MB | ≤ 150 MB (REQ-UX-002) | Yes, with 4 MB to spare |
 | Soak (ADR 0003), `hyperbutler start`, incl. bind mounts and `-p` | 1 h (2026-11-01, before the broker), 12,327 docker commands, none failed: the raw private working set rose 3.4 MiB (allowed 2.0), which is Go reusing pages it had returned; with them added back (`ws_private_adj`) +0.70 MiB against 2.24 MiB. Private bytes, handles, threads, goroutines, heap, vmmem and vmwp flat ([release.md](release.md)) | 24 h, no positive trend | **24 h, 2026-11-03 to 11-04, v0.1.0-rc.1 from the MSI:** 261,338 docker commands, none failed; engine memory, handles, threads and goroutines flat. Two flags explained, not leaks: the Go heap swings with no trend, and the broker keeps a bounded number of Windows RPC thread handles ([release.md](release.md)). Accepted for v0.1.0 |
 
 Released as v0.1.0 (2026-11-04) without these tests ([docs/release.md](release.md) lists every gate):
@@ -73,6 +73,10 @@ failed) found a slow leak in the share server, about 3.6 MiB of Go heap a day fr
 answered "missing" being kept after their bind mount was gone; it is fixed in v0.2.0,
 which ships on this run and the fix, and the next 24 h soak runs against v0.2.0
 ([release.md](release.md)).
+
+v0.2.0 (2026-11-09) is that release candidate with the leak fix. Its own MSIs were checked
+before publishing: the Quick Start on a second standard account outside Hyper-V
+Administrators, through the broker service, and a sandbox session.
 
 Bind mounts from Windows paths work but are not yet fast for write-heavy trees: use a
 named volume for `node_modules`.

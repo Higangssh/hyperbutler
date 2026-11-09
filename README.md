@@ -23,23 +23,21 @@ directly through the Windows Host Compute Service (the API WSL 2 uses), runs doc
 and lets the stock `docker` CLI and Docker Compose talk to it. No WSL, no Docker Desktop.
 
 > [!NOTE]
-> **v0.1.1** is the latest release. v0.1.0, the first, passed a 24-hour soak (261,338 docker
-> commands, none failed); v0.1.1 made bind mounts from `C:\` about twice as fast. It works end
-> to end on Windows 11 Home. Some release tests have not run yet,
+> **[v0.2.0](https://github.com/Higangssh/hyperbutler/releases/tag/v0.2.0)** is the latest
+> release. It adds the [sandbox for AI coding agents](#a-sandbox-for-ai-coding-agents),
+> BuildKit builds and ports published on `127.0.0.1`. Its release candidate ran a 24-hour soak
+> (283,947 docker commands, none failed), and the one slow leak that soak found is fixed. It
+> works end to end on Windows 11 Home. Some release tests have not run yet,
 > among them an install on a clean PC and a real sleep test; [status](docs/status.md) and
 > the [release checklist](docs/release.md) list them. Early software: try it, report what
 > breaks.
->
-> **[v0.2.0-rc.1](https://github.com/Higangssh/hyperbutler/releases/tag/v0.2.0-rc.1)**, a
-> pre-release, adds the [sandbox for AI coding agents](#a-sandbox-for-ai-coding-agents).
-> v0.2.0 follows once it has passed its own 24-hour soak.
 
 ## Highlights
 
 - **No WSL.** The VM runs on Hyper-V's Host Compute Service. WSL can stay off, and its updates
   never touch hyperbutler.
-- **Light.** 319 MiB of memory at idle with the broker service, a 120 MB download, 197 MB
-  installed.
+- **Light.** 319 MiB of memory at idle with the broker service, a 146 MB download, 270 MB
+  installed (most of it the bundled docker CLI and its plugins).
 - **Disk space comes back by itself.** Delete images and the data disk shrinks. No
   compaction, no admin step.
 - **Fast bind mounts from `C:\`.** Its own file server reads 2000 small files in 0.4 s
@@ -50,7 +48,7 @@ and lets the stock `docker` CLI and Docker Compose talk to it. No WSL, no Docker
   it only starts and stops your VM ([how](#how-it-works)).
 - **Safe for AI agents.** A built-in MCP server lets an AI assistant read and, if you allow it,
   manage your containers, with limits it cannot lift.
-- **A sandbox for coding agents** (v0.2.0-rc.1). An agent works in a VM of its own on a copy
+- **A sandbox for coding agents** (new in v0.2.0). An agent works in a VM of its own on a copy
   of your project; you read its changes before they reach your files.
 - **Free for every company size.** Apache-2.0, no telemetry.
 
@@ -62,8 +60,8 @@ script, one engine at a time ([method and raw data](docs/compare-docker-desktop.
 | | hyperbutler | Docker Desktop 4.97 (WSL 2) |
 |---|---|---|
 | Needs WSL | **no** | yes |
-| Download | **120 MB** | 592 MB (+351 MB WSL) |
-| Installed size | **197 MB** | about 6.7 GB |
+| Download | **146 MB** (v0.2.0) | 592 MB (+351 MB WSL) |
+| Installed size | **270 MB** (v0.2.0) | about 6.7 GB |
 | Start until a container runs | **2.5 s** | 5.6 s |
 | Idle memory, VM running | **319 MiB** (with the broker service, v0.1.0-rc.1) | 1.7–2.7 GB |
 | Disk 5 min after deleting ~5 GB of images | **1.5 GiB**, given back automatically | 6.8 GiB, kept |
@@ -135,8 +133,8 @@ fix it (`--fix` repairs what it may); `hyperbutler diagnose` packs a redacted re
 
 ## A sandbox for AI coding agents
 
-New in [v0.2.0-rc.1](https://github.com/Higangssh/hyperbutler/releases/tag/v0.2.0-rc.1), a
-pre-release. `hyperbutler sandbox run` gives a coding agent, or any command, a Linux VM of its
+New in [v0.2.0](https://github.com/Higangssh/hyperbutler/releases/tag/v0.2.0).
+`hyperbutler sandbox run` gives a coding agent, or any command, a Linux VM of its
 own with a copy of your project:
 
 ```powershell
