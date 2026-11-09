@@ -68,7 +68,10 @@ BuildKit; `bench/compat-tools` ([compat.md](compat.md)), nine Testcontainers and
 Tested on one machine before the tag: both MSIs installed, repaired, upgraded and removed in
 each order; a session through the installed broker service; the terminal (keys, resize,
 Ctrl+C, leaving and coming back) through a real pseudo console; Playwright's Chromium on
-github.com in `dev` mode. The soak before v0.2.0 has not run.
+github.com in `dev` mode. Its 24 h soak (2026-11-08 to 11-09, 283,947 docker commands, none
+failed) found a slow leak in the share server, about 3.6 MiB of Go heap a day from names
+answered "missing" being kept after their bind mount was gone; it is fixed on main and
+v0.2.0 waits for a soak of the fix ([release.md](release.md)).
 
 Bind mounts from Windows paths work but are not yet fast for write-heavy trees: use a
 named volume for `node_modules`.

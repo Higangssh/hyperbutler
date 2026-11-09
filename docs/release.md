@@ -226,6 +226,20 @@ soak runs separately and its result goes here.
       one-time per thread and bounded by the size of the thread pool (about 50 handles), so
       this is not a per-session leak. Follow-up: judge the broker's handles by the slope
       after the last concurrency change, or make every HCS call on one fixed thread.
+  - **24 h run for v0.2.0**, 2026-11-08 13:25 to 2026-11-09 13:25 KST, installed
+    v0.2.0-rc.1 (both MSIs), 1 h warm-up (23 h window), bind mounts and a published port:
+    283947 docker commands, 0 failed. The soak tool reported **FAIL on `heap_inuse`**
+    (+3.6 MiB against an allowed 1.9 MiB); every other metric passed, with
+    `ws_private_adj` +1.5 MiB against 2.4 MiB, `private_bytes_adj` +0.02 MiB, engine and
+    broker handles, threads and goroutines +0. Unlike v0.1.0 this growth was a leak: the
+    heap profile at the end has 2.1 MiB in the share server's map of names it answered
+    "missing" (`lookupBody`) and 1 MiB in the names, none of it at the end of the
+    warm-up. Entries were removed only when the name was created, so every bind mount
+    left its entries behind, up to `MaxNodes`. Fixed on main in 6b731b0 (entries older
+    than twice the negative TTL are pruned). A 1 h run of the fix (2026-11-09, 11825
+    docker commands, 0 failed) passed with no share allocations in its end profile, but
+    1 h is too short to tell this growth from noise (rc.1 grew about 1200 entries in its
+    first hour, below the profile's sampling).
 - [ ] The 45 MB working set seen under the soak workload is profiled and explained
   (ADR 0003, Consequences) before any memory budget is claimed.
 - [x] `go test -race ./...` and the goleak meta-test pass on Windows and Linux (CI).
