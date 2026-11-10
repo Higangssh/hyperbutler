@@ -192,6 +192,13 @@ func TestParseRelease(t *testing.T) {
 		{`{"tag_name":"v0.3.0"}`, "v0.3.0", releasePagePrefix + "v0.3.0", false},
 		{`{"tag_name":"nightly"}`, "", "", true},
 		{`{"tag_name":"v0.3.0\u001b[2J"}`, "", "", true},
+		// Build metadata reaches the page URL, so it must follow the SemVer grammar.
+		{`{"tag_name":"v0.3.0-rc.1+build.7"}`, "v0.3.0-rc.1+build.7", releasePagePrefix + "v0.3.0-rc.1+build.7", false},
+		{`{"tag_name":"0.0.0+\u007f"}`, "", "", true},
+		{`{"tag_name":"v0.3.0+"}`, "", "", true},
+		{`{"tag_name":"v0.3.0+a..b"}`, "", "", true},
+		{`{"tag_name":"v0.3.0+a/b"}`, "", "", true},
+		{`{"tag_name":"v0.3.0+a?b"}`, "", "", true},
 		{`{"tag_name":"v0.3.0","prerelease":true}`, "", "", true},
 		{`not json`, "", "", true},
 	} {
@@ -230,6 +237,7 @@ func TestNewer(t *testing.T) {
 		{"0.3.0", "v0.2.0", true},
 		{"v0.2.0", "v0.2.0", false},
 		{"v0.2.0+b", "v0.2.0", false},
+		{"v0.3.0+dirty", "v0.3.0", false},
 		{"v0.2.0-rc.1", "v0.2.0", false},
 		{"v01.2.0", "v0.2.0", false},
 		{"v0.2", "v0.1.0", false},
@@ -257,6 +265,26 @@ func TestUserAgent(t *testing.T) {
 	for v, want := range map[string]string{"v0.2.0": "hyperbutler/v0.2.0", "(devel)": "hyperbutler/devel", "": "hyperbutler/unknown", "v1\r\nX: y": "hyperbutler/v1Xy"} {
 		if got := UserAgent(v); got != want {
 			t.Errorf("%q: %q", v, got)
+		}
+	}
+}
+
+func TestIsDevBuild(t *testing.T) {
+	for _, tc := range []struct {
+		version string
+		want    bool
+	}{
+		{"v0.2.0", false},
+		{"v0.2.0+build.7", false},
+		{"v0.2.0+dirty", true},
+		{"v0.2.1-0.20261110120000-0123456789ab", true},
+		{"v0.2.1-0.20261110120000-0123456789ab+dirty", true},
+		{"(devel)", true},
+		{"", true},
+		{"v0.2.0+a/b", true},
+	} {
+		if got := IsDevBuild(tc.version); got != tc.want {
+			t.Errorf("IsDevBuild(%q) = %v", tc.version, got)
 		}
 	}
 }

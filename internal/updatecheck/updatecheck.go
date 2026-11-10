@@ -287,7 +287,16 @@ func parseSemver(s string) (semver, bool) {
 		return v, false
 	}
 	s = strings.TrimPrefix(s, "v")
-	s, _, _ = strings.Cut(s, "+")
+	s, meta, hasMeta := strings.Cut(s, "+")
+	if hasMeta {
+		// Build metadata does not order versions, but it ends up in the release page
+		// URL, so it is held to the SemVer grammar: dot-separated [0-9A-Za-z-]+.
+		for _, id := range strings.Split(meta, ".") {
+			if id == "" || strings.Trim(id, semverIDChars) != "" {
+				return v, false
+			}
+		}
+	}
 	core, pre, hasPre := strings.Cut(s, "-")
 	parts := strings.Split(core, ".")
 	if len(parts) != 3 {
@@ -305,7 +314,7 @@ func parseSemver(s string) (semver, bool) {
 	}
 	if hasPre {
 		for _, id := range strings.Split(pre, ".") {
-			if id == "" || strings.Trim(id, "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ-") != "" ||
+			if id == "" || strings.Trim(id, semverIDChars) != "" ||
 				numeric(id) && (len(id) > 1 && id[0] == '0' || len(id) > 19) {
 				return v, false
 			}
@@ -314,6 +323,9 @@ func parseSemver(s string) (semver, bool) {
 	}
 	return v, true
 }
+
+// semverIDChars are the characters of a SemVer pre-release or build identifier.
+const semverIDChars = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ-"
 
 func numeric(s string) bool { return s != "" && strings.Trim(s, "0123456789") == "" }
 
