@@ -47,7 +47,7 @@ func TestWatchSessionEnd(t *testing.T) {
 		t.Fatalf("WM_QUERYENDSESSION: %v %v", r, err)
 	}
 	if n := stops.Load(); n != 0 {
-		t.Fatalf("stop called %d times on WM_QUERYENDSESSION, want 0 (the end may be cancelled)", n)
+		t.Fatalf("stop called %d times on WM_QUERYENDSESSION, want 0 (the end may be canceled)", n)
 	}
 	go func() {
 		time.Sleep(200 * time.Millisecond)
@@ -70,7 +70,7 @@ func TestWatchSessionEnd(t *testing.T) {
 }
 
 // Up to v0.2.0 the engine stopped its VM on WM_QUERYENDSESSION, so a session end that
-// was queried and then cancelled (by another application, or a Restart Manager request
+// was queried and then canceled (by another application, or a Restart Manager request
 // another application refused) stopped it too. Only a WM_ENDSESSION that says the end is
 // real may stop the VM; a confirmed close still does (ADR 0010).
 func TestWatchSessionEndMessages(t *testing.T) {
@@ -89,10 +89,10 @@ func TestWatchSessionEndMessages(t *testing.T) {
 		{"logoff query alone", []step{q(endSessionLogoff)}, 0},
 		{"critical query alone", []step{q(endSessionCritical)}, 0},
 		{"restart manager query alone", []step{q(endSessionCloseApp)}, 0},
-		{"shutdown cancelled", []step{q(0), end(0, 0)}, 0},
-		{"logoff cancelled", []step{q(endSessionLogoff), end(0, endSessionLogoff)}, 0},
-		{"restart manager cancelled", []step{q(endSessionCloseApp), end(0, endSessionCloseApp)}, 0},
-		{"cancelled, then queried again", []step{q(0), end(0, 0), q(0)}, 0},
+		{"shutdown canceled", []step{q(0), end(0, 0)}, 0},
+		{"logoff canceled", []step{q(endSessionLogoff), end(0, endSessionLogoff)}, 0},
+		{"restart manager canceled", []step{q(endSessionCloseApp), end(0, endSessionCloseApp)}, 0},
+		{"canceled, then queried again", []step{q(0), end(0, 0), q(0)}, 0},
 		{"shutdown", []step{q(0), end(1, 0)}, 1},
 		{"logoff", []step{q(endSessionLogoff), end(1, endSessionLogoff)}, 1},
 		{"critical shutdown", []step{q(endSessionCritical), end(1, endSessionCritical)}, 1},
@@ -101,7 +101,7 @@ func TestWatchSessionEndMessages(t *testing.T) {
 		// power-off beats being terminated with the VM running.
 		{"restart manager closes the app", []step{q(endSessionCloseApp), end(1, endSessionCloseApp)}, 1},
 		{"end without a query", []step{end(1, 0)}, 1},
-		{"cancelled, then real", []step{q(0), end(0, 0), q(0), end(1, 0)}, 1},
+		{"canceled, then real", []step{q(0), end(0, 0), q(0), end(1, 0)}, 1},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

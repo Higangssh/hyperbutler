@@ -24,7 +24,7 @@ import (
 // TRUE at once and does nothing else. The decision is WM_ENDSESSION: with wParam TRUE the
 // end is real and the window sets a shutdown block reason, starts the normal stop and
 // waits for it; with
-// FALSE the end was cancelled and the VM keeps running. A confirmed ENDSESSION_CLOSEAPP
+// FALSE the end was canceled and the VM keeps running. A confirmed ENDSESSION_CLOSEAPP
 // stops too, because the caller closes the process next either way (ADR 0010).
 
 var (
@@ -133,7 +133,7 @@ func sessionWndProc(hwnd windows.HWND, m uint32, wp, lp uintptr) uintptr {
 	watchMu.Unlock()
 	switch {
 	case w != nil && m == wmQueryEndSession:
-		// Never veto, and return at once: the end may still be cancelled, and a Restart
+		// Never veto, and return at once: the end may still be canceled, and a Restart
 		// Manager session another application refuses may send no WM_ENDSESSION at all,
 		// so nothing stops here.
 		return 1
@@ -164,7 +164,7 @@ func sessionWndProc(hwnd windows.HWND, m uint32, wp, lp uintptr) uintptr {
 // WatchSessionEnd calls stop (which must not block) when the user signs out, Windows
 // shuts down or the Restart Manager closes the engine, with a short description of
 // which, and holds the session end until done is closed or endSessionWait passes. A
-// session end that is queried and then cancelled calls nothing.
+// session end that is queried and then canceled calls nothing.
 // The returned function removes the window.
 func WatchSessionEnd(stop func(why string), done <-chan struct{}) (func(), error) {
 	if err := modUser32.Load(); err != nil {

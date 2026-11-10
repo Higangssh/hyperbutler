@@ -34,12 +34,12 @@ engine had been started from a shell inside that app. The guest powered off clea
 1.4 s and the 24 h soak ended at 12h59m; the rest of the soak's process tree was closed
 by the same update. Because `lParam` was not logged, we cannot tell whether the engine got
 a close that was then confirmed (the likely case: it ran as a process of the package being
-updated, and its neighbours were closed too) or a query that was later cancelled. Whether
+updated, and its neighbours were closed too) or a query that was later canceled. Whether
 a package update sends this pair before it ends a package's processes is not documented;
 this is inferred from the log.
 
 So this decision does not by itself prevent that incident: if the close was confirmed, the
-engine stops the same way it did. What it fixes is the cancelled case, where stopping on
+engine stops the same way it did. What it fixes is the canceled case, where stopping on
 the query was wrong, and it makes the choice for `ENDSESSION_CLOSEAPP` on purpose. What
 keeps the soak alive is running it outside the app's package (see Decision).
 
@@ -105,6 +105,6 @@ no longer reaches it.
 
 ## Consequences
 
-A cancelled sign-out or shutdown, and a Restart Manager request that another application
+A canceled sign-out or shutdown, and a Restart Manager request that another application
 refuses, leave the VM running. A confirmed close still powers the guest off cleanly. The
 log line now says which kind of end it was, so the next unexpected stop can be traced.
