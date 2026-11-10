@@ -357,10 +357,11 @@ For each scenario:
 
 - **Today** *(from code)*: the engine has no console, so it never gets console logoff or
   shutdown events. It creates a hidden top-level window instead
-  (`internal/engine/sessionend_windows.go:96-125`, wired in
-  `internal/engine/serve_windows.go:128-144`). On `WM_QUERYENDSESSION` it shows the
-  shutdown block reason "Stopping the hyperbutler VM" and starts the normal stop. On
-  `WM_ENDSESSION` it waits for the stop, for up to 20 s (`endSessionWait`, line 50). It
+  (`sessionWndProc` in `internal/engine/sessionend_windows.go`, wired in
+  `internal/engine/serve_windows.go`). `WM_QUERYENDSESSION` only returns TRUE, because the
+  end may still be cancelled ([ADR 0010](../adr/0010-session-end.md)). On `WM_ENDSESSION`
+  with wParam TRUE it shows the shutdown block reason "Stopping the hyperbutler VM",
+  starts the normal stop and waits for it, for up to 20 s (`endSessionWait`). It
   also asks to be told before ordinary applications (`SetProcessShutdownParameters
   0x3FF`). The guest's stop stops dockerd, which gives containers 10 s after SIGTERM,
   then unmounts the data disk. Containers that ignore SIGTERM (a shell's `sleep`, many

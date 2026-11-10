@@ -17,9 +17,15 @@ import (
 // The engine runs detached, without a console, so it never sees CTRL_LOGOFF_EVENT or
 // CTRL_SHUTDOWN_EVENT. Without this, signing out or shutting Windows down would kill it
 // and its VM mid-write. A hidden top-level window receives WM_QUERYENDSESSION and
-// WM_ENDSESSION instead (message-only windows do not get these broadcasts); both start
-// the normal stop, and WM_ENDSESSION waits for it, with a shutdown block reason shown
-// while it runs.
+// WM_ENDSESSION instead (message-only windows do not get these broadcasts).
+//
+// WM_QUERYENDSESSION only asks: another application may veto it, and the Restart Manager
+// (installers, updaters) sends it too, with ENDSESSION_CLOSEAPP. So the query returns
+// TRUE at once and does nothing else. The decision is WM_ENDSESSION: with wParam TRUE the
+// end is real and the window sets a shutdown block reason, starts the normal stop and
+// waits for it; with
+// FALSE the end was cancelled and the VM keeps running. A confirmed ENDSESSION_CLOSEAPP
+// stops too, because the caller closes the process next either way (ADR 0010).
 
 var (
 	modUser32                      = windows.NewLazySystemDLL("user32.dll")
@@ -44,6 +50,11 @@ const (
 	wmQueryEndSession = 0x0011
 	wmEndSession      = 0x0016
 	wmQuit            = 0x0012
+
+	// lParam flags of WM_QUERYENDSESSION and WM_ENDSESSION (0 is a shutdown or restart).
+	endSessionCloseApp = 0x00000001 // the Restart Manager closes the application
+	endSessionCritical = 0x40000000 // forced; the application may get no more time
+	endSessionLogoff   = 0x80000000 // the user signs out
 
 	// endSessionWait bounds how long WM_ENDSESSION holds the session open for the
 	// guest's orderly shutdown (about 1.5 s measured).
@@ -78,7 +89,7 @@ type msg struct {
 // sessionWatch is the hidden window.
 type sessionWatch struct {
 	hwnd windows.HWND
-	stop func()
+	stop func(why string)
 	done <-chan struct{}
 	quit chan struct{}
 }
@@ -93,19 +104,45 @@ var (
 	className       = windows.StringToUTF16Ptr("hyperbutler-engine-session")
 )
 
+// stopsOnSessionEnd reports whether message m ends the session for real, so the VM must
+// stop. Only WM_ENDSESSION with wParam TRUE does, whatever its lParam flags.
+func stopsOnSessionEnd(m uint32, wp, _ uintptr) bool {
+	return m == wmEndSession && wp != 0
+}
+
+// sessionEndWhy names the lParam flags of WM_ENDSESSION, for the log.
+func sessionEndWhy(lp uintptr) string {
+	var why string
+	switch {
+	case lp&endSessionCloseApp != 0:
+		why = "an installer or updater (Restart Manager) closes the engine"
+	case lp&endSessionLogoff != 0:
+		why = "sign-out"
+	default:
+		why = "shutdown or restart"
+	}
+	if lp&endSessionCritical != 0 {
+		why += ", forced"
+	}
+	return why
+}
+
 func sessionWndProc(hwnd windows.HWND, m uint32, wp, lp uintptr) uintptr {
 	watchMu.Lock()
 	w := watches[hwnd]
 	watchMu.Unlock()
 	switch {
 	case w != nil && m == wmQueryEndSession:
-		reason, _ := windows.UTF16PtrFromString("Stopping the hyperbutler VM")
-		procShutdownBlockReasonCreate.Call(uintptr(hwnd), uintptr(unsafe.Pointer(reason)))
-		w.stop()
-		return 1 // allow the session to end; WM_ENDSESSION waits for the stop
+		// Never veto, and return at once: the end may still be cancelled, and a Restart
+		// Manager session another application refuses may send no WM_ENDSESSION at all,
+		// so nothing stops here.
+		return 1
 	case w != nil && m == wmEndSession:
-		if wp != 0 {
-			w.stop()
+		if stopsOnSessionEnd(m, wp, lp) {
+			// Shown on the blocking screen while this handler waits for the stop.
+			reason, _ := windows.UTF16PtrFromString("Stopping the hyperbutler VM")
+			procShutdownBlockReasonCreate.Call(uintptr(hwnd), uintptr(unsafe.Pointer(reason)))
+			w.stop(sessionEndWhy(lp))
 			select {
 			case <-w.done:
 			case <-time.After(endSessionWait):
@@ -124,10 +161,12 @@ func sessionWndProc(hwnd windows.HWND, m uint32, wp, lp uintptr) uintptr {
 	return r
 }
 
-// WatchSessionEnd calls stop (which must not block) when the user signs out or Windows
-// shuts down, and holds the session end until done is closed or endSessionWait passes.
+// WatchSessionEnd calls stop (which must not block) when the user signs out, Windows
+// shuts down or the Restart Manager closes the engine, with a short description of
+// which, and holds the session end until done is closed or endSessionWait passes. A
+// session end that is queried and then cancelled calls nothing.
 // The returned function removes the window.
-func WatchSessionEnd(stop func(), done <-chan struct{}) (func(), error) {
+func WatchSessionEnd(stop func(why string), done <-chan struct{}) (func(), error) {
 	if err := modUser32.Load(); err != nil {
 		return nil, err
 	}
@@ -191,7 +230,7 @@ func WatchSessionEnd(stop func(), done <-chan struct{}) (func(), error) {
 }
 
 // sendSessionMessage delivers m to the watch windows, for tests.
-func sendSessionMessage(m uint32, wp uintptr) ([]uintptr, error) {
+func sendSessionMessage(m uint32, wp, lp uintptr) ([]uintptr, error) {
 	watchMu.Lock()
 	var hs []windows.HWND
 	for h := range watches {
@@ -203,7 +242,7 @@ func sendSessionMessage(m uint32, wp uintptr) ([]uintptr, error) {
 	}
 	var out []uintptr
 	for _, h := range hs {
-		r, _, _ := procSendMessageW.Call(uintptr(h), uintptr(m), wp, 0)
+		r, _, _ := procSendMessageW.Call(uintptr(h), uintptr(m), wp, lp)
 		out = append(out, r)
 	}
 	return out, nil

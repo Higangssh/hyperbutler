@@ -134,9 +134,9 @@ func Serve(opts ServeOptions) error {
 	// through a hidden window, which then holds the session end until the guest is down.
 	finished := make(chan struct{})
 	var stopOnce sync.Once
-	unwatch, err := WatchSessionEnd(func() {
+	unwatch, err := WatchSessionEnd(func(why string) {
 		stopOnce.Do(func() {
-			log.Info("the Windows session is ending; stopping")
+			log.Info("the Windows session is ending; stopping", "why", why)
 			go pub.update(func(s *State) { s.Phase = PhaseStopping })
 			cancel()
 		})
