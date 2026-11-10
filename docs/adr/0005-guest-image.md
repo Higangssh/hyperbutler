@@ -659,7 +659,9 @@ their sources go into the bundle like every other origin.
   input mirror exists for). On 2026-11-03 it moved again, to 6.18.60-r0 (upstream
   2026-10-30, in v3.24), before v0.1.0: stable point releases carry security fixes, and
   the old pin would be dropped next. On 2026-11-10, after v0.2.0, Alpine dropped
-  6.18.60-r0 and the CI guest build failed with a 404, so it moved to 6.18.62-r0. Released
+  6.18.60-r0 and the CI guest build failed with a 404, so it moved to 6.18.62-r0, and
+  `docker-engine` (with the bundled docker CLI, which follows it) from 29.9.2 to 29.9.3 for
+  the same reason. Released
   images still rebuild from the inputs their release publishes.
 - `build.ps1` now checks signatures too, on every build: after the SHA-256 pins it streams
   the lock, the pinned files and `fetch-verify.sh` into the digest-pinned Alpine container

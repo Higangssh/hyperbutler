@@ -9,8 +9,9 @@
 # 6.18.58-r0 from the mirrors, so a clean build could no longer fetch it. It moved to
 # 6.18.60-r0 (upstream 2026-10-30) on 2026-11-03, before v0.1.0, so the release is on the
 # current stable point release and is not caught by the next mirror drop. It moved to
-# 6.18.62-r0 (built 2026-11-07) on 2026-11-10, after v0.2.0, when Alpine dropped 6.18.60-r0
-# and the CI guest build failed with a 404.
+# 6.18.62-r0 (built 2026-11-07) on 2026-11-10, after v0.2.0, when Alpine dropped 6.18.60-r0;
+# docker-engine moved from 29.9.2-r0 to 29.9.3-r0 the same day for the same reason (the
+# CI guest build failed with a 404 on each).
 #
 # The pin alone is not the trust anchor: every build checks the signatures again. The CI
 # build runs `apk verify` on each package (scripts/guest-image/fetch-verify.sh), and so
@@ -25,7 +26,7 @@ busybox-static b0d6cfc585d7fdd12df359cc5d38d5e45894e9e9e78c4059eb41577d022ec734 
 # tini-static's /sbin/tini-static, which system.spec installs as the file itself. The
 # packages' other dependencies come from the entries here (iptables, the CA bundle,
 # BusyBox for /bin/sh); system.spec installs only the files the guest runs.
-docker-engine  1f209bee7eb081018b007ecf374d0a1463668678b6e5e14cf0f763e89d6488d3 https://dl-cdn.alpinelinux.org/alpine/v3.24/community/x86_64/docker-engine-29.9.2-r0.apk
+docker-engine  ae90ab2cb0ee776b6995b5aaf850bd5e2c9fec5a96e17d0a9a6da4ac7259bb91 https://dl-cdn.alpinelinux.org/alpine/v3.24/community/x86_64/docker-engine-29.9.3-r0.apk
 containerd     bdacf19d51ea00ab489458d22a954b8a72850a32febd779e0380826198deb74b https://dl-cdn.alpinelinux.org/alpine/v3.24/community/x86_64/containerd-2.3.7-r0.apk
 runc           875fd2ce632520882972cb0e1ff87d3103dd27eb10fd3f4f737c1bc4c59667e6 https://dl-cdn.alpinelinux.org/alpine/v3.24/community/x86_64/runc-1.4.3-r2.apk
 libseccomp     b22ccfe8cb072e4c8d3bc17222eeda132e270ce6258c27622acb193bf27b48e1 https://dl-cdn.alpinelinux.org/alpine/v3.24/main/x86_64/libseccomp-2.6.1-r0.apk

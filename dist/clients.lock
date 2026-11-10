@@ -16,9 +16,9 @@
 # end to end and is reproducible with the same Go version.
 #
 # Bump rules: docker-cli follows the guest's Docker Engine (guest/prototype/sources.lock,
-# docker-engine 29.9.2); docker-compose and docker-buildx take the latest stable release.
+# docker-engine 29.9.3); docker-compose and docker-buildx take the latest stable release.
 # Take the h1: hash from `go mod download -json <module@version>` (its Sum) and the commit
 # and time from https://proxy.golang.org/<module>/@v/<version>.info.
-docker-cli     github.com/docker/cli@v29.9.2+incompatible h1:trup/vUxx5uUo2t+87Cd9AmITR+DvKUe4H2tTtZN8FY= a82e528901260c8df6073311379eac65f92db204 2026-10-20T11:24:07Z
+docker-cli     github.com/docker/cli@v29.9.3+incompatible h1:SBaMp7ecohadEHMDrUJg22t9I3awqsAVhnJ7GOcWpfE= 5457199aa57c45e990c59c89cab5f02b817238d7 2026-11-03T21:35:02Z
 docker-compose github.com/docker/compose/v5@v5.7.0        h1:nRBxm4HkCFo8Bgb49o6xdhnJ0nl1eGb1H0FAb/ExldE= 5bceecf985347fcf6dd23029ce440b502a0d4301 2026-11-02T14:41:36Z
 docker-buildx  github.com/docker/buildx@v0.38.2           h1:TTn5GXRaZatKpvJ4l7xXuS/N8kTIkLFP0WvGRkbbW9U= 3c4cbd35852fc1a476923627a780a7836c28b654 2026-11-03T14:21:00Z
