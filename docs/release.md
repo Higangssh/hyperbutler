@@ -243,6 +243,33 @@ soak runs separately and its result goes here.
     run plus the fix, which a unit test covers (`TestNegativePruned`); the share server's
     other maps were checked for the same pattern and are bounded. The next 24 h soak
     runs against v0.2.0 itself and gates v0.3.
+  - **24 h run of v0.2.0 itself**, 2026-11-10 23:25 to 2026-11-11 23:25 KST, installed
+    v0.2.0 (both MSIs), started by a one-shot scheduled task under a headless console,
+    1 h warm-up (23 h window), bind mounts and a published port: 292074 docker commands,
+    0 failed. (Two earlier attempts ended early: one when the engine stopped on a
+    session-end query during an app update, fixed on main in 5c61db3 and ADR 0010; one
+    from a console close event at 9 h 52 min.) The soak tool reported **FAIL on
+    `ws_private_adj`** (+10.6 MiB against an allowed 3.1 MiB); every other metric
+    passed: `private_bytes_adj` +0.17 MiB, `heap_inuse` -0.08 MiB, goroutines +0,
+    handles +10.8 against 21.3, threads +1.3 against 2.0, vmmem, vmwp and the broker flat.
+    The heap profile at the end has the same owners as at the end of the warm-up, 1 MiB
+    smaller. The share server leak of rc.1 is gone.
+    - `ws_private_adj` is not a trend: the working set stayed at 42 MiB for 10.8 h, then
+      at 10:16:38, 26 s after a Defender security intelligence update was installed, it
+      dropped to 37 MiB and refaulted to 56 MiB, where it stayed for 13 h. A second
+      Defender update at 23:10 was followed by a drop to 9 MiB. The engine's
+      working-set guard counted exactly these two trims (`working_set_trims` 0 → 2).
+      Private bytes did not move at either point, so no memory was allocated: pages the
+      engine had already committed were made resident by an outside reader. Re-judged
+      from the CSV, the 10 h before the step and the 13 h after it each pass every metric.
+    - Handles (+8) and threads (+1) stepped once at 11:05, a few minutes after another
+      antivirus product's services started, and stayed flat afterwards. Go keeps the OS
+      thread it adds for a blocking call; one step in 23 h is not a trend. Not traced.
+    - **Accepted for v0.2.0** by the maintainer (2026-11-12) as the 24 h gate, with this
+      exception recorded. Follow-ups: record `working_set_trims` in every sample and have
+      the judge flag a step that coincides with a trim; consider judging commit
+      (`private_bytes_adj`) as the primary memory metric; the working-set guard does not
+      restore the earlier level after a partial outside read.
 - [ ] The 45 MB working set seen under the soak workload is profiled and explained
   (ADR 0003, Consequences) before any memory budget is claimed.
 - [x] `go test -race ./...` and the goleak meta-test pass on Windows and Linux (CI).
