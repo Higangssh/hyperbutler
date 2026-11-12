@@ -6,7 +6,7 @@
 
 <p align="center">
   <a href="https://github.com/Higangssh/hyperbutler/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/Higangssh/hyperbutler/actions/workflows/ci.yml/badge.svg"></a>
-  <a href="https://github.com/Higangssh/hyperbutler/releases"><img alt="Release" src="https://img.shields.io/github/v/release/Higangssh/hyperbutler?include_prereleases&label=release"></a>
+  <a href="https://github.com/Higangssh/hyperbutler/releases"><img alt="Release" src="https://img.shields.io/github/v/release/Higangssh/hyperbutler?include_prereleases&sort=semver&label=release"></a>
   <img alt="Windows 11" src="https://img.shields.io/badge/Windows-11-0078D4">
   <a href="LICENSE"><img alt="License: Apache-2.0" src="https://img.shields.io/badge/license-Apache--2.0-blue"></a>
 </p>

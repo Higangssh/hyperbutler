@@ -80,6 +80,23 @@ jobs:
           check-latest: true
           cache: false
 
+      # The build falls back to the guest-inputs pre-release when Alpine has dropped a
+      # pinned package (ADR 0005). Fail here when a pin's file was not uploaded there, so a
+      # bump that forgets the upload is caught now, not when Alpine drops the file.
+      - name: Check the guest-inputs copy has every pinned file
+        run: |
+          set -euo pipefail
+          mirror=https://github.com/Higangssh/hyperbutler/releases/download/guest-inputs
+          missing=0
+          while read -r name sha url; do
+            file=${url##*/}
+            if ! curl --proto '=https' -fsSIL --retry 3 -o /dev/null "$mirror/$file"; then
+              echo "::error title=guest image::$name: $file is not in the guest-inputs release (gh release upload guest-inputs $file)"
+              missing=1
+            fi
+          done < <(grep -v -E '^[[:space:]]*(#|$)' "$HYPERBUTLER_LOCK")
+          exit "$missing"
+
       - name: Build in the Alpine container
         run: |
           set -euo pipefail

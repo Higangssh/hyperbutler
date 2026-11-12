@@ -73,6 +73,7 @@ while read -r name sha url extra; do
             # The project keeps a copy of every pinned file; the checks below are the same
             # whichever host served the bytes, and the Alpine repo is still taken from $url.
             [ -n "$mirror" ] || fail "$name: download failed and no fallback mirror is set: $url"
+            echo "::warning title=guest image::$name: $url is gone upstream; using the guest-inputs copy. The pin is likely superseded (ADR 0005)."
             echo "fetch  $mirror/$file (fallback)"
             curl --proto '=https' --tlsv1.2 -fsSL --retry 3 -o "$path.part" "$mirror/$file" ||
                 fail "$name: download failed from $url and from $mirror/$file"

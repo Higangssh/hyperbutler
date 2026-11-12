@@ -350,6 +350,10 @@ soak runs separately and its result goes here.
   ships exactly these. Not in this rule but found with it: linux-virt 6.18.59 is one point
   release behind 6.18.60 (2026-10-30, in v3.24); Alpine drops superseded kernels from the
   mirrors (6.18.58 went that way): bumped to 6.18.60-r0 the same day, for rc.2.
+  Since 2026-11-12 a dropped package no longer breaks the build (the `guest-inputs`
+  copy, ADR 0005), so check the release's guest-image log: a "gone upstream; using the
+  guest-inputs copy" warning means Alpine has replaced that pin, and the rule above
+  decides whether to bump it before the tag.
 - [ ] `hyperbutler.exe` checks the guest image files against hashes embedded at build time
   (Decision 4): `hyperbutler version --json` of the released binary says
   `"imagePinned": true` with the `image.json` SHA-256 from the guest-image job, and a
