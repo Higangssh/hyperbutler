@@ -76,6 +76,7 @@ function Run-Builder([string]$what, [string]$script, [string]$inFile, [string]$o
 }
 
 # --- 1. fetch and verify ------------------------------------------------------------
+$inputsMirror = 'https://github.com/Higangssh/hyperbutler/releases/download/guest-inputs'
 $src = @{}
 $pin = @{}      # file -> sha256, checked again right before each unpack
 $pinned = @()   # dl/<name>/<file>, for the signature check
@@ -92,7 +93,16 @@ foreach ($line in Get-Content (Join-Path $proto 'sources.lock')) {
     $pinned += "dl/$srcName/$fname"
     if (-not (Test-Path $file)) {
         Write-Host "fetch  $url"
-        Invoke-WebRequest -UseBasicParsing -Uri $url -OutFile "$file.part"
+        try {
+            Invoke-WebRequest -UseBasicParsing -Uri $url -OutFile "$file.part"
+        } catch {
+            # Alpine drops superseded packages from its mirrors; the project keeps a copy
+            # of every pinned file. The SHA-256 pin and the signature check below apply
+            # either way (scripts/guest-image/fetch-verify.sh does the same in CI).
+            $fallback = "$inputsMirror/$fname"
+            Write-Host "fetch  $fallback (fallback: $($_.Exception.Message))"
+            Invoke-WebRequest -UseBasicParsing -Uri $fallback -OutFile "$file.part"
+        }
         Move-Item -Force "$file.part" $file
     }
     $got = (Get-FileHash -Algorithm SHA256 $file).Hash.ToLowerInvariant()

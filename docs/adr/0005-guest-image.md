@@ -663,6 +663,17 @@ their sources go into the bundle like every other origin.
   `docker-engine` (with the bundled docker CLI, which follows it) from 29.9.2 to 29.9.3 for
   the same reason. Released
   images still rebuild from the inputs their release publishes.
+- Two days later (2026-11-12) Alpine had replaced both again (6.18.63-r0, 29.9.3-r1), so
+  a build of main broke again while the pins were the ones the v0.2.0 24 h soak ran on.
+  Rather than chase every rebuild, the repository keeps a copy of every pinned file in a
+  pre-release named `guest-inputs` (not a hyperbutler release; it is never `latest`).
+  `fetch-verify.sh` and `build.ps1` fetch from the lock's URL first and from
+  `.../releases/download/guest-inputs/<file>` only when that fails. Nothing else changes:
+  the SHA-256 pin, `apk verify` against the pinned image's keys, the `.PKGINFO` name and
+  the branch/arch check of the lock's URL all apply to the copy, so the copy can make a
+  build available but cannot change its bytes. Pins now move when a fix is wanted, not
+  when a mirror drops a file. A bump uploads the new file to `guest-inputs` in the same
+  change (`gh release upload guest-inputs <file>`), and the old files stay there.
 - `build.ps1` now checks signatures too, on every build: after the SHA-256 pins it streams
   the lock, the pinned files and `fetch-verify.sh` into the digest-pinned Alpine container
   (`--network=none`), which runs the CI check (`apk verify`, `.PKGINFO` name) and returns

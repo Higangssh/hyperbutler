@@ -33,6 +33,16 @@ arch=$(apk --print-arch)
 
 fail() { echo "fetch-verify: $*" >&2; exit 1; }
 
+# Fallback for a pinned file the upstream URL no longer serves: <mirror>/<file name>.
+# The default is a pre-release of this repository that holds a copy of every pinned
+# package (docs/adr/0005-guest-image.md). Set HYPERBUTLER_INPUTS_MIRROR= to turn it off.
+mirror=${HYPERBUTLER_INPUTS_MIRROR-https://github.com/Higangssh/hyperbutler/releases/download/guest-inputs}
+case "$mirror" in
+    "" | https://*) ;;
+    *) fail "HYPERBUTLER_INPUTS_MIRROR must be an https URL: $mirror" ;;
+esac
+mirror=${mirror%/}
+
 [ -f "$lock" ] || fail "lock file $lock not found"
 mkdir -p "$cache/dl"
 : >"$manifest"
@@ -58,7 +68,15 @@ while read -r name sha url extra; do
     path="$dir/$file"
     if [ ! -f "$path" ]; then
         echo "fetch  $url"
-        curl --proto '=https' --tlsv1.2 -fsSL --retry 3 -o "$path.part" "$url"
+        if ! curl --proto '=https' --tlsv1.2 -fsSL --retry 3 -o "$path.part" "$url"; then
+            # Alpine removes a package from its mirrors once a newer build replaces it.
+            # The project keeps a copy of every pinned file; the checks below are the same
+            # whichever host served the bytes, and the Alpine repo is still taken from $url.
+            [ -n "$mirror" ] || fail "$name: download failed and no fallback mirror is set: $url"
+            echo "fetch  $mirror/$file (fallback)"
+            curl --proto '=https' --tlsv1.2 -fsSL --retry 3 -o "$path.part" "$mirror/$file" ||
+                fail "$name: download failed from $url and from $mirror/$file"
+        fi
         mv "$path.part" "$path"
     fi
     if ! (cd "$dir" && printf '%s  %s\n' "$sha" "$file" | sha256sum -c -s -); then

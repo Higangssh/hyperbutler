@@ -13,6 +13,10 @@
 # docker-engine moved from 29.9.2-r0 to 29.9.3-r0 the same day for the same reason (the
 # CI guest build failed with a 404 on each).
 #
+# Every pinned file is also kept in this repository's `guest-inputs` pre-release, which
+# the builds fall back to when the URL no longer serves it (ADR 0005). Changing a pin
+# means uploading the new file there too: gh release upload guest-inputs <file>.
+#
 # The pin alone is not the trust anchor: every build checks the signatures again. The CI
 # build runs `apk verify` on each package (scripts/guest-image/fetch-verify.sh), and so
 # does build.ps1, in the digest-pinned Alpine container it already uses for mkfs.erofs.
