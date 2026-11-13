@@ -55,7 +55,7 @@ func testPublisher(t *testing.T, client *http.Client, check func(uint16) error, 
 	}
 	t.Cleanup(g.st.Close)
 	a := &autoPublisher{g: g, client: client, step: func(string, ...any) {}, open: map[string][]io.Closer{},
-		failed: map[string][]UnpublishedPort{}, check: check}
+		failed: map[string][]UnpublishedPort{}, ports: map[string][]uint16{}, check: check}
 	g.ap = a
 	t.Cleanup(a.closeAll)
 	return a
@@ -187,4 +187,39 @@ func TestAddPublishes(t *testing.T) {
 		t.Fatalf("127.0.0.1:%d: %v", q, err)
 	}
 	_ = c.Close()
+}
+
+// State.PublishedPorts follows what is mirrored: a container's ports when it is
+// published, nothing once it stops, and a refused container adds none (issue #2:
+// status names other programs on exactly these ports).
+func TestAddReportsPublished(t *testing.T) {
+	q, r := freePort(t), freePort(t)
+	var mu sync.Mutex
+	var reported [][]uint16
+	a := testPublisher(t, fakeDockerd(t, r, q), func(port uint16) error { return hostPortFreeExcept(port, 0) }, nil)
+	a.g.nc.OnPublished = func(ps []uint16) {
+		mu.Lock()
+		reported = append(reported, ps)
+		mu.Unlock()
+	}
+	a.add(context.Background(), testID)
+	a.remove(testID)
+	mu.Lock()
+	defer mu.Unlock()
+	want := []uint16{min(q, r), max(q, r)}
+	if len(reported) != 2 || fmt.Sprint(reported[0]) != fmt.Sprint(want) || len(reported[1]) != 0 {
+		t.Errorf("reported %v, want [%v []]", reported, want)
+	}
+
+	_, p := hostProgram(t)
+	reported = nil
+	b := testPublisher(t, fakeDockerd(t, p), noCheck, nil)
+	b.g.nc.OnPublished = a.g.nc.OnPublished
+	mu.Unlock()
+	b.add(context.Background(), testID)
+	b.remove(testID)
+	mu.Lock()
+	if len(reported) != 0 {
+		t.Errorf("a refused container reported %v", reported)
+	}
 }

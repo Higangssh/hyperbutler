@@ -113,6 +113,10 @@ type State struct {
 	// the engine fails instead; this lists what a restart policy started, or what lost a
 	// race with a host program after the start was checked.
 	UnpublishedPorts []UnpublishedPort `json:"unpublishedPorts,omitempty"`
+	// PublishedPorts are the host ports the engine mirrors on 127.0.0.1 and [::1] for
+	// running containers (REQ-NET-001), sorted. `status` names other programs that
+	// listen on them too (REQ-NET-005, issue #2).
+	PublishedPorts []uint16 `json:"publishedPorts,omitempty"`
 	// Executable and ExecutableVersion are the engine's hyperbutler.exe and its version
 	// (REQ-PLAT-008), so a start from another folder or release can say which one runs.
 	Executable        string `json:"executable,omitempty"`
@@ -152,6 +156,10 @@ type UnpublishedPort struct {
 
 // MaxUnpublishedPorts bounds State.UnpublishedPorts.
 const MaxUnpublishedPorts = 256
+
+// MaxPublishedPorts bounds State.PublishedPorts: every port takes two of the engine's
+// at most 256 host listeners (maxAutoPublished).
+const MaxPublishedPorts = 128
 
 // Validate reports the first field out of range.
 func (u *UnpublishedPort) Validate() error {
@@ -306,6 +314,14 @@ func (s *State) Validate() error {
 			return fmt.Errorf("state: %w", err)
 		}
 	}
+	if len(s.PublishedPorts) > MaxPublishedPorts {
+		return fmt.Errorf("state: %d published ports, at most %d", len(s.PublishedPorts), MaxPublishedPorts)
+	}
+	for i, p := range s.PublishedPorts {
+		if p == 0 || (i > 0 && p <= s.PublishedPorts[i-1]) {
+			return errors.New("state: published ports not sorted, unique and nonzero")
+		}
+	}
 	return nil
 }
 
@@ -356,6 +372,16 @@ func ParseState(b []byte) (*State, error) {
 	}
 	if err := s.Validate(); err != nil {
 		return nil, err
+	}
+	// An empty list reads as none, as it is written (omitempty).
+	if len(s.PastRuntimeIDs) == 0 {
+		s.PastRuntimeIDs = nil
+	}
+	if len(s.UnpublishedPorts) == 0 {
+		s.UnpublishedPorts = nil
+	}
+	if len(s.PublishedPorts) == 0 {
+		s.PublishedPorts = nil
 	}
 	return &s, nil
 }

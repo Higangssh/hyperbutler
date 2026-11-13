@@ -616,8 +616,17 @@ Facts from the code that the scenarios below rely on
   takes 0.04 ms for the table lookup and 0.37 ms with the two loopback binds (Go
   benchmark, 200 runs); the rest is the container inspect it asks dockerd for over
   hvsock.
-- **Gap:** none found in hyperbutler (Docker Desktop not run). REQ-NET-005 (new),
-  REQ-NET-001.
+- **Gap (2026-11-14, from issue #2, Docker Desktop on Windows 10 Pro):** both engines'
+  `-p 8080:80` succeeded, and localhost kept answering whichever container was stopped.
+  The report does not say which started first; the likely reading is hyperbutler first,
+  because Windows allows a wildcard or LAN-address bind
+  next to another process's loopback listener, with or without `SO_EXCLUSIVEADDRUSE`
+  (checked on the reference machine), and gives loopback connections to the more specific
+  listener, hyperbutler's. The later bind cannot be refused, so `status` now names every
+  other listener on a published port (`engine.SharedPorts` over `state.publishedPorts`,
+  read from the socket table only when `status` runs). Docker Desktop first would instead
+  mean the start check missed its listener; the tester was asked for the order and a
+  `netstat -ano` of the port to rule that out. REQ-NET-005, REQ-NET-001.
 
 ### S3.5 `host.docker.internal`
 

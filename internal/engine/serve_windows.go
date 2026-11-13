@@ -239,6 +239,9 @@ func Serve(opts ServeOptions) error {
 	netCfg.OnUnpublished = func(u []UnpublishedPort) {
 		pub.update(func(s *State) { s.UnpublishedPorts = u })
 	}
+	netCfg.OnPublished = func(ps []uint16) {
+		pub.update(func(s *State) { s.PublishedPorts = ps })
+	}
 	var predicted string // the runtime id OnGrant recorded
 	runErr := Run(ctx, Config{
 		KernelPath: opts.KernelPath, InitrdPath: opts.InitrdPath, Image: opts.Image, Broker: opts.Broker,

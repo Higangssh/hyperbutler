@@ -53,6 +53,7 @@ type (
 	DoctorJSON      = schema.Doctor
 	DoctorCheck     = schema.DoctorCheck
 	GuardPauseJSON  = schema.GuardPause
+	SharedPortJSON  = schema.SharedPort
 	ConfigListJSON  = schema.ConfigList
 	DiagnoseJSON    = schema.Diagnose
 	DiagnoseMissing = schema.DiagnoseMissing

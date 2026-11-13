@@ -53,6 +53,19 @@ type Status struct {
 	GuestDisk *GuestDisk `json:"guestDisk,omitempty"`
 	// Update is the last update check, when the check is on (REQ-UX-022).
 	Update *Update `json:"update,omitempty"`
+	// SharedPorts are other programs' TCP listeners on ports the running engine
+	// publishes (REQ-NET-005): localhost reaches the engine's container, not them.
+	SharedPorts []SharedPort `json:"sharedPorts,omitempty"`
+	// SharedPortsMore is how many more there were than SharedPorts lists.
+	SharedPortsMore int `json:"sharedPortsMore,omitempty"`
+}
+
+// SharedPort is another program listening on a port the engine publishes.
+type SharedPort struct {
+	Port    uint16   `json:"port"`
+	PID     uint32   `json:"pid"`
+	Process string   `json:"process,omitempty"` // its executable's file name, when readable
+	Listen  []string `json:"listen"`            // its local addresses, such as 0.0.0.0:8080
 }
 
 // GuestDisk is the guest data file system's use; the numbers are guest-reported.

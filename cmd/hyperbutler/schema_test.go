@@ -89,14 +89,17 @@ func TestSchemaFields(t *testing.T) {
 				SHA256:  "h", Restarted: true, Error: "e"}},
 		HostGateway:      &engine.HostGatewayState{Address: "192.168.127.254", Enabled: true, Ports: "all", Reloads: 1, Error: "e"},
 		UnpublishedPorts: []engine.UnpublishedPort{{Container: "0123456789ab", Port: 8080, Reason: "r", Since: now}},
+		PublishedPorts:   []uint16{80},
 		Executable:       "x", ExecutableVersion: "v",
 		GuardPause: &engine.GuardPauseState{Volume: "C:", FreeBytes: 1, ResumeAtBytes: 2, Since: now},
 	}
 	checkKeys(t, "status", StatusJSON{
 		Schema: 1, Running: true, SetUp: true, Home: "h", State: st, DataDir: "d", Disk: "x", DiskUsed: 1, DiskMax: 2, HostFree: 3,
 		MemoryMB: 4, CPUs: 5, Context: "c", ContextSel: true, DaemonJSON: "j", DaemonJSONExists: true, DockerCLI: "d", DockerCLIBundled: "b",
-		GuardPause: &GuardPauseJSON{Volume: "C:", FreeBytes: 1, ResumeAtBytes: 2, Since: now},
+		GuardPause:  &GuardPauseJSON{Volume: "C:", FreeBytes: 1, ResumeAtBytes: 2, Since: now},
+		SharedPorts: []SharedPortJSON{{Port: 8080, PID: 7, Process: "p.exe", Listen: []string{"0.0.0.0:8080"}}}, SharedPortsMore: 1,
 	}, []string{
+		"sharedPorts", "sharedPortsMore", "sharedPorts[].port", "sharedPorts[].pid", "sharedPorts[].process", "sharedPorts[].listen",
 		"guardPause", "guardPause.volume", "guardPause.freeBytes", "guardPause.resumeAtBytes", "guardPause.since",
 		"state.executable", "state.executableVersion",
 		"state.guardPause", "state.guardPause.volume", "state.guardPause.freeBytes", "state.guardPause.resumeAtBytes", "state.guardPause.since",
@@ -116,7 +119,7 @@ func TestSchemaFields(t *testing.T) {
 		"state.hostGateway", "state.hostGateway.address", "state.hostGateway.enabled", "state.hostGateway.ports",
 		"state.hostGateway.reloads", "state.hostGateway.error",
 		"state.unpublishedPorts", "state.unpublishedPorts[].container", "state.unpublishedPorts[].port", "state.unpublishedPorts[].reason",
-		"state.unpublishedPorts[].since",
+		"state.unpublishedPorts[].since", "state.publishedPorts",
 	})
 	checkKeys(t, "diagnose", DiagnoseJSON{Schema: 1, File: "f", Files: []string{"a"}, Missing: []DiagnoseMissing{{Name: "n", Reason: "r"}}},
 		[]string{"schema", "file", "files", "missing", "missing[].name", "missing[].reason"})

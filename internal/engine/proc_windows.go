@@ -5,6 +5,7 @@ package engine
 import (
 	"errors"
 	"fmt"
+	"path/filepath"
 	"time"
 	"unsafe"
 
@@ -234,4 +235,26 @@ func setEvent(eventName string) error {
 	}
 	defer func() { _ = windows.CloseHandle(h) }()
 	return windows.SetEvent(h)
+}
+
+// ProcessName returns the file name of process pid's executable ("com.docker.backend.exe"),
+// or "" when it cannot be read (the process exited, or is protected).
+func ProcessName(pid uint32) string {
+	h, err := windows.OpenProcess(windows.PROCESS_QUERY_LIMITED_INFORMATION, false, pid)
+	if err != nil {
+		return ""
+	}
+	defer func() { _ = windows.CloseHandle(h) }()
+	for size := windows.MAX_PATH; size <= windows.MAX_LONG_PATH; size *= 8 {
+		buf := make([]uint16, size)
+		n := uint32(len(buf))
+		err := windows.QueryFullProcessImageName(h, 0, &buf[0], &n)
+		if err == nil {
+			return filepath.Base(windows.UTF16ToString(buf[:n]))
+		}
+		if !errors.Is(err, windows.ERROR_INSUFFICIENT_BUFFER) {
+			return ""
+		}
+	}
+	return ""
 }

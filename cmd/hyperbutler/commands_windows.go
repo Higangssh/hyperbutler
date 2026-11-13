@@ -924,6 +924,9 @@ func (in *install) collectStatus(checkUpdate bool, stderr io.Writer) (StatusJSON
 		g := r.State.GuestFS
 		r.GuestDisk = &GuestDiskJSON{SizeBytes: g.SizeBytes, UsedBytes: g.UsedBytes(), FreeBytes: g.FreeBytes, UsedPercent: g.UsedPercent(), Updated: g.Updated}
 	}
+	if r.Running && r.State != nil && r.State.Phase.Live() {
+		r.SharedPorts, r.SharedPortsMore = sharedPorts(r.State)
+	}
 	upd := in.lastUpdate()
 	if checkUpdate {
 		upd = in.checkUpdate(stderr)
@@ -1010,6 +1013,12 @@ func (in *install) printStatus(stdout io.Writer, r StatusJSON, upd *updatecheck.
 	if st != nil && st.Phase.Live() {
 		for _, u := range st.UnpublishedPorts {
 			_, _ = fmt.Fprintf(stdout, "  ports:   %d of container %s is not published: %s\n", u.Port, u.Container, printable([]byte(u.Reason)))
+		}
+		for _, s := range r.SharedPorts {
+			_, _ = fmt.Fprintf(stdout, "  ports:   %s\n", sharedPortText(s))
+		}
+		if r.SharedPortsMore > 0 {
+			_, _ = fmt.Fprintf(stdout, "  ports:   and %d more programs on published ports (status --json lists the first %d)\n", r.SharedPortsMore, engine.MaxSharedPorts)
 		}
 	}
 	_, _ = fmt.Fprintf(stdout, "  state:   %s\n", in.l.Home)

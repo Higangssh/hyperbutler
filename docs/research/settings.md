@@ -415,6 +415,12 @@ fields are only added; removing or renaming one means a new version.
   engine runs (REQ-DISK-009; guest-reported numbers, for display only); `update`
   (`checked`, and `latest` and `url` when the last check that got an answer found a
   release) while `updateCheck` is on (REQ-UX-022).
+  Added 2026-11-14, within schema 1: `state.publishedPorts`, the host ports the engine
+  mirrors on the loopback, sorted; `sharedPorts` (`port`, `pid`, `process` when its
+  executable can be read, `listen`: its addresses on that port), other programs' TCP
+  listeners on those ports, by port and process; localhost reaches the engine's
+  container, not them (REQ-NET-005, issue #2). `sharedPortsMore` counts the entries past
+  the first 64.
   The container lists of REQ-UX-017 are text only: `stop`, `restart`, `config set
   --apply` and `config daemon apply` have no `--json`.
 - `config list`: `schema`, `settingsFile`, `keys` (a list of the items below), and

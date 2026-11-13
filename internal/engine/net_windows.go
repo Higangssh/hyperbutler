@@ -15,6 +15,7 @@ import (
 	"net/netip"
 	"net/url"
 	"os"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -63,6 +64,9 @@ type NetConfig struct {
 	// OnUnpublished, if set, is called with every port of running containers that
 	// auto-publishing could not mirror (State.UnpublishedPorts), whenever that changes.
 	OnUnpublished func([]UnpublishedPort)
+	// OnPublished, if set, is called with the host ports auto-publishing mirrors on the
+	// loopback (State.PublishedPorts), sorted, whenever that changes.
+	OnPublished func([]uint16)
 	// Egress, if set, narrows what the guest may reach (a sandbox session, ADR 0009).
 	Egress netstack.Egress
 	// NoDiag leaves the network out of the debug endpoint: a session's process has none.
@@ -332,7 +336,7 @@ func (g *guestNet) startAutoPublish(ctx context.Context, target transport.Hvsock
 		DisableKeepAlives: true,
 	}}
 	g.ap = &autoPublisher{g: g, client: client, step: step, open: map[string][]io.Closer{},
-		failed: map[string][]UnpublishedPort{}, check: hostPortFree}
+		failed: map[string][]UnpublishedPort{}, ports: map[string][]uint16{}, check: hostPortFree}
 	ctx, g.apCancel = context.WithCancel(ctx)
 	g.apDone = make(chan struct{})
 	go func() {
@@ -387,6 +391,8 @@ type autoPublisher struct {
 	// failed are the ports of running containers that could not be published, by
 	// container; State.UnpublishedPorts shows them.
 	failed map[string][]UnpublishedPort
+	// ports are the host ports published for each container in open.
+	ports map[string][]uint16
 }
 
 func (a *autoPublisher) follow(ctx context.Context) error {
@@ -544,8 +550,26 @@ func (a *autoPublisher) add(ctx context.Context, id string) {
 	}
 	a.mu.Lock()
 	a.open[id] = closers
+	a.ports[id] = ports
 	a.count += len(closers)
 	a.mu.Unlock()
+	a.reportPublished()
+}
+
+// reportPublished hands the host ports now published to NetConfig.OnPublished.
+func (a *autoPublisher) reportPublished() {
+	on := a.g.nc.OnPublished
+	if on == nil {
+		return
+	}
+	a.mu.Lock()
+	all := []uint16{}
+	for _, ps := range a.ports {
+		all = append(all, ps...)
+	}
+	a.mu.Unlock()
+	slices.Sort(all)
+	on(slices.Compact(all))
 }
 
 // fail records that none of a running container's ports is published.
@@ -587,6 +611,8 @@ func (a *autoPublisher) remove(id string) {
 	a.mu.Lock()
 	cs := a.open[id]
 	delete(a.open, id)
+	_, hadPorts := a.ports[id]
+	delete(a.ports, id)
 	a.count -= len(cs)
 	_, hadFailed := a.failed[id]
 	delete(a.failed, id)
@@ -599,6 +625,9 @@ func (a *autoPublisher) remove(id string) {
 	}
 	if hadFailed {
 		a.reportFailed()
+	}
+	if hadPorts {
+		a.reportPublished()
 	}
 }
 
