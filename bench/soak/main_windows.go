@@ -469,6 +469,8 @@ sampling:
 				if o := st.OS; o != nil {
 					extra["os_private"], extra["os_heap_committed"] = u(o.PrivateBytes), u(o.HeapCommitted)
 				}
+				extra["ws_trims"] = strconv.FormatInt(st.WorkingSetTrims, 10)
+				series[trimsSeries] = append(series[trimsSeries], Point{T: t, V: float64(st.WorkingSetTrims)})
 				addAdjusted(row, float64(m.HeapReleased))
 			}
 		}
@@ -537,7 +539,7 @@ sampling:
 }
 
 // extraColumns are CSV columns recorded for analysis but not judged.
-var extraColumns = []string{"heap_alloc", "heap_idle", "heap_released", "stack_inuse", "go_sys", "num_gc", "os_private", "os_heap_committed", "foreign"}
+var extraColumns = []string{"heap_alloc", "heap_idle", "heap_released", "stack_inuse", "go_sys", "num_gc", "os_private", "os_heap_committed", "foreign", "ws_trims"}
 
 // fetchProfiles saves the engine's heap, allocs and goroutine profiles, so growth or a
 // large working set can be traced afterwards (`go tool pprof`).

@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strings"
 	"time"
 )
 
@@ -21,6 +22,23 @@ var adjusted = []struct{ adj, raw string }{
 	{"ws_private_adj", "ws_private"},
 	{"private_bytes_adj", "private_bytes"},
 }
+
+// committed maps each working-set metric of the engine to the committed-memory metric
+// judged in its place. A private page that is resident is also committed, so a leak of
+// private memory raises private bytes; the private working set adds no leak signal of
+// its own, only residency, which Windows and outside readers change: the working-set
+// guard trims it, and a process that reads the engine's memory (an antivirus scan after
+// a signature update, in the v0.2.0 24 h run) makes committed pages resident again. The
+// working set is still reported, with the guard's trims, for the memory budgets
+// (REQ-MEM-001). ADR 0003, guardrail 3, change of 2026-11-14.
+var committed = []struct{ ws, commit string }{
+	{"ws_private", "private_bytes"},
+	{"ws_private_adj", "private_bytes_adj"},
+}
+
+// trimsSeries is the series of the engine's working-set guard trim count
+// (diag.Stats.WorkingSetTrims, cumulative). It is not a judged metric.
+const trimsSeries = "ws_trims"
 
 func isAdjusted(m string) bool {
 	for _, a := range adjusted {
@@ -57,20 +75,46 @@ const minBuckets = 6
 // judge prints a verdict per metric and reports whether every judged metric passed.
 // A raw metric whose adjusted metric has samples is analyzed and printed but not
 // judged; without adjusted samples (no heap_released: no diag endpoint) the raw metric
-// is judged instead, and judge says so.
+// is judged instead, and judge says so. A working-set metric is analyzed and printed,
+// with the guard's trims, but its commit metric is judged in its place, held to the
+// working set's allowance (metrics lists each working set before its commit metric).
 func judge(out io.Writer, c verdictConfig, series map[string][]Point) bool {
 	ok := true
 	adjOf, rawOf := map[string]string{}, map[string]string{}
 	for _, a := range adjusted {
 		adjOf[a.raw], rawOf[a.adj] = a.adj, a.raw
 	}
+	commitOf := map[string]string{}
+	for _, w := range committed {
+		commitOf[w.ws] = w.commit
+	}
+	// judgedInstead names the metric judged in m's place, or "" when m itself is judged:
+	// the adjusted metric for a raw one, then, for a working set, the commit metric that
+	// is judged (adjusted, or raw without heap_released).
+	judgedInstead := func(m string) string {
+		if c, has := commitOf[m]; has && len(series[c]) > 0 {
+			if adj, has := adjOf[c]; has && len(series[adj]) > 0 {
+				return adj
+			}
+			return c
+		}
+		if adj, has := adjOf[m]; has && len(series[adj]) > 0 {
+			return adj
+		}
+		return ""
+	}
+	// standIn holds, for a commit metric judged in a working set's place, the growth the
+	// working set's own limit allowed. Private bytes sit above the private working set,
+	// so a relative limit on their median would allow more; the commit metric is held
+	// to the working set's allowance, never looser than before the change.
+	standIn := map[string]float64{}
 	for _, m := range metrics {
 		pts := series[m]
 		raw, isAdj := rawOf[m]
 		if len(pts) == 0 {
 			switch {
 			case isAdj && len(series[raw]) > 0:
-				_, _ = fmt.Fprintf(out, "%-17s skipped: no heap_released samples (no diag endpoint), %s is judged instead\n", m, raw)
+				_, _ = fmt.Fprintf(out, "%-17s skipped: no heap_released samples (no diag endpoint), %s stands in\n", m, raw)
 			case isAdj:
 				// The raw metric's line already reports the missing samples.
 				_, _ = fmt.Fprintf(out, "%-17s skipped: no %s samples\n", m, raw)
@@ -88,16 +132,53 @@ func judge(out io.Writer, c verdictConfig, series map[string][]Point) bool {
 			_, _ = fmt.Fprintf(out, "%-17s FAIL: no noise limit configured\n", m)
 			continue
 		}
+		if a, has := standIn[m]; has {
+			lim = Limit{Abs: a}
+		}
 		v := Analyze(m, pts, Options{Warmup: c.warmup, MinWindow: c.minWindow, Bucket: c.bucket, MinBuckets: minBuckets, Limit: lim})
-		if adj, has := adjOf[m]; has && len(series[adj]) > 0 {
-			v.NotJudged = adj
-			_, _ = fmt.Fprintln(out, v)
-			continue
+		v.NotJudged = judgedInstead(m)
+		if j := v.NotJudged; j != "" && commitOf[m] != "" && v.Allowed > 0 {
+			if prev, has := standIn[j]; !has || v.Allowed < prev {
+				standIn[j] = v.Allowed
+			}
 		}
 		_, _ = fmt.Fprintln(out, v)
-		ok = ok && v.Pass
+		if _, ws := commitOf[m]; ws {
+			if note := trimNote(series[trimsSeries], c.warmup); note != "" {
+				_, _ = fmt.Fprintf(out, "%-17s %s\n", "", note)
+			}
+		}
+		if v.NotJudged == "" {
+			ok = ok && v.Pass
+		}
 	}
 	return ok
+}
+
+// trimNote says when the working-set guard trimmed the engine's working set after the
+// warm-up, from the cumulative trim count; "" when it did not, or was not sampled. A
+// trim, and an outside read that often comes with it, moves the working set in a step
+// that is not a leak.
+func trimNote(trims []Point, warmup time.Duration) string {
+	var at []string
+	prev, seen := 0.0, false
+	for _, p := range trims {
+		if seen && p.V > prev && p.T >= warmup.Seconds() {
+			at = append(at, (time.Duration(p.T) * time.Second).String())
+		}
+		prev, seen = p.V, true
+	}
+	if len(at) == 0 {
+		return ""
+	}
+	const maxListed = 10
+	more := ""
+	if len(at) > maxListed {
+		more = fmt.Sprintf(" and %d more", len(at)-maxListed)
+		at = at[:maxListed]
+	}
+	return fmt.Sprintf("note: the working-set guard trimmed after the warm-up at %s%s; a step in the working set there is residency, not a leak",
+		strings.Join(at, ", "), more)
 }
 
 // report prints a verdict per metric and the workload totals, and returns nil only if

@@ -60,16 +60,18 @@ func TestAdjustedMetrics(t *testing.T) {
 		fail         string // the metric that must fail
 	}{
 		"scavenger reuse": {ws: reuse, released: scavenged, pass: true, want: []string{
-			"reported, not judged (see ws_private_adj); alone: FAIL",
-			"reported, not judged (see private_bytes_adj); alone: PASS",
+			"ws_private        n=", "reported, not judged (see private_bytes_adj); alone: FAIL",
 		}},
+		// A leak commits memory, so private bytes grow with the working set. They are
+		// held to the working set's allowance (2 MiB here), not their own (5 % of 90 MiB).
 		"leak, heap_released flat": {ws: reuse, released: func(float64) float64 { return 5 * mib },
-			fail: "ws_private_adj"},
+			fail: "private_bytes_adj"},
 		"leak under scavenger reuse": {ws: func(t float64) float64 { return reuse(t) + 4*mib*t/hour }, released: scavenged,
-			fail: "ws_private_adj"},
+			fail: "private_bytes_adj"},
 		"no heap_released: raw judged": {ws: reuse, want: []string{
-			"ws_private_adj    skipped: no heap_released samples (no diag endpoint), ws_private is judged instead",
-		}, fail: "ws_private"},
+			"ws_private_adj    skipped: no heap_released samples (no diag endpoint), ws_private stands in",
+			"reported, not judged (see private_bytes); alone: FAIL",
+		}, fail: "private_bytes"},
 		"no heap_released, flat": {ws: func(float64) float64 { return 40 * mib }, pass: true},
 	} {
 		var out strings.Builder
@@ -142,7 +144,7 @@ func TestJudgeCSV(t *testing.T) {
 	}
 	out.Reset()
 	if err := judgeCSV(&out, strings.NewReader(oldCSV(reuse, nil)), c); err == nil ||
-		!strings.Contains(out.String(), "ws_private is judged instead") {
+		!strings.Contains(out.String(), "ws_private stands in") {
 		t.Fatalf("CSV without heap_released did not judge the raw metric (err %v):\n%s", err, out.String())
 	}
 

@@ -269,7 +269,10 @@ soak runs separately and its result goes here.
       exception recorded. Follow-ups: record `working_set_trims` in every sample and have
       the judge flag a step that coincides with a trim; consider judging commit
       (`private_bytes_adj`) as the primary memory metric; the working-set guard does not
-      restore the earlier level after a partial outside read.
+      restore the earlier level after a partial outside read. The first two are done
+      (2026-11-14): the CSV has `ws_trims` and the table notes each trim, and the engine's
+      memory is judged on its commit, held to the working set's allowance (ADR 0003,
+      guardrail 3). Re-judged that way this run passes.
 - [ ] The 45 MB working set seen under the soak workload is profiled and explained
   (ADR 0003, Consequences) before any memory budget is claimed.
 - [x] `go test -race ./...` and the goleak meta-test pass on Windows and Linux (CI).

@@ -81,6 +81,13 @@ func readCSV(r io.Reader) (map[string][]Point, []string, error) {
 				series[m] = append(series[m], Point{T: t, V: v})
 			}
 		}
+		trims, ok, err := num(rec, trimsSeries)
+		if err != nil {
+			return nil, nil, fmt.Errorf("line %d: %w", line, err)
+		}
+		if ok {
+			series[trimsSeries] = append(series[trimsSeries], Point{T: t, V: trims})
+		}
 	}
 	var empty []string
 	for _, m := range metrics {

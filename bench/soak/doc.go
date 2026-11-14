@@ -6,10 +6,12 @@
 // endpoint, and the VM's vmmem and vmwp private working sets. After the run it fits a
 // Theil–Sen slope to each metric over the steady-state window (after -warmup) and fails
 // if any metric's fitted growth across that window is above its noise limit, or if there
-// is too little data to tell. The engine's private working set and private bytes are
-// judged with the Go heap the scavenger has returned added back (ws_private_adj,
-// private_bytes_adj), since on Windows reusing those pages commits them again; the raw
-// metrics are reported but judged only when heap_released is not sampled.
+// is too little data to tell. The engine's memory is judged on its private bytes with
+// the Go heap the scavenger has returned added back (private_bytes_adj), since on Windows
+// reusing those pages commits them again, held to the growth the private working set's
+// limit allows; the working set, raw and adjusted, is reported with the working-set
+// guard's trims but not judged, since a trim or an outside read moves it without a leak.
+// The raw private bytes are judged only when heap_released is not sampled.
 //
 //	soak -hyperbutler hyperbutler.exe -home DIR -image-dir DIR -docker docker.exe \
 //	     -image-tar busybox-image.tar -share-dir DIR -duration 24h -warmup 1h -out soak.csv
