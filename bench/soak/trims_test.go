@@ -64,6 +64,38 @@ func TestWorkingSetStepJudgedByCommit(t *testing.T) {
 	}
 }
 
+// The stand-in allowance needs each working set analyzed before its commit metric.
+func TestWorkingSetBeforeCommit(t *testing.T) {
+	pos := map[string]int{}
+	for i, m := range metrics {
+		pos[m] = i
+	}
+	for _, w := range committed {
+		wi, ok1 := pos[w.ws]
+		ci, ok2 := pos[w.commit]
+		if !ok1 || !ok2 || wi >= ci {
+			t.Errorf("%s must come before %s in metrics", w.ws, w.commit)
+		}
+	}
+}
+
+// Without working-set samples the commit metric must not fall back to 5 % of its own
+// median: 3 MiB of growth on 93 MiB passes that, but not the 1 MiB absolute limit.
+func TestCommitWithoutWorkingSet(t *testing.T) {
+	s := trimRun(func(t float64) float64 { return 3 * mib * t / hour })
+	delete(s, "ws_private")
+	delete(s, "ws_private_adj")
+	c := soakVerdictConfig()
+	c.optedOut["ws_private"], c.optedOut["ws_private_adj"] = true, true
+	var out strings.Builder
+	if err := report(&out, c, s, 100, 0, "", nil, nil, nil, false); err == nil {
+		t.Fatalf("commit growth passed without a working-set allowance:\n%s", out.String())
+	}
+	if !strings.Contains(out.String(), "private_bytes_adj judged with its absolute limit only") {
+		t.Errorf("fallback not reported:\n%s", out.String())
+	}
+}
+
 func TestTrimNote(t *testing.T) {
 	pts := func(vs ...float64) []Point {
 		var p []Point

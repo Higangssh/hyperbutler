@@ -130,7 +130,7 @@ Why Go here specifically:
    moved 0.17 MiB in 23 h and the guard counted two trims, both at Defender updates; the
    first v0.2.0 run had a 7 MiB step of the same kind. The allowance keeps the gate no
    looser: re-judged from its CSV, the v0.2.0-rc.1 run with the share server heap leak
-   fails on `private_bytes_adj` (+4.2 MiB, allowed 2.2 MiB), which the old
+   fails on `private_bytes_adj` (+4.2 MiB, allowed 2.3 MiB), which the old
    `ws_private_adj` passed (+1.5 MiB). A leak of shared or mapped memory shows in neither
    metric; handles cover sections. The working set stays the REQ-MEM-001 budget metric.
 4. **Runtime limits:** long-running Go processes set `GOMEMLIMIT` and expose `pprof` and

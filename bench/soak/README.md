@@ -68,13 +68,13 @@ or the VM, grows over time.
   judged (ADR 0003, guardrail 3). A resident private page is also committed, so a leak of
   private memory raises private bytes; the working set only adds residency, which the
   working-set guard and outside readers move. The commit metric is held to the growth
-  the working set's own limit allows (`max(-ws-abs, -ws-rel × ws median)`), not to 5 %
+  the working set's own limit allows (`max(-ws-abs, -ws-rel × median)` of `ws_private_adj` for `private_bytes_adj`, of `ws_private` for `private_bytes`), not to 5 %
   of its own, larger median, so the gate is no looser than before. The CSV's `ws_trims`
   column is the guard's cumulative trim count, and the table notes every trim after the
   warm-up under the working-set lines. Re-judged from their CSVs: the v0.2.0 24 h run,
   which the old rule failed on one 14 MiB working-set step after a Defender update with
   flat private bytes, passes; the v0.2.0-rc.1 run, whose share server leaked heap, fails
-  on `private_bytes_adj` (+4.2 MiB, allowed 2.2) as well as `heap_inuse`, where the old
+  on `private_bytes_adj` (+4.2 MiB, allowed 2.3) as well as `heap_inuse`, where the old
   rule's `ws_private_adj` passed it (+1.5 MiB).
 
   The run also fails if the engine or the VM exits, if any docker command fails, if

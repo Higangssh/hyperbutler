@@ -84,9 +84,9 @@ func judge(out io.Writer, c verdictConfig, series map[string][]Point) bool {
 	for _, a := range adjusted {
 		adjOf[a.raw], rawOf[a.adj] = a.adj, a.raw
 	}
-	commitOf := map[string]string{}
+	commitOf, isCommit := map[string]string{}, map[string]bool{}
 	for _, w := range committed {
-		commitOf[w.ws] = w.commit
+		commitOf[w.ws], isCommit[w.commit] = w.commit, true
 	}
 	// judgedInstead names the metric judged in m's place, or "" when m itself is judged:
 	// the adjusted metric for a raw one, then, for a working set, the commit metric that
@@ -134,16 +134,21 @@ func judge(out io.Writer, c verdictConfig, series map[string][]Point) bool {
 		}
 		if a, has := standIn[m]; has {
 			lim = Limit{Abs: a}
+		} else if isCommit[m] && judgedInstead(m) == "" {
+			// No working-set allowance (no working-set samples, or too few to analyze):
+			// never fall back to the commit metric's own, looser relative limit.
+			lim = Limit{Abs: lim.Abs}
+			_, _ = fmt.Fprintf(out, "%-17s judged with its absolute limit only: no working-set allowance to hold it to\n", m)
 		}
 		v := Analyze(m, pts, Options{Warmup: c.warmup, MinWindow: c.minWindow, Bucket: c.bucket, MinBuckets: minBuckets, Limit: lim})
 		v.NotJudged = judgedInstead(m)
-		if j := v.NotJudged; j != "" && commitOf[m] != "" && v.Allowed > 0 {
-			if prev, has := standIn[j]; !has || v.Allowed < prev {
-				standIn[j] = v.Allowed
-			}
+		// Each working set gives its allowance to its own commit metric (raw to raw,
+		// adjusted to adjusted); metrics lists each working set before it.
+		if cm, ws := commitOf[m]; ws && v.Allowed > 0 {
+			standIn[cm] = v.Allowed
 		}
 		_, _ = fmt.Fprintln(out, v)
-		if _, ws := commitOf[m]; ws {
+		if m == lastWorkingSet(series) {
 			if note := trimNote(series[trimsSeries], c.warmup); note != "" {
 				_, _ = fmt.Fprintf(out, "%-17s %s\n", "", note)
 			}
@@ -155,10 +160,22 @@ func judge(out io.Writer, c verdictConfig, series map[string][]Point) bool {
 	return ok
 }
 
+// lastWorkingSet is the last working-set metric with samples, under whose line the trims
+// are noted, once.
+func lastWorkingSet(series map[string][]Point) string {
+	last := ""
+	for _, w := range committed {
+		if len(series[w.ws]) > 0 {
+			last = w.ws
+		}
+	}
+	return last
+}
+
 // trimNote says when the working-set guard trimmed the engine's working set after the
 // warm-up, from the cumulative trim count; "" when it did not, or was not sampled. A
 // trim, and an outside read that often comes with it, moves the working set in a step
-// that is not a leak.
+// whether or not memory leaks; the commit metric tells the two apart.
 func trimNote(trims []Point, warmup time.Duration) string {
 	var at []string
 	prev, seen := 0.0, false
@@ -177,7 +194,7 @@ func trimNote(trims []Point, warmup time.Duration) string {
 		more = fmt.Sprintf(" and %d more", len(at)-maxListed)
 		at = at[:maxListed]
 	}
-	return fmt.Sprintf("note: the working-set guard trimmed after the warm-up at %s%s; a step in the working set there is residency, not a leak",
+	return fmt.Sprintf("note: the working-set guard trimmed after the warm-up at %s%s; a working-set step there can be residency alone, the commit metric decides",
 		strings.Join(at, ", "), more)
 }
 
