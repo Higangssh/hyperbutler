@@ -245,9 +245,9 @@ func ProcessName(pid uint32) string {
 		return ""
 	}
 	defer func() { _ = windows.CloseHandle(h) }()
-	for size := windows.MAX_PATH; size <= windows.MAX_LONG_PATH; size *= 8 {
+	for size := uint32(windows.MAX_PATH); size <= windows.MAX_LONG_PATH; size *= 8 {
 		buf := make([]uint16, size)
-		n := uint32(len(buf))
+		n := size
 		err := windows.QueryFullProcessImageName(h, 0, &buf[0], &n)
 		if err == nil {
 			return filepath.Base(windows.UTF16ToString(buf[:n]))

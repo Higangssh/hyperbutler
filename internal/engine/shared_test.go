@@ -78,7 +78,7 @@ func TestSharedPorts(t *testing.T) {
 func TestSharedPortsBounded(t *testing.T) {
 	ss := []socktable.Socket{{Proto: "tcp4", PID: 1, Local: netip.MustParseAddrPort("127.0.0.1:8080"), State: "LISTEN"}}
 	for i := range 3 * MaxSharedPorts {
-		ss = append(ss, socktable.Socket{Proto: "tcp4", PID: uint32(i + 2), Local: netip.MustParseAddrPort("0.0.0.0:8080"), State: "LISTEN"}) //nolint:gosec // G115: small test values
+		ss = append(ss, socktable.Socket{Proto: "tcp4", PID: uint32(i + 2), Local: netip.MustParseAddrPort("0.0.0.0:8080"), State: "LISTEN"})
 	}
 	got, more := SharedPorts(ss, 1, []uint16{8080})
 	if len(got) != MaxSharedPorts || more != 2*MaxSharedPorts {

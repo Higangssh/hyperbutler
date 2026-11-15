@@ -55,7 +55,7 @@ func TestSharedPortsHelper(t *testing.T) {
 // startHelper starts a helper listening on addr and returns its first line.
 func startHelper(t *testing.T, addr string) (string, *exec.Cmd) {
 	t.Helper()
-	cmd := exec.Command(os.Args[0], "-test.run=^TestSharedPortsHelper$") //nolint:gosec // G204: this test binary
+	cmd := exec.Command(os.Args[0], "-test.run=^TestSharedPortsHelper$")
 	cmd.Env = append(os.Environ(), "HB_TEST_SHARED_LISTEN="+addr)
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
@@ -89,7 +89,7 @@ func TestSharedPortsLive(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		port := uint16(l.Addr().(*net.TCPAddr).Port) //nolint:gosec // G115: a TCP port
+		port := uint16(l.Addr().(*net.TCPAddr).Port)
 		st := &engine.State{PID: os.Getpid(), PIDCreated: created, PublishedPorts: []uint16{port}}
 		if got, _ := sharedPorts(st); len(got) != 0 {
 			_ = l.Close()
@@ -112,7 +112,7 @@ func TestSharedPortsLive(t *testing.T) {
 		}
 
 		got, more := sharedPorts(st)
-		want := SharedPortJSON{Port: port, PID: uint32(cmd.Process.Pid), Process: filepath.Base(os.Args[0]), Listen: []string{fmt.Sprintf("[::1]:%d", port)}} //nolint:gosec // G115: Windows process IDs are DWORDs
+		want := SharedPortJSON{Port: port, PID: uint32(cmd.Process.Pid), Process: filepath.Base(os.Args[0]), Listen: []string{fmt.Sprintf("[::1]:%d", port)}}
 		if len(got) != 1 || more != 0 || got[0].Port != want.Port || got[0].PID != want.PID ||
 			!strings.EqualFold(got[0].Process, want.Process) || strings.Join(got[0].Listen, ",") != want.Listen[0] {
 			t.Errorf("got %+v (%d more), want %+v", got, more, want)
