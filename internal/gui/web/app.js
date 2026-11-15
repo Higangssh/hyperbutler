@@ -335,6 +335,15 @@
     if (status.paused) return "paused";
     return status.phase;
   }
+  function portNoteText(n) {
+    if (n.kind === "unpublished") return t("home.ports.unpublished", { port: n.port, container: n.container, reason: n.reason });
+    if (n.kind !== "shared") return "";
+    const who = n.process ? t("home.ports.process", { name: n.process, pid: n.pid }) : t("home.ports.pid", { pid: n.pid });
+    const listen = (n.listen || []).slice();
+    if (!listen.length) return "";
+    if (n.listenMore) listen.push(t("home.ports.listenMore", { n: fmtInt(n.listenMore) }));
+    return t("home.ports.shared", { port: n.port, who, listen: listText(listen) });
+  }
   function renderHome() {
     if (!status) return;
     const ph = phaseKey();
@@ -385,6 +394,17 @@
       $("error-code").textContent = t("error.code", { code });
       $("error-copy").textContent = t("error.copy");
     }
+
+    // Port problems of a live engine (REQ-NET-005), as `hyperbutler status` lists them;
+    // the host sends them only for a live engine, also while the free-space guard pauses it.
+    const pl = $("home-port-list");
+    clear(pl);
+    for (const n of status.ports || []) {
+      const text = portNoteText(n);
+      if (text) pl.append(h("li", { text }));
+    }
+    if (pl.childElementCount && status.portsMore) pl.append(h("li", { text: t("home.ports.more", { n: fmtInt(status.portsMore) }) }));
+    $("home-ports").hidden = !pl.childElementCount;
 
     const [mn, mu] = status.memoryMB ? bytes(status.memoryMB * (1 << 20)) : ["-", ""];
     $("st-mem").textContent = mn;

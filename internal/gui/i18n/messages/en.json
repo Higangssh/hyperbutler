@@ -58,6 +58,13 @@
   "home.containers.unknown": "Shown while the engine runs",
   "home.running.title": "Running now",
   "home.project": "Project {name}",
+  "home.ports.title": "Some ports need a look",
+  "home.ports.unpublished": "Port {port} of container {container} is not published: {reason}",
+  "home.ports.shared": "Port {port} is also used by {who} on {listen}. localhost reaches hyperbutler's container, not that program.",
+  "home.ports.process": "{name} (process {pid})",
+  "home.ports.pid": "process {pid}",
+  "home.ports.listenMore": "{n} more",
+  "home.ports.more": "And {n} more not shown here.",
 
   "action.start": "Start",
   "action.stop": "Stop",

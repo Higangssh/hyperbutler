@@ -256,7 +256,9 @@ sink, `eval`, network API, inline script or style, or outside URL in the page.
   that will stop and which come back (REQ-UX-017). Changing a setting that needs a VM or
   dockerd restart shows a banner with "Restart now", which goes through the same list.
 - Screens: Home (state, memory, CPUs, disk, containers; the error state with steps by
-  code), Containers (by Compose project, actions, logs), Storage (read-only), Settings
+  code; a banner with the live engine's port problems as `status` lists them: ports it
+  could not publish and other programs listening on a published port, REQ-NET-005),
+  Containers (by Compose project, actions, logs), Storage (read-only), Settings
   (keys with their apply time, daemon.json editor), Help (doctor, diagnose, the recovery
   ladder), and the first-run screen with doctor's key checks.
 

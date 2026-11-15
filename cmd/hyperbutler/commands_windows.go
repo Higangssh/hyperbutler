@@ -1010,7 +1010,7 @@ func (in *install) printStatus(stdout io.Writer, r StatusJSON, upd *updatecheck.
 		}
 		_, _ = fmt.Fprintf(stdout, "  proxy:   %s\n", env)
 	}
-	if st != nil && st.Phase.Live() {
+	if r.Running && st != nil && st.Phase.Live() {
 		for _, u := range st.UnpublishedPorts {
 			_, _ = fmt.Fprintf(stdout, "  ports:   %d of container %s is not published: %s\n", u.Port, u.Container, printable([]byte(u.Reason)))
 		}

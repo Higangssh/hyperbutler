@@ -165,6 +165,8 @@ h1 { margin: 0; font-size: 28px; font-weight: 800; letter-spacing: -0.02em; over
 .banner { display: flex; align-items: center; gap: 12px; padding: 12px 18px; border-radius: 24px; flex-wrap: wrap; }
 .banner.warn { background: var(--warn-note); color: #6E3C00; }
 .banner img { object-fit: contain; }
+.banner h2 { font-size: inherit; margin: 0; }
+.port-notes { margin: 4px 0 0; padding-left: 18px; overflow-wrap: anywhere; }
 .banner .btn { margin-left: auto; }
 .set-card { padding: 6px 22px; }
 .set { display: flex; align-items: center; gap: 14px; padding: 14px 0; border-top: 1px solid var(--line); flex-wrap: wrap; }

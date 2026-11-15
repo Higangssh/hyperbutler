@@ -161,3 +161,19 @@ func TestSharedPortText(t *testing.T) {
 		t.Errorf("process name not capped: %d runes", len([]rune(got)))
 	}
 }
+
+// An engine that exited without shutting down leaves its last ports in state.json;
+// `status` reports it stopped and lists none of them, as the window does.
+func TestPrintStatusStalePorts(t *testing.T) {
+	dir := t.TempDir()
+	in := &install{l: engine.Layout{Home: dir, Data: dir}}
+	st := &engine.State{Phase: engine.PhaseRunning, PID: 42, Started: time.Now(),
+		UnpublishedPorts: []engine.UnpublishedPort{{Container: "0123456789ab", Port: 8080, Reason: "Ports are not available"}}}
+	var out strings.Builder
+	if err := in.printStatus(&out, StatusJSON{State: st}, nil, dockerCLI{}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "exited without shutting down") || strings.Contains(out.String(), "ports:") {
+		t.Errorf("stale state:\n%s", out.String())
+	}
+}

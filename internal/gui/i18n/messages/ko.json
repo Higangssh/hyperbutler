@@ -56,6 +56,13 @@
   "home.containers.unknown": "엔진이 돌아갈 때 보여드려요",
   "home.running.title": "지금 일하는 중",
   "home.project": "{name} 프로젝트",
+  "home.ports.title": "살펴볼 포트가 있어요",
+  "home.ports.unpublished": "컨테이너 {container}의 {port}번 포트를 열지 못했어요: {reason}",
+  "home.ports.shared": "{port}번 포트를 {who}도 {listen}에서 쓰고 있어요. localhost는 그 프로그램이 아니라 hyperbutler 컨테이너로 연결돼요.",
+  "home.ports.process": "{name}(프로세스 {pid})",
+  "home.ports.pid": "프로세스 {pid}",
+  "home.ports.listenMore": "{n}곳 더",
+  "home.ports.more": "여기 보이지 않는 것이 {n}개 더 있어요.",
 
   "action.start": "시작",
   "action.stop": "쉬게 하기",

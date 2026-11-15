@@ -573,6 +573,93 @@ func TestMakeStatus(t *testing.T) {
 	}
 }
 
+// The home screen lists the running engine's port problems as `status` does (issue #2),
+// cleaned and bounded, and none while it is not running.
+func TestMakeStatusPorts(t *testing.T) {
+	run := &engine.State{Phase: engine.PhaseRunning, UnpublishedPorts: []engine.UnpublishedPort{
+		{Container: "0123456789ab", Port: 8080, Reason: "Ports are not available: \x1b[2J in use"}}}
+	shared := []schema.SharedPort{
+		{Port: 8080, PID: 7, Process: "com.docker.backend.exe", Listen: []string{"0.0.0.0:8080", "[::]:8080"}},
+		{Port: 80, PID: 4, Listen: []string{"a", "b", "c", "d", "e"}},
+	}
+	v := MakeStatus(schema.Status{SetUp: true, Running: true, State: run, SharedPorts: shared, SharedPortsMore: 3})
+	if len(v.Ports) != 3 || v.PortsMore != 3 {
+		t.Fatalf("ports: %+v (%d more)", v.Ports, v.PortsMore)
+	}
+	if u := v.Ports[0]; u.Kind != "unpublished" || u.Port != 8080 || u.Container != "0123456789ab" || strings.ContainsRune(u.Reason, 0x1b) {
+		t.Errorf("unpublished: %+v", u)
+	}
+	if sp := v.Ports[1]; sp.Kind != "shared" || sp.PID != 7 || sp.Process != "com.docker.backend.exe" || len(sp.Listen) != 2 {
+		t.Errorf("shared: %+v", sp)
+	}
+	if sp := v.Ports[2]; sp.Process != "" || len(sp.Listen) != maxPortListen {
+		t.Errorf("shared without a name: %+v", sp)
+	}
+
+	many := &engine.State{Phase: engine.PhaseRunning}
+	for i := range maxPortNotes + 5 {
+		many.UnpublishedPorts = append(many.UnpublishedPorts, engine.UnpublishedPort{Container: "0123456789ab", Port: uint16(1000 + i)})
+	}
+	if v := MakeStatus(schema.Status{SetUp: true, Running: true, State: many}); len(v.Ports) != maxPortNotes || v.PortsMore != 5 {
+		t.Errorf("bounded: %d notes, %d more", len(v.Ports), v.PortsMore)
+	}
+
+	stopped := &engine.State{Phase: engine.PhaseStopped, UnpublishedPorts: run.UnpublishedPorts}
+	if v := MakeStatus(schema.Status{SetUp: true, State: stopped, SharedPorts: shared}); v.Ports != nil || v.PortsMore != 0 {
+		t.Errorf("stopped engine: %+v", v.Ports)
+	}
+	if v := MakeStatus(schema.Status{SetUp: true, Running: true, State: &engine.State{Phase: engine.PhaseRunning}}); v.Ports != nil {
+		t.Errorf("no problems: %+v", v.Ports)
+	}
+	// A state.json left "running" by an engine that is gone shows nothing.
+	if v := MakeStatus(schema.Status{SetUp: true, State: run, SharedPorts: shared}); v.Ports != nil {
+		t.Errorf("stale state: %+v", v.Ports)
+	}
+	// Paused by the free-space guard, starting or stopping: still listed, as `status` does.
+	if v := MakeStatus(schema.Status{SetUp: true, Running: true, State: run, SharedPorts: shared, GuardPause: &schema.GuardPause{}}); !v.Paused || len(v.Ports) != 3 {
+		t.Errorf("paused: %v %+v", v.Paused, v.Ports)
+	}
+	for _, ph := range []engine.Phase{engine.PhaseStarting, engine.PhaseStopping} {
+		st := &engine.State{Phase: ph, UnpublishedPorts: run.UnpublishedPorts}
+		if v := MakeStatus(schema.Status{SetUp: true, Running: true, State: st}); len(v.Ports) != 1 {
+			t.Errorf("%s: %+v", ph, v.Ports)
+		}
+	}
+}
+
+// Other programs' names and addresses are cleaned and bounded too; the counts add up
+// across both kinds, a negative count from the host is ignored, and a shared note
+// without an address (which the sentence cannot say) is dropped.
+func TestMakeStatusPortsHostile(t *testing.T) {
+	st := &engine.State{Phase: engine.PhaseRunning}
+	for i := range 10 {
+		st.UnpublishedPorts = append(st.UnpublishedPorts, engine.UnpublishedPort{Container: "0123456789ab", Port: uint16(2000 + i), Reason: strings.Repeat("r", 5000)})
+	}
+	var shared []schema.SharedPort
+	for i := range 10 {
+		shared = append(shared, schema.SharedPort{Port: uint16(3000 + i), PID: uint32(10 + i),
+			Process: "\u202eexe.\x1b[31m" + strings.Repeat("p", 2000), Listen: []string{"0.0.0.0:1\x1b[2J", "a", "b", "c", "d", "e"}})
+	}
+	shared = append(shared, schema.SharedPort{Port: 1, PID: 1})
+	v := MakeStatus(schema.Status{SetUp: true, Running: true, State: st, SharedPorts: shared, SharedPortsMore: 7})
+	if len(v.Ports) != maxPortNotes || v.PortsMore != 4+7 {
+		t.Fatalf("%d notes, %d more", len(v.Ports), v.PortsMore)
+	}
+	for _, n := range v.Ports {
+		for _, s := range append([]string{n.Reason, n.Process, n.Container}, n.Listen...) {
+			if strings.ContainsAny(s, "\x1b\u202e") || len(s) > maxPortReason {
+				t.Fatalf("not cleaned or bounded: %q", s)
+			}
+		}
+		if n.Kind == "shared" && (len(n.Listen) != maxPortListen || n.ListenMore != 2) {
+			t.Errorf("listen bound: %+v", n)
+		}
+	}
+	if v := MakeStatus(schema.Status{SetUp: true, Running: true, State: &engine.State{Phase: engine.PhaseRunning}, SharedPorts: shared[10:], SharedPortsMore: -5}); v.Ports != nil || v.PortsMore != 0 {
+		t.Errorf("empty listen or negative count: %+v, %d", v.Ports, v.PortsMore)
+	}
+}
+
 // fakeImporter checks that import.run passes only planned, not imported items.
 type fakeImporter struct {
 	got     chan []string

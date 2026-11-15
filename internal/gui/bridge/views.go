@@ -50,6 +50,65 @@ type StatusView struct {
 	// Error is the last failed start, as a code and its English original.
 	Error *ErrorView `json:"error,omitempty"`
 	Home  string     `json:"home"`
+	// Ports are the port problems of a live engine (running, also while the free-space
+	// guard pauses it, starting or stopping), as `status` prints them (REQ-NET-005):
+	// container ports it could not publish, and other programs that listen on a port it
+	// publishes. PortsMore counts the ones not listed: past maxPortNotes here, and past
+	// the 64 that `status` reads. The page shows whatever is here.
+	Ports     []PortNote `json:"ports,omitempty"`
+	PortsMore int        `json:"portsMore,omitempty"`
+}
+
+// PortNote is one port problem. Kind is "unpublished" (Container and Reason set) or
+// "shared" (PID, Process when its executable could be read, at least one Listen
+// address, and ListenMore past maxPortListen).
+type PortNote struct {
+	Kind       string   `json:"kind"`
+	Port       uint16   `json:"port"`
+	Container  string   `json:"container,omitempty"`
+	Reason     string   `json:"reason,omitempty"`
+	PID        uint32   `json:"pid"`
+	Process    string   `json:"process,omitempty"`
+	Listen     []string `json:"listen"`
+	ListenMore int      `json:"listenMore,omitempty"`
+}
+
+// maxPortNotes bounds StatusView.Ports; maxPortListen one note's addresses;
+// maxPortReason Docker's reason (state.json allows 4 KiB, real ones are ~200 bytes).
+const (
+	maxPortNotes  = 16
+	maxPortListen = 4
+	maxPortReason = 1024
+)
+
+// portNotes is the port problems of a live engine, unpublished ones first.
+func portNotes(s schema.Status) (out []PortNote, more int) {
+	add := func(n PortNote) {
+		if len(out) == maxPortNotes {
+			more++
+			return
+		}
+		out = append(out, n)
+	}
+	for _, u := range s.State.UnpublishedPorts {
+		add(PortNote{Kind: "unpublished", Port: u.Port, Container: field(u.Container), Listen: []string{},
+			Reason: dockerapi.Clip(dockerapi.CleanText(redact.String(u.Reason), false), maxPortReason)})
+	}
+	for _, sp := range s.SharedPorts {
+		if len(sp.Listen) == 0 {
+			continue // engine.SharedPorts never makes one; the sentence needs an address
+		}
+		n := PortNote{Kind: "shared", Port: sp.Port, PID: sp.PID, Process: field(sp.Process), Listen: []string{}}
+		for i, a := range sp.Listen {
+			if i == maxPortListen {
+				n.ListenMore = len(sp.Listen) - i
+				break
+			}
+			n.Listen = append(n.Listen, field(a))
+		}
+		add(n)
+	}
+	return out, more + max(s.SharedPortsMore, 0)
 }
 
 // engineCodes maps the engine's state.json error codes to the GUI's.
@@ -92,6 +151,7 @@ func MakeStatus(s schema.Status) StatusView {
 		if !st.Started.IsZero() {
 			v.UpSeconds = int64(time.Since(st.Started) / time.Second)
 		}
+		v.Ports, v.PortsMore = portNotes(s)
 	case s.Running:
 		v.Phase = "starting"
 	case st != nil && st.Phase == engine.PhaseFailed:
