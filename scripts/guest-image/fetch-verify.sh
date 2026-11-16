@@ -128,6 +128,7 @@ while read -r name sha url extra; do
             kind=rebuild
             binfo=$(tar -xOf "$path" BUILDINFO.txt 2>/dev/null) || fail "$name: no BUILDINFO.txt"
             want=engine-nonpie
+            licenses=
             for pkg in docker-engine containerd; do
                 # commit, version, repo/origin of the pinned package
                 pin=$(awk -F '\t' -v p="$pkg" '$1 == p && $4 == "apk" { print $8 "\t" $6 "\t" $9 "/" $7; exit }' "$manifest")
@@ -138,6 +139,8 @@ while read -r name sha url extra; do
                 printf '%s\n' "$binfo" | grep -q -x -F "$pkg: aports $pcommit $porigin" ||
                     fail "$name: BUILDINFO.txt was not built from $pkg's aports commit $pcommit"
                 want="$want-${pkg#docker-engine}-$pver"
+                plic=$(awk -F '\t' -v p="$pkg" '$1 == p { print $10; exit }' "$manifest")
+                case " $licenses " in *" $plic "*) ;; *) licenses="${licenses:+$licenses }$plic" ;; esac
             done
             # engine-nonpie-docker-<ver>-containerd-<ver>.tar
             want=$(printf '%s' "$want" | sed 's/^engine-nonpie--/engine-nonpie-docker-/').tar
@@ -146,6 +149,7 @@ while read -r name sha url extra; do
                 tar -tf "$path" "usr/bin/$b" >/dev/null 2>&1 || fail "$name: no usr/bin/$b"
             done
             pkgname=engine-nonpie
+            license=$licenses
             echo "ok     $name (sha256; rebuilt from the docker-engine and containerd pins)"
             ;;
         *)

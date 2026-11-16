@@ -364,6 +364,11 @@ soak runs separately and its result goes here.
   (ADR 0011; an older or newer dockerd may ignore unknown `builder.gc` keys without an
   error): with no user daemon.json, `docker buildx inspect` lists a rule with
   "Max Used Space: 8GiB" (or the bytes of 8 GiB).
+- [ ] After a `docker-engine` or `containerd` bump, the `engine-nonpie` pin is rebuilt
+  (ADR 0005, "The engine without PIE"): run `nonpie-engine.yml`, upload the tar it makes
+  to guest-inputs, and pin the line it prints. The guest-image build refuses a pin whose
+  BUILDINFO.txt names other aports commits, and the workflow fails when a rebuild does
+  not give the pinned bytes.
 - [ ] `hyperbutler.exe` checks the guest image files against hashes embedded at build time
   (Decision 4): `hyperbutler version --json` of the released binary says
   `"imagePinned": true` with the `image.json` SHA-256 from the guest-image job, and a

@@ -541,11 +541,13 @@ try {
             if ($c.Count -ne 10) { Fail "bad line in ${inputs}: $l" }
             $n++
             $pkg = if ($c[3] -eq 'apk') { "$($c[4])-$($c[5])" } else { $c[2] }
-            $how = if ($c[3] -eq 'apk') { 'signed' } else { 'pin only' }
+            $how = switch ($c[3]) { 'apk' { 'signed' } 'rebuild' { 'rebuilt without PIE from the signed docker-engine and containerd' } default { 'pin only' } }
             # A release ships only signed Alpine packages, whose source and license texts
-            # the image job can collect. kind is 'apk' only after apk verify passed
-            # (fetch-verify.sh); anything else is a pin-only input.
-            if ($c[3] -ne 'apk') { Warn "guest input $($c[0]) ($($c[2])) is not a signed Alpine package" }
+            # the image job can collect, and the engine-nonpie rebuild of two of them
+            # (ADR 0005), whose source is theirs. kind is 'apk' only after apk verify
+            # passed and 'rebuild' only after its commits matched (fetch-verify.sh);
+            # anything else is a pin-only input.
+            if ($c[3] -ne 'apk' -and $c[3] -ne 'rebuild') { Warn "guest input $($c[0]) ($($c[2])) is not a signed Alpine package" }
             $index.Add("$($c[0])  $pkg  $($c[9])  ($how)")
             if ($c[9] -match 'GPL') { $gpl += "  $pkg ($($c[9]))" }
         }

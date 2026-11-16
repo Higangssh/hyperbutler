@@ -140,6 +140,12 @@ Alpine Linux packages listed in MANIFEST.tsv. For each package this bundle has:
 To rebuild a package, copy its aports directory into an aports checkout on Alpine Linux,
 put the distfiles in $SRCDEST, and run `abuild -r`.
 
+dockerd, docker-proxy, containerd and containerd-shim-runc-v2 in the image are not the
+packages' own builds: they are rebuilt from the docker and containerd aports directories
+and distfiles here, with only the Go build mode changed from PIE to a fixed-address
+executable, by scripts/guest-image/build-nonpie.sh in the hyperbutler repository at the
+tag of this release (its BUILDINFO.txt lists the commits and patches).
+
 The hyperbutler code in the image (guest/cmd/*) is Apache-2.0; its source is the hyperbutler
 repository at the tag of this release.
 EOF
