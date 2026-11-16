@@ -272,7 +272,10 @@ soak runs separately and its result goes here.
       restore the earlier level after a partial outside read. The first two are done
       (2026-11-14): the CSV has `ws_trims` and the table notes each trim, and the engine's
       memory is judged on its commit, held to the working set's allowance (ADR 0003,
-      guardrail 3). Re-judged that way this run passes.
+      guardrail 3). Re-judged that way this run passes. For the third, the guard now
+      checks again from five minutes after a trim and trims again (at most twice) if the working set is
+      still 8 MiB above the pre-read low with the commit flat (2026-11-16,
+      docs/research/mem-reclaim.md, section 3); not yet seen working in a soak.
 - [ ] The 45 MB working set seen under the soak workload is profiled and explained
   (ADR 0003, Consequences) before any memory budget is claimed.
 - [x] `go test -race ./...` and the goleak meta-test pass on Windows and Linux (CI).

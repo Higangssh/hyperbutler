@@ -1289,7 +1289,7 @@ func cmdEngine(args []string, stderr io.Writer) (int, error) {
 	}
 	// REQ-MEM-002: undo an outside scan that makes the untouched commit resident.
 	guard := diag.StartWorkingSetGuard(func(rule string, private, commit uint64) {
-		log.Info("working set emptied after an unexplained rise (likely an outside memory read)", "rule", rule, "privateWorkingSet", private, "privateBytes", commit)
+		log.Info("working set emptied (likely an outside memory read)", "rule", rule, "privateWorkingSet", private, "privateBytes", commit)
 	})
 	defer guard.Stop()
 	log.Info("working-set guard started", "partialRule", guard.PartialRule())

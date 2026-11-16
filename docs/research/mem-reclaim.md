@@ -256,7 +256,7 @@ last 30 s:
   effect this rule detects the FIPS buffer becoming resident. With
   `GODEBUG=fips140=on` the engine fills the buffer itself and the rule trims once.
 
-Either rule calls `SetProcessWorkingSetSizeEx(-1, -1)`, at most once a minute, and the
+Either rule (and the settle check below) calls `SetProcessWorkingSetSizeEx(-1, -1)`, at most once a minute, and the
 engine logs `working set emptied` with the rule. The engine also logs at start whether
 the partial rule is on. A trim moves pages to the standby list: the working set
 REQ-MEM-001/002 count drops at once, the RAM is free when Windows repurposes it, and the
@@ -265,6 +265,29 @@ the full rule fired about 4 s after each of eight scans, at 64.5 to 66.5 MiB; th
 dropped to 1.0 to 1.4 MiB and settled at 13.6 to 13.8 MiB, below its 19 MiB before. It
 did not fire in any `nt` run. The partial rule has not fired in a bench run yet: the one
 partial read was seen before it existed.
+
+**Settle check (2026-11-16).** The 24 h soak of v0.2.0 (docs/release.md) shows the
+partial rule firing in the field, at 10:16:39 on 2026-11-11, 26 s after a Defender
+signature update: the private working set was 59.1 MiB against 42.0 MiB held for 10.8 h,
+private bytes flat. After the trim the engine was at 37.1 MiB, then climbed over about
+five minutes to 54 MiB (46.9 after 10 s, 51.3 after 30 s, 53.6 after 5 min) and stayed
+there for 13 h, private bytes +0.2 MiB. A climb that slow never rises GuardRise or
+GuardBigRise within one 30 s window, so neither rule fired again until the next Defender
+update. After a full or partial trim from a steady level the guard now checks again,
+from five minutes after the trim for five more (GuardSettle): on the first sample where
+the private working set is still 8 MiB (GuardRise) above the pre-read low, has stopped
+climbing (within 1 MiB over the 30 s window) and the commit is up by at most 1 MiB
+since the trim, it trims again (rule `settle`). Each read gets at most two settle trims
+(GuardSettleTries), each opening the next check, so if the engine really uses those
+pages it refaults them at most twice more and keeps them. A second read while a check
+is pending keeps the lower baseline; a read that lands on a refault (the window before it
+was not steady, as after Windows trimmed the engine) arms no check, because its low is
+not the engine's working set. Replayed at the guard's 5 s cadence with the soak's
+numbers, the check fires 300 s after the trim. Not measured yet: whether the settle trim
+brings the engine back to its pre-read level (the second trim of that soak, at the next
+Defender update, left it at 37 MiB, below the 42 before), and why the first trim left
+37 MiB resident where the others left 1 to 9 MiB (the reader may still have been
+running).
 
 Evaluated and not used:
 - `GOMEMLIMIT`, `debug.FreeOSMemory`: what a scan adds is not reclaimable heap (the
@@ -385,3 +408,21 @@ a flat commit), then at its two follow-ups, with unit tests only (a bench was ru
 | 6 | Low | The `.data` reference is taken once, at start. | **Documented** under "what is left". |
 | 7 | Low | Parsing the executable file with `debug/pe` could fail silently, and it parsed the whole symbol table (3.3 MiB allocated; E's idle engine sat at 22.7 MiB). | **Fixed:** the headers are read from the loaded image (F), and the engine logs at start whether the partial rule is on. |
 | 8 | Low | Header bounds checks could overflow on a 32-bit `int`; no fuzz target; no test for headers without `.data`. | **Fixed:** overflow-free checks, `FuzzParseDataSection` (it found that an accepted section could wrap past 4 GiB; fixed, input kept as a seed), tests for no `.data` and no sections. The attribute field is a `ULONG_PTR`. |
+
+### Fourth review: the settle check (2026-11-16)
+
+The adversarial review replayed the soak's numbers at the guard's 5 s cadence, checked
+the settle predicate at every position of the 24 h CSV (no steady-state false positive;
+heap swings of 12 to 21 MiB never moved the private working set), and tried to break the
+first version, which checked once, exactly five minutes after the trim.
+
+| # | Sev | Finding | Resolution |
+|---|---|---|---|
+| 1 | Med | The baseline was the window's low; a read that lands on a refault after Windows trimmed the engine gives a low of a few MiB, and the engine's normal level then gets a settle trim. | **Fixed:** a read arms the check only if the window before it moved by at most GuardRise. Test "read during a refault after an OS trim". |
+| 2 | Med | One sample decided: commit noise (private bytes swing 3.5 MiB at idle; over 1 MiB in five minutes at 3.3 % of positions) used up the check. | **Fixed:** the check stays open for five minutes and fires on the first sample that qualifies. Test "commit noise when the check opens". |
+| 3 | Med | A second read during the follow-up replaced the baseline with the already raised level (the soak's second trim had a window low of 56.7 MiB). | **Fixed:** a read while a check is pending keeps the lower baseline. Test "second read during the follow-up". |
+| 4 | Med | One fixed-time follow-up; if the reader outlasts five minutes, the settle trim lands mid-read. | **Fixed in part:** up to two settle trims per read, and only once the climb stopped (within 1 MiB over the window). Why the reader leaves pages behind is not known. |
+| 5 | Low | A failed settle trim is not retried. | **Accepted:** the second try covers it; `SetProcessWorkingSetSizeEx` on the own process does not fail in practice. Documented in the code. |
+| 6 | Low | The check was consumed before the rate limit; safe only because GuardSettle exceeds GuardMinGap. | **Fixed:** state changes only after the rate limit, and a constant expression fails the build if GuardSettle drops under GuardMinGap. |
+| 7 | Low | Docs and log lines said "after an unexplained rise" and named only two rules. | **Fixed:** the log says "working set emptied (likely an outside memory read)" with the rule. |
+| — | — | Test gaps: no loop-level settle test, the rule table ran with the check off, no 5 s cadence replay. | **Fixed:** TestGuardLoopSettle, the table runs with the check off and on, TestGuardSettle replays at 5 s. |

@@ -45,12 +45,15 @@ func TestGuardRule(t *testing.T) {
 		{"refault after a guard trim, later activity", []step{{0, 19, 67, 7, ""}, {5, 66, 67, 39, "full"}, {10, 6, 67, 2, ""}, {60, 8, 67, 3, ""}, {65, 28, 67, 7, ""}, {70, 30, 67, 8, ""}}},
 		{"partial after a full trim is rate limited", []step{{0, 19, 67, 7, ""}, {5, 66, 67, 39, "full"}, {10, 2, 67, 1, ""}, {20, 40, 67, 39, ""}, {70, 40, 67, 39, ""}, {75, 2, 67, 1, ""}, {80, 40, 67, 39, "partial"}}},
 	} {
-		g := &guardState{window: 30 * time.Second, minGap: time.Minute, rise: 8 * mib, slack: 4 * mib, bigRise: 16 * mib, flat: 1 * mib, dataRef: 7 * mib}
-		for i, s := range tc.steps {
-			at := t0.Add(time.Duration(s.sec) * time.Second)
-			data := func() (uint64, bool) { return s.data * mib, true }
-			if got := g.observe(guardSample{at: at, private: s.private * mib, commit: s.commt * mib}, data); got != s.rule {
-				t.Errorf("%s: step %d (t=%ds): rule %q, want %q", tc.name, i, s.sec, got, s.rule)
+		// The settle check (off and on) never changes these: none lasts five minutes.
+		for _, settle := range []time.Duration{0, GuardSettle} {
+			g := &guardState{window: 30 * time.Second, minGap: time.Minute, settle: settle, rise: 8 * mib, slack: 4 * mib, bigRise: 16 * mib, flat: 1 * mib, dataRef: 7 * mib}
+			for i, s := range tc.steps {
+				at := t0.Add(time.Duration(s.sec) * time.Second)
+				data := func() (uint64, bool) { return s.data * mib, true }
+				if got := g.observe(guardSample{at: at, private: s.private * mib, commit: s.commt * mib}, data); got != s.rule {
+					t.Errorf("%s (settle %v): step %d (t=%ds): rule %q, want %q", tc.name, settle, i, s.sec, got, s.rule)
+				}
 			}
 		}
 	}

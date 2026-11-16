@@ -199,7 +199,7 @@ func startService(f serviceFlags, log serviceLog) (_ broker.ServiceInstance, err
 	// the working set once first, so the guard starts from the cold level.
 	cold, trimmed := diag.TrimAndReadStart()
 	guard := diag.StartWorkingSetGuard(func(rule string, private, commit uint64) {
-		log.Infof("working set emptied after an unexplained rise (likely an outside memory read): rule %s, private working set %d, private bytes %d", rule, private, commit)
+		log.Infof("working set emptied (likely an outside memory read): rule %s, private working set %d, private bytes %d", rule, private, commit)
 	})
 	cleanup = append(cleanup, guard.Stop)
 	log.Infof("working-set guard started (partial rule %v; trimmed first %v: private working set %d, private bytes %d, data section %d)",

@@ -39,6 +39,22 @@ import (
 // standby list; the ones only the scan touched stay out. The trim takes pages out of
 // the working set, which is what REQ-MEM-001/002 count; Windows frees the RAM when it
 // repurposes them. It does not prevent the scan and does nothing outside Windows.
+//
+// A read can outlast the trim: in the v0.2.0 soak a partial trim at 59 MiB was
+// followed by a refault over minutes from 37 to 54 MiB against a pre-read low of 42
+// MiB, with the commit flat, and the level held for 13 h (a slow rise never meets the
+// rules above within one GuardWindow). So after a full or partial trim from a steady
+// level the guard checks again (the settle check), from GuardSettle after the trim for
+// another GuardSettle: on the first sample where the private working set is still
+// GuardRise above the pre-read low, has stopped climbing (it moved by at most GuardFlat
+// over the window) and the commit grew by at most GuardFlat since the trim, it trims
+// again (rule "settle"). Each read gets at most GuardSettleTries settle trims, each
+// opening the next check; a level that is still there afterwards, or that comes only
+// after the check closed, is the process's own, and the guard keeps it. A second read
+// while a check is pending keeps the lower baseline. A read that lands on a refault
+// (the window before it was not steady, as after Windows trimmed the process) arms no
+// check: its low is not the process's working set. A trim that fails is not retried
+// except by the next check.
 type WorkingSetGuard struct {
 	stop chan struct{}
 	done chan struct{}
@@ -61,7 +77,15 @@ const (
 	GuardFlat     = 1 << 20
 	// GuardMinGap is the shortest time between two trims.
 	GuardMinGap = time.Minute
+	// GuardSettle is how long after a trim the settle check opens, and how long it
+	// stays open. It must be at least GuardMinGap, or the rate limit would suppress it.
+	GuardSettle = 5 * time.Minute
+	// GuardSettleTries bounds the settle trims per outside read.
+	GuardSettleTries = 2
 )
+
+// The settle check relies on the rate limit never suppressing it.
+const _ = uint64(GuardSettle - GuardMinGap)
 
 // workingSetTrims counts the guard's trims, for /debug/stats.
 var workingSetTrims atomic.Int64
@@ -77,17 +101,38 @@ type guardSample struct {
 // testable without the OS.
 type guardState struct {
 	window, minGap time.Duration
+	settle         time.Duration // 0 turns the settle check off
 	rise, slack    uint64
 	bigRise, flat  uint64
 	dataRef        uint64 // resident bytes of the executable's data section at start
 	recent         []guardSample
 	lastTrim       time.Time
+	// anchor is the pre-read low (and the commit at the last trim) the settle check
+	// compares with; tries is how many settle trims are left for the current read, and
+	// due when the next check opens (it stays open for settle).
+	anchor guardSample
+	tries  int
+	due    time.Time
+}
+
+// steady reports whether the private working set of the window moved by at most d: a
+// refault that is still climbing is not trimmed until it stops.
+func (g *guardState) steady(d uint64) bool {
+	if len(g.recent) < 2 {
+		return false
+	}
+	lo, hi := g.recent[0].private, g.recent[0].private
+	for _, r := range g.recent[1:] {
+		lo, hi = min(lo, r.private), max(hi, r.private)
+	}
+	return hi-lo <= d
 }
 
 // Rule names, for the log.
 const (
 	ruleFull    = "full"
 	rulePartial = "partial"
+	ruleSettle  = "settle"
 )
 
 // observe records s and reports which rule says to trim now ("" for none). data, if
@@ -102,10 +147,24 @@ func (g *guardState) observe(s guardSample, data func() (uint64, bool)) string {
 	}
 	g.recent = keep
 	low := s
+	// before is the range of the window ahead of s: a read that starts from a steady
+	// level arms the settle check, one that lands on a refault (after Windows trimmed
+	// the process) does not, because its low is not the process's working set.
+	var before struct {
+		lo, hi uint64
+		ok     bool
+	}
 	for _, r := range g.recent {
 		if r.private < low.private {
 			low = r
 		}
+		if !before.ok || r.private < before.lo {
+			before.lo = r.private
+		}
+		if !before.ok || r.private > before.hi {
+			before.hi = r.private
+		}
+		before.ok = true
 	}
 	g.recent = append(g.recent, s)
 	rule := ""
@@ -117,6 +176,14 @@ func (g *guardState) observe(s guardSample, data func() (uint64, bool)) string {
 			rule = rulePartial
 		}
 	}
+	if rule == "" && g.tries > 0 && !s.at.Before(g.due) {
+		switch {
+		case s.at.Sub(g.due) > g.settle:
+			g.tries = 0 // the check's span is over: the level is the process's own
+		case s.private >= g.anchor.private+g.rise && s.commit <= g.anchor.commit+g.flat && g.steady(g.flat):
+			rule = ruleSettle
+		}
+	}
 	if rule == "" {
 		return ""
 	}
@@ -124,6 +191,19 @@ func (g *guardState) observe(s guardSample, data func() (uint64, bool)) string {
 		return ""
 	}
 	g.lastTrim = s.at
+	switch {
+	case rule == ruleSettle:
+		g.tries--
+		g.due = s.at.Add(g.settle)
+	case g.settle <= 0:
+	case g.tries > 0:
+		// A new read while a check is pending: keep the lower, earlier baseline.
+		g.anchor = guardSample{private: min(g.anchor.private, low.private), commit: s.commit}
+		g.tries, g.due = GuardSettleTries, s.at.Add(g.settle)
+	case before.ok && before.hi-before.lo <= g.rise:
+		g.anchor = guardSample{private: low.private, commit: s.commit}
+		g.tries, g.due = GuardSettleTries, s.at.Add(g.settle)
+	}
 	// Keep the pre-scan low: refaulting the real working set after the trim is not a
 	// rise, only a second scan back to the full commit is.
 	g.recent = append(g.recent[:0], guardSample{at: s.at, private: low.private, commit: s.commit})
@@ -166,7 +246,7 @@ func TrimAndReadStart() (GuardStart, bool) {
 }
 
 // StartWorkingSetGuard starts the guard. trimmed, if not nil, is called after each trim
-// with the rule that fired ("full" or "partial") and the private working set and commit
+// with the rule that fired ("full", "partial" or "settle") and the private working set and commit
 // before it. Stop must be called.
 func StartWorkingSetGuard(trimmed func(rule string, private, commit uint64)) *WorkingSetGuard {
 	if !guardSupported {
@@ -194,7 +274,7 @@ func startGuard(tick <-chan time.Time, stopTick func(), os guardOS, trimmed func
 	go func() {
 		defer close(w.done)
 		defer stopTick()
-		g := &guardState{window: GuardWindow, minGap: GuardMinGap, rise: GuardRise, slack: GuardSlack, bigRise: GuardBigRise, flat: GuardFlat, dataRef: ref}
+		g := &guardState{window: GuardWindow, minGap: GuardMinGap, settle: GuardSettle, rise: GuardRise, slack: GuardSlack, bigRise: GuardBigRise, flat: GuardFlat, dataRef: ref}
 		for {
 			select {
 			case <-w.stop:
