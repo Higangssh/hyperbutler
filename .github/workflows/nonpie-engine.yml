@@ -17,7 +17,7 @@ on:
   schedule:
     - cron: "17 4 * * 1"
   push:
-    branches: [main, feat/nonpie-engine] # TODO: main only before merging
+    branches: [main, feat/engine-nonpie] # the work branch: main only before merging
     paths:
       - guest/prototype/sources.lock
       - scripts/guest-image/build-nonpie.sh
