@@ -21,9 +21,8 @@ rm -rf "$work"
 mkdir -p "$work/cache"
 grep -E '^(docker-engine|containerd)[[:space:]]' "$lock" >"$work/packages.lock"
 [ "$(wc -l <"$work/packages.lock")" -eq 2 ] || fail "the lock lacks docker-engine or containerd"
-# No fallback: every case below places its tar in the cache, so nothing is downloaded but
-# the two packages.
-export HYPERBUTLER_INPUTS_MIRROR=
+# Every case places its tar in the cache, so only the two packages are downloaded (with
+# the usual guest-inputs fallback, since Alpine drops superseded packages).
 
 # case NAME WANT DIR [LOCK-ORDER]: DIR holds the tree to tar (BUILDINFO.txt, usr/bin/...).
 # WANT is pass or fail. LOCK-ORDER "first" lists engine-nonpie before the packages.
