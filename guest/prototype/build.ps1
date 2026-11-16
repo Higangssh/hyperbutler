@@ -192,6 +192,16 @@ if ($null -ne $src['engine-nonpie']) {
     Expand-Fresh $src['engine-nonpie'] "$x\engine-nonpie"
     foreach ($b in 'dockerd', 'docker-proxy') { Copy-Item -Force "$x\engine-nonpie\usr\bin\$b" "$x\docker-engine\usr\bin\$b" }
     foreach ($b in 'containerd', 'containerd-shim-runc-v2') { Copy-Item -Force "$x\engine-nonpie\usr\bin\$b" "$x\containerd\usr\bin\$b" }
+    # What goes into the image must be fixed-address executables: ELF e_type at offset 16
+    # (little endian) is 2 for EXEC, 3 for DYN (PIE).
+    foreach ($f in "$x\docker-engine\usr\bin\dockerd", "$x\docker-engine\usr\bin\docker-proxy", "$x\containerd\usr\bin\containerd", "$x\containerd\usr\bin\containerd-shim-runc-v2") {
+        $h = New-Object byte[] 18
+        $s = [IO.File]::OpenRead($f)
+        try { $n = $s.Read($h, 0, 18) } finally { $s.Dispose() }
+        if ($n -lt 18 -or $h[16] -ne 2 -or $h[17] -ne 0) { throw "$f is not a fixed-address executable (EXEC)" }
+    }
+} elseif ($Strict) {
+    throw 'sources.lock has no engine-nonpie entry; a release ships the engine without PIE (ADR 0005)'
 }
 
 # --- 3. kernel modules ----------------------------------------------------------------

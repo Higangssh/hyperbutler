@@ -792,9 +792,11 @@ not read by the Makefile.)
 ### Options
 
 1. **Rebuild in every guest image build.** `build-system.sh` would run abuild for the
-   two origins: about 10 more minutes per CI run, Go module downloads at build time
-   (containerd's `build()` runs `go mod tidy`), and `build.ps1` on Windows could not do it,
-   so the two builds would no longer make the same bytes.
+   two origins: about 10 more minutes per CI run, a toolchain from the live Alpine
+   repository in every image build, and `build.ps1` on Windows could not do it, so the two
+   builds would no longer make the same bytes. (containerd's `build()` runs `go mod tidy`,
+   which downloads modules to recompute `go.sum`; both projects build from their vendored
+   modules, which are in the distfiles, so nothing downloaded enters the binaries.)
 2. **Rebuild once per package bump, and pin the result.** A workflow rebuilds the four
    binaries from the aports commits and distfiles of the pinned packages, with only the
    build mode changed, and makes one tar. The tar goes to the guest-inputs release and is
@@ -817,16 +819,31 @@ byte-identical, and the source of the four binaries is the source bundle already
   `-buildmode=pie` from abuild's `GOFLAGS` with a user `abuild.conf`, and runs
   `abuild build`. `SOURCE_DATE_EPOCH` is the aports commit's time, since moby stamps the
   build time into dockerd. It checks that each binary is `EXEC`, not `DYN`, and writes
-  `engine-nonpie-docker-<ver>-containerd-<ver>.tar` (sorted, mtime 0) with the four
-  binaries under `usr/bin` and a `BUILDINFO.txt` (commits, patches, Go version).
+  `engine-nonpie-docker-<ver>-containerd-<ver>-<hash>.tar` (sorted, mtime 0), where
+  `<hash>` is the first 12 hex digits of the tar's own SHA-256, with the four binaries
+  under `usr/bin` and a `BUILDINFO.txt` (commits, patches, every installed package of the
+  toolchain). The hash in the name means a rebuild with another toolchain gets a new
+  file: a file that an older tag pins is never replaced on guest-inputs.
 - `fetch-verify.sh` accepts that tar as the `engine-nonpie` entry, in strict mode too,
-  only from the guest-inputs release, with all four binaries, and with a `BUILDINFO.txt`
+  only from the guest-inputs release, with all four binaries, with a `BUILDINFO.txt`
   that names the aports commits of the pinned `docker-engine` and `containerd` packages
-  listed before it; the file name must carry their versions. A bump of either package
-  without a new rebuild fails the build.
-- `.github/workflows/nonpie-engine.yml` runs it by hand after a bump (it prints the lock
-  line), and on every change to the lock or the scripts it compares the rebuild with the
-  pin.
+  listed before it, and with a file name made of their versions and the pin's hash.
+  `BUILDINFO.txt` is text inside the pinned tar, so this proves the pin belongs to the
+  pinned packages (a bump without a rebuild fails), not where its bytes came from.
+- **Where the trust comes from.** Every other input is signed by Alpine; this one is not.
+  Its trust is its sha256 pin plus reproducibility: `nonpie-engine.yml` rebuilds it from
+  the pins and compares, so anyone can check it. It runs by hand after a bump (it prints
+  the lock line), on every change to the lock or the scripts, and weekly. A mismatch with
+  the same toolchain fails; a mismatch because Alpine has moved the toolchain since (a
+  newer Go) is a warning that the pin can no longer be rebuilt today, and the next bump
+  re-pins it. The same workflow runs `test-engine-nonpie.sh`, which checks that
+  `fetch-verify.sh` refuses a stale commit, a missing line or binary, no BUILDINFO.txt,
+  the entry before the packages, another host or release, and a name with other versions
+  or another hash.
+- In strict mode (every CI build and every release) both builds refuse a lock without
+  `engine-nonpie`, and both check that the dockerd, docker-proxy, containerd and shim that
+  go into the image are `EXEC` (ELF `e_type` 2), so a release cannot fall back to PIE
+  without failing.
 
 ### Verification
 
@@ -853,6 +870,23 @@ byte-identical, and the source of the four binaries is the source bundle already
   The host totals drop by 20 to 25 MiB, but they vary by about 11 MiB between rounds of
   the same image (an earlier PIE run read 344.3 MiB), so the guest numbers are the
   measure. Shims of running containers save their own share; not measured.
+
+### Review of this change
+
+The adversarial review checked the two patch targets at the pinned upstream versions,
+abuild's configuration order, the vendored builds, and the shell and workflow logic.
+
+| # | Finding | Disposition |
+|---|---|---|
+| N1 high | The pinned tar was not on guest-inputs yet, so every build of the branch failed. | **Fixed** before merging: uploaded, and the branch's CI built from it. |
+| N2 high | The tar's name had only the two versions, but its bytes depend on the live Alpine toolchain: a newer Go would force replacing a file that older tags pin, and nothing would notice in between. | **Fixed:** the name carries the tar's own hash, BUILDINFO.txt lists the toolchain, the workflow runs weekly and tells a moved toolchain (warning) from a build that is not reproducible (failure). Pinning the toolchain itself as lock inputs: not done; the weekly run shows when it matters. |
+| N3 medium | After a bump the workflow failed its comparison before uploading the tar the docs say to pin. | **Fixed:** it uploads first. |
+| N4 medium | A lock without the entry silently built a PIE engine, and nothing checked what went into the image. | **Fixed:** strict builds require the entry, and both builds check the four binaries' ELF type. |
+| N5 medium | The docs still said strict mode accepts only signed Alpine packages, and called the BUILDINFO check provenance. | **Fixed:** release.md, the workflows, ci-entry.sh and the package index say what the trust is. |
+| N6 low | `pick` took the first of several matches. | **Fixed:** exactly one. |
+| N7 low | The workflow matched the lock line differently from the scripts, and the branch trigger was left in. | **Fixed:** the same pattern; the trigger is main only. |
+| N8 low | No negative tests of the new entry; REQ-MEM-001's status was not updated. | **Fixed:** `test-engine-nonpie.sh` in the workflow; requirements.md has the numbers. |
+| N9 info | Option 1's module downloads happen in option 2 too. | **Fixed:** they only recompute go.sum; stated under Options. |
 
 ## Adversarial review
 

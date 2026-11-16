@@ -72,6 +72,16 @@ if [ -d "$dl/engine-nonpie" ]; then
     tar -xf "$(input engine-nonpie)" -C "$x/engine-nonpie"
     for b in dockerd docker-proxy; do cp "$x/engine-nonpie/usr/bin/$b" "$x/docker-engine/usr/bin/$b"; done
     for b in containerd containerd-shim-runc-v2; do cp "$x/engine-nonpie/usr/bin/$b" "$x/containerd/usr/bin/$b"; done
+elif [ "${HYPERBUTLER_STRICT:-0}" = 1 ]; then
+    fail "the lock has no engine-nonpie entry; a release ships the engine without PIE (ADR 0005)"
+fi
+# A release must not regress to PIE without a signal: check what goes into the image.
+# e_type (ELF header offset 16, little endian): 2 is EXEC, 3 is DYN (PIE).
+if [ -d "$dl/engine-nonpie" ]; then
+    for bin in "$x/docker-engine/usr/bin/dockerd" "$x/docker-engine/usr/bin/docker-proxy" \
+        "$x/containerd/usr/bin/containerd" "$x/containerd/usr/bin/containerd-shim-runc-v2"; do
+        [ "$(od -An -tu2 -j16 -N2 "$bin" | tr -d ' ')" = 2 ] || fail "$bin is not a fixed-address executable (EXEC)"
+    done
 fi
 
 # --- kernel modules -------------------------------------------------------------------

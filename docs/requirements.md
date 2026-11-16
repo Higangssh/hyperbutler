@@ -65,6 +65,10 @@ Status on the reference machine (2026-10-31, `hyperbutler start`, 4 GiB / 8 vCPU
   engine's whole memory makes its whole commit (about 66 MiB) resident; the engine
   empties its working set a few seconds after that
   ([research/mem-reclaim.md](research/mem-reclaim.md), section 3).
+  2026-11-16, with dockerd and containerd rebuilt without PIE (ADR 0005, "The engine
+  without PIE"): median 335.6 and 329.3 MiB in two runs, against 360.7 and 349.7 MiB with
+  the PIE build of the same commit; these totals include the broker service (38 MiB).
+  Still over 1.0's 250 MB.
 - REQ-MEM-002: **met for 0.1 unless something reads the engine's memory in the 60 s
   window** (`bench/mem-reclaim`, 2026-10-31 to 11-01, 12 GiB guest, 4 + 4 GiB workload,
   release configuration; details in [research/mem-reclaim.md](research/mem-reclaim.md)).

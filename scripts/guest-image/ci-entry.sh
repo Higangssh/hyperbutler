@@ -12,7 +12,8 @@
 #   HYPERBUTLER_BUILD_SCRIPT  build script path, relative to the repository root (contract in
 #                        build-system.sh)
 #   HYPERBUTLER_OUTPUTS       space-separated file names the build script must produce
-#   HYPERBUTLER_STRICT        1: only signed Alpine packages are accepted (release)
+#   HYPERBUTLER_STRICT        1: only signed Alpine packages and engine-nonpie are accepted
+#                             (release), and engine-nonpie is required
 #   HYPERBUTLER_WITH_SOURCES  1: also produce the GPL source bundle and license texts
 #   HYPERBUTLER_HOST_UID      owner to give /out at the end
 #

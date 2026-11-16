@@ -142,8 +142,8 @@ while read -r name sha url extra; do
                 plic=$(awk -F '\t' -v p="$pkg" '$1 == p { print $10; exit }' "$manifest")
                 case " $licenses " in *" $plic "*) ;; *) licenses="${licenses:+$licenses }$plic" ;; esac
             done
-            # engine-nonpie-docker-<ver>-containerd-<ver>.tar
-            want=$(printf '%s' "$want" | sed 's/^engine-nonpie--/engine-nonpie-docker-/').tar
+            # engine-nonpie-docker-<ver>-containerd-<ver>-<first 12 hex of the pin>.tar
+            want=$(printf '%s' "$want" | sed 's/^engine-nonpie--/engine-nonpie-docker-/')-$(printf '%s' "$sha" | cut -c1-12).tar
             [ "$file" = "$want" ] || fail "$name: $file, but the pinned packages make $want"
             for b in dockerd docker-proxy containerd containerd-shim-runc-v2; do
                 tar -tf "$path" "usr/bin/$b" >/dev/null 2>&1 || fail "$name: no usr/bin/$b"

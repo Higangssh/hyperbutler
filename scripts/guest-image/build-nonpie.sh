@@ -65,7 +65,6 @@ origin_of() {
 info="$work/BUILDINFO.txt"
 {
     echo "alpine: $(cat /etc/alpine-release)"
-    echo "image: ${HYPERBUTLER_IMAGE:-unknown}"
 } >"$info"
 
 build_origin() { # package-name
@@ -127,12 +126,19 @@ build_origin containerd
 echo "go: $(go version)" >>"$info"
 echo "abuild GOFLAGS (before the user configuration): $(tr '\n' ' ' <"$work/abuild-conf.txt")" >>"$info"
 echo "  patch: ~/.abuild/abuild.conf: -buildmode=pie removed from GOFLAGS" >>"$info"
+# The toolchain: abuild deps installed the makedepends from the live v3.24 repository,
+# so a later rebuild can get a newer Go; the workflow tells that apart from a build that
+# is not reproducible.
+{
+    echo "toolchain:"
+    apk list -I 2>/dev/null | cut -d' ' -f1 | LC_ALL=C sort | sed 's/^/  /'
+} >>"$info"
 
 # The four binaries the guest image ships (guest/prototype/system.spec).
 pick() { # name
     # shellcheck disable=SC2046 # word splitting wanted: the paths have no spaces
     set -- $(find "$work/aports" -type f -name "$1" -perm -u+x -path '*/src/*' | grep -v -e '/vendor/' -e '/hack/' | sort)
-    [ "$#" -ge 1 ] || fail "no $1 built"
+    [ "$#" -eq 1 ] || fail "expected one $1 built, found $#: $*"
     cp "$1" "$out/$(basename "$1")"
 }
 for b in dockerd docker-proxy containerd containerd-shim-runc-v2; do
@@ -151,12 +157,13 @@ cat "$out/BUILDINFO.txt"
 (cd "$out" && sha256sum dockerd docker-proxy containerd containerd-shim-runc-v2 BUILDINFO.txt >SHA256SUMS)
 cat "$out/SHA256SUMS"
 
-# The input sources.lock pins: one tar, named after the two package versions, laid out
-# like the packages (usr/bin/...), with BUILDINFO.txt at the top. Sorted, mtime 0, owner
-# 0, so the same binaries give the same tar.
+# The input sources.lock pins: one tar laid out like the packages (usr/bin/...), with
+# BUILDINFO.txt at the top. Sorted, mtime 0, owner 0, so the same binaries give the same
+# tar. Its name carries the two package versions and the first 12 hex digits of its own
+# SHA-256, so a rebuild with a newer toolchain gets a new name and never replaces a file
+# that an older tag pins.
 dver=$(awk -F '\t' '$1 == "docker-engine" { print $6 }' "$work/inputs.tsv")
 cver=$(awk -F '\t' '$1 == "containerd" { print $6 }' "$work/inputs.tsv")
-tarname="engine-nonpie-docker-$dver-containerd-$cver.tar"
 t="$work/tar"
 mkdir -p "$t/usr/bin"
 cp "$out/dockerd" "$out/docker-proxy" "$out/containerd" "$out/containerd-shim-runc-v2" "$t/usr/bin/"
@@ -164,8 +171,11 @@ chmod 0755 "$t/usr" "$t/usr/bin" "$t/usr/bin/"*
 cp "$out/BUILDINFO.txt" "$t/BUILDINFO.txt"
 chmod 0644 "$t/BUILDINFO.txt"
 tar --sort=name --mtime=@0 --owner=0 --group=0 --numeric-owner --format=gnu \
-    -C "$t" -cf "$out/$tarname" BUILDINFO.txt usr
-echo "$(sha256sum "$out/$tarname" | cut -d' ' -f1)  $tarname" >>"$out/SHA256SUMS"
-echo "lock line: engine-nonpie $(sha256sum "$out/$tarname" | cut -d' ' -f1) https://github.com/Higangssh/hyperbutler/releases/download/guest-inputs/$tarname"
+    -C "$t" -cf "$work/engine.tar" BUILDINFO.txt usr
+sum=$(sha256sum "$work/engine.tar" | cut -d' ' -f1)
+tarname="engine-nonpie-docker-$dver-containerd-$cver-$(printf '%s' "$sum" | cut -c1-12).tar"
+mv "$work/engine.tar" "$out/$tarname"
+echo "$sum  $tarname" >>"$out/SHA256SUMS"
+echo "lock line: engine-nonpie $sum https://github.com/Higangssh/hyperbutler/releases/download/guest-inputs/$tarname"
 [ -n "${HYPERBUTLER_HOST_UID:-}" ] && chown -R "$HYPERBUTLER_HOST_UID" "$out"
 exit 0

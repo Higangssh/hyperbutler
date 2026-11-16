@@ -27,7 +27,7 @@ on:
         type: string
         default: vmlinuz-virt initramfs-stage1.gz system.vhd image.json kernel-modules.tar
       strict:
-        description: Accept only signed Alpine packages (inputs whose source can be bundled)
+        description: Accept only signed Alpine packages and the engine-nonpie rebuild of two of them (inputs whose source can be bundled)
         type: boolean
         default: true
       with-sources:

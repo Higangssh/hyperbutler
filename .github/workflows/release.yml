@@ -333,7 +333,7 @@ jobs:
           - \`$NAME.zip\`: unzip, add the folder to PATH, run \`hyperbutler start\`.
           - \`hyperbutler-$TAG-sandbox-windows-amd64.msi\`: the agent sandbox's image, not needed to run Docker. \`hyperbutler sandbox install\` fetches this file and checks it against a hash inside \`hyperbutler.exe\`; it needs the MSI above.
           - \`hyperbutler-$TAG-guest-sources.tar\`: corresponding source of the guest image's GPL components.
-          - \`hyperbutler-$TAG-guest-inputs.tar\`: the signed Alpine packages the guest image was built from.
+          - \`hyperbutler-$TAG-guest-inputs.tar\`: the signed Alpine packages the guest image was built from, and the project's rebuild of dockerd and containerd without PIE from two of them (ADR 0005).
           - \`sandbox-sources.tar\` (or numbered parts, joined with \`cat\`), \`sandbox-sources.tsv\`, \`SANDBOX-SOURCES.txt\`: corresponding source of the sandbox image's Debian packages. \`sandbox-packages.tsv\`: what is in that image.
           - \`$NAME.spdx.json\`: SBOM of the zip. \`SHA256SUMS\`: checksums of the above.
 

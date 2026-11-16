@@ -541,7 +541,7 @@ try {
             if ($c.Count -ne 10) { Fail "bad line in ${inputs}: $l" }
             $n++
             $pkg = if ($c[3] -eq 'apk') { "$($c[4])-$($c[5])" } else { $c[2] }
-            $how = switch ($c[3]) { 'apk' { 'signed' } 'rebuild' { 'rebuilt without PIE from the signed docker-engine and containerd' } default { 'pin only' } }
+            $how = switch ($c[3]) { 'apk' { 'signed' } 'rebuild' { 'rebuilt without PIE by this project from the pinned docker-engine and containerd; trusted by its sha256 pin, ADR 0005' } default { 'pin only' } }
             # A release ships only signed Alpine packages, whose source and license texts
             # the image job can collect, and the engine-nonpie rebuild of two of them
             # (ADR 0005), whose source is theirs. kind is 'apk' only after apk verify

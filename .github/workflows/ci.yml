@@ -115,7 +115,7 @@ jobs:
 
   # The canonical guest image build (ADR 0005), the same one release.yml runs, so a
   # change that breaks it fails here and not on the tag. Strict, like a release: every
-  # input is a signed Alpine package (ADR 0005, "Docker Engine from Alpine"), so an
+  # input is a signed Alpine package or the engine-nonpie rebuild of two (ADR 0005), so an
   # unsigned one fails the PR that adds it. Pushes to main and manual runs also build the
   # source bundle and license texts, so that path is tested before a tag needs it.
   guest-image:

@@ -16,7 +16,7 @@ GitHub-hosted runners (ADR 0005, Decision 4).
 | `hyperbutler-<tag>-windows-amd64.msi` | `dist/msi/build-msi.ps1` | The installer, with the broker service ([install.md](install.md)) |
 | `hyperbutler-<tag>-sandbox-windows-amd64.msi` | `dist/msi/build-sandbox-msi.ps1`, run by `package.ps1` | The agent sandbox's image, a product of its own ([install.md](install.md#the-agent-sandbox-image)), which `hyperbutler sandbox install` fetches by this name from this release and checks against the hash in `hyperbutler.exe`. **Never replace this asset:** a different file breaks that install for everyone on this version |
 | `hyperbutler-<tag>-guest-sources.tar` | `scripts/guest-image/fetch-sources.sh` | Corresponding source of the guest image (GPL and others) |
-| `hyperbutler-<tag>-guest-inputs.tar` | `scripts/guest-image/ci-entry.sh` | The signed Alpine packages the image was built from (our mirror) |
+| `hyperbutler-<tag>-guest-inputs.tar` | `scripts/guest-image/ci-entry.sh` | The signed Alpine packages the image was built from, and the `engine-nonpie` rebuild of two of them (our mirror) |
 | `sandbox-sources.tar` (or `.000`, `.001`, ...), `sandbox-sources.tsv`, `SANDBOX-SOURCES.txt` | `scripts/guest-image/sandbox-sources.sh`, `build-sandbox.sh` | Corresponding source of the sandbox image's Debian packages, with its manifest and the text that names it. They keep their artifact names, which that text uses |
 | `sandbox-packages.tsv` | `guest/sandbox/build-rootfs.sh` | What is in the sandbox image, by package and source package. It stands in for an SBOM: syft cannot see inside the image's system disk |
 | `hyperbutler-<tag>-windows-amd64.spdx.json` | syft 1.55.0 | SBOM of the zip contents |
@@ -82,10 +82,13 @@ administrator; the README says so.
      against the Alpine keys and the hash chain over the package contents. It also checks
      that the signed `.PKGINFO` names the pinned file.
    - **Strict mode** rejects any input that is not a signed Alpine package, because
-     neither its signature nor its source can be verified. It is the workflow's default,
-     and both `ci.yml` (every PR and push) and `release.yml` set it: since the engine
-     comes from Alpine's packages (ADR 0005, "Docker Engine from Alpine"), the lock has
-     no other kind of input, and a PR that adds one fails.
+     neither its signature nor its source can be verified, with one exception:
+     `engine-nonpie`, dockerd, docker-proxy, containerd and the shim rebuilt without PIE by
+     this project's CI from the pinned packages' aports commits (ADR 0005, "The engine
+     without PIE"). Its trust is its sha256 pin, which `nonpie-engine.yml` checks by
+     rebuilding it; its BUILDINFO.txt only ties it to the pinned packages, so a stale pin
+     fails. Strict mode is the workflow's default, and both `ci.yml` (every PR and push)
+     and `release.yml` set it; a PR that adds another kind of input fails.
    - The build script (input `build-script`, default `scripts/guest-image/build-system.sh`)
      builds the A2b image: `vmlinuz-virt`, `initramfs-stage1.gz`, `system.vhd` and
      `image.json`. Its contract is in that file. It is the Linux port of
@@ -336,7 +339,8 @@ soak runs separately and its result goes here.
 
 **ADR 0005 (guest image)**
 - [x] The image comes from the release run's guest-image job in strict mode, so every
-  input is a signed Alpine package. Since 2026-10-31 the engine is Alpine's
+  input is a signed Alpine package or the `engine-nonpie` rebuild of two of them (since
+  2026-11-16; check its last `nonpie-engine.yml` run matched the pin). Since 2026-10-31 the engine is Alpine's
   `docker-engine`, `containerd`, `runc` and `tini-static` (ADR 0005, "Docker Engine from
   Alpine"), and CI runs strict on every PR, so this holds unless that job was skipped.
   2026-11-03, v0.1.0-rc.1: the release run 41620846473 built it with `strict: true` /

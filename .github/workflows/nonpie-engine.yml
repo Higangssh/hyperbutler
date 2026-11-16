@@ -13,18 +13,23 @@ name: Non-PIE engine
 
 on:
   workflow_dispatch:
+  # Weekly: whether the pin can still be rebuilt with what the Alpine repository serves.
+  schedule:
+    - cron: "17 4 * * 1"
   push:
     branches: [main, feat/nonpie-engine] # TODO: main only before merging
     paths:
       - guest/prototype/sources.lock
       - scripts/guest-image/build-nonpie.sh
       - scripts/guest-image/fetch-verify.sh
+      - scripts/guest-image/test-engine-nonpie.sh
       - .github/workflows/nonpie-engine.yml
   pull_request:
     paths:
       - guest/prototype/sources.lock
       - scripts/guest-image/build-nonpie.sh
       - scripts/guest-image/fetch-verify.sh
+      - scripts/guest-image/test-engine-nonpie.sh
       - .github/workflows/nonpie-engine.yml
 
 permissions:
@@ -55,6 +60,23 @@ jobs:
             -e HYPERBUTLER_IMAGE="$ALPINE_IMAGE" -e HYPERBUTLER_HOST_UID="$(id -u)" \
             "$ALPINE_IMAGE" /bin/sh /src/scripts/guest-image/build-nonpie.sh /src/guest/prototype/sources.lock /out
 
+      - name: fetch-verify.sh refuses a wrong engine-nonpie
+        run: |
+          set -euo pipefail
+          set -- "$RUNNER_TEMP"/nonpie/engine-nonpie-*.tar
+          docker run --rm \
+            -v "$GITHUB_WORKSPACE:/src:ro" \
+            -v "$RUNNER_TEMP/nonpie:/out:ro" \
+            "$ALPINE_IMAGE" /bin/sh /src/scripts/guest-image/test-engine-nonpie.sh /src/guest/prototype/sources.lock "/out/${1##*/}"
+
+      # Before the comparison, so a run after a bump (which fails it) still has the tar.
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: nonpie-engine
+          path: ${{ runner.temp }}/nonpie/
+          if-no-files-found: error
+          retention-days: 14
+
       - name: Compare with the pin
         run: |
           set -euo pipefail
@@ -73,22 +95,33 @@ jobs:
             echo "$line"
             echo '```'
           } >>"$GITHUB_STEP_SUMMARY"
-          read -r _ pin url < <(grep -E '^engine-nonpie[[:space:]]' guest/prototype/sources.lock || echo "- - -")
+          # Same pattern as build-nonpie.sh and fetch-verify.sh.
+          read -r _ pin url < <(grep -E '^[[:space:]]*engine-nonpie[[:space:]]' guest/prototype/sources.lock || echo "- - -")
+          pinned=${url##*/}
           if [ "$pin" = - ]; then
-            echo "::notice title=non-PIE engine::the lock has no engine-nonpie line; to use this build, upload $file and pin: $line"
-          elif [ "${url##*/}" != "$file" ]; then
-            echo "::error title=non-PIE engine::the lock pins ${url##*/}, but its packages now make $file: upload it and pin: $line"
+            echo "::error title=non-PIE engine::the lock has no engine-nonpie line; upload $file to guest-inputs and pin: $line"
             exit 1
-          elif [ "$pin" != "$got" ]; then
-            echo "::error title=non-PIE engine::the rebuild of $file is $got, but the lock pins $pin: the build is not reproducible, or the pinned tar is not this build"
-            exit 1
-          else
-            echo "the rebuild matches the pinned $file"
           fi
-
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: nonpie-engine
-          path: ${{ runner.temp }}/nonpie/
-          if-no-files-found: error
-          retention-days: 14
+          # The name without its hash suffix: engine-nonpie-docker-<ver>-containerd-<ver>
+          if [ "${pinned%-*}" != "${file%-*}" ]; then
+            echo "::error title=non-PIE engine::the lock pins $pinned, but its packages now make ${file%-*}-*.tar: upload $file to guest-inputs and pin: $line"
+            exit 1
+          fi
+          if [ "$pin" = "$got" ]; then
+            echo "the rebuild matches the pinned $pinned"
+            exit 0
+          fi
+          # A mismatch with the same toolchain means the build is not reproducible (or the
+          # pinned tar is not this build). With a newer toolchain from the Alpine
+          # repository it only means the pin can no longer be rebuilt today.
+          curl --proto '=https' -fsSL --retry 3 -o "$RUNNER_TEMP/pinned.tar" "$url"
+          echo "$pin  $RUNNER_TEMP/pinned.tar" | sha256sum -c --strict --quiet
+          tar -xOf "$RUNNER_TEMP/pinned.tar" BUILDINFO.txt | sed -n '/^toolchain:/,$p' >"$RUNNER_TEMP/pinned-toolchain.txt"
+          sed -n '/^toolchain:/,$p' "$out/BUILDINFO.txt" >"$RUNNER_TEMP/new-toolchain.txt"
+          if ! cmp -s "$RUNNER_TEMP/pinned-toolchain.txt" "$RUNNER_TEMP/new-toolchain.txt"; then
+            diff "$RUNNER_TEMP/pinned-toolchain.txt" "$RUNNER_TEMP/new-toolchain.txt" || true
+            echo "::warning title=non-PIE engine::the Alpine toolchain moved since $pinned was built (diff above), so this rebuild differs; the pin stays valid. Re-pin with $line to make it checkable again."
+            exit 0
+          fi
+          echo "::error title=non-PIE engine::the rebuild of $pinned with the same toolchain is $got, but the lock pins $pin: the build is not reproducible, or the pinned tar is not this build"
+          exit 1
