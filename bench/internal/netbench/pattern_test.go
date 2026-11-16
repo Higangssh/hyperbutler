@@ -137,7 +137,10 @@ func TestDownloadDetectsCorruption(t *testing.T) {
 			}
 		}
 	}()
-	r, err := Download(context.Background(), ln.Addr().String(), 50*time.Millisecond)
+	// The clock starts before the seed is read, so a short window can end before the
+	// third block arrives: on a loaded -race runner reading the 8-byte seed took 61 ms
+	// against a 50 ms window and the download counted no data (PR 8, 2026-11-14).
+	r, err := Download(context.Background(), ln.Addr().String(), time.Second)
 	ln.Close()
 	<-done
 	if err != nil || r.Corrupt != 1 {
