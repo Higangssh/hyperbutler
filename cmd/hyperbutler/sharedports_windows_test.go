@@ -123,9 +123,17 @@ func TestSharedPortsLive(t *testing.T) {
 			t.Errorf("stale engine pid: %+v", got)
 		}
 		// A loopback listener of the engine that is not in PublishedPorts is not reported.
-		if got, _ := sharedPorts(&engine.State{PID: os.Getpid(), PIDCreated: created, PublishedPorts: []uint16{port + 1}}); got != nil {
+		// The published port is one the engine (this process) holds itself: port+1 could
+		// be another process's, which would rightly be reported (a CI run hit that).
+		other, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		otherPort := uint16(other.Addr().(*net.TCPAddr).Port)
+		if got, _ := sharedPorts(&engine.State{PID: os.Getpid(), PIDCreated: created, PublishedPorts: []uint16{otherPort}}); got != nil {
 			t.Errorf("unpublished port reported: %+v", got)
 		}
+		_ = other.Close()
 		_ = l.Close()
 		return
 	}
