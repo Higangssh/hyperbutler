@@ -92,28 +92,34 @@ build_origin() { # package-name
             echo "  patch: moby hack/make/.binary: no -buildmode=pie" >>"$info"
             ;;
         containerd)
-            grep -q 'BUILDMODE=pie' "$dir/APKBUILD" || fail "the containerd APKBUILD no longer passes BUILDMODE=pie"
-            sed -i 's/BUILDMODE=pie/BUILDMODE=exe/' "$dir/APKBUILD"
-            echo "  patch: APKBUILD: BUILDMODE=exe" >>"$info"
+            # Makefile.linux adds -buildmode=pie unless STATIC is set (the APKBUILD's
+            # BUILDMODE=pie is not read by the Makefile).
+            set -- "$dir"/src/containerd-*/Makefile.linux
+            [ "$#" -eq 1 ] && [ -f "$1" ] || fail "containerd Makefile.linux not found"
+            grep -q 'GO_GCFLAGS += -buildmode=pie' "$1" || fail "containerd Makefile.linux no longer adds -buildmode=pie where expected"
+            sed -i 's/GO_GCFLAGS += -buildmode=pie//' "$1"
+            echo "  patch: containerd Makefile.linux: no -buildmode=pie" >>"$info"
             ;;
     esac
 
     echo "::group::$origin: build"
-    # abuild.conf may put -buildmode=pie into GOFLAGS as well.
-    (
-        cd "$dir"
-        GOFLAGS=$(printf '%s' "${GOFLAGS:-}" | sed 's/-buildmode=pie//g')
-        export GOFLAGS
-        abuild -F build
-    ) || fail "abuild build failed for $origin"
+    (cd "$dir" && abuild -F build) || fail "abuild build failed for $origin"
     echo "::endgroup::"
 }
 
-grep -n 'GOFLAGS\|buildmode' /etc/abuild.conf >"$work/abuild-conf.txt" || true
+# abuild reads /usr/share/abuild/default.conf and /etc/abuild.conf, which put
+# -buildmode=pie into GOFLAGS, every time it runs; the user configuration is read last.
+cat /usr/share/abuild/default.conf /etc/abuild.conf 2>/dev/null | grep -n 'GOFLAGS' >"$work/abuild-conf.txt" || true
+mkdir -p "$HOME/.abuild"
+cat >"$HOME/.abuild/abuild.conf" <<'EOF'
+GOFLAGS=$(printf '%s' "${GOFLAGS:-}" | sed 's/-buildmode=pie//g')
+export GOFLAGS
+EOF
 build_origin docker-engine
 build_origin containerd
 echo "go: $(go version)" >>"$info"
-echo "abuild.conf GOFLAGS: $(cat "$work/abuild-conf.txt")" >>"$info"
+echo "abuild GOFLAGS (before the user configuration): $(tr '\n' ' ' <"$work/abuild-conf.txt")" >>"$info"
+echo "  patch: ~/.abuild/abuild.conf: -buildmode=pie removed from GOFLAGS" >>"$info"
 
 # The four binaries the guest image ships (guest/prototype/system.spec).
 pick() { # name
