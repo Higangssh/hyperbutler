@@ -850,9 +850,15 @@ byte-identical, and the source of the four binaries is the source bundle already
 - **Not PIE:** `readelf` reports type `EXEC` and no `.data.rel.ro` for dockerd,
   docker-proxy, containerd and containerd-shim-runc-v2 (Go 1.26.11 from Alpine 3.24.3,
   docker 29.9.3-r0 from aports a74d2833, containerd 2.3.7-r0 from aports 6d641cca).
-- **Reproducible:** two runs of the same commit gave the same four binaries and the same
-  tar. Before `SOURCE_DATE_EPOCH` was fixed, dockerd and docker-proxy differed; containerd
-  and the shim were already reproducible.
+- **Reproducible:** `nonpie-engine.yml` run 43794405067 built the pinned tar (SHA-256
+  c8305a24...), and run 43795244140, on the next commit, rebuilt it byte for byte. Before
+  `SOURCE_DATE_EPOCH` was fixed, dockerd and docker-proxy differed between runs; before the
+  toolchain list left out abuild's virtual `.makedepends-<origin>-<timestamp>` packages,
+  BUILDINFO.txt did. containerd and the shim were reproducible from the start.
+- **Fail-closed:** `test-engine-nonpie.sh` in the same run: the good tar passes, and the
+  nine wrong ones (stale commit, missing BUILDINFO line, missing binary, no BUILDINFO.txt,
+  listed before the packages, another host, another release, other versions, another
+  hash) are each refused with the reason.
 - **Memory**, Windows 11 Home 10.0.26200, the guest images of the same commit with and
   without the overlay, `bench/mem-idle` (minutes 5 to 10 after start, median of 31
   samples), then `smaps_rollup` in the guest, two rounds each:
