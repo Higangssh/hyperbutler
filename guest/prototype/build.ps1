@@ -185,6 +185,14 @@ foreach ($n in 'e2fsprogs-libs', 'libblkid', 'libcom_err', 'libeconf', 'libuuid'
     Copy-Item -Recurse -Force "$x\$n\usr" $e2fs
 }
 Expand-Fresh $src['musl'] "$x\musl" 'lib/libc.musl-x86_64.so.1'
+# engine-nonpie (ADR 0005, Follow-up 10): dockerd, docker-proxy, containerd and the shim
+# rebuilt without PIE from the same aports commits (fetch-verify.sh checked that). They
+# replace the packages' PIE builds, as build-system.sh does.
+if ($null -ne $src['engine-nonpie']) {
+    Expand-Fresh $src['engine-nonpie'] "$x\engine-nonpie"
+    foreach ($b in 'dockerd', 'docker-proxy') { Copy-Item -Force "$x\engine-nonpie\usr\bin\$b" "$x\docker-engine\usr\bin\$b" }
+    foreach ($b in 'containerd', 'containerd-shim-runc-v2') { Copy-Item -Force "$x\engine-nonpie\usr\bin\$b" "$x\containerd\usr\bin\$b" }
+}
 
 # --- 3. kernel modules ----------------------------------------------------------------
 $kdirs = @(Get-ChildItem -Directory "$x\linux-virt\lib\modules")

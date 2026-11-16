@@ -1,15 +1,31 @@
-name: Non-PIE engine binaries
+name: Non-PIE engine
 
 # Builds dockerd, docker-proxy, containerd and containerd-shim-runc-v2 without PIE from
-# the aports commit and upstream sources of the signed packages in sources.lock (ADR 0005,
-# Follow-up 10), in the same digest-pinned Alpine container as the guest image. Run by
-# hand; the result is uploaded as an artifact for review.
+# the aports commits and upstream sources of the docker-engine and containerd packages in
+# sources.lock (ADR 0005, Follow-up 10), in the same digest-pinned Alpine container as the
+# guest image, and checks the result against the lock's engine-nonpie pin.
+#
+# - After a docker-engine or containerd bump: run it by hand, upload the tar it reports to
+#   the guest-inputs release (gh release upload guest-inputs <file>) and pin the lock line
+#   it prints. The guest image takes the binaries from that pin.
+# - On every change to the lock or the build script: the rebuild must give the pinned
+#   bytes (the build is reproducible), so the pinned tar is checkable by anyone.
 
 on:
   workflow_dispatch:
-  # While the build is being worked out it also runs on pushes to its branch.
   push:
-    branches: [feat/nonpie-engine]
+    branches: [main, feat/nonpie-engine] # TODO: main only before merging
+    paths:
+      - guest/prototype/sources.lock
+      - scripts/guest-image/build-nonpie.sh
+      - scripts/guest-image/fetch-verify.sh
+      - .github/workflows/nonpie-engine.yml
+  pull_request:
+    paths:
+      - guest/prototype/sources.lock
+      - scripts/guest-image/build-nonpie.sh
+      - scripts/guest-image/fetch-verify.sh
+      - .github/workflows/nonpie-engine.yml
 
 permissions:
   contents: read
@@ -38,15 +54,37 @@ jobs:
             -v "$out:/out" \
             -e HYPERBUTLER_IMAGE="$ALPINE_IMAGE" -e HYPERBUTLER_HOST_UID="$(id -u)" \
             "$ALPINE_IMAGE" /bin/sh /src/scripts/guest-image/build-nonpie.sh /src/guest/prototype/sources.lock /out
+
+      - name: Compare with the pin
+        run: |
+          set -euo pipefail
+          out="$RUNNER_TEMP/nonpie"
+          set -- "$out"/engine-nonpie-*.tar
+          tar=$1
+          file=${tar##*/}
+          got=$(sha256sum "$tar" | cut -d' ' -f1)
+          line="engine-nonpie $got https://github.com/Higangssh/hyperbutler/releases/download/guest-inputs/$file"
           {
-            echo '### Non-PIE engine binaries'
+            echo '### Non-PIE engine'
             echo
             echo '```'
             cat "$out/BUILDINFO.txt"
             echo
-            cat "$out/SHA256SUMS"
+            echo "$line"
             echo '```'
           } >>"$GITHUB_STEP_SUMMARY"
+          read -r _ pin url < <(grep -E '^engine-nonpie[[:space:]]' guest/prototype/sources.lock || echo "- - -")
+          if [ "$pin" = - ]; then
+            echo "::notice title=non-PIE engine::the lock has no engine-nonpie line; to use this build, upload $file and pin: $line"
+          elif [ "${url##*/}" != "$file" ]; then
+            echo "::error title=non-PIE engine::the lock pins ${url##*/}, but its packages now make $file: upload it and pin: $line"
+            exit 1
+          elif [ "$pin" != "$got" ]; then
+            echo "::error title=non-PIE engine::the rebuild of $file is $got, but the lock pins $pin: the build is not reproducible, or the pinned tar is not this build"
+            exit 1
+          else
+            echo "the rebuild matches the pinned $file"
+          fi
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
@@ -54,39 +92,3 @@ jobs:
           path: ${{ runner.temp }}/nonpie/
           if-no-files-found: error
           retention-days: 14
-
-      # A guest image with these binaries, to measure against the PIE one.
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
-        with:
-          go-version-file: go.mod
-          check-latest: true
-          cache: false
-
-      - name: Build a guest image with them
-        env:
-          HYPERBUTLER_BUILD_SCRIPT: scripts/guest-image/build-system.sh
-          HYPERBUTLER_LOCK: guest/prototype/sources.lock
-          HYPERBUTLER_OUTPUTS: vmlinuz-virt initramfs-stage1.gz system.vhd image.json
-          HYPERBUTLER_STRICT: '0'
-          HYPERBUTLER_WITH_SOURCES: '0'
-        run: |
-          set -euo pipefail
-          out="$RUNNER_TEMP/guest-image"
-          mkdir -p "$out"
-          docker run --rm \
-            -v "$GITHUB_WORKSPACE:/src:ro" \
-            -v "$(go env GOROOT):/usr/local/go:ro" \
-            -v "$RUNNER_TEMP/nonpie:/engine:ro" \
-            -v "$out:/out" \
-            -e HYPERBUTLER_BUILD_SCRIPT -e HYPERBUTLER_LOCK -e HYPERBUTLER_OUTPUTS \
-            -e HYPERBUTLER_STRICT -e HYPERBUTLER_WITH_SOURCES -e HYPERBUTLER_ENGINE_BIN=/engine \
-            -e HYPERBUTLER_IMAGE="$ALPINE_IMAGE" -e HYPERBUTLER_HOST_UID="$(id -u)" \
-            "$ALPINE_IMAGE" /bin/sh /src/scripts/guest-image/ci-entry.sh
-
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: guest-image-nonpie
-          path: ${{ runner.temp }}/guest-image/
-          if-no-files-found: error
-          retention-days: 14
-          compression-level: 0

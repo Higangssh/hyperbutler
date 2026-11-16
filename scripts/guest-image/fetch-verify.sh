@@ -12,7 +12,10 @@
 #      alpine image) and the control segment's hash over the data segment. A package
 #      that is not signed by one of those keys fails. Then it reads .PKGINFO for the
 #      origin, aports commit and license, which the source bundle needs;
-#   4. any other file is checked by its SHA-256 pin only (trust on first use). With
+#   4. engine-nonpie (the engine rebuilt without PIE, ADR 0005 Follow-up 10): its pin, a
+#      guest-inputs URL, and a BUILDINFO.txt that names the aports commits of the pinned
+#      docker-engine and containerd packages above it;
+#   5. any other file is checked by its SHA-256 pin only (trust on first use). With
 #      HYPERBUTLER_STRICT=1 such an entry is an error: a release must only contain inputs
 #      whose signature and corresponding source can be verified.
 #
@@ -110,6 +113,40 @@ while read -r name sha url extra; do
             [ -n "$repo" ] || fail "$name: not an Alpine $branch main/community $arch URL: $url"
             case "$(field arch)" in "$arch" | noarch) ;; *) fail "$name: .PKGINFO arch is '$(field arch)', not $arch or noarch" ;; esac
             echo "ok     $name $pkgname-$pkgver (signature, sha256; origin $origin@$commit)"
+            ;;
+        engine-nonpie-docker-*-containerd-*.tar)
+            # dockerd, docker-proxy, containerd and the shim rebuilt without PIE by
+            # scripts/guest-image/build-nonpie.sh (ADR 0005, Follow-up 10). The project
+            # builds it and keeps the only copy, so its pin is the trust; its source is
+            # the docker-engine and containerd packages' aports directories and distfiles,
+            # which must be the pinned packages above it in the lock, at the same commits.
+            [ "$name" = engine-nonpie ] || fail "$name: an $file must be the engine-nonpie entry"
+            case "$url" in
+                https://github.com/Higangssh/hyperbutler/releases/download/guest-inputs/*) ;;
+                *) fail "$name: must come from the guest-inputs release: $url" ;;
+            esac
+            kind=rebuild
+            binfo=$(tar -xOf "$path" BUILDINFO.txt 2>/dev/null) || fail "$name: no BUILDINFO.txt"
+            want=engine-nonpie
+            for pkg in docker-engine containerd; do
+                # commit, version, repo/origin of the pinned package
+                pin=$(awk -F '\t' -v p="$pkg" '$1 == p && $4 == "apk" { print $8 "\t" $6 "\t" $9 "/" $7; exit }' "$manifest")
+                [ -n "$pin" ] || fail "$name: $pkg must be a pinned Alpine package listed before it"
+                pcommit=$(printf '%s' "$pin" | cut -f1)
+                pver=$(printf '%s' "$pin" | cut -f2)
+                porigin=$(printf '%s' "$pin" | cut -f3)
+                printf '%s\n' "$binfo" | grep -q -x -F "$pkg: aports $pcommit $porigin" ||
+                    fail "$name: BUILDINFO.txt was not built from $pkg's aports commit $pcommit"
+                want="$want-${pkg#docker-engine}-$pver"
+            done
+            # engine-nonpie-docker-<ver>-containerd-<ver>.tar
+            want=$(printf '%s' "$want" | sed 's/^engine-nonpie--/engine-nonpie-docker-/').tar
+            [ "$file" = "$want" ] || fail "$name: $file, but the pinned packages make $want"
+            for b in dockerd docker-proxy containerd containerd-shim-runc-v2; do
+                tar -tf "$path" "usr/bin/$b" >/dev/null 2>&1 || fail "$name: no usr/bin/$b"
+            done
+            pkgname=engine-nonpie
+            echo "ok     $name (sha256; rebuilt from the docker-engine and containerd pins)"
             ;;
         *)
             unsigned=$((unsigned + 1))

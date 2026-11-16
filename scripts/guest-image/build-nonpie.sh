@@ -27,7 +27,10 @@ mkdir -p "$work/cache" "$work/distfiles" "$work/aports" "$out"
 apk add --no-cache --quiet git abuild binutils curl tar gzip
 
 echo "::group::fetch and verify the pinned packages"
-sh "$src/scripts/guest-image/fetch-verify.sh" "$lock" "$work/cache" "$work/inputs.tsv"
+# Without the engine-nonpie entry: that is what this rebuilds, and after a bump it pins
+# the binaries of the previous packages.
+grep -v -E '^[[:space:]]*engine-nonpie[[:space:]]' "$lock" >"$work/sources.lock"
+sh "$src/scripts/guest-image/fetch-verify.sh" "$work/sources.lock" "$work/cache" "$work/inputs.tsv"
 echo "::endgroup::"
 
 branch="v$(cut -d. -f1,2 /etc/alpine-release)"
@@ -147,5 +150,22 @@ cp "$info" "$out/BUILDINFO.txt"
 cat "$out/BUILDINFO.txt"
 (cd "$out" && sha256sum dockerd docker-proxy containerd containerd-shim-runc-v2 BUILDINFO.txt >SHA256SUMS)
 cat "$out/SHA256SUMS"
+
+# The input sources.lock pins: one tar, named after the two package versions, laid out
+# like the packages (usr/bin/...), with BUILDINFO.txt at the top. Sorted, mtime 0, owner
+# 0, so the same binaries give the same tar.
+dver=$(awk -F '\t' '$1 == "docker-engine" { print $6 }' "$work/inputs.tsv")
+cver=$(awk -F '\t' '$1 == "containerd" { print $6 }' "$work/inputs.tsv")
+tarname="engine-nonpie-docker-$dver-containerd-$cver.tar"
+t="$work/tar"
+mkdir -p "$t/usr/bin"
+cp "$out/dockerd" "$out/docker-proxy" "$out/containerd" "$out/containerd-shim-runc-v2" "$t/usr/bin/"
+chmod 0755 "$t/usr" "$t/usr/bin" "$t/usr/bin/"*
+cp "$out/BUILDINFO.txt" "$t/BUILDINFO.txt"
+chmod 0644 "$t/BUILDINFO.txt"
+tar --sort=name --mtime=@0 --owner=0 --group=0 --numeric-owner --format=gnu \
+    -C "$t" -cf "$out/$tarname" BUILDINFO.txt usr
+echo "$(sha256sum "$out/$tarname" | cut -d' ' -f1)  $tarname" >>"$out/SHA256SUMS"
+echo "lock line: engine-nonpie $(sha256sum "$out/$tarname" | cut -d' ' -f1) https://github.com/Higangssh/hyperbutler/releases/download/guest-inputs/$tarname"
 [ -n "${HYPERBUTLER_HOST_UID:-}" ] && chown -R "$HYPERBUTLER_HOST_UID" "$out"
 exit 0
