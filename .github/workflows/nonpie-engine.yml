@@ -54,3 +54,39 @@ jobs:
           path: ${{ runner.temp }}/nonpie/
           if-no-files-found: error
           retention-days: 14
+
+      # A guest image with these binaries, to measure against the PIE one.
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          check-latest: true
+          cache: false
+
+      - name: Build a guest image with them
+        env:
+          HYPERBUTLER_BUILD_SCRIPT: scripts/guest-image/build-system.sh
+          HYPERBUTLER_LOCK: guest/prototype/sources.lock
+          HYPERBUTLER_OUTPUTS: vmlinuz-virt initramfs-stage1.gz system.vhd image.json
+          HYPERBUTLER_STRICT: '0'
+          HYPERBUTLER_WITH_SOURCES: '0'
+        run: |
+          set -euo pipefail
+          out="$RUNNER_TEMP/guest-image"
+          mkdir -p "$out"
+          docker run --rm \
+            -v "$GITHUB_WORKSPACE:/src:ro" \
+            -v "$(go env GOROOT):/usr/local/go:ro" \
+            -v "$RUNNER_TEMP/nonpie:/engine:ro" \
+            -v "$out:/out" \
+            -e HYPERBUTLER_BUILD_SCRIPT -e HYPERBUTLER_LOCK -e HYPERBUTLER_OUTPUTS \
+            -e HYPERBUTLER_STRICT -e HYPERBUTLER_WITH_SOURCES -e HYPERBUTLER_ENGINE_BIN=/engine \
+            -e HYPERBUTLER_IMAGE="$ALPINE_IMAGE" -e HYPERBUTLER_HOST_UID="$(id -u)" \
+            "$ALPINE_IMAGE" /bin/sh /src/scripts/guest-image/ci-entry.sh
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: guest-image-nonpie
+          path: ${{ runner.temp }}/guest-image/
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0

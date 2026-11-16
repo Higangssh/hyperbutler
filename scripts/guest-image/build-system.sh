@@ -64,6 +64,14 @@ for n in e2fsprogs-libs libblkid libcom_err libeconf libuuid; do
     cp -a "$x/$n/usr" "$e2fs/"
 done
 expand "$(input musl)" "$x/musl"
+# HYPERBUTLER_ENGINE_BIN (experiment, ADR 0005 Follow-up 10): a directory with non-PIE
+# dockerd, docker-proxy, containerd and containerd-shim-runc-v2 from build-nonpie.sh,
+# which replace the packages' PIE builds.
+if [ -n "${HYPERBUTLER_ENGINE_BIN:-}" ]; then
+    for b in dockerd docker-proxy; do cp "$HYPERBUTLER_ENGINE_BIN/$b" "$x/docker-engine/usr/bin/$b"; done
+    for b in containerd containerd-shim-runc-v2; do cp "$HYPERBUTLER_ENGINE_BIN/$b" "$x/containerd/usr/bin/$b"; done
+    echo "build-system: engine binaries from $HYPERBUTLER_ENGINE_BIN (non-PIE)"
+fi
 
 # --- kernel modules -------------------------------------------------------------------
 set -- "$x/linux-virt/lib/modules"/*/
