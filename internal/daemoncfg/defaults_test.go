@@ -161,7 +161,7 @@ func TestBuildCachePolicyConstants(t *testing.T) {
 		return n
 	}
 	r, f, m := gib(BuildCacheReserved), gib(BuildCacheMinFree), gib(BuildCacheMax)
-	if !(r < f && f < m && m*(1<<30) < 10e9) {
+	if r >= f || f >= m || m*(1<<30) >= 10e9 {
 		t.Fatalf("reserved %d, min free %d, max %d GiB", r, f, m)
 	}
 }
