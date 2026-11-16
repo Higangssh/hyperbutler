@@ -780,6 +780,80 @@ or a release. Disposition:
 | R5 low | No automated test of package.ps1's and build.ps1's manifest parsing. | **Accepted.** A malformed line was checked by hand (refused, with `-Snapshot` too); Pester is not set up in this repository. |
 | R6 low | build.ps1 does not check the Go version, so "same bytes as CI" holds only by luck. | **Fixed:** it prints the version and warns when it is not the go.mod one. Pinning `toolchain` stays Follow-up 5. |
 
+## The engine without PIE (2026-11-16, Follow-up 10)
+
+Alpine builds Go programs as PIE, and the loader relocates their `.data.rel.ro` at
+start, which cost about 15 MiB of idle guest memory (Measurements above). The price was
+accepted for 0.1 only. Two places add `-buildmode=pie`: moby's `hack/make/.binary` for
+every dynamic build, and containerd's `Makefile.linux` unless `STATIC` is set; abuild's
+`default.conf` also puts it into `GOFLAGS`. (The containerd APKBUILD's `BUILDMODE=pie` is
+not read by the Makefile.)
+
+### Options
+
+1. **Rebuild in every guest image build.** `build-system.sh` would run abuild for the
+   two origins: about 10 more minutes per CI run, Go module downloads at build time
+   (containerd's `build()` runs `go mod tidy`), and `build.ps1` on Windows could not do it,
+   so the two builds would no longer make the same bytes.
+2. **Rebuild once per package bump, and pin the result.** A workflow rebuilds the four
+   binaries from the aports commits and distfiles of the pinned packages, with only the
+   build mode changed, and makes one tar. The tar goes to the guest-inputs release and is
+   pinned in `sources.lock` like every other input; both builds overlay it on the
+   packages. Since the trust is the pin and not a signature, the rebuild must be
+   reproducible, so that anyone can rebuild it and compare; the workflow does that on
+   every change to the lock or the build script.
+3. **Keep PIE** until 1.0. It costs the 15 MiB the 1.0 target (250 MB) cannot spare.
+
+### Decision
+
+Option 2. It changes nothing in the image build but one overlay, keeps `build.ps1` and CI
+byte-identical, and the source of the four binaries is the source bundle already holds
+(the two packages' aports directories and distfiles) plus `build-nonpie.sh`.
+
+- `scripts/guest-image/build-nonpie.sh` fetches and verifies the lock's packages (without
+  its `engine-nonpie` line), takes the `docker` and `containerd` origins from the
+  signed `.PKGINFO` commits, runs `abuild deps fetch verify unpack prepare`, removes the
+  two `-buildmode=pie` lines (it fails if they are not where it expects them), strips
+  `-buildmode=pie` from abuild's `GOFLAGS` with a user `abuild.conf`, and runs
+  `abuild build`. `SOURCE_DATE_EPOCH` is the aports commit's time, since moby stamps the
+  build time into dockerd. It checks that each binary is `EXEC`, not `DYN`, and writes
+  `engine-nonpie-docker-<ver>-containerd-<ver>.tar` (sorted, mtime 0) with the four
+  binaries under `usr/bin` and a `BUILDINFO.txt` (commits, patches, Go version).
+- `fetch-verify.sh` accepts that tar as the `engine-nonpie` entry, in strict mode too,
+  only from the guest-inputs release, with all four binaries, and with a `BUILDINFO.txt`
+  that names the aports commits of the pinned `docker-engine` and `containerd` packages
+  listed before it; the file name must carry their versions. A bump of either package
+  without a new rebuild fails the build.
+- `.github/workflows/nonpie-engine.yml` runs it by hand after a bump (it prints the lock
+  line), and on every change to the lock or the scripts it compares the rebuild with the
+  pin.
+
+### Verification
+
+- **Not PIE:** `readelf` reports type `EXEC` and no `.data.rel.ro` for dockerd,
+  docker-proxy, containerd and containerd-shim-runc-v2 (Go 1.26.11 from Alpine 3.24.3,
+  docker 29.9.3-r0 from aports a74d2833, containerd 2.3.7-r0 from aports 6d641cca).
+- **Reproducible:** two runs of the same commit gave the same four binaries and the same
+  tar. Before `SOURCE_DATE_EPOCH` was fixed, dockerd and docker-proxy differed; containerd
+  and the shim were already reproducible.
+- **Memory**, Windows 11 Home 10.0.26200, the guest images of the same commit with and
+  without the overlay, `bench/mem-idle` (minutes 5 to 10 after start, median of 31
+  samples), then `smaps_rollup` in the guest, two rounds each:
+
+  | | PIE | non-PIE |
+  |---|---:|---:|
+  | Host total, median (round 1, round 2) | 360.7, 349.7 MiB | 335.6, 329.3 MiB |
+  | of which `vmmem` | 296.0, 285.2 MiB | 270.8, 264.8 MiB |
+  | dockerd `Private_Dirty` (round 2) | 28.1 MiB | 17.7 MiB |
+  | containerd `Private_Dirty` (round 2) | 18.0 MiB | 13.9 MiB |
+  | Guest `AnonPages` (round 2) | 68.3 MiB | 52.4 MiB |
+
+  dockerd and containerd give back 14.5 MiB of private dirty memory, close to their
+  `.data.rel.ro` (11.0 and 4.7 MiB), and the guest's anonymous memory drops by 15.9 MiB.
+  The host totals drop by 20 to 25 MiB, but they vary by about 11 MiB between rounds of
+  the same image (an earlier PIE run read 344.3 MiB), so the guest numbers are the
+  measure. Shims of running containers save their own share; not measured.
+
 ## Adversarial review
 
 The adversarial reviewer got the diff and the
@@ -867,10 +941,10 @@ These are owned by the guest track unless noted.
    erofs-utils `.apk`s (with SHA-256) in `sources.lock`. Today it is a version pin.
 9. Embed the image manifest's SHA-256 in release `hyperbutler.exe` builds, so `image.json` stops
    being self-certifying.
-10. **Required before 1.0.** Win back the ~15 MiB that Alpine's PIE dockerd and
-    containerd cost at idle: build those two non-PIE in CI from the aports commit and
-    distfiles of the signed packages. The maintainer accepted the regression for 0.1 only
-    (2026-10-31).
+10. **Done (2026-11-16).** Win back the ~15 MiB that Alpine's PIE dockerd and containerd
+    cost at idle: they are rebuilt without PIE from the aports commits and distfiles of the
+    signed packages and pinned as `engine-nonpie` (section "The engine without PIE"). The
+    maintainer had accepted the regression for 0.1 only (2026-10-31).
 11. Run `scripts/guest-image` negative tests (unsigned, foreign-signed, wrong branch,
     renamed, pin mismatch) in CI; today they were run by hand (see Verification).
 **What would make us revisit**
