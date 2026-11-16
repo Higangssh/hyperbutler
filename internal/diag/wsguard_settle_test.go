@@ -2,6 +2,7 @@ package diag
 
 import (
 	"fmt"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -175,25 +176,24 @@ func TestGuardSettle(t *testing.T) {
 // TestGuardLoopSettle: the loop reports a settle trim to the callback and counts it.
 func TestGuardLoopSettle(t *testing.T) {
 	tick := make(chan time.Time)
-	at := 0
-	trims := 0
+	var at, trims atomic.Int64 // shared with the guard's goroutine
 	called := make(chan string, 8)
 	g := startGuard(tick, func() {}, guardOS{
 		read: func() (uint64, uint64, bool) {
 			switch {
-			case at < 100:
+			case at.Load() < 100:
 				return 42 * mib, 89 * mib, true
-			case trims == 0:
+			case trims.Load() == 0:
 				return 59 * mib, 89 * mib, true
-			case trims == 1:
+			case trims.Load() == 1:
 				return 54 * mib, 89 * mib, true
 			default:
 				return 41 * mib, 89 * mib, true
 			}
 		},
-		trim: func() bool { trims++; return true },
+		trim: func() bool { trims.Add(1); return true },
 		data: func() (uint64, bool) {
-			if at == 0 || trims > 1 || at < 100 {
+			if at.Load() < 100 || trims.Load() > 1 {
 				return 7 * mib, true
 			}
 			return 39 * mib, true
@@ -201,12 +201,13 @@ func TestGuardLoopSettle(t *testing.T) {
 	}, func(rule string, _, _ uint64) { called <- rule })
 	before := workingSetTrims.Load()
 	t0 := time.Unix(1000, 0)
-	for at = 0; at <= 900; at += 5 {
-		tick <- t0.Add(time.Duration(at) * time.Second)
+	for s := int64(0); s <= 900; s += 5 {
+		at.Store(s)
+		tick <- t0.Add(time.Duration(s) * time.Second)
 	}
 	g.Stop()
-	if trims != 2 || workingSetTrims.Load() != before+2 {
-		t.Fatalf("trims %d, counter +%d", trims, workingSetTrims.Load()-before)
+	if trims.Load() != 2 || workingSetTrims.Load() != before+2 {
+		t.Fatalf("trims %d, counter +%d", trims.Load(), workingSetTrims.Load()-before)
 	}
 	if a, b := <-called, <-called; a != rulePartial || b != ruleSettle {
 		t.Fatalf("callbacks %q %q", a, b)
