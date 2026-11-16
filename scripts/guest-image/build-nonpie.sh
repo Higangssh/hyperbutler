@@ -131,7 +131,9 @@ echo "  patch: ~/.abuild/abuild.conf: -buildmode=pie removed from GOFLAGS" >>"$i
 # is not reproducible.
 {
     echo "toolchain:"
-    apk list -I 2>/dev/null | cut -d' ' -f1 | LC_ALL=C sort | sed 's/^/  /'
+    # abuild's virtual .makedepends-<origin>-<timestamp> packages are left out: their names
+    # change with every run.
+    apk list -I 2>/dev/null | cut -d' ' -f1 | grep -v '^\.makedepends-' | LC_ALL=C sort | sed 's/^/  /'
 } >>"$info"
 
 # The four binaries the guest image ships (guest/prototype/system.spec).
