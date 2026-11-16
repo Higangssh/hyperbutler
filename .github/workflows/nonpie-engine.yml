@@ -1,0 +1,56 @@
+name: Non-PIE engine binaries
+
+# Builds dockerd, docker-proxy, containerd and containerd-shim-runc-v2 without PIE from
+# the aports commit and upstream sources of the signed packages in sources.lock (ADR 0005,
+# Follow-up 10), in the same digest-pinned Alpine container as the guest image. Run by
+# hand; the result is uploaded as an artifact for review.
+
+on:
+  workflow_dispatch:
+  # While the build is being worked out it also runs on pushes to its branch.
+  push:
+    branches: [feat/nonpie-engine]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: non-PIE engine (alpine container)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      # Same image as guest-image.yml; bump together.
+      ALPINE_IMAGE: alpine:3.24.3@sha256:be2656061b536c1883c4034790e21d0a09c5aaaf51968b89368a3c0371ea2c9a
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Build in the Alpine container
+        run: |
+          set -euo pipefail
+          out="$RUNNER_TEMP/nonpie"
+          mkdir -p "$out"
+          docker pull --quiet "$ALPINE_IMAGE"
+          docker run --rm \
+            -v "$GITHUB_WORKSPACE:/src:ro" \
+            -v "$out:/out" \
+            -e HYPERBUTLER_IMAGE="$ALPINE_IMAGE" -e HYPERBUTLER_HOST_UID="$(id -u)" \
+            "$ALPINE_IMAGE" /bin/sh /src/scripts/guest-image/build-nonpie.sh /src/guest/prototype/sources.lock /out
+          {
+            echo '### Non-PIE engine binaries'
+            echo
+            echo '```'
+            cat "$out/BUILDINFO.txt"
+            echo
+            cat "$out/SHA256SUMS"
+            echo '```'
+          } >>"$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: nonpie-engine
+          path: ${{ runner.temp }}/nonpie/
+          if-no-files-found: error
+          retention-days: 14
