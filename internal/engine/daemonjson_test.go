@@ -9,8 +9,18 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/Higangssh/hyperbutler/internal/daemoncfg"
 	"github.com/Higangssh/hyperbutler/internal/guestctl"
 )
+
+// wire is what the guest is sent for the user's file s ("" for none): s with the
+// build cache default (daemoncfg.WithDefaults).
+func wire(s string) string {
+	if s == "" {
+		return string(daemoncfg.WithDefaults(nil))
+	}
+	return string(daemoncfg.WithDefaults([]byte(s)))
+}
 
 // fakeGuest accepts any daemon.json that does not contain "dockerd-refuses" and records
 // what it got.
@@ -18,7 +28,8 @@ type fakeGuest struct {
 	features guestctl.Features
 	got      [][]byte
 	restarts []bool
-	rollback bool // the next restart rolls back
+	rollback bool   // the next restart rolls back
+	refuse   string // refuse any file that contains this too (a dockerd that refuses the default)
 	err      error
 
 	// The environment side (DockerdEnv).
@@ -47,7 +58,7 @@ func (g *fakeGuest) DaemonConfig(_ context.Context, data []byte, restart bool) (
 		// At boot: dockerd exits with the file, so the guest starts it without one.
 		return guestctl.DaemonResult{Code: guestctl.DaemonRolledBack, Flags: guestctl.DaemonChanged | guestctl.DaemonRestarted, Message: "dockerd did not start"}, nil
 	}
-	if bytes.Contains(data, []byte("dockerd-refuses")) {
+	if bytes.Contains(data, []byte("dockerd-refuses")) || g.refuse != "" && bytes.Contains(data, []byte(g.refuse)) {
 		return guestctl.DaemonResult{Code: guestctl.DaemonRejected, Message: "unknown key \x1b[31m"}, nil
 	}
 	if restart && g.rollback {
@@ -109,19 +120,19 @@ func TestDaemonConfigBoot(t *testing.T) {
 	t.Run("none", func(t *testing.T) {
 		dc, g, _ := newDaemonTest(t)
 		dc.Connected(ctx, g)
-		if len(g.got) != 1 || g.got[0] != nil || g.restarts[0] {
+		if len(g.got) != 1 || string(g.got[0]) != wire("") || g.restarts[0] {
 			t.Fatalf("pushed %q %v", g.got, g.restarts)
 		}
 		if st := dc.State(); st.Source != DaemonNone || st.Error != "" || st.Generation != 1 {
 			t.Fatalf("state %+v", st)
 		}
 	})
-	t.Run("user file, byte for byte", func(t *testing.T) {
+	t.Run("user file, byte for byte plus the build cache limit", func(t *testing.T) {
 		dc, g, _ := newDaemonTest(t)
 		user := "{\r\n  \"insecure-registries\" : [\"192.168.1.5:5000\"]\r\n}\r\n"
 		writeUser(t, dc, user)
 		dc.Connected(ctx, g)
-		if len(g.got) != 1 || string(g.got[0]) != user {
+		if len(g.got) != 1 || string(g.got[0]) != wire(user) {
 			t.Fatalf("pushed %q", g.got)
 		}
 		st := dc.State()
@@ -134,7 +145,7 @@ func TestDaemonConfigBoot(t *testing.T) {
 		// A reconnect sends what is in effect, even if the user file changed meanwhile.
 		writeUser(t, dc, `{"debug":true}`)
 		dc.Connected(ctx, g)
-		if len(g.got) != 2 || string(g.got[1]) != user || g.restarts[1] {
+		if len(g.got) != 2 || string(g.got[1]) != wire(user) || g.restarts[1] {
 			t.Fatalf("reconnect pushed %q", g.got)
 		}
 	})
@@ -146,7 +157,7 @@ func TestDaemonConfigBoot(t *testing.T) {
 		}
 		writeUser(t, dc, `{"hosts":["tcp://0.0.0.0:2375"]}`)
 		dc.Connected(ctx, g)
-		if len(g.got) != 1 || string(g.got[0]) != prev {
+		if len(g.got) != 1 || string(g.got[0]) != wire(prev) {
 			t.Fatalf("pushed %q", g.got)
 		}
 		st := dc.State()
@@ -165,7 +176,7 @@ func TestDaemonConfigBoot(t *testing.T) {
 		dc, g, _ := newDaemonTest(t)
 		writeUser(t, dc, `{"dockerd-refuses":1}`)
 		dc.Connected(ctx, g)
-		if len(g.got) != 2 || g.got[1] != nil {
+		if len(g.got) != 2 || string(g.got[1]) != wire("") {
 			t.Fatalf("pushed %q", g.got)
 		}
 		st := dc.State()
@@ -182,18 +193,18 @@ func TestDaemonConfigBoot(t *testing.T) {
 		writeUser(t, dc, `{"dockerd-exits":1}`)
 		dc.Connected(ctx, g)
 		// The user's file, then the previous one with a dockerd restart.
-		if len(g.got) != 2 || string(g.got[1]) != prev || g.restarts[0] || !g.restarts[1] {
+		if len(g.got) != 2 || string(g.got[1]) != wire(prev) || g.restarts[0] || !g.restarts[1] {
 			t.Fatalf("pushed %q %v", g.got, g.restarts)
 		}
 		if st := dc.State(); st.Source != DaemonPrevious || !strings.Contains(st.Error, "did not start") {
 			t.Fatalf("state %+v", st)
 		}
-		// Without a previous one, dockerd stays without a file.
+		// Without a previous one, dockerd gets hyperbutler's defaults alone (a restart).
 		dc2, g2, _ := newDaemonTest(t)
 		writeUser(t, dc2, `{"dockerd-exits":1}`)
 		dc2.Connected(ctx, g2)
-		if len(g2.got) != 1 {
-			t.Fatalf("pushed %q", g2.got)
+		if len(g2.got) != 2 || string(g2.got[1]) != wire("") || !g2.restarts[1] {
+			t.Fatalf("pushed %q %v", g2.got, g2.restarts)
 		}
 		if st := dc2.State(); st.Source != DaemonNone || st.Error == "" {
 			t.Fatalf("state %+v", st)
@@ -300,4 +311,46 @@ func TestDaemonStateValidate(t *testing.T) {
 			t.Errorf("%s: accepted %+v", name, c)
 		}
 	}
+}
+
+// TestDaemonConfigDefaults: the build cache default (REQ-DISK-006) goes with every
+// file, a user "builder" replaces it, and a dockerd that refuses it still starts.
+func TestDaemonConfigDefaults(t *testing.T) {
+	ctx := context.Background()
+	t.Run("user builder wins", func(t *testing.T) {
+		dc, g, _ := newDaemonTest(t)
+		user := `{"builder":{"gc":{"enabled":false}}}`
+		writeUser(t, dc, user)
+		dc.Connected(ctx, g)
+		if len(g.got) != 1 || string(g.got[0]) != user {
+			t.Fatalf("pushed %q", g.got)
+		}
+	})
+	t.Run("dockerd refuses the default", func(t *testing.T) {
+		dc, g, _ := newDaemonTest(t)
+		g.refuse = "defaultMaxUsedSpace"
+		dc.Connected(ctx, g)
+		if len(g.got) != 2 || string(g.got[0]) != wire("") || g.got[1] != nil {
+			t.Fatalf("pushed %q", g.got)
+		}
+		if st := dc.State(); st.Source != DaemonNone || !strings.Contains(st.Error, "build cache limit") {
+			t.Fatalf("state %+v", st)
+		}
+		// A reconnect sends what is in effect: no file.
+		dc.Connected(ctx, g)
+		if len(g.got) != 3 || g.got[2] != nil || g.restarts[2] {
+			t.Fatalf("reconnect pushed %q %v", g.got, g.restarts)
+		}
+	})
+	t.Run("apply compares what was sent", func(t *testing.T) {
+		dc, g, _ := newDaemonTest(t)
+		dc.Connected(ctx, g)
+		writeUser(t, dc, `{"debug":true}`)
+		if err := dc.Apply(ctx); err != nil {
+			t.Fatal(err)
+		}
+		if n := len(g.got); string(g.got[n-1]) != wire(`{"debug":true}`) || !g.restarts[n-1] {
+			t.Fatalf("apply pushed %q %v", g.got, g.restarts)
+		}
+	})
 }

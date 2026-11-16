@@ -33,7 +33,7 @@ type DaemonPusher interface {
 type DaemonSource string
 
 const (
-	DaemonNone     DaemonSource = "none"     // dockerd runs with its defaults
+	DaemonNone     DaemonSource = "none"     // dockerd runs with its defaults and hyperbutler's build cache limit
 	DaemonFile     DaemonSource = "file"     // the user's daemon.json
 	DaemonPrevious DaemonSource = "previous" // the last one that worked (the user's is invalid)
 )
@@ -119,9 +119,12 @@ type DaemonConfig struct {
 
 	mu       sync.Mutex
 	st       DaemonState
-	inEffect []byte // what the guest's dockerd runs with (or will start with)
-	known    bool   // inEffect is known (a delivery succeeded on this VM)
-	pusher   DaemonPusher
+	inEffect []byte // the user's file (or nil) the guest's dockerd runs with (or will start with)
+	// wireInEffect is the file the guest actually has: inEffect with hyperbutler's
+	// defaults (daemoncfg.WithDefaults), or nil when dockerd runs without a file.
+	wireInEffect []byte
+	known        bool // inEffect is known (a delivery succeeded on this VM)
+	pusher       DaemonPusher
 
 	envInEffect []byte // the encoded environment the guest accepted last
 	envKnown    bool
@@ -342,14 +345,22 @@ func (d *DaemonConfig) Connected(ctx context.Context, p DaemonPusher) {
 		d.result(DaemonNone, nil, false, "the guest image does not support daemon.json; update it")
 		return
 	}
+	// data is the user's file (or nil), wire what is sent: data with hyperbutler's
+	// build cache default (def), and as the last resort no file at all. The guest image
+	// ships with the engine and its dockerd takes the default, so the user's file
+	// without it is not tried: a refusal is the file's own.
 	type cand struct {
-		src  DaemonSource
-		data []byte
+		src        DaemonSource
+		data, wire []byte
+		def        bool
+	}
+	withDef := func(src DaemonSource, data []byte) cand {
+		return cand{src, data, daemoncfg.WithDefaults(data), true}
 	}
 	var cands []cand
 	var why string
 	if d.known {
-		cands = []cand{{d.st.Source, d.inEffect}}
+		cands = []cand{{d.st.Source, d.inEffect, d.wireInEffect, false}}
 	} else {
 		user, uerr := ReadDaemonJSON(d.Layout, d.GuestSubnet)
 		prev, perr := ReadFileBounded(d.Layout.DaemonAppliedPath())
@@ -358,45 +369,57 @@ func (d *DaemonConfig) Connected(ctx context.Context, p DaemonPusher) {
 		case uerr != nil:
 			why = uerr.Error() + "; the previous daemon.json stays in effect"
 			if havePrev {
-				cands = append(cands, cand{DaemonPrevious, prev})
+				cands = append(cands, withDef(DaemonPrevious, prev))
 			}
 		case user != nil:
-			cands = append(cands, cand{DaemonFile, user})
+			cands = append(cands, withDef(DaemonFile, user))
 			if havePrev && !bytes.Equal(prev, user) {
-				cands = append(cands, cand{DaemonPrevious, prev})
+				cands = append(cands, withDef(DaemonPrevious, prev))
 			}
 		}
-		cands = append(cands, cand{DaemonNone, nil})
+		cands = append(cands, withDef(DaemonNone, nil), cand{DaemonNone, nil, nil, false})
 	}
 	// restart is set once the guest's dockerd runs: after a boot-time rollback, the next
 	// candidate needs a dockerd restart (with the guest's own rollback) to take effect.
 	restart := false
+	// defRefused is the guest's answer to the last candidate with the default, which a
+	// success of the same file without it blames.
+	var defRefused DaemonSource
+	var defWhy string
 	for _, c := range cands {
-		if restart && c.data == nil {
+		if restart && c.wire == nil {
 			break // dockerd already runs without a file
 		}
-		r, err := p.DaemonConfig(ctx, c.data, restart)
+		r, err := p.DaemonConfig(ctx, c.wire, restart)
 		if err != nil {
 			d.log().Warn("daemon.json: delivery failed", "err", err)
 			d.result(d.st.Source, d.inEffect, false, "could not deliver daemon.json: "+err.Error())
 			return
 		}
 		if r.Code == guestctl.DaemonOK {
-			d.inEffect, d.known = c.data, true
+			if !c.def && defWhy != "" && defRefused == c.src {
+				why = "dockerd refused hyperbutler's build cache limit (" + defWhy + "); dockerd runs without it"
+			}
+			d.inEffect, d.wireInEffect, d.known = c.data, c.wire, true
 			if c.src == DaemonFile {
 				d.saveApplied(c.data)
 			} else if c.src == DaemonNone && why == "" {
 				// No user file: forget the old one too.
 				_ = os.Remove(d.Layout.DaemonAppliedPath())
 			}
-			d.log().Info("daemon.json delivered", "source", c.src, "bytes", len(c.data), "dockerdRestarted", restart)
+			d.log().Info("daemon.json delivered", "source", c.src, "bytes", len(c.data), "sentBytes", len(c.wire), "dockerdRestarted", restart)
 			d.result(c.src, c.data, restart, why)
 			return
 		}
 		why = describe(r)
+		if c.def {
+			defRefused, defWhy = c.src, why
+		} else {
+			defWhy = ""
+		}
 		if r.Code == guestctl.DaemonRolledBack && !restart {
 			// At boot dockerd did not start with it; the guest started it without one.
-			d.inEffect, d.known, restart = nil, true, true
+			d.inEffect, d.wireInEffect, d.known, restart = nil, nil, true, true
 		}
 		if c.src == DaemonFile && r.Code != guestctl.DaemonRolledBack {
 			why += "; the previous daemon.json stays in effect"
@@ -449,14 +472,15 @@ func (d *DaemonConfig) Apply(ctx context.Context) error {
 	}
 	// dockerd restarted for the environment already runs with the daemon.json in
 	// effect; restart again only for a changed file.
-	restart := !d.envRestarted || !bytes.Equal(data, d.inEffect)
-	r, err := p.DaemonConfig(ctx, data, restart)
+	wire := daemoncfg.WithDefaults(data)
+	restart := !d.envRestarted || !bytes.Equal(wire, d.wireInEffect)
+	r, err := p.DaemonConfig(ctx, wire, restart)
 	if err != nil {
 		return fail(fmt.Errorf("could not deliver daemon.json: %w", err))
 	}
 	switch r.Code {
 	case guestctl.DaemonOK:
-		d.inEffect = data
+		d.inEffect, d.wireInEffect = data, wire
 		src := DaemonFile
 		if data == nil {
 			src = DaemonNone
@@ -464,7 +488,7 @@ func (d *DaemonConfig) Apply(ctx context.Context) error {
 		} else {
 			d.saveApplied(data)
 		}
-		d.log().Info("daemon.json applied", "bytes", len(data), "dockerdRestarted", r.Flags&guestctl.DaemonRestarted != 0, "took", r.Duration)
+		d.log().Info("daemon.json applied", "bytes", len(data), "sentBytes", len(wire), "dockerdRestarted", r.Flags&guestctl.DaemonRestarted != 0, "took", r.Duration)
 		d.result(src, data, r.Flags&guestctl.DaemonRestarted != 0, "")
 		return envErr
 	case guestctl.DaemonRolledBack:

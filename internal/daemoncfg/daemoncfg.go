@@ -1,7 +1,8 @@
 // Package daemoncfg checks a user's daemon.json before hyperbutler hands it to the
 // guest's dockerd (REQ-UX-007).
 //
-// The file is passed through byte for byte: hyperbutler never rewrites it. Check refuses
+// The file is passed through byte for byte, except that hyperbutler adds its build cache
+// policy when the file does not configure builder.gc (WithDefaults, ADR 0011). Check refuses
 // what cannot be delivered safely and the keys hyperbutler owns, because the guest starts
 // dockerd with them as flags or relies on their defaults (see Owned). dockerd checks the
 // rest itself (`dockerd --validate`) in the guest before the file is used.
@@ -82,8 +83,8 @@ type Options struct {
 // Check reports why b cannot be used as the guest's daemon.json, or nil. It never
 // changes b.
 func Check(b []byte, opts Options) error {
-	if len(b) > MaxSize {
-		return &Error{Msg: fmt.Sprintf("daemon.json is %d bytes; the limit is %d", len(b), MaxSize)}
+	if len(b) > MaxSize-DefaultsRoom {
+		return &Error{Msg: fmt.Sprintf("daemon.json is %d bytes; the limit is %d", len(b), MaxSize-DefaultsRoom)}
 	}
 	if bytes.HasPrefix(b, []byte("\xef\xbb\xbf")) {
 		return &Error{Msg: "daemon.json starts with a UTF-8 byte order mark, which dockerd does not accept; save it as UTF-8 without BOM"}

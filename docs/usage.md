@@ -179,7 +179,7 @@ hyperbutler restart
 hyperbutler config daemon apply              # restarts dockerd only, not the VM
 ```
 
-`daemon.json` reaches the guest's dockerd byte for byte. Keys hyperbutler owns (`hosts`,
+`daemon.json` reaches the guest's dockerd byte for byte (with one addition, below). Keys hyperbutler owns (`hosts`,
 `iptables`, `data-root`, `live-restore` and a few more) are refused with the reason, and an
 invalid file leaves the previous one in effect. For example, a registry that speaks plain
 HTTP:
@@ -187,6 +187,17 @@ HTTP:
 ```json
 { "insecure-registries": ["192.168.1.20:5000"] }
 ```
+
+One addition: unless the file configures `builder.gc`, hyperbutler adds a build cache
+policy to what dockerd gets (ADR 0011): BuildKit prunes its cache above 8 GiB, and down
+towards 2 GiB when the data disk has less than 5 GiB free. Your file on disk is not
+changed. To set your own limit, or to turn collection off, write it yourself:
+
+```json
+{ "builder": { "gc": { "enabled": true, "defaultMaxUsedSpace": "20GB" } } }
+```
+
+`docker buildx inspect` shows the policy dockerd runs with.
 
 Behind a corporate proxy, dockerd trusts the CA certificates of the Windows root stores
 (`ca.import`, on by default; a PEM file can be added with `ca.extraFile`, which is copied

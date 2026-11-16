@@ -357,6 +357,10 @@ soak runs separately and its result goes here.
   copy, ADR 0005), so check the release's guest-image log: a "gone upstream; using the
   guest-inputs copy" warning means Alpine has replaced that pin, and the rule above
   decides whether to bump it before the tag.
+- [ ] After a `docker-engine` bump, dockerd still honours hyperbutler's build cache policy
+  (ADR 0011; an older or newer dockerd may ignore unknown `builder.gc` keys without an
+  error): with no user daemon.json, `docker buildx inspect` lists a rule with
+  "Max Used Space: 8GiB" (or the bytes of 8 GiB).
 - [ ] `hyperbutler.exe` checks the guest image files against hashes embedded at build time
   (Decision 4): `hyperbutler version --json` of the released binary says
   `"imagePinned": true` with the `image.json` SHA-256 from the guest-image job, and a

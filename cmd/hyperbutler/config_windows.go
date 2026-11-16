@@ -37,7 +37,8 @@ They never restart anything unless --apply is given.
 
 Proxy URLs are shown with their password replaced by *** unless --show-secrets.
 
-daemon.json (%s) is passed to the guest's dockerd byte for byte;
+daemon.json (%s) is passed to the guest's dockerd byte for byte, plus a
+build cache limit (8 GiB) when it does not configure builder.gc;
 "config daemon apply" restarts dockerd (not the VM) with it and with the
 proxy and CA settings (proxy.*, ca.*).
 `
@@ -478,7 +479,7 @@ func daemonApply(args []string, stdout, stderr io.Writer) error {
 
 func describeDaemonFile(path string, data []byte) string {
 	if data == nil {
-		return "no daemon.json (dockerd defaults)"
+		return "no daemon.json (dockerd defaults, build cache limited to 8 GiB)"
 	}
 	sum := sha256.Sum256(data)
 	return fmt.Sprintf("%s (%d bytes, sha256 %s)", path, len(data), hex.EncodeToString(sum[:6]))
@@ -487,7 +488,7 @@ func describeDaemonFile(path string, data []byte) string {
 func describeState(d *engine.DaemonState) string {
 	switch d.Source {
 	case engine.DaemonNone:
-		return "no daemon.json (dockerd defaults)"
+		return "no daemon.json (dockerd defaults, build cache limited to 8 GiB)"
 	case engine.DaemonPrevious:
 		return fmt.Sprintf("the previous daemon.json (%d bytes)", d.Bytes)
 	}
