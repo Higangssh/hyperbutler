@@ -77,6 +77,10 @@ build_origin() { # package-name
     git --git-dir="$git_dir" archive --format=tar "$commit" "$repo/$origin" | tar -x -C "$work/aports"
     dir="$work/aports/$repo/$origin"
     echo "$1: aports $commit $repo/$origin" >>"$info"
+    # A fixed build time (moby stamps it into dockerd): the aports commit's, so a rebuild
+    # from the same pins gives the same bytes.
+    SOURCE_DATE_EPOCH=$(git --git-dir="$git_dir" show -s --format=%ct "$commit")
+    export SOURCE_DATE_EPOCH
 
     echo "::group::$origin: dependencies and sources"
     (cd "$dir" && abuild -F deps && abuild -F fetch verify unpack prepare) || fail "abuild prepare failed for $origin"
