@@ -31,6 +31,11 @@ and lets the stock `docker` CLI and Docker Compose talk to it. No WSL, no Docker
 > among them an install on a clean PC and a real sleep test; [status](docs/status.md) and
 > the [release checklist](docs/release.md) list them. Early software: try it, report what
 > breaks.
+>
+> **[v0.3.0-rc.1](https://github.com/Higangssh/hyperbutler/releases/tag/v0.3.0-rc.1)**, a
+> pre-release, runs dockerd and containerd built without PIE (less memory), names other
+> programs that listen on a published port, and bounds the BuildKit cache. v0.3.0 follows
+> once it has passed its own 24-hour soak.
 
 ## Highlights
 

@@ -82,5 +82,18 @@ goroutines, handles and threads flat; the tool flagged one 14 MiB working-set st
 followed a Defender update and the engine's working-set guard, with no change in private
 bytes. Accepted as the gate on 2026-11-12 ([release.md](release.md)).
 
+v0.3.0-rc.1 (2026-11-21) is a pre-release with what came after v0.2.0: dockerd, containerd,
+docker-proxy and the runc shim rebuilt without PIE from the pinned Alpine packages' sources
+([ADR 0005](adr/0005-guest-image.md), "The engine without PIE"; idle memory 20 to 25 MiB
+lower, still over 1.0's 250 MB); `status` and the window's home screen name another program
+that listens on a published port (REQ-NET-005); a BuildKit cache bound of 8 GiB unless
+`daemon.json` sets one; the working-set guard checks again after a trim; the VM stops only
+on a confirmed session end ([ADR 0010](adr/0010-session-end.md)); linux-virt 6.18.62 and
+docker-engine 29.9.3. Tested on one machine before the tag, from a snapshot package of the
+same commit and its CI guest image, in the engine process: `start`, `hello-world`, a bind
+mount read and write, a published port, `docker build` with BuildKit, Compose with a
+published port, a wildcard listener on a published port named by `status`, `stop`. Its
+24 h soak has not run.
+
 Bind mounts from Windows paths work but are not yet fast for write-heavy trees: use a
 named volume for `node_modules`.
