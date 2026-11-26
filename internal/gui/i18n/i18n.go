@@ -34,6 +34,7 @@ const Pseudo = "pseudo"
 var PluralForms = map[string][]string{
 	"en": {"one", "other"},
 	"ko": {"other"},
+	"ja": {"other"},
 }
 
 // NameKey is a language's name in itself ("English", "한국어"), which the language

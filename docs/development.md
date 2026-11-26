@@ -38,6 +38,13 @@ docker -H npipe:////./pipe/hb_dev info
 `--no-context` leaves your `docker context` alone; `HYPERBUTLER_NO_LAUNCHER=1` turns off
 the double-click launcher.
 
+`hyperbutler gui` also needs `WebView2Loader.dll` next to the exe, which `go build`
+does not produce: `dist/package.ps1` downloads it from the pinned
+`Microsoft.Web.WebView2` NuGet package at release time (docs/gui.md). To try the
+window from a development build, copy the loader from an installed release
+(`C:\Program Files\hyperbutler`) or a release zip into `$env:TEMP\hb-dev`; without
+it `gui` shows the "WebView2 Runtime is not installed" box even on Windows 11.
+
 ## Guest images
 
 - The Docker VM's image: `guest/prototype/build.ps1`. Its inputs are pinned by SHA-256 in

@@ -33,6 +33,15 @@ body {
   font-size: 15px;
   line-height: 1.45;
 }
+/* Per-language faces: the single stack above puts Malgun Gothic before Yu Gothic
+   UI, which gives Japanese text Korean-shaped glyphs. lang is on <html>. */
+body:lang(ja) {
+  font-family: "Yu Gothic UI", "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
+}
+body:lang(ko) {
+  font-family: "Malgun Gothic", "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
+}
+
 [hidden] { display: none !important; }
 :focus-visible { outline: 3px solid var(--focus); outline-offset: 2px; border-radius: 12px; }
 .visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
