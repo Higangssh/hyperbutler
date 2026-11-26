@@ -459,7 +459,8 @@ type Settings struct {
 }
 
 // GUILanguages are the languages the GUI ships.
-var GUILanguages = []string{"en", "ko"}
+// ("en" first, the rest in lexicographic order)
+var GUILanguages = []string{"en", "ja", "ko"}
 
 // GUILanguageAuto is gui.language chosen as "follow the Windows display language".
 const GUILanguageAuto = "auto"
