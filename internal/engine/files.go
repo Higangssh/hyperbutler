@@ -647,6 +647,13 @@ func ParseSettings(b []byte) (*Settings, error) {
 	if err := decodeStrict(b, &s); err != nil {
 		return nil, fmt.Errorf("settings: %w", err)
 	}
+
+	// A settings.json from a build that shipped more languages can name one this build
+	// does not have: read it as not chosen (the window asks once) instead of refusing the whole file.
+	if s.GUILanguage != "" && s.GUILanguage != GUILanguageAuto && !slices.Contains(GUILanguages, s.GUILanguage) {
+		s.GUILanguage = ""
+	}
+
 	if err := s.Validate(); err != nil {
 		return nil, err
 	}
