@@ -230,11 +230,11 @@
   "daemon.saved": "保存しました。適用すると、dockerd がこの設定で再起動します。",
   "daemon.appliesAtStart": "保存しました。エンジンは稼働していないため、次回の起動時にこの設定が使われます。",
 
-  "help.doctor.title": "先にいくつか確認しておきました",
+  "help.doctor.title": "あらかじめいくつか確認しておきました",
   "help.doctor.again": "再確認",
   "help.doctor.running": "確認中…",
   "help.diagnose.title": "診断ファイルを作成",
-  "help.diagnose.body": "ログと設定を 1 つの zip にまとめます。パスワードとトークンは伏せられます。ファイルはこの PC に保存され、どこにも送信されません。",
+  "help.diagnose.body": "ログと設定を 1 つの zip にまとめます。パスワードとトークンはマスクされます。ファイルはこの PC に保存され、どこにも送信されません。",
   "help.diagnose.button": "診断ファイルを作成",
   "help.diagnose.reveal": "フォルダーで表示",
   "help.diagnose.running": "収集中…",
