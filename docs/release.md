@@ -279,6 +279,18 @@ soak runs separately and its result goes here.
       checks again from five minutes after a trim and trims again (at most twice) if the working set is
       still 8 MiB above the pre-read low with the commit flat (2026-11-16,
       docs/research/mem-reclaim.md, section 3); not yet seen working in a soak.
+  - **24 h run for v0.3.0**, 2026-11-25 10:01 to 2026-11-26 10:01 KST, installed
+    v0.3.0-rc.1 (both MSIs, the engine through the broker service), started by a one-shot
+    scheduled task under a headless console, 1 h warm-up (23 h window), bind mounts and a
+    published port: 303833 docker commands, 0 failed. The soak tool reported **PASS** on
+    every judged metric: `private_bytes_adj` +0.07 MiB against an allowed 2.1 MiB,
+    `heap_inuse` +0.10 MiB against 1.6 MiB, goroutines, handles and threads +0, vmmem
+    +12.5 MiB against 64 MiB, vmwp, broker private bytes and broker handles flat. The
+    working-set guard trimmed three times (2 h 24 min, 7 h 41 min, 15 h 5 min), each time
+    with private bytes unchanged, and the working set came back to 37 to 47 MiB; none
+    needed the second check's extra trim. The heap profile at the end is 1.6 MiB smaller
+    than at the end of the warm-up, with no new owner. **Accepted for v0.3.0**
+    (2026-11-26).
 - [ ] The 45 MB working set seen under the soak workload is profiled and explained
   (ADR 0003, Consequences) before any memory budget is claimed.
 - [x] `go test -race ./...` and the goleak meta-test pass on Windows and Linux (CI).
