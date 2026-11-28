@@ -23,19 +23,13 @@ directly through the Windows Host Compute Service (the API WSL 2 uses), runs doc
 and lets the stock `docker` CLI and Docker Compose talk to it. No WSL, no Docker Desktop.
 
 > [!NOTE]
-> **[v0.2.0](https://github.com/Higangssh/hyperbutler/releases/tag/v0.2.0)** is the latest
-> release. It adds the [sandbox for AI coding agents](#a-sandbox-for-ai-coding-agents),
-> BuildKit builds and ports published on `127.0.0.1`. Its release candidate ran a 24-hour soak
-> (283,947 docker commands, none failed), and the one slow leak that soak found is fixed. It
-> works end to end on Windows 11 Home. Some release tests have not run yet,
-> among them an install on a clean PC and a real sleep test; [status](docs/status.md) and
-> the [release checklist](docs/release.md) list them. Early software: try it, report what
-> breaks.
->
-> **[v0.3.0-rc.1](https://github.com/Higangssh/hyperbutler/releases/tag/v0.3.0-rc.1)**, a
-> pre-release, runs dockerd and containerd built without PIE (less memory), names other
-> programs that listen on a published port, and bounds the BuildKit cache. v0.3.0 follows
-> once it has passed its own 24-hour soak.
+> **[v0.3.0](https://github.com/Higangssh/hyperbutler/releases/tag/v0.3.0)** is the latest
+> release. It runs dockerd and containerd built without PIE (less memory), names other
+> programs that listen on a published port, and bounds the BuildKit cache. It passed a
+> 24-hour soak (303,833 docker commands, none failed) and works end to end on Windows 11
+> Home. Some release tests have not run yet, among them an install on a clean PC and a real
+> sleep test; [status](docs/status.md) and the [release checklist](docs/release.md) list
+> them. Early software: try it, report what breaks.
 
 ## Highlights
 

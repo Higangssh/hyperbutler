@@ -97,5 +97,10 @@ published port, a wildcard listener on a published port named by `status`, `stop
 commands, none failed) passed every judged metric, with the engine's commit +0.07 MiB
 over 23 h; accepted as the gate for v0.3.0 ([release.md](release.md)).
 
+v0.3.0 (2026-11-29) is that release candidate's code; its guest and sandbox images are the
+same files the soak ran. Its own MSIs were installed over rc.1 before publishing: through
+the broker service, `start`, `hello-world`, a bind mount read and write, a published port
+and `stop` passed, and a sandbox session ran and showed its change in `sandbox diff`.
+
 Bind mounts from Windows paths work but are not yet fast for write-heavy trees: use a
 named volume for `node_modules`.
